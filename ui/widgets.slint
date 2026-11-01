@@ -250,7 +250,8 @@ export component Field inherits Rectangle {
     background: Theme.field;
     opacity: root.enabled ? 1 : 0.55;
     clip: true;
-    if input.text == "": Text {
+    // Gone too while an input method composes, as what it composes isn't in `text` yet.
+    if input.text == "" && input.preedit-text == "": Text {
         x: root.margin;
         width: parent.width - 2 * root.margin;
         height: parent.height;

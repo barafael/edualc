@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, ImageChip, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -94,6 +94,10 @@ export global Composer {
     // Ctrl+V: the clipboard's image, if it holds one (text is pasted as ever).
     callback paste-image;
     callback remove-image(int);
+    // Ctrl+Enter, which the text box itself ignores: the draft with a line break in place of
+    // what lies between two byte offsets (the selection, or none at the caret), and where the
+    // caret goes after it.
+    pure callback break-line(string, int, int) -> LineBreak;
 }
 
 // The sidebar: the sessions of this directory, and the directories to switch to.

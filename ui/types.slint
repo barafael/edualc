@@ -203,3 +203,9 @@ export struct ImageChip {
     // Its size as sent, e.g. "1920×1080".
     caption: string,
 }
+
+// A draft with a line break put in, and the caret's byte offset after the break.
+export struct LineBreak {
+    text: string,
+    caret: int,
+}

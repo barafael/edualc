@@ -594,12 +594,16 @@ component PromptBar inherits Rectangle {
                         feedback.text = "";
                     }
                 }
+                // Enter denies with what was written, as Deny does: once armed like the buttons,
+                // and not with nothing written.
                 feedback := Field {
                     horizontal-stretch: 1;
                     placeholder: "Or tell Claude what to do instead";
                     accepted(text) => {
-                        Prompt.deny(Prompt.request, text);
-                        self.text = "";
+                        if root.armed && text != "" {
+                            Prompt.deny(Prompt.request, text);
+                            self.text = "";
+                        }
                     }
                 }
             }
@@ -936,7 +940,8 @@ component EditArea inherits Rectangle {
     measure := Text {
         visible: false;
         width: input.width;
-        text: Composer.draft + " ";
+        // With what an input method still composes, which isn't in the draft yet.
+        text: Composer.draft + input.preedit-text + " ";
         wrap: word-wrap;
     }
     // As tall as its layout: what it holds outside the layout (the draft measured, the text
@@ -999,7 +1004,7 @@ component EditArea inherits Rectangle {
             changed content-height => {
                 self.content-y = max(self.content-y, self.height - self.content-height);
             }
-            if Composer.draft == "": Text {
+            if Composer.draft == "" && input.preedit-text == "": Text {
                 x: 0;
                 y: 0;
                 width: scroll.width;
@@ -1028,9 +1033,17 @@ component EditArea inherits Rectangle {
                         scroll.content-y = scroll.height - at.y - root.line;
                     }
                 }
-                // Enter sends, Shift+Enter starts a new line, Tab takes the first command.
-                // Ctrl+V asks for the clipboard's image too, and pastes its text as ever.
+                // Enter sends; Shift+Enter and Ctrl+Enter start a new line (Ctrl+Enter as in
+                // WeChat; the box ignores it, so the line break is put in here). Tab takes the
+                // first command. Ctrl+V asks for the clipboard's image too, and pastes its
+                // text as ever.
                 key-pressed(event) => {
+                    if event.text == Key.Return && event.modifiers.control {
+                        let broken = Composer.break-line(Composer.draft, min(self.cursor-position-byte-offset, self.anchor-position-byte-offset), max(self.cursor-position-byte-offset, self.anchor-position-byte-offset));
+                        Composer.draft = broken.text;
+                        self.set-selection-offsets(broken.caret, broken.caret);
+                        return accept;
+                    }
                     if event.modifiers.control && (event.text == "v" || event.text == "V") {
                         Composer.paste-image();
                         return reject;
@@ -1109,6 +1122,15 @@ component EditArea inherits Rectangle {
                 label: Composer.size == ComposerSize.full ? "Show the conversation again" : "Give the message the whole column, to see all of a long paste";
                 tint: Theme.text-faint;
                 clicked => { root.toggle(ComposerSize.full); }
+            }
+            // While Claude works and a message is written (to send when it's done), Send stays
+            // Send, and Stop is here.
+            if Session.busy && Composer.draft != "": IconButton {
+                icon: @image-url("@lucide/square.svg");
+                label: "Stop";
+                tint: Theme.danger-text;
+                y: (parent.height - self.height) / 2;
+                clicked => { Session.interrupt(); }
             }
             SendButton {
                 sent => {
@@ -1439,7 +1461,10 @@ export component AppWindow inherits Window {
                 return accept;
             }
             // While Claude waits for an answer, Esc belongs to what asks (a comment being written).
-            if event.text == Key.Escape && Session.busy && Prompt.kind == PromptKind.none {
+            // With a draft written, it stops nothing: an Esc meant for the writing (one more
+            // after an input method's conversion was cancelled, say) mustn't stop a turn; Stop
+            // is beside the draft then.
+            if event.text == Key.Escape && Session.busy && Prompt.kind == PromptKind.none && Composer.draft == "" {
                 Session.interrupt();
                 return accept;
             }

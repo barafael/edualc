@@ -7,7 +7,7 @@ use slint::ComponentHandle;
 use crate::app::{Action, Event, PermissionMode};
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Prompt, Session, Sessions, Side, Transcript, Usage,
+    AppWindow, Clipboard, Composer, LineBreak, Prompt, Session, Sessions, Side, Transcript, Usage,
 };
 use crate::settings::Zoom;
 
@@ -106,6 +106,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     });
     composer.on_paste_image(actions.on(|| Action::PasteImage));
     composer.on_remove_image(actions.on_index(Action::RemoveImage));
+    composer.on_break_line(|text, from, to| break_line(&text, from, to));
 
     let session = window.global::<Session>();
     session.on_interrupt(actions.on(|| Action::Interrupt));
@@ -209,4 +210,43 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         actions.send(Action::Quit);
         slint::CloseRequestResponse::HideWindow
     });
+}
+
+/// `text` with a line break in place of what lies between the byte offsets `from` and `to`, as
+/// the text box gives them (one outside the text, or inside a character, is moved to the
+/// boundary before it); and the caret's offset after the break.
+fn break_line(text: &str, from: i32, to: i32) -> LineBreak {
+    let at = |offset: i32| text.floor_char_boundary(usize::try_from(offset).unwrap_or(0));
+    let (start, end) = (at(from.min(to)), at(from.max(to)));
+    let mut broken = String::with_capacity(text.len() + 1);
+    broken.push_str(text.get(..start).unwrap_or(text));
+    broken.push('\n');
+    broken.push_str(text.get(end..).unwrap_or(""));
+    LineBreak {
+        text: broken.into(),
+        caret: i32::try_from(start + 1).unwrap_or(i32::MAX),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn broken(text: &str, from: i32, to: i32) -> (String, i32) {
+        let LineBreak { text, caret } = break_line(text, from, to);
+        (text.into(), caret)
+    }
+
+    /// A break goes in at the caret, or in place of the selection; the caret after it. Offsets
+    /// are bytes: one inside a character, or past the end, goes to the boundary before.
+    #[test]
+    fn a_line_break_replaces_the_selection_at_the_caret() {
+        assert_eq!(broken("ab", 1, 1), ("a\nb".to_owned(), 2));
+        assert_eq!(broken("abcd", 3, 1), ("a\nd".to_owned(), 2));
+        assert_eq!(broken("", 0, 0), ("\n".to_owned(), 1));
+        // 今 is three bytes: an offset inside it goes before it.
+        assert_eq!(broken("今日", 4, 4), ("今\n日".to_owned(), 4));
+        assert_eq!(broken("今日", 2, 2), ("\n今日".to_owned(), 1));
+        assert_eq!(broken("ab", 99, -5), ("\n".to_owned(), 1));
+    }
 }
