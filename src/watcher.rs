@@ -38,8 +38,9 @@ pub(crate) enum Error {
 impl Watcher {
     pub(crate) fn start(events: Sender<Event>) -> Result<Self, Error> {
         let inotify = inotify::init(CreateFlags::CLOEXEC).map_err(Error::Start)?;
-        // The reading thread has a descriptor of its own for the same watches.
-        let reading = rustix::io::dup(&inotify).map_err(Error::Start)?;
+        // The reading thread has a descriptor of its own for the same watches; closed on exec
+        // like the first (a `dup` isn't), so no program the window starts holds it.
+        let reading = rustix::io::fcntl_dupfd_cloexec(&inotify, 0).map_err(Error::Start)?;
         std::thread::spawn(move || read(&reading, &events));
         Ok(Self { inotify })
     }
