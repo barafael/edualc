@@ -435,10 +435,12 @@ impl View {
         session.set_sandbox_detail(detail.into());
         session.set_sandbox_on(status.sandbox_choice.on);
         session.set_sandbox_desktop(status.sandbox_choice.desktop);
+        // Not yet known isn't warned about: every start would flash the warning.
         session.set_sandboxed(matches!(
             status.sandboxing,
             Sandboxing::Landlock(Enforcement::Full | Enforcement::Partial)
                 | Sandboxing::ClaudeCodes
+                | Sandboxing::Pending
         ));
         let doing = if waiting {
             "Waiting for you".to_owned()
@@ -979,6 +981,10 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
              servers run with all your rights.",
         ),
         Sandboxing::Off => ("Not sandboxed", "Claude Code runs with all your rights."),
+        Sandboxing::Pending => (
+            "Sandbox",
+            "How far this kernel holds the sandbox is known once Claude Code runs.",
+        ),
     }
 }
 

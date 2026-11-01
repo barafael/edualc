@@ -73,7 +73,9 @@ other way around.
   Slash commands complete with Tab; Esc interrupts. The box grows with its text; dragging its top
   edge gives it a height of your own (kept; a double click fits it to the text again), one button
   makes it taller over the conversation and another gives it the whole column, to see all of a long
-  paste. The account, cost and plan limits sit at the foot of the sidebar, which Ctrl+B hides.
+  paste. The account, cost and plan limits sit at the foot of the sidebar, which Ctrl+B hides; a
+  click on them opens the usage details over the conversation, which stays in sight around them.
+  While Claude Code isn't sandboxed, the foot of the sidebar says so above them too.
 
 ## Look
 

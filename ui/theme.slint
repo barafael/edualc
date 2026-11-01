@@ -25,6 +25,9 @@ export global Theme {
     // Under what lies over the conversation (the composer made taller, popovers): darker on the
     // dark theme, where a light shadow wouldn't show.
     out property <color> shadow: self.dark ? #0009 : #0005;
+    // Over the conversation around a popover: enough to set the popover apart, little enough to
+    // keep the conversation readable.
+    out property <color> dim: self.dark ? #0004 : #0002;
     // bg1: the user's messages.
     out property <color> bubble: self.dark ? #3c3836 : #ebdbb2;
     // bg0_h / bg1: code, tool input and output.

@@ -34,6 +34,8 @@ component LiveDot inherits Rectangle {
 component Sidebar inherits Rectangle {
     // 0: this folder's sessions; 1: those running anywhere.
     property <int> tab: 0;
+    // The warning that Claude Code isn't sandboxed was clicked: the header's menu says more.
+    callback sandbox-clicked;
     min-width: 200px;
     preferred-width: Theme.sidebar;
     max-width: Theme.sidebar;
@@ -301,6 +303,35 @@ component Sidebar inherits Rectangle {
             Rectangle {
                 height: 1px;
                 background: Theme.divider;
+            }
+            // Where the eye goes for what the session may spend: what it may do, when nothing
+            // keeps it in.
+            if !Session.sandboxed: Pressable {
+                accessible-label: Session.sandbox-label + ": " + Session.sandbox-detail;
+                clicked => { root.sandbox-clicked(); }
+                HorizontalLayout {
+                    padding: Theme.space-xs;
+                    spacing: Theme.space-s;
+                    Icon {
+                        source: @image-url("@lucide/shield-off.svg");
+                        tint: Theme.warning-text;
+                        width: Theme.icon-small;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text {
+                            text: Session.sandbox-label;
+                            color: Theme.warning-text;
+                            font-weight: 600;
+                            font-size: 1rem * Theme.small;
+                            wrap: word-wrap;
+                        }
+                        Caption {
+                            text: Session.sandbox-detail;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
             }
             HorizontalLayout {
                 padding-top: Theme.space-xs;
@@ -959,6 +990,9 @@ component EditArea inherits Rectangle {
 component Header inherits Rectangle {
     in property <bool> sidebar-shown;
     callback toggle-sidebar;
+    public function open-sandbox-menu() {
+        sandbox-menu.show();
+    }
     height: Theme.header;
     HorizontalLayout {
         padding-left: Theme.space-s;
@@ -1343,7 +1377,9 @@ export component AppWindow inherits Window {
             return reject;
         }
         HorizontalLayout {
-            if root.sidebar-shown: Sidebar { }
+            if root.sidebar-shown: Sidebar {
+                sandbox-clicked => { header.open-sandbox-menu(); }
+            }
             if root.sidebar-shown: Rectangle {
                 width: 1px;
                 background: Theme.divider;
@@ -1467,11 +1503,39 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                     }
-                    if Usage.open: UsagePanel {
+                    // Over the conversation, which stays in sight around it: a click beside the
+                    // panel, or Esc, closes it.
+                    if Usage.open: Rectangle {
                         x: 0;
                         y: 0;
                         width: parent.width;
                         height: parent.height;
+                        background: Theme.dim;
+                        TouchArea {
+                            clicked => { Usage.close(); }
+                        }
+                        // Three quarters of the area's height, not sized from its list: a list
+                        // sizing what sizes it is measured again and again.
+                        Rectangle {
+                            property <length> room: parent.height - 2 * Theme.space-xl;
+                            width: min(parent.width - 2 * Theme.space-xl, 680px);
+                            height: max(min(360px, self.room), self.room * 75%);
+                            x: (parent.width - self.width) / 2;
+                            y: Theme.space-xl;
+                            background: Theme.surface;
+                            border-radius: Theme.radius-l;
+                            border-width: 1px;
+                            border-color: Theme.divider;
+                            drop-shadow-blur: 24px;
+                            drop-shadow-color: Theme.shadow;
+                            clip: true;
+                            // Clicks on the panel stay with it.
+                            TouchArea { }
+                            UsagePanel {
+                                width: parent.width;
+                                height: parent.height;
+                            }
+                        }
                     }
                     if !transcript.follow && !(Prompt.kind == PromptKind.plan && Prompt.reviewing): IconButton {
                         x: parent.width - self.width - Theme.space-xl;

@@ -267,8 +267,10 @@ pub(crate) struct SandboxChoice {
 /// What keeps Claude Code's process in, as far as this window knows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Sandboxing {
-    /// Not started yet, or the sandbox is turned off here.
+    /// Not known yet: no process runs, or one is being started.
     #[default]
+    Pending,
+    /// The sandbox is turned off here.
     Off,
     /// The user turned on Claude Code's own (for its commands), which Landlock would break.
     ClaudeCodes,
@@ -832,7 +834,7 @@ impl App {
     fn start(&mut self, resume: Option<Resume>) {
         if !trust::trusted(&self.cwd, &self.settings) {
             self.awaiting_trust = Some(resume);
-            self.status.sandboxing = Sandboxing::Off;
+            self.status.sandboxing = Sandboxing::Pending;
             return;
         }
         self.awaiting_trust = None;
@@ -855,6 +857,8 @@ impl App {
         // How far it is sandboxed is known once the daemon started it (`Output::Started`).
         self.status.sandboxing = if own_sandbox {
             Sandboxing::ClaudeCodes
+        } else if self.settings.sandbox {
+            Sandboxing::Pending
         } else {
             Sandboxing::Off
         };
@@ -924,7 +928,11 @@ impl App {
             self.stop();
             self.start(resume);
         } else {
-            self.status.sandboxing = Sandboxing::Off;
+            self.status.sandboxing = if self.settings.sandbox {
+                Sandboxing::Pending
+            } else {
+                Sandboxing::Off
+            };
         }
         self.redraw.menus = true;
     }
