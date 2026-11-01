@@ -1,0 +1,131 @@
+// The window's look in one place: Gruvbox (github.com/morhetz/gruvbox), dark or light as the
+// desktop asks. Where a Gruvbox colour falls short of WCAG AA (4.5:1 for text, 3:1 for the
+// edge of a control) on the surface it is used on, it is moved towards the text colour just
+// far enough; those are marked "lifted". Elements use these, never literal values.
+
+import { Palette } from "std-widgets.slint";
+
+export global Motion {
+    // Hover and press feedback.
+    out property <duration> fast: 120ms;
+}
+
+export global Theme {
+    // Dark unless the desktop asks for light.
+    out property <bool> dark: Palette.color-scheme != ColorScheme.light;
+
+    // Surfaces, from back to front. The sidebar and side panel sit lower (darker in the dark
+    // theme) than the conversation, which sets them apart without lines.
+    // bg0: the conversation.
+    out property <color> surface: self.dark ? #282828 : #fbf1c7;
+    // bg0_h / bg0_s: the sidebar, the side panel, popups.
+    out property <color> surface-raised: self.dark ? #1d2021 : #f2e5bc;
+    // bg0_s / bg0_h: tool calls, the bar asking for an answer.
+    out property <color> card: self.dark ? #32302f : #f9f5d7;
+    // bg1: the user's messages.
+    out property <color> bubble: self.dark ? #3c3836 : #ebdbb2;
+    // bg0_h / bg1: code, tool input and output.
+    out property <color> code: self.dark ? #1d2021 : #f2e5bc;
+    out property <color> field: self.dark ? #32302f : #f9f5d7;
+    // bg1 / bg2: lines between areas (decorative, so no contrast floor).
+    out property <color> divider: self.dark ? #3c3836 : #d5c4a1;
+    // The edge of a text field or menu: lifted to 3:1.
+    out property <color> control-border: self.dark ? #837769 : #968977;
+
+    // Text, by how much it matters: fg1, fg3, fg4; gray only for placeholders and disabled
+    // text (4:1).
+    out property <color> text: self.dark ? #ebdbb2 : #3c3836;
+    out property <color> text-secondary: self.dark ? #bdae93 : #504945;
+    out property <color> text-tertiary: self.dark ? #a89984 : #665c54;
+    out property <color> text-faint: self.dark ? #928374 : #7c6f64;
+
+    // Fills laid over a surface.
+    out property <color> hover: self.text.with-alpha(0.07);
+    out property <color> pressed: self.text.with-alpha(0.12);
+    out property <color> subtle: self.text.with-alpha(0.04);
+    out property <color> selected: self.accent.with-alpha(0.16);
+
+    // The accent, Gruvbox orange: what to press, what has focus, what is chosen. Dark text on
+    // it (6.5:1 dark, 5.4:1 light).
+    out property <color> accent: self.dark ? #fe8019 : #af3a03;
+    out property <color> on-accent: self.dark ? #1d2021 : #fbf1c7;
+    // Gruvbox blue.
+    out property <color> link: self.dark ? #83a598 : #076678;
+    // bg2 / light bg2, as Gruvbox selects text.
+    out property <color> selection: self.dark ? #504945 : #d5c4a1;
+    out property <color> selection-text: self.dark ? #fbf1c7 : #282828;
+
+    // Claude's mark, and the dot that shows it working.
+    out property <color> claude: self.dark ? #fe8019 : #d65d0e;
+
+    // How things went. The light theme's yellow and green fall short as text and are lifted
+    // for it; as dots and edges they keep 3:1.
+    out property <color> success: self.dark ? #b8bb26 : #736f10;
+    out property <color> warning: self.dark ? #fabd2f : #b57614;
+    out property <color> warning-text: self.dark ? #fabd2f : #926219;
+    out property <color> danger: self.dark ? #fb4934 : #9d0006;
+    // Dark red lifted to 4.6:1.
+    out property <color> danger-text: self.dark ? #fb5841 : #9d0006;
+    out property <color> danger-fill: self.danger.with-alpha(0.12);
+    // Gruvbox aqua (light: lifted to 4.6:1), for what is neither good nor bad news.
+    out property <color> info: self.dark ? #8ec07c : #417756;
+
+    // Diffs: the line's colour behind it, faint, and in its sign.
+    out property <color> added: (self.dark ? #b8bb26 : #79740e).with-alpha(0.16);
+    out property <color> added-text: self.success;
+    out property <color> removed: self.danger.with-alpha(0.16);
+    out property <color> removed-text: self.danger-text;
+    // A share's colour, warming as it fills: a warning from 70%, danger from 90%.
+    public pure function fill(fraction: float) -> color {
+        return fraction >= 0.9 ? self.danger : fraction >= 0.7 ? self.warning : self.info;
+    }
+    // The same for a number shown beside it.
+    public pure function fill-text(fraction: float) -> color {
+        return fraction >= 0.9 ? self.danger-text : fraction >= 0.7 ? self.warning-text : self.text-secondary;
+    }
+
+    // Fira Sans for the interface, Fira Code for code; Rust sets what fontconfig has (the
+    // desktop's sans and monospace where Fira isn't installed).
+    in property <string> sans: "Fira Sans";
+    in property <string> mono: "Fira Code";
+    // The base text size, as the desktop configures it and the user zooms it (Ctrl+= and
+    // Ctrl+-); in logical pixels, which the window scales for the screen.
+    in property <length> base-size: 15px;
+
+    // Text sizes, in `rem` (the base size): `font-size: 1rem * Theme.small`.
+    out property <float> caption: 0.8;
+    out property <float> small: 0.9;
+    out property <float> code-size: 0.92;
+    out property <float> title: 1.1;
+    out property <float> heading: 1.3;
+    out property <float> display: 1.6;
+
+    // Corners.
+    out property <length> radius-s: 6px;
+    out property <length> radius-m: 8px;
+    out property <length> radius-l: 12px;
+    out property <length> bubble-radius: 16px;
+
+    // Spacing, on a 4px grid.
+    out property <length> space-xs: 4px;
+    out property <length> space-s: 8px;
+    out property <length> space-m: 12px;
+    out property <length> space-l: 16px;
+    out property <length> space-xl: 24px;
+
+    // Sizes grow with the text, from a floor that keeps targets easy to hit: controls and
+    // buttons at least 32px, rows at least 34px.
+    out property <length> icon: max(18px, self.base-size * 1.2);
+    out property <length> icon-small: max(14px, self.base-size * 0.95);
+    out property <length> button: max(32px, self.base-size * 2.2);
+    out property <length> control: max(32px, self.base-size * 2.2);
+    out property <length> row: max(34px, self.base-size * 2.3);
+    // Compact controls in toolbars: chips, the send button.
+    out property <length> chip: max(28px, self.base-size * 2);
+    out property <length> row-tall: max(42px, self.base-size * 2.9);
+    out property <length> header: max(46px, self.base-size * 3.1);
+    out property <length> sidebar: max(272px, self.base-size * 18);
+    out property <length> side-panel: max(400px, self.base-size * 26);
+    // The transcript reads best as a column (about 90 characters), not the window's width.
+    out property <length> column: max(880px, self.base-size * 58);
+}

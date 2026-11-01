@@ -1,0 +1,1803 @@
+//! The one owner of everything the window shows: the conversation, the process holding it,
+//! what it waits for. UI callbacks, the process's output, a timer and background work reach it
+//! as [`Event`]s on one channel, and it draws what changed once per batch.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use async_channel::{Receiver, Sender};
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::chat::{Chat, ToolState};
+use crate::claude::{self, Claude, Launch, Output, Resume, SandboxWish};
+use crate::desktop;
+use crate::generated::AppWindow;
+use crate::ipc::{Act, ActFailure, ToDaemon};
+use crate::link::{self, Link};
+use crate::plan;
+use crate::sandbox;
+use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
+use crate::settings::{self, Settings, Zoom};
+use crate::trust;
+use crate::ui::View;
+use crate::watcher::{Watched, Watcher};
+use crate::wire::{
+    self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
+    ToolInput, ToolName, ToolUseId, TranscriptLine,
+};
+
+mod protocol;
+mod side;
+mod usage;
+mod worktree;
+
+pub(crate) use side::{Answer, SideChat, SideView};
+
+/// The permission modes the menu offers, as the CLI names them.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+#[strum(serialize_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Plan,
+    Auto,
+    BypassPermissions,
+}
+
+impl PermissionMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Ask before edits",
+            Self::AcceptEdits => "Accept edits",
+            Self::Plan => "Plan mode",
+            Self::Auto => "Auto",
+            Self::BypassPermissions => "Bypass permissions",
+        }
+    }
+
+    /// What the mode lets through, for its menu.
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Default => "Claude asks before it edits files or runs commands",
+            Self::AcceptEdits => "File edits go through; commands still ask",
+            Self::Plan => "Claude only reads and plans, then asks you to approve the plan",
+            Self::Auto => "A classifier lets the safe through and asks about the rest",
+            Self::BypassPermissions => "Nothing asks. Only for sandboxes you can throw away",
+        }
+    }
+}
+
+/// The mode the CLI reports: one the menu knows, or one named as the CLI names it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Mode {
+    Known(PermissionMode),
+    Unknown(String),
+}
+
+/// Which process said something: what an earlier one still says is dropped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Generation(pub(crate) u64);
+
+impl Generation {
+    fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Event {
+    Action(Action),
+    Claude {
+        generation: Generation,
+        output: Output,
+    },
+    SessionsListed {
+        cwd: PathBuf,
+        sessions: Vec<SessionInfo>,
+    },
+    ProjectsListed(Vec<ProjectInfo>),
+    /// A saved session read from its start, as a conversation (built off the UI thread); where
+    /// its transcript was found, and how far into it the conversation reaches.
+    SessionLoaded {
+        id: SessionId,
+        path: PathBuf,
+        result: std::io::Result<(Chat, u64)>,
+    },
+    /// What a watched session's transcript says after what is shown.
+    TranscriptGrew {
+        id: SessionId,
+        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+    },
+    LiveListed(Vec<LiveSession>),
+    /// The daemon did what the desktop was asked, or says why not.
+    Acted {
+        request: u64,
+        result: Result<(), ActFailure>,
+    },
+    /// The folder the daemon's picker came back with.
+    Picked {
+        request: u64,
+        folder: Option<PathBuf>,
+    },
+    /// The daemon is gone, and the sessions it ran for this window.
+    DaemonLost,
+    /// The worktree a session's transcript says it works in.
+    WorktreeRead {
+        id: SessionId,
+        worktree: Option<Worktree>,
+    },
+
+    /// Something watched changed: the running sessions' records, or a followed transcript.
+    Changed(Watched),
+    /// Now and then: sessions whose process ended without saying so are let go.
+    Tick,
+}
+
+/// What a request to the daemon was for.
+#[derive(Debug)]
+enum Acting {
+    /// Something for the desktop; only its failure is told.
+    Desktop,
+    /// Stopping a session elsewhere, to continue it here.
+    Bringing(LiveSession),
+}
+
+/// What the user did in the window.
+#[derive(Debug)]
+pub(crate) enum Action {
+    Send(String),
+    Interrupt,
+    NewSession,
+    OpenSession(SessionId),
+    OpenProject(String),
+    BrowseProject,
+    ListProjects,
+    ChooseModel(usize),
+    ChooseMode(usize),
+    DraftEdited(String),
+    PickCommand(usize),
+    Toggle(usize),
+    CopyEntry(usize),
+    Copy(String),
+    OpenUrl(String),
+    Allow(RequestId),
+    AllowAlways(RequestId),
+    Deny {
+        request: RequestId,
+        feedback: String,
+    },
+    ToggleOption {
+        question: usize,
+        option: usize,
+    },
+    SetOther {
+        question: usize,
+        text: String,
+    },
+    AnswerQuestions(RequestId),
+    ApprovePlan {
+        request: RequestId,
+        mode: PermissionMode,
+        overall: String,
+    },
+    EditComment(usize),
+    SetComment {
+        section: usize,
+        text: String,
+    },
+    CancelComment,
+    Watch(SessionId),
+    ContinueHere,
+    GoToWindow,
+    AskSide(String),
+    ToggleSide,
+    DismissSide,
+    CopySide(usize),
+    SideToConversation,
+    BranchSide,
+    /// Opens the session's worktree with the opener at this place in the menu (0: here).
+    OpenWorktree(usize),
+    Zoom(Zoom),
+    FilterSessions(String),
+    /// Opens or folds the run of tool calls whose first call is at this place.
+    ToggleRun(usize),
+    ShowUsage,
+    HideUsage,
+    /// Stops the watched session in its window and continues it here.
+    BringHere,
+    /// Trusts the folder shown, to start Claude Code in it.
+    TrustFolder,
+    /// Turns the sandbox on or off, starting the process again.
+    ToggleSandbox,
+    /// Lets the sandboxed Claude use the display, or stops it, starting the process again.
+    ToggleSandboxDesktop,
+    Quit,
+}
+
+/// What the header, the status bar and the menus show about the process and its session.
+#[derive(Debug, Default)]
+pub(crate) struct Status {
+    pub(crate) session_id: Option<SessionId>,
+    pub(crate) title: Option<String>,
+    /// The model in use, as the CLI resolved it.
+    pub(crate) model: String,
+    pub(crate) models: Vec<wire::ModelInfo>,
+    /// Picked in the menu or on the command line: kept for the processes after this one.
+    pub(crate) model_choice: Option<String>,
+    pub(crate) mode: Option<Mode>,
+    /// Picked in the menu for this session: applied again if its process is restarted.
+    pub(crate) mode_choice: Option<PermissionMode>,
+    pub(crate) commands: Vec<wire::CommandInfo>,
+    pub(crate) account: wire::Account,
+    /// Claude Code's version, as it told at `initialize`.
+    pub(crate) version: String,
+    /// Prompts sent and not answered yet.
+    pub(crate) turns: usize,
+    pub(crate) doing: Doing,
+    pub(crate) context_tokens: u64,
+    pub(crate) context_window: u64,
+    pub(crate) cost_usd: f64,
+    pub(crate) limits: Limits,
+    pub(crate) worktree: Option<Worktree>,
+    pub(crate) sandboxing: Sandboxing,
+    /// What the settings ask of the sandbox, for its menu.
+    pub(crate) sandbox_choice: SandboxChoice,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SandboxChoice {
+    pub(crate) on: bool,
+    pub(crate) desktop: bool,
+}
+
+/// What keeps Claude Code's process in, as far as this window knows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Sandboxing {
+    /// Not started yet, or the sandbox is turned off here.
+    #[default]
+    Off,
+    /// The user turned on Claude Code's own (for its commands), which Landlock would break.
+    ClaudeCodes,
+    Landlock(sandbox::Enforcement),
+}
+
+/// What Claude is doing, for the status bar. That it waits for the user is told by what it
+/// asks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, derive_more::Display)]
+pub(crate) enum Doing {
+    #[default]
+    #[display("")]
+    Nothing,
+    #[display("Starting")]
+    Starting,
+    #[display("Thinking")]
+    Thinking,
+    #[display("Thinking  ~{}", crate::ui::short_count(*_0))]
+    ThinkingTokens(u64),
+    #[display("Writing")]
+    Writing,
+    #[display("Preparing {_0}")]
+    Preparing(ToolName),
+    #[display("Running {_0}")]
+    Running(ToolName),
+    /// Going on after the user answered.
+    #[display("Working")]
+    Working,
+    #[display("Compacting the conversation")]
+    Compacting,
+}
+
+/// How much of the plan's usage limits is used, as far as the CLI said.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Limits {
+    pub(crate) five_hour: Option<LimitUse>,
+    pub(crate) seven_day: Option<LimitUse>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LimitUse {
+    /// 0 to 1.
+    pub(crate) used: f32,
+    pub(crate) resets_at: Option<jiff::Timestamp>,
+}
+
+impl From<&wire::PlanLimit> for LimitUse {
+    fn from(limit: &wire::PlanLimit) -> Self {
+        Self {
+            used: (limit.percent / 100.0).clamp(0.0, 1.0),
+            resets_at: limit.resets_at,
+        }
+    }
+}
+
+/// The usage panel: what the CLI's `/usage` and `/context` answered, once asked.
+#[derive(Debug, Default)]
+pub(crate) struct UsagePanel {
+    pub(crate) open: bool,
+    pub(crate) report: Option<wire::UsageReport>,
+    pub(crate) context: Option<wire::ContextReport>,
+    /// Answers still owed.
+    pub(crate) waiting: usize,
+    pub(crate) error: Option<String>,
+}
+
+/// A request from the CLI waiting for the user.
+#[derive(Debug)]
+pub(crate) struct Ask {
+    pub(crate) request: RequestId,
+    pub(crate) tool_use: Option<ToolUseId>,
+    pub(crate) tool: ToolName,
+    pub(crate) input: Value,
+    pub(crate) kind: AskKind,
+}
+
+#[derive(Debug)]
+pub(crate) enum AskKind {
+    /// May the tool run?
+    Tool {
+        /// Rules the CLI offers to remember.
+        suggestions: Vec<wire::Offered>,
+        description: String,
+    },
+    /// AskUserQuestion: what is picked, by question and option, and what was typed.
+    Questions {
+        asked: wire::Questions,
+        picked: Vec<Vec<bool>>,
+        other: Vec<String>,
+    },
+    /// ExitPlanMode: the plan's parts with the comment on each, and the part whose comment is
+    /// being written.
+    Plan {
+        input: wire::PlanInput,
+        parts: Vec<plan::PlanPart>,
+        editing: Option<usize>,
+    },
+}
+
+/// What our control requests were for, to act on their answers.
+#[derive(Debug)]
+pub(crate) enum Request {
+    Initialize,
+    Model(String),
+    Mode(PermissionMode),
+    Interrupt,
+    /// A side question, by its place in the side chat.
+    Side(usize),
+    Usage,
+    ContextUsage,
+}
+
+/// A session running elsewhere, shown as it goes but not driven from here.
+#[derive(Debug)]
+pub(crate) struct Watch {
+    pub(crate) session: LiveSession,
+    /// Where its transcript is; corrected by the first read, which looks for it.
+    path: PathBuf,
+    /// How far the transcript has been read.
+    offset: u64,
+    reading: Refresh,
+    /// The watch on its transcript, once it is found.
+    watched: Option<Watched>,
+}
+
+/// Reading again what other processes write: one read at a time, and one more after it if
+/// what is read changed meanwhile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Refresh {
+    #[default]
+    Idle,
+    Reading,
+    /// Reading, and changed since the read began.
+    ReadingStale,
+}
+
+impl Refresh {
+    /// Asked to read again: whether a read is to start now.
+    fn wanted(&mut self) -> bool {
+        let start = *self == Self::Idle;
+        *self = if start {
+            Self::Reading
+        } else {
+            Self::ReadingStale
+        };
+        start
+    }
+
+    /// A read came back: whether what it read changed meanwhile, to be asked for again.
+    fn done(&mut self) -> bool {
+        let stale = *self == Self::ReadingStale;
+        *self = Self::Idle;
+        stale
+    }
+}
+
+/// What to draw besides the transcript and the status bar, which are drawn every time.
+#[derive(Debug, Default, Clone, Copy)]
+struct Redraw {
+    /// A run of tool calls was opened or folded.
+    runs: bool,
+    menus: bool,
+    prompt: bool,
+    /// Both lists: this folder's sessions mark those running elsewhere.
+    sessions: bool,
+    side: bool,
+    usage: bool,
+}
+
+impl Redraw {
+    /// After switching sessions: everything shown belonged to the one before.
+    fn everything() -> Self {
+        Self {
+            runs: true,
+            menus: true,
+            prompt: true,
+            sessions: true,
+            side: true,
+            usage: true,
+        }
+    }
+}
+
+/// Lines of stderr kept, to say why the process ended.
+const LOG_LINES: usize = 20;
+/// How often the running sessions are looked at without being told of a change: a process that
+/// crashed leaves its record behind.
+const TICK: Duration = Duration::from_secs(60);
+/// The least time between two notifications about the same session.
+const NOTIFY_AGAIN: Duration = Duration::from_secs(60);
+
+pub(crate) struct App {
+    view: View,
+    events: Sender<Event>,
+    chat: Chat,
+    status: Status,
+    asks: VecDeque<Ask>,
+    requests: HashMap<RequestId, Request>,
+    process: Option<Claude>,
+    generation: Generation,
+    cwd: PathBuf,
+    sessions: Vec<SessionInfo>,
+    /// The slash commands the draft could become, by their place in `status.commands`.
+    command_matches: Vec<usize>,
+    log: VecDeque<String>,
+    live: Vec<LiveSession>,
+    listing_live: Refresh,
+    /// When each session running elsewhere was last notified about.
+    notified: HashMap<SessionId, std::time::Instant>,
+    watch: Option<Watch>,
+    watcher: Option<Watcher>,
+    /// The watch on the running sessions' records.
+    records: Option<Watched>,
+    side: SideChat,
+    /// What a worktree can be opened in here, as the menu lists them after "this window".
+    openers: Vec<desktop::Opener>,
+    settings: Settings,
+    /// The desktop's text size, in logical pixels, which the zoom scales.
+    desktop_text_size: f32,
+    /// What the list of this directory's sessions is narrowed to.
+    session_filter: String,
+    /// The runs of tool calls opened, by their first call; the others are folded.
+    open_runs: HashSet<usize>,
+    usage: UsagePanel,
+    /// A start held back until the folder is trusted, with what it was to resume.
+    awaiting_trust: Option<Option<Resume>>,
+    /// The line to the daemon, which runs Claude Code and does what the desktop is asked.
+    link: Link,
+    /// What the daemon was asked to do, by request, for what its answer means.
+    acting: HashMap<u64, Acting>,
+    next_act: u64,
+    tick: slint::Timer,
+    redraw: Redraw,
+}
+
+impl App {
+    pub(crate) fn new(
+        window: AppWindow,
+        events: Sender<Event>,
+        link: Link,
+        desktop_found: Desktop,
+        cwd: PathBuf,
+        model: Option<String>,
+    ) -> Self {
+        let Desktop {
+            openers,
+            fonts,
+            text_size: desktop_text_size,
+        } = desktop_found;
+        let view = View::new(window, &openers, fonts);
+        let settings = settings::load().unwrap_or_else(|error| {
+            tracing::warn!(%error, "starting with the default settings");
+            Settings::default()
+        });
+        view.set_text_size(desktop_text_size * settings.scale());
+        Self {
+            view,
+            events,
+            chat: Chat::default(),
+            status: Status {
+                model_choice: model,
+                sandbox_choice: SandboxChoice {
+                    on: settings.sandbox,
+                    desktop: settings.sandbox_desktop,
+                },
+                ..Status::default()
+            },
+            asks: VecDeque::new(),
+            requests: HashMap::new(),
+            process: None,
+            generation: Generation::default(),
+            cwd,
+            sessions: Vec::new(),
+            command_matches: Vec::new(),
+            log: VecDeque::new(),
+            live: Vec::new(),
+            listing_live: Refresh::Idle,
+            notified: HashMap::new(),
+            watch: None,
+            watcher: None,
+            records: None,
+            side: SideChat::default(),
+            openers,
+            settings,
+            desktop_text_size,
+            session_filter: String::new(),
+            open_runs: HashSet::new(),
+            usage: UsagePanel::default(),
+            awaiting_trust: None,
+            link,
+            acting: HashMap::new(),
+            next_act: 0,
+            tick: slint::Timer::default(),
+            redraw: Redraw::default(),
+        }
+    }
+
+    /// Opens the first session (`resume`, or a new one), sends the first prompt, and starts
+    /// looking at running sessions.
+    pub(crate) fn begin(
+        &mut self,
+        resume: Option<SessionId>,
+        mode: Option<PermissionMode>,
+        prompt: Option<&str>,
+    ) {
+        self.load_sessions();
+        // Known before resuming: a session running elsewhere is watched, not resumed by a
+        // second process writing the same transcript.
+        if resume.is_some() {
+            self.live = sessions::live();
+        }
+        match resume {
+            Some(id) => self.open_session(id),
+            None => self.new_session(),
+        }
+        if let Some(mode) = mode {
+            self.set_mode(mode);
+        }
+        if let Some(prompt) = prompt {
+            self.send(prompt);
+        }
+        match Watcher::start(self.events.clone()) {
+            Ok(watcher) => {
+                self.records = watcher
+                    .folder(&sessions::config_dir().join("sessions"))
+                    .inspect_err(|error| tracing::warn!(%error, "running sessions go unnoticed"))
+                    .ok();
+                self.watcher = Some(watcher);
+            }
+            Err(error) => tracing::warn!(%error, "changes go unnoticed until the next tick"),
+        }
+        let events = self.events.clone();
+        self.tick.start(slint::TimerMode::Repeated, TICK, move || {
+            if events.try_send(Event::Tick).is_err() {
+                tracing::debug!("a tick after the window closed");
+            }
+        });
+        self.tick();
+        self.render();
+    }
+
+    /// Takes events until the window quits, drawing once per batch.
+    pub(crate) async fn run(mut self, events: Receiver<Event>) {
+        while let Ok(event) = events.recv().await {
+            let mut flow = self.handle(event);
+            while flow.is_continue()
+                && let Ok(event) = events.try_recv()
+            {
+                flow = self.handle(event);
+            }
+            if flow.is_break() {
+                break;
+            }
+            self.render();
+        }
+    }
+
+    fn handle(&mut self, event: Event) -> ControlFlow<()> {
+        match event {
+            Event::Action(action) => return self.act(action),
+            Event::Claude { generation, output } => self.take(generation, output),
+            Event::SessionsListed { cwd, sessions } => self.sessions_listed(&cwd, sessions),
+            Event::ProjectsListed(projects) => self.view.render_projects(&projects),
+            Event::SessionLoaded { id, path, result } => self.session_loaded(&id, path, result),
+            Event::TranscriptGrew { id, result } => self.transcript_grew(&id, result),
+            Event::LiveListed(live) => self.live_listed(live),
+            Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
+            Event::Acted { request, result } => self.acted(request, result),
+            Event::Picked { request, folder } => {
+                self.acting.remove(&request);
+                if let Some(folder) = folder {
+                    self.open_project(&folder.to_string_lossy());
+                }
+            }
+            Event::DaemonLost => {
+                self.process = None;
+                self.forget_process();
+                self.chat.error(
+                    "Lost the edualc daemon, which runs Claude Code. Open edualc again to go on.",
+                );
+            }
+            Event::Changed(watched) => self.changed(watched),
+            Event::Tick => self.tick(),
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn act(&mut self, action: Action) -> ControlFlow<()> {
+        match action {
+            Action::Send(text) => self.send(&text),
+            Action::Interrupt => self.interrupt(),
+            Action::NewSession => self.new_session(),
+            Action::OpenSession(id) => self.open_session(id),
+            Action::OpenProject(path) => self.open_project(&path),
+            Action::BrowseProject => self.ask_desktop(Act::PickFolder, Acting::Desktop),
+            Action::ListProjects => self.in_background(sessions::projects, Event::ProjectsListed),
+            Action::ChooseModel(index) => self.choose_model(index),
+            Action::ChooseMode(index) => self.choose_mode(index),
+            Action::DraftEdited(draft) => self.draft_edited(&draft),
+            Action::PickCommand(index) => self.pick_command(index),
+            Action::Toggle(index) => self.chat.toggle(index),
+            Action::CopyEntry(index) => {
+                if let Some(entry) = self.chat.entries.get(index) {
+                    self.view.copy(entry.copy_text());
+                }
+            }
+            Action::Copy(text) => self.view.copy(&text),
+            Action::OpenUrl(url) => self.ask_desktop(Act::OpenUrl(url), Acting::Desktop),
+            Action::Allow(request) => self.allow(&request, false),
+            Action::AllowAlways(request) => self.allow(&request, true),
+            Action::Deny { request, feedback } => self.deny(&request, &feedback),
+            Action::ToggleOption { question, option } => self.toggle_option(question, option),
+            Action::SetOther { question, text } => self.set_other(question, text),
+            Action::AnswerQuestions(request) => self.answer_questions(&request),
+            Action::ApprovePlan {
+                request,
+                mode,
+                overall,
+            } => self.approve_plan(&request, mode, &overall),
+            Action::EditComment(section) => self.edit_comment(Some(section)),
+            Action::CancelComment => self.edit_comment(None),
+            Action::SetComment { section, text } => self.set_comment(section, &text),
+            Action::Watch(id) => self.watch_live(&id),
+            Action::ContinueHere => self.continue_here(),
+            Action::GoToWindow => self.go_to_window(),
+            Action::AskSide(question) => self.ask_side(&question),
+            Action::ToggleSide => self.toggle_side(),
+            Action::DismissSide => self.dismiss_side(),
+            Action::CopySide(index) => self.copy_side(index),
+            Action::SideToConversation => self.side_to_conversation(),
+            Action::BranchSide => self.branch_side(),
+            Action::OpenWorktree(index) => self.open_worktree(index),
+            Action::ShowUsage => self.show_usage(),
+            Action::HideUsage => {
+                self.usage.open = false;
+                self.redraw.usage = true;
+            }
+            Action::BringHere => self.bring_here(),
+            Action::TrustFolder => self.trust_folder(),
+            Action::ToggleSandbox => {
+                self.settings.sandbox = !self.settings.sandbox;
+                self.sandbox_changed();
+            }
+            Action::ToggleSandboxDesktop => {
+                self.settings.sandbox_desktop = !self.settings.sandbox_desktop;
+                self.sandbox_changed();
+            }
+            Action::ToggleRun(index) => {
+                if !self.open_runs.remove(&index) {
+                    self.open_runs.insert(index);
+                }
+                self.redraw.runs = true;
+            }
+            Action::FilterSessions(filter) => {
+                self.session_filter = filter;
+                self.redraw.sessions = true;
+            }
+            Action::Zoom(zoom) => {
+                self.settings.zoom(zoom);
+                self.view
+                    .set_text_size(self.desktop_text_size * self.settings.scale());
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the zoom");
+                }
+            }
+            Action::Quit => {
+                self.quit();
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn render(&mut self) {
+        let redraw = std::mem::take(&mut self.redraw);
+        let changes = self.chat.take_changes();
+        self.view
+            .render_transcript(&self.chat, changes, &self.cwd, &self.open_runs, redraw.runs);
+        self.view.render_status(
+            &self.status,
+            !self.asks.is_empty(),
+            self.awaiting_trust.is_some(),
+            &self.cwd,
+            self.watch.as_ref(),
+            self.current_worktree(),
+        );
+        if redraw.menus {
+            self.view.render_menus(&self.status);
+        }
+        if redraw.prompt {
+            self.view.render_prompt(&self.asks, &self.cwd);
+        }
+        if redraw.usage {
+            self.view.render_usage(&self.usage, &self.status);
+        }
+        if redraw.side {
+            let can_ask = self.watch.is_none();
+            let can_branch = self.status.turns == 0
+                && self.status.session_id.is_some()
+                && self.side.has_answers()
+                && !self.side.pending();
+            self.view.render_side(&self.side, can_ask, can_branch);
+        }
+        if redraw.sessions {
+            let watched = self.watch.as_ref().map(|watch| &watch.session.id);
+            let filter = self.session_filter.to_lowercase();
+            let shown: Vec<&SessionInfo> = self
+                .sessions
+                .iter()
+                .filter(|session| {
+                    filter.is_empty() || session.title.to_lowercase().contains(&filter)
+                })
+                .collect();
+            self.view
+                .render_sessions(&shown, self.status.session_id.as_ref(), &self.live);
+            self.view.render_live(&self.live, watched);
+        }
+    }
+
+    /// Runs `work` on a thread of its own; its result comes back as the event `done` makes.
+    fn in_background<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+        done: impl FnOnce(T) -> Event + Send + 'static,
+    ) {
+        let events = self.events.clone();
+        std::thread::spawn(move || {
+            if events.send_blocking(done(work())).is_err() {
+                tracing::debug!("the window closed before background work finished");
+            }
+        });
+    }
+
+    /// Starts a process in the working directory.
+    fn start(&mut self, resume: Option<Resume>) {
+        if !trust::trusted(&self.cwd, &self.settings) {
+            self.awaiting_trust = Some(resume);
+            self.status.sandboxing = Sandboxing::Off;
+            return;
+        }
+        self.awaiting_trust = None;
+        self.generation = self.generation.next();
+        self.log.clear();
+        if self.status.worktree.is_none() {
+            self.status.worktree = sessions::linked_worktree(&self.cwd);
+        }
+        let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
+        let launch = Launch {
+            cwd: self.cwd.clone(),
+            resume,
+            model: self.status.model_choice.clone(),
+            sandbox: (self.settings.sandbox && !own_sandbox).then(|| SandboxWish {
+                desktop: self.settings.sandbox_desktop,
+                read: self.settings.sandbox_read.clone(),
+                write: self.settings.sandbox_write.clone(),
+            }),
+        };
+        // How far it is sandboxed is known once the daemon started it (`Output::Started`).
+        self.status.sandboxing = if own_sandbox {
+            Sandboxing::ClaudeCodes
+        } else {
+            Sandboxing::Off
+        };
+        match Claude::start(&self.link, self.generation.0, launch) {
+            Ok(process) => self.process = Some(process),
+            Err(error) => {
+                self.chat.error(error.to_string());
+                return;
+            }
+        }
+        self.request(&ControlRequest::Initialize, Request::Initialize);
+        if let Some(mode) = self.status.mode_choice {
+            self.request(
+                &ControlRequest::SetPermissionMode { mode },
+                Request::Mode(mode),
+            );
+        }
+    }
+
+    /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`.
+    fn ask_desktop(&mut self, act: Act, acting: Acting) {
+        self.next_act += 1;
+        let request = self.next_act;
+        if link::send(&self.link, ToDaemon::Act { request, act }).is_err() {
+            self.chat.error("Lost the edualc daemon.");
+            return;
+        }
+        self.acting.insert(request, acting);
+    }
+
+    fn acted(&mut self, request: u64, result: Result<(), ActFailure>) {
+        match (self.acting.remove(&request), result) {
+            (Some(Acting::Bringing(session)), result) => self.brought(session, result),
+            (Some(Acting::Desktop), Err(failure)) => {
+                tracing::warn!(%failure, "the desktop didn't do it");
+                self.chat.error(failure.to_string());
+            }
+            (Some(Acting::Desktop), Ok(())) | (None, _) => {}
+        }
+    }
+
+    /// Trusts the folder shown and starts what waited for it.
+    fn trust_folder(&mut self) {
+        let Some(resume) = self.awaiting_trust.take() else {
+            return;
+        };
+        self.settings.trusted_folders.push(self.cwd.clone());
+        if let Err(error) = settings::save(&self.settings) {
+            tracing::warn!(%error, "couldn't keep the trusted folder");
+        }
+        self.start(resume);
+        self.view.focus_composer();
+    }
+
+    /// Keeps the changed sandbox setting and starts the process again under it, continuing the
+    /// session: a sandbox can't be changed on a running process.
+    fn sandbox_changed(&mut self) {
+        self.status.sandbox_choice = SandboxChoice {
+            on: self.settings.sandbox,
+            desktop: self.settings.sandbox_desktop,
+        };
+        if let Err(error) = settings::save(&self.settings) {
+            tracing::warn!(%error, "couldn't keep the sandbox setting");
+        }
+        if self.process.is_some() {
+            let resume = self.status.session_id.clone().map(Resume::Continue);
+            self.stop();
+            self.start(resume);
+        } else {
+            self.status.sandboxing = Sandboxing::Off;
+        }
+        self.redraw.menus = true;
+    }
+
+    /// Ends the process, if any.
+    fn stop(&mut self) {
+        self.process = None;
+        self.forget_process();
+    }
+
+    /// Drops what the process had under way, as it is gone: nothing it still says is taken,
+    /// and nothing waits for its answers.
+    fn forget_process(&mut self) {
+        self.generation = self.generation.next();
+        self.asks.clear();
+        self.requests.clear();
+        self.status.turns = 0;
+        self.status.doing = Doing::Nothing;
+        self.usage.waiting = 0;
+        self.side_lost();
+        self.redraw.prompt = true;
+        self.redraw.usage = true;
+    }
+
+    /// Starts a process for the session shown, unless one runs or the session runs
+    /// elsewhere. Whether one runs now.
+    fn ensure_process(&mut self) -> bool {
+        if self.process.is_none() && self.watch.is_none() && self.awaiting_trust.is_none() {
+            let resume = self.status.session_id.clone().map(Resume::Continue);
+            self.start(resume);
+        }
+        self.process.is_some()
+    }
+
+    fn quit(&mut self) {
+        self.tick.stop();
+        self.generation = self.generation.next();
+        // Its handle going ends it; the daemon ends whatever this window started anyway once it
+        // hangs up.
+        self.process = None;
+        if let Err(error) = slint::quit_event_loop() {
+            tracing::warn!(%error, "couldn't quit the event loop");
+        }
+    }
+
+    /// Writes to the process; says so in the transcript if that fails.
+    fn write(&mut self, action: impl FnOnce(&mut Claude) -> Result<(), claude::Error>) {
+        let Some(process) = self.process.as_mut() else {
+            return;
+        };
+        if let Err(error) = action(process) {
+            tracing::warn!(%error, "lost claude");
+            self.chat.error(format!("Lost Claude Code: {error}"));
+        }
+    }
+
+    /// Sends a control request, remembering what it was for. Whether it went out.
+    fn request(&mut self, request: &ControlRequest, purpose: Request) -> bool {
+        let Some(process) = self.process.as_mut() else {
+            return false;
+        };
+        match process.request(request) {
+            Ok(id) => {
+                self.requests.insert(id, purpose);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "couldn't send a control request");
+                false
+            }
+        }
+    }
+
+    fn new_session(&mut self) {
+        self.stop();
+        self.watch = None;
+        self.chat.clear();
+        self.reset_session(None, None);
+        self.start(None);
+        self.redraw = Redraw::everything();
+        self.view.focus_composer();
+    }
+
+    fn reset_session(&mut self, id: Option<SessionId>, title: Option<String>) {
+        self.status.session_id = id;
+        self.status.title = title;
+        self.status.mode_choice = None;
+        self.status.context_tokens = 0;
+        self.status.cost_usd = 0.0;
+        self.status.worktree = None;
+        self.open_runs.clear();
+        // Side questions belong to the session they were asked in.
+        self.side = SideChat::default();
+        self.redraw.side = true;
+    }
+
+    /// Shows a saved session and continues it; one running elsewhere is only watched.
+    fn open_session(&mut self, id: SessionId) {
+        if self.status.session_id.as_ref() == Some(&id) && self.watch.is_none() {
+            return;
+        }
+        if self.live.iter().any(|session| session.id == id) {
+            self.watch_live(&id);
+            return;
+        }
+        self.stop();
+        self.watch = None;
+        self.chat.clear();
+        let known = self.sessions.iter().find(|session| session.id == id);
+        let title = known.map(|session| session.title.clone());
+        let worktree = known.and_then(|session| session.worktree.clone());
+        self.reset_session(Some(id.clone()), title);
+        self.status.worktree = worktree;
+        self.load_session(id.clone(), self.cwd.clone());
+        self.start(Some(Resume::Continue(id)));
+        self.redraw = Redraw::everything();
+        self.view.focus_composer();
+    }
+
+    /// Loads a session's transcript in the background, looking for it: a worktree the session
+    /// entered may have moved it.
+    fn load_session(&self, id: SessionId, cwd: PathBuf) {
+        self.in_background(
+            move || {
+                let path = sessions::locate(&cwd, &id);
+                let result = sessions::read_from(&path, 0)
+                    .map(|(lines, offset)| (Chat::from_transcript(&lines), offset));
+                Event::SessionLoaded { id, path, result }
+            },
+            std::convert::identity,
+        );
+    }
+
+    fn session_loaded(
+        &mut self,
+        id: &SessionId,
+        path: PathBuf,
+        result: std::io::Result<(Chat, u64)>,
+    ) {
+        // Another session may have been opened meanwhile.
+        if self.status.session_id.as_ref() != Some(id) {
+            return;
+        }
+        let watching = self.watch.as_mut().filter(|watch| &watch.session.id == id);
+        match result {
+            Ok((chat, offset)) => {
+                self.chat = chat;
+                self.view.scroll_to_end();
+                if let Some(watch) = watching {
+                    watch.watched = watch_transcript(self.watcher.as_ref(), &path);
+                    watch.path = path;
+                    watch.offset = offset;
+                    if watch.reading.done() {
+                        self.read_on();
+                    }
+                }
+            }
+            Err(error) => {
+                // Not written yet, perhaps: it is watched for, and read once it is.
+                if let Some(watch) = watching {
+                    watch.watched = watch_transcript(self.watcher.as_ref(), &path);
+                    watch.path = path;
+                    watch.reading = Refresh::Idle;
+                }
+                self.chat
+                    .error(format!("Couldn't read the session: {error}"));
+            }
+        }
+    }
+
+    fn transcript_grew(
+        &mut self,
+        id: &SessionId,
+        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+    ) {
+        let Some(watch) = self.watch.as_mut().filter(|watch| &watch.session.id == id) else {
+            return;
+        };
+        let again = watch.reading.done();
+        match result {
+            Ok((lines, offset)) => {
+                watch.offset = offset;
+                self.chat.replay(&lines);
+            }
+            Err(error) => tracing::warn!(%error, "couldn't read on in a watched session"),
+        }
+        if again {
+            self.read_on();
+        }
+    }
+
+    /// Shows a session another Claude Code process runs, following it as it goes.
+    fn watch_live(&mut self, id: &SessionId) {
+        let Some(session) = self.live.iter().find(|session| &session.id == id).cloned() else {
+            return;
+        };
+        self.stop();
+        self.chat.clear();
+        if self.cwd != session.cwd {
+            self.cwd.clone_from(&session.cwd);
+            self.sessions.clear();
+            self.load_sessions();
+        }
+        self.reset_session(Some(session.id.clone()), Some(session.name.clone()));
+        self.load_session(session.id.clone(), session.cwd.clone());
+        self.forget_watch();
+        self.watch = Some(Watch {
+            path: sessions::transcript_path(&session.cwd, &session.id),
+            session,
+            offset: 0,
+            reading: Refresh::Reading,
+            watched: None,
+        });
+        self.redraw = Redraw::everything();
+    }
+
+    /// Continues the watched session here, as a copy: the original runs on where it runs.
+    fn continue_here(&mut self) {
+        let Some(watch) = self.watch.take() else {
+            return;
+        };
+        self.status.session_id = None;
+        self.status.title = Some(format!("{} (copy)", watch.session.name));
+        self.start(Some(Resume::Fork(watch.session.id)));
+        self.redraw.sessions = true;
+        self.view.focus_composer();
+    }
+
+    fn go_to_window(&mut self) {
+        let Some(watch) = &self.watch else {
+            return;
+        };
+        let pid = watch.session.pid;
+        self.ask_desktop(Act::FocusWindowOf { pid }, Acting::Desktop);
+    }
+
+    fn tick(&mut self) {
+        self.list_live();
+        self.read_on();
+    }
+
+    fn changed(&mut self, watched: Watched) {
+        if self.records == Some(watched) {
+            self.list_live();
+        } else if self
+            .watch
+            .as_ref()
+            .is_some_and(|watch| watch.watched == Some(watched))
+        {
+            self.read_on();
+        } else if let Some(watcher) = &self.watcher {
+            // A transcript no longer followed.
+            watcher.forget(watched);
+        }
+    }
+
+    /// Lists the running sessions again, once whatever listing is under way is done.
+    fn list_live(&mut self) {
+        if self.listing_live.wanted() {
+            self.in_background(sessions::live, Event::LiveListed);
+        }
+    }
+
+    /// Reads what the followed session's transcript says after what is shown.
+    fn read_on(&mut self) {
+        let Some(watch) = self.watch.as_mut() else {
+            return;
+        };
+        let grown =
+            std::fs::metadata(&watch.path).is_ok_and(|metadata| metadata.len() > watch.offset);
+        if grown && watch.reading.wanted() {
+            let (id, path, from) = (watch.session.id.clone(), watch.path.clone(), watch.offset);
+            self.in_background(
+                move || sessions::read_from(&path, from),
+                move |result| Event::TranscriptGrew { id, result },
+            );
+        }
+    }
+
+    /// Stops watching the followed session's transcript.
+    fn forget_watch(&self) {
+        if let (Some(watcher), Some(watched)) = (
+            &self.watcher,
+            self.watch.as_ref().and_then(|watch| watch.watched),
+        ) {
+            watcher.forget(watched);
+        }
+    }
+
+    /// The running sessions anew, but our own process: says when one starts waiting for its
+    /// user.
+    fn live_listed(&mut self, mut live: Vec<LiveSession>) {
+        if self.listing_live.done() {
+            self.list_live();
+        }
+        let own = self.process.as_ref().and_then(Claude::pid);
+        live.retain(|session| Some(session.pid) != own);
+        for session in &live {
+            let was = self
+                .live
+                .iter()
+                .find(|known| known.id == session.id)
+                .map(|known| known.status);
+            let started_waiting = session.status == LiveStatus::Waiting
+                && was.is_some_and(|was| was != LiveStatus::Waiting);
+            // A session flipping between waiting and working doesn't make a notification each
+            // time.
+            let now = std::time::Instant::now();
+            let recently = self
+                .notified
+                .get(&session.id)
+                .is_some_and(|at| now.duration_since(*at) < NOTIFY_AGAIN);
+            if started_waiting && !recently {
+                self.notified.insert(session.id.clone(), now);
+                let summary = format!("{} needs you", session.name);
+                let body = session.cwd.display().to_string();
+                self.ask_desktop(Act::Notify { summary, body }, Acting::Desktop);
+            }
+        }
+        if let Some(watch) = self.watch.as_mut()
+            && let Some(session) = live.iter().find(|session| session.id == watch.session.id)
+        {
+            watch.session.clone_from(session);
+        }
+        if live != self.live {
+            self.live = live;
+            self.redraw.sessions = true;
+        }
+    }
+
+    /// Switches to another working directory, with a fresh session in it.
+    fn open_project(&mut self, path: &str) {
+        let path = match path.trim().strip_prefix('~') {
+            Some(rest) => dirs::home_dir()
+                .unwrap_or_default()
+                .join(rest.trim_start_matches('/')),
+            None => PathBuf::from(path.trim()),
+        };
+        let path = match path.canonicalize() {
+            Ok(path) if path.is_dir() => path,
+            Ok(path) => {
+                self.chat
+                    .error(format!("{} isn't a folder", path.display()));
+                return;
+            }
+            Err(error) => {
+                self.chat
+                    .error(format!("Couldn't open {}: {error}", path.display()));
+                return;
+            }
+        };
+        self.cwd = path;
+        self.sessions.clear();
+        self.load_sessions();
+        self.new_session();
+    }
+
+    /// Lists the working directory's sessions anew, e.g. once a new one has its title.
+    fn load_sessions(&self) {
+        let cwd = self.cwd.clone();
+        let listed = cwd.clone();
+        // Those listed already are summed up again only if their transcript changed.
+        let known = self.sessions.clone();
+        self.in_background(
+            move || sessions::list(&listed, 200, known),
+            move |sessions| Event::SessionsListed { cwd, sessions },
+        );
+    }
+
+    fn sessions_listed(&mut self, cwd: &Path, sessions: Vec<SessionInfo>) {
+        if self.cwd != cwd {
+            return;
+        }
+        if let Some(id) = &self.status.session_id
+            && let Some(session) = sessions.iter().find(|session| &session.id == id)
+            && self.watch.is_none()
+        {
+            self.status.title = Some(session.title.clone());
+        }
+        self.sessions = sessions;
+        self.redraw.sessions = true;
+    }
+
+    fn send(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        // Nothing runs before the folder is trusted: the prompt waits in the composer.
+        if self.awaiting_trust.is_some() {
+            self.view.set_draft(text);
+            return;
+        }
+        self.view.set_draft("");
+        self.command_matches.clear();
+        self.view.render_commands(&[]);
+        // In the terminal these start over; the CLI behind a pipe doesn't.
+        if matches!(text, "/clear" | "/new") {
+            self.new_session();
+            return;
+        }
+        // The terminal's `/btw` takes over the input; here it asks beside the conversation.
+        if let Some(question) = text.strip_prefix("/btw")
+            && (question.is_empty() || question.starts_with(char::is_whitespace))
+        {
+            self.ask_side(question);
+            return;
+        }
+        if self.watch.is_some() {
+            return;
+        }
+        self.chat.user(text);
+        if self.ensure_process() {
+            self.status.turns += 1;
+            self.status.doing = Doing::Starting;
+            self.write(|process| process.prompt(text));
+        }
+        self.view.scroll_to_end();
+    }
+
+    fn interrupt(&mut self) {
+        if self.status.turns > 0 {
+            self.request(&ControlRequest::Interrupt, Request::Interrupt);
+        }
+    }
+
+    fn choose_model(&mut self, index: usize) {
+        let Some(value) = self
+            .status
+            .models
+            .get(index)
+            .map(|model| model.value.clone())
+        else {
+            return;
+        };
+        // Without a process the choice waits for the next: it is started with it.
+        if self.process.is_none() {
+            self.status.model_choice = Some(value);
+            self.redraw.menus = true;
+            return;
+        }
+        self.request(
+            &ControlRequest::SetModel {
+                model: value.clone(),
+            },
+            Request::Model(value),
+        );
+    }
+
+    fn choose_mode(&mut self, index: usize) {
+        use strum::IntoEnumIterator;
+        if let Some(mode) = PermissionMode::iter().nth(index) {
+            self.set_mode(mode);
+        }
+    }
+
+    fn set_mode(&mut self, mode: PermissionMode) {
+        // Without a process the choice waits for the next, which `start` gives it.
+        if self.process.is_none() {
+            self.status.mode_choice = Some(mode);
+            self.status.mode = Some(Mode::Known(mode));
+            self.redraw.menus = true;
+            return;
+        }
+        self.request(
+            &ControlRequest::SetPermissionMode { mode },
+            Request::Mode(mode),
+        );
+    }
+
+    /// Lists the slash commands the draft could become.
+    fn draft_edited(&mut self, draft: &str) {
+        let matches: Vec<usize> = match draft.strip_prefix('/') {
+            Some(typed) if !typed.contains(char::is_whitespace) => self
+                .status
+                .commands
+                .iter()
+                .enumerate()
+                .filter(|(_, command)| command.name.starts_with(typed) && command.name != typed)
+                .take(8)
+                .map(|(index, _)| index)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if self.command_matches == matches {
+            return;
+        }
+        let shown: Vec<&wire::CommandInfo> = matches
+            .iter()
+            .filter_map(|index| self.status.commands.get(*index))
+            .collect();
+        self.view.render_commands(&shown);
+        self.command_matches = matches;
+    }
+
+    fn pick_command(&mut self, index: usize) {
+        let Some(name) = self
+            .command_matches
+            .get(index)
+            .and_then(|at| self.status.commands.get(*at))
+            .map(|command| command.name.clone())
+        else {
+            return;
+        };
+        self.command_matches.clear();
+        self.view.set_draft(&format!("/{name} "));
+        self.view.render_commands(&[]);
+        self.view.focus_composer();
+    }
+
+    /// The waiting request the user answered, if it is still the one shown: an answer meant for
+    /// a request that was cancelled or replaced meanwhile is not given to the next.
+    fn take_ask(&mut self, request: &RequestId) -> Option<Ask> {
+        if self.asks.front().is_some_and(|ask| &ask.request == request) {
+            return self.asks.pop_front();
+        }
+        tracing::warn!(%request, "an answer for a request no longer shown");
+        self.redraw.prompt = true;
+        None
+    }
+
+    /// Allows the waiting tool call; `always` also takes the first rule the CLI offered.
+    fn allow(&mut self, request: &RequestId, always: bool) {
+        let Some(ask) = self.take_ask(request) else {
+            return;
+        };
+        let mut updated_permissions = Vec::new();
+        if always
+            && let AskKind::Tool { suggestions, .. } = &ask.kind
+            && let Some(offered) = suggestions.first()
+            && let Some(rule) = &offered.rule
+        {
+            // A mode it switches to is shown in the menu at once.
+            if let wire::Suggestion::SetMode { mode } = rule {
+                self.status.mode = Some(mode.clone());
+            }
+            updated_permissions.push(PermissionUpdate::Offered(offered.raw.clone()));
+        }
+        let response = PermissionResult::Allow {
+            updated_input: ToolInput::AsAsked(ask.input.clone()),
+            updated_permissions,
+        };
+        self.answer(&ask, &response, ToolState::Running);
+    }
+
+    /// Denies the waiting request. A tool call denied with nothing said stops the turn, as in
+    /// the terminal; with what to do instead, Claude carries on with that.
+    fn deny(&mut self, request: &RequestId, feedback: &str) {
+        let Some(ask) = self.take_ask(request) else {
+            return;
+        };
+        let feedback = feedback.trim();
+        let (message, interrupt) = match &ask.kind {
+            AskKind::Questions { .. } => ("The user chose not to answer.".to_owned(), false),
+            AskKind::Plan { input, parts, .. } => {
+                let revise = plan::feedback(&input.plan, parts, feedback);
+                if revise.is_empty() {
+                    ("The user wants to keep planning.".to_owned(), false)
+                } else {
+                    (revise, false)
+                }
+            }
+            AskKind::Tool { .. } if feedback.is_empty() => (
+                "The user denied this tool use. Stop and wait for their instructions.".to_owned(),
+                true,
+            ),
+            AskKind::Tool { .. } => (feedback.to_owned(), false),
+        };
+        let response = PermissionResult::Deny { message, interrupt };
+        self.answer(&ask, &response, ToolState::Denied);
+    }
+
+    /// Approves the plan, with the comments on it as notes in the plan Claude works from.
+    fn approve_plan(&mut self, request: &RequestId, mode: PermissionMode, overall: &str) {
+        let Some(ask) = self.take_ask(request) else {
+            return;
+        };
+        let updated_input = match &ask.kind {
+            AskKind::Plan { input, parts, .. } => ToolInput::Plan(wire::PlanInput {
+                plan: plan::annotated(&input.plan, parts, overall),
+                rest: input.rest.clone(),
+            }),
+            AskKind::Tool { .. } | AskKind::Questions { .. } => {
+                ToolInput::AsAsked(ask.input.clone())
+            }
+        };
+        self.status.mode = Some(Mode::Known(mode));
+        let response = PermissionResult::Allow {
+            updated_input,
+            updated_permissions: vec![PermissionUpdate::SetMode {
+                mode,
+                destination: Destination::Session,
+            }],
+        };
+        self.answer(&ask, &response, ToolState::Running);
+    }
+
+    fn toggle_option(&mut self, question: usize, option: usize) {
+        let Some(Ask {
+            kind: AskKind::Questions { asked, picked, .. },
+            ..
+        }) = self.asks.front_mut()
+        else {
+            return;
+        };
+        let multi = asked
+            .questions
+            .get(question)
+            .is_some_and(|q| q.multi_select);
+        let Some(picks) = picked.get_mut(question) else {
+            return;
+        };
+        let Some(was) = picks.get(option).copied() else {
+            return;
+        };
+        if !multi {
+            picks.iter_mut().for_each(|pick| *pick = false);
+        }
+        if let Some(pick) = picks.get_mut(option) {
+            *pick = !was;
+        }
+        self.redraw.prompt = true;
+    }
+
+    fn set_other(&mut self, question: usize, text: String) {
+        if let Some(Ask {
+            kind: AskKind::Questions { other, .. },
+            ..
+        }) = self.asks.front_mut()
+            && let Some(slot) = other.get_mut(question)
+        {
+            *slot = text;
+        }
+    }
+
+    /// Sends the answers to Claude's questions: the labels picked, or what was typed.
+    fn answer_questions(&mut self, request: &RequestId) {
+        let Some(ask) = self.take_ask(request) else {
+            return;
+        };
+        let updated_input = match &ask.kind {
+            AskKind::Questions {
+                asked,
+                picked,
+                other,
+            } => {
+                let mut answered = asked.clone();
+                for (index, question) in asked.questions.iter().enumerate() {
+                    let typed = other.get(index).map_or("", |text| text.trim());
+                    let answer = if typed.is_empty() {
+                        question
+                            .options
+                            .iter()
+                            .zip(picked.get(index).into_iter().flatten())
+                            .filter(|(_, picked)| **picked)
+                            .map(|(option, _)| option.label.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    } else {
+                        typed.to_owned()
+                    };
+                    if !answer.is_empty() {
+                        answered.answers.insert(question.question.clone(), answer);
+                    }
+                }
+                ToolInput::Answered(answered)
+            }
+            AskKind::Tool { .. } | AskKind::Plan { .. } => ToolInput::AsAsked(ask.input.clone()),
+        };
+        let response = PermissionResult::Allow {
+            updated_input,
+            updated_permissions: Vec::new(),
+        };
+        self.answer(&ask, &response, ToolState::Running);
+    }
+
+    fn edit_comment(&mut self, section: Option<usize>) {
+        if let Some(Ask {
+            kind: AskKind::Plan { parts, editing, .. },
+            ..
+        }) = self.asks.front_mut()
+        {
+            *editing = section.filter(|&section| section < parts.len());
+            self.redraw.prompt = true;
+        }
+    }
+
+    fn set_comment(&mut self, section: usize, text: &str) {
+        if let Some(Ask {
+            kind: AskKind::Plan { parts, editing, .. },
+            ..
+        }) = self.asks.front_mut()
+        {
+            if let Some(part) = parts.get_mut(section) {
+                text.trim().clone_into(&mut part.comment);
+            }
+            *editing = None;
+            self.redraw.prompt = true;
+        }
+    }
+
+    fn answer(&mut self, ask: &Ask, response: &PermissionResult, state: ToolState) {
+        tracing::info!(tool = %ask.tool, ?state, "answered a permission request");
+        self.write(|process| process.answer(&ask.request, response));
+        if let Some(id) = &ask.tool_use {
+            self.chat.set_tool_state(id, state);
+        }
+        self.status.doing = Doing::Working;
+        self.redraw.prompt = true;
+        self.redraw.menus = true;
+    }
+
+    /// A permission request from the CLI, waiting for the user.
+    fn ask(
+        &mut self,
+        request: RequestId,
+        tool: ToolName,
+        input: Value,
+        suggestions: Vec<Value>,
+        description: String,
+        tool_use: Option<ToolUseId>,
+    ) {
+        tracing::info!(%tool, "claude asks for permission");
+        if let Some(id) = &tool_use {
+            self.chat.show_asked(id, &tool, &input);
+            self.chat.set_tool_state(id, ToolState::Awaiting);
+        }
+        // Questions and plans have their own prompts; one that doesn't parse is asked about as
+        // any tool is.
+        let special = if tool == ToolName::AskUserQuestion {
+            questions_asked(&input)
+        } else if tool == ToolName::ExitPlanMode {
+            plan_offered(&input)
+        } else {
+            None
+        };
+        // From inside the sandbox the user's own settings can't be written: a rule meant for
+        // every project couldn't be kept, so it isn't offered.
+        let sandboxed = matches!(self.status.sandboxing, Sandboxing::Landlock(_));
+        let suggestions = suggestions
+            .into_iter()
+            .map(wire::Offered::read)
+            .filter(|offered| !(sandboxed && offered.for_every_project()))
+            .collect();
+        let kind = special.unwrap_or(AskKind::Tool {
+            suggestions,
+            description,
+        });
+        self.asks.push_back(Ask {
+            request,
+            tool_use,
+            tool,
+            input,
+            kind,
+        });
+        self.redraw.prompt = true;
+    }
+
+    /// The process no longer waits for this request (the turn was interrupted).
+    fn cancel(&mut self, request: &RequestId) {
+        if let Some(at) = self.asks.iter().position(|ask| &ask.request == request)
+            && let Some(ask) = self.asks.remove(at)
+            && let Some(id) = &ask.tool_use
+        {
+            self.chat.set_tool_state(id, ToolState::Cancelled);
+        }
+        self.redraw.prompt = true;
+    }
+
+    /// The process ended without being asked to: says why, as far as it said.
+    fn ended(&mut self, code: Option<i32>) {
+        self.process = None;
+        let turns = self.status.turns;
+        self.forget_process();
+        self.chat.end_turn();
+        if turns > 0 || code != Some(0) {
+            let how = match code {
+                Some(code) => format!(" (exit code {code})"),
+                None => " (killed)".to_owned(),
+            };
+            let mut lines = vec![format!("Claude Code stopped{how}.")];
+            lines.extend(self.log.iter().cloned());
+            lines.push("Sending a message starts it again.".to_owned());
+            self.chat.error(lines.join("\n"));
+        }
+    }
+}
+
+fn questions_asked(input: &Value) -> Option<AskKind> {
+    match wire::Questions::deserialize(input) {
+        Ok(asked) => Some(AskKind::Questions {
+            picked: asked
+                .questions
+                .iter()
+                .map(|question| vec![false; question.options.len()])
+                .collect(),
+            other: vec![String::new(); asked.questions.len()],
+            asked,
+        }),
+        Err(error) => {
+            tracing::warn!(%error, "questions that don't parse");
+            None
+        }
+    }
+}
+
+fn plan_offered(input: &Value) -> Option<AskKind> {
+    match wire::PlanInput::deserialize(input) {
+        Ok(input) => Some(AskKind::Plan {
+            parts: plan::parts(&input.plan),
+            input,
+            editing: None,
+        }),
+        Err(error) => {
+            tracing::warn!(%error, "a plan that doesn't parse");
+            None
+        }
+    }
+}
+
+/// Watches a followed session's transcript, or the folder it will be written in while it isn't
+/// there yet.
+fn watch_transcript(watcher: Option<&Watcher>, path: &Path) -> Option<Watched> {
+    let watcher = watcher?;
+    watcher.file(path).ok().or_else(|| {
+        watcher
+            .folder(path.parent()?)
+            .inspect_err(|error| tracing::debug!(%error, "a followed session goes unwatched"))
+            .ok()
+    })
+}
+
+/// What the desktop has and says: asked before the window is confined, of programs it may not
+/// run then.
+#[derive(Debug)]
+pub(crate) struct Desktop {
+    openers: Vec<desktop::Opener>,
+    fonts: crate::appearance::Fonts,
+    /// In logical pixels.
+    text_size: f32,
+}
+
+impl Desktop {
+    /// Asks several programs at once, before the first frame.
+    pub(crate) fn find() -> Self {
+        std::thread::scope(|scope| {
+            let openers = scope.spawn(desktop::openers);
+            let fonts = scope.spawn(crate::appearance::fonts);
+            let text_size = crate::appearance::desktop_text_size();
+            Self {
+                openers: joined(openers),
+                fonts: joined(fonts),
+                text_size,
+            }
+        })
+    }
+}
+
+/// What a scoped thread made; its panic, if it panicked, goes on here.
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Why a control request of ours brought no answer to take.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AnswerError {
+    #[error("{0}")]
+    Refused(String),
+    #[error("an answer that doesn't parse: {0}")]
+    Unreadable(#[source] serde_json::Error),
+}
+
+/// The answer to a control request of ours, as `T`.
+pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
+    outcome: Result<Value, String>,
+) -> Result<T, AnswerError> {
+    let answer = outcome.map_err(AnswerError::Refused)?;
+    T::deserialize(answer).map_err(AnswerError::Unreadable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A change while a read is under way makes one more read once it is done, and the next
+    /// change after that is read too: nothing stays stuck waiting for a read that never comes.
+    #[test]
+    fn changes_during_a_read_are_read_after_it() {
+        let mut refresh = Refresh::default();
+        assert!(refresh.wanted(), "the first change starts a read");
+        assert!(!refresh.wanted(), "one while reading waits");
+        assert!(!refresh.wanted());
+        assert!(refresh.done(), "the read came back stale: ask again");
+        assert!(refresh.wanted(), "and asking again starts a read");
+        assert!(!refresh.done(), "this one wasn't stale");
+        assert!(refresh.wanted(), "a later change starts a read again");
+    }
+}

@@ -1,0 +1,175 @@
+// Side questions (the terminal's `/btw`), beside the conversation instead of over the input:
+// asked and answered with the conversation's context but never part of it, kept while the
+// panel is folded away, and taken up into the conversation or a branch of it when wanted.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { SideState } from "types.slint";
+import { Side } from "state.slint";
+import { Caption, Field, Icon, IconButton, Small, TextButton } from "widgets.slint";
+import { BlockView } from "transcript.slint";
+
+export component SidePanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <int> focus-serial: Side.focus-serial;
+    changed focus-serial => { follow-up.focus(); }
+    // Opened to ask: a panel just made has missed the bump that asked for the focus. Opened
+    // with a question already asked, it leaves the focus where it was.
+    init => {
+        if Side.focus-wanted {
+            Side.focus-wanted = false;
+            follow-up.focus();
+        }
+    }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 52px;
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-xs;
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/message-circle-question-mark.svg");
+                tint: Theme.claude;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: "By the way";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Caption {
+                    text: "Sees the conversation; doesn't join it or run tools";
+                    overflow: elide;
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/panel-right-close.svg");
+                label: "Fold away (it waits in the header)";
+                y: (parent.height - self.height) / 2;
+                clicked => { Side.toggle(); }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Dismiss the side questions";
+                y: (parent.height - self.height) / 2;
+                clicked => { Side.dismiss(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        exchanges := ListView {
+            vertical-stretch: 1;
+            changed content-height => {
+                self.content-y = min(0px, self.visible-height - self.content-height);
+            }
+            for exchange[index] in Side.exchanges: VerticalLayout {
+                padding: Theme.space-m;
+                padding-bottom: Theme.space-xs;
+                spacing: Theme.space-s;
+                HorizontalLayout {
+                    alignment: end;
+                    Rectangle {
+                        max-width: exchanges.visible-width * 0.85;
+                        border-radius: Theme.radius-l;
+                        background: Theme.bubble;
+                        HorizontalLayout {
+                            padding: Theme.space-s;
+                            padding-left: Theme.space-m;
+                            padding-right: Theme.space-m;
+                            Text {
+                                text: exchange.question;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                if exchange.state == SideState.pending || exchange.state == SideState.retrying: HorizontalLayout {
+                    spacing: Theme.space-s;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: Theme.claude;
+                    }
+                    Small {
+                        text: exchange.state == SideState.retrying ? "Waiting for the API, then trying again" : "Answering";
+                        vertical-alignment: center;
+                    }
+                }
+                if exchange.state == SideState.answered: VerticalLayout {
+                    spacing: Theme.space-s;
+                    for block[position] in exchange.answer: BlockView {
+                        block: block;
+                        key: "side\{index}:b\{position}";
+                        first: position == 0;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        IconButton {
+                            icon: @image-url("@lucide/copy.svg");
+                            label: "Copy the answer";
+                            width: 24px;
+                            height: 24px;
+                            icon-size: Theme.icon-small;
+                            tint: Theme.text-faint;
+                            clicked => { Side.copy(index); }
+                        }
+                    }
+                }
+                if exchange.state == SideState.failed: Text {
+                    text: exchange.error;
+                    color: Theme.danger-text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if Side.exchanges.length == 0: VerticalLayout {
+            padding: Theme.space-l;
+            Small {
+                text: "Ask something on the side while Claude works: about the code, the conversation, anything. The conversation goes on undisturbed.";
+                wrap: word-wrap;
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        VerticalLayout {
+            padding: Theme.space-m;
+            spacing: Theme.space-s;
+            follow-up := Field {
+                enabled: Side.can-ask && !Side.pending;
+                placeholder: !Side.can-ask ? "Continue this session here to ask on the side"
+                    : Side.exchanges.length == 0 ? "Ask on the side" : "Ask a follow-up";
+                accepted(text) => {
+                    Side.ask(text);
+                    self.text = "";
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                TextButton {
+                    text: "Use in the conversation";
+                    has-icon: true;
+                    icon: @image-url("@lucide/corner-down-left.svg");
+                    enabled: Side.has-answers;
+                    clicked => { Side.to-conversation(); }
+                }
+                TextButton {
+                    text: "Branch into a session";
+                    has-icon: true;
+                    icon: @image-url("@lucide/git-branch.svg");
+                    enabled: Side.can-branch;
+                    clicked => { Side.branch(); }
+                }
+            }
+        }
+    }
+}

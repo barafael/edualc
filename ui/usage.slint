@@ -1,0 +1,129 @@
+// The usage panel, over the conversation: the plan's limits and when they start over, this
+// session's cost and time, what fills the context, and the last day and week as the CLI's
+// `/usage` sees them, with its advice. Esc or the cross closes it.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Usage } from "state.slint";
+import { Caption, Icon, IconButton, Meter, Small, Title } from "widgets.slint";
+
+component StatLine inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <string> detail;
+    in property <float> fraction;
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: Theme.space-m;
+        Text {
+            text: root.label;
+            color: Theme.text;
+            overflow: elide;
+            horizontal-stretch: 1;
+            min-width: 0px;
+        }
+        Text {
+            text: root.value;
+            color: Theme.fill-text(root.fraction);
+            font-family: Theme.mono;
+            font-size: 1rem * Theme.code-size;
+        }
+    }
+    if root.fraction >= 0: Meter {
+        fraction: root.fraction;
+    }
+    if root.detail != "": Small {
+        text: root.detail;
+        wrap: word-wrap;
+    }
+}
+
+export component UsagePanel inherits Rectangle {
+    background: Theme.surface;
+    VerticalLayout {
+        HorizontalLayout {
+            height: Theme.header;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/gauge.svg");
+                tint: Theme.claude;
+                width: 22px;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Title {
+                    text: "Usage";
+                }
+                Caption {
+                    text: Usage.loading ? "Asking Claude Code" : "As Claude Code's /usage and /context report it";
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/refresh-cw.svg");
+                label: "Ask again";
+                enabled: !Usage.loading;
+                y: (parent.height - self.height) / 2;
+                clicked => { Usage.refresh(); }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Back to the conversation (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { Usage.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        if Usage.note != "": HorizontalLayout {
+            padding: Theme.space-m;
+            padding-left: Theme.space-xl;
+            Small {
+                text: Usage.note;
+                color: Theme.warning-text;
+                wrap: word-wrap;
+            }
+        }
+        sections := ListView {
+            for section[index] in Usage.sections: HorizontalLayout {
+                alignment: center;
+                padding-top: index == 0 ? Theme.space-xl : Theme.space-m;
+                padding-bottom: index == Usage.sections.length - 1 ? Theme.space-xl : Theme.space-m;
+                VerticalLayout {
+                    width: min(sections.visible-width - 2 * Theme.space-xl, 720px);
+                    spacing: Theme.space-m;
+                    HorizontalLayout {
+                        spacing: Theme.space-s;
+                        Text {
+                            text: section.title;
+                            font-weight: 600;
+                            font-size: 1rem * Theme.title;
+                            color: Theme.text;
+                        }
+                        Small {
+                            text: section.note;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    for row in section.rows: StatLine {
+                        label: row.label;
+                        value: row.value;
+                        detail: row.detail;
+                        fraction: row.fraction;
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.divider;
+                    }
+                }
+            }
+        }
+    }
+}

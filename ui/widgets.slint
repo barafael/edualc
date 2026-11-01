@@ -1,0 +1,420 @@
+// The shared pieces the window is built from. Each takes its look from `Theme` and `Motion`.
+
+import { Motion, Theme } from "theme.slint";
+import { MenuItem } from "types.slint";
+import { Session, TextSelection } from "state.slint";
+
+// A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
+export component Icon inherits Image {
+    in property <color> tint: Theme.text-secondary;
+    width: Theme.icon;
+    height: self.width;
+    image-fit: contain;
+    colorize: root.tint;
+    accessible-role: none;
+}
+
+export component Title inherits Text {
+    font-size: 1rem * Theme.title;
+    font-weight: 600;
+    color: Theme.text;
+}
+
+export component Small inherits Text {
+    font-size: 1rem * Theme.small;
+    color: Theme.text-tertiary;
+}
+
+export component Caption inherits Text {
+    font-size: 1rem * Theme.caption;
+    color: Theme.text-tertiary;
+}
+
+// Something to click that isn't a button: a row, a header. Lit while hovered or pressed,
+// tinted while selected (with a bar of the accent, so selection isn't told by tint alone).
+export component Pressable inherits Rectangle {
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked;
+    accessible-role: button;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    border-radius: Theme.radius-s;
+    background: root.selected ? Theme.selected
+        : touch.pressed ? Theme.pressed
+        : touch.has-hover && root.enabled ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height - 2 * Theme.space-s;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    @children
+}
+
+// A button that is only an icon, its label as the tooltip.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <length> icon-size: Theme.icon;
+    in property <color> tint: Theme.text-secondary;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    width: Theme.button;
+    height: Theme.button;
+    border-radius: Theme.radius-s;
+    opacity: root.enabled ? 1 : 0.4;
+    background: touch.pressed ? Theme.pressed : touch.has-hover && root.enabled ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        if self.has-hover && root.label != "": Tooltip {
+            text: @markdown("\{root.label}");
+        }
+    }
+    Icon {
+        source: root.icon;
+        tint: root.tint;
+        width: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+// A button with a label (and maybe an icon); `primary` for what is expected.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <bool> primary;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.text;
+    // Assistive tools press it as a click would: not before it is enabled (armed).
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    property <color> ink: root.primary ? Theme.on-accent : root.danger ? Theme.danger-text : Theme.text;
+    height: 30px;
+    border-radius: Theme.radius-s;
+    opacity: root.enabled ? 1 : 0.5;
+    background: root.primary
+        ? (touch.pressed ? Theme.accent.darker(0.2) : touch.has-hover ? Theme.accent.brighter(0.1) : Theme.accent)
+        : (touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : Theme.subtle);
+    border-width: root.primary ? 0 : 1px;
+    border-color: Theme.divider;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-m;
+        spacing: Theme.space-xs;
+        alignment: center;
+        if root.has-icon: Icon {
+            source: root.icon;
+            tint: root.ink;
+            width: Theme.icon-small;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.text;
+            color: root.ink;
+            vertical-alignment: center;
+            font-weight: root.primary ? 600 : 400;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Text that can be selected and copied, in the transcript: one element's selection at a time
+// (`TextSelection`), each told apart by its `key`. Links open in the browser.
+export component Selectable inherits StyledText {
+    in property <string> key;
+    // A long unbreakable word (a URL, a path) must not widen the row past the column.
+    min-width: 0px;
+    selectable: true;
+    default-color: Theme.text;
+    link-color: Theme.link;
+    selection-background-color: Theme.selection;
+    selection-foreground-color: Theme.selection-text;
+    accessible-role: text;
+    link-clicked(link) => { Session.open-url(link); }
+    property <string> owner: TextSelection.owner;
+    changed owner => {
+        if self.owner != root.key {
+            self.clear-selection();
+        }
+    }
+    changed has-selection => {
+        if self.has-selection {
+            TextSelection.owner = root.key;
+        } else if TextSelection.owner == root.key {
+            TextSelection.clear();
+        }
+    }
+    property <int> copy-request: TextSelection.copy-request;
+    changed copy-request => {
+        if TextSelection.owner == root.key && self.has-selection {
+            self.copy();
+        }
+    }
+}
+
+// Monospace text on the code background: code, a tool's input or output.
+export component CodeBox inherits Rectangle {
+    in property <styled-text> body;
+    in property <string> key;
+    in property <color> ink: Theme.text;
+    // Above the text, e.g. the code's language; nothing shown if empty.
+    in property <string> label;
+    // Below the text, e.g. what was left out.
+    in property <string> note;
+    // Offers a copy button, which calls `copy`.
+    in property <bool> copyable;
+    callback copy;
+    background: Theme.code;
+    border-radius: Theme.radius-m;
+    VerticalLayout {
+        padding: Theme.space-m;
+        padding-top: root.label != "" || root.copyable ? Theme.space-xs : Theme.space-m;
+        spacing: Theme.space-xs;
+        if root.label != "" || root.copyable: HorizontalLayout {
+            Caption {
+                text: root.label;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.copyable: IconButton {
+                icon: @image-url("@lucide/copy.svg");
+                label: "Copy";
+                width: 24px;
+                height: 24px;
+                icon-size: Theme.icon-small;
+                clicked => { root.copy(); }
+            }
+        }
+        Selectable {
+            text: root.body;
+            key: root.key;
+            default-color: root.ink;
+            default-font-family: Theme.mono;
+            default-font-size: 1rem * Theme.code-size;
+        }
+        if root.note != "": Caption {
+            text: root.note;
+        }
+    }
+}
+
+// A line of text to type, in the theme's look: a placeholder while empty, the accent around it
+// while focused. Enter calls `accepted`. The text scrolls sideways to keep the caret in view.
+export component Field inherits Rectangle {
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> input.text;
+    callback accepted(string);
+    callback edited(string);
+    forward-focus: input;
+    // How far the text is scrolled to the left.
+    property <length> scrolled: 0;
+    property <length> margin: Theme.space-s;
+    min-width: 80px;
+    height: Theme.control;
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.control-border;
+    animate border-color { duration: Motion.fast; easing: ease-out; }
+    background: Theme.field;
+    opacity: root.enabled ? 1 : 0.55;
+    clip: true;
+    if input.text == "": Text {
+        x: root.margin;
+        width: parent.width - 2 * root.margin;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.text-faint;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: root.margin + root.scrolled;
+        width: max(parent.width - 2 * root.margin, self.preferred-width + self.text-cursor-width);
+        height: parent.height;
+        vertical-alignment: center;
+        single-line: true;
+        enabled: root.enabled;
+        color: Theme.text;
+        selection-background-color: Theme.selection;
+        selection-foreground-color: Theme.selection-text;
+        accessible-placeholder-text: root.placeholder;
+        accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
+        cursor-position-changed(at) => {
+            if at.x + root.scrolled < 0 {
+                root.scrolled = -at.x;
+            } else if at.x + root.scrolled > root.width - 2 * root.margin - self.text-cursor-width {
+                root.scrolled = root.width - 2 * root.margin - self.text-cursor-width - at.x;
+            }
+        }
+    }
+}
+
+// A compact choice in a toolbar: an icon and the current choice's name, no frame until
+// hovered. Its menu opens upwards and says what each choice means.
+export component MenuButton inherits Rectangle {
+    in property <[MenuItem]> model;
+    in-out property <int> current-index;
+    in property <image> icon;
+    in property <color> tint: Theme.text-secondary;
+    // Above the choices in the menu, e.g. "Permission mode".
+    in property <string> heading;
+    callback selected(int);
+    property <string> current: root.current-index >= 0 && root.current-index < root.model.length
+        ? root.model[root.current-index].title : "";
+    accessible-role: combobox;
+    accessible-label: root.heading;
+    accessible-value: root.current;
+    height: Theme.chip;
+    min-width: 0px;
+    border-radius: Theme.radius-m;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-xs;
+        spacing: Theme.space-xs;
+        Icon {
+            source: root.icon;
+            tint: root.tint;
+            width: Theme.icon-small;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.current;
+            color: root.tint;
+            font-size: 1rem * Theme.small;
+            vertical-alignment: center;
+            overflow: elide;
+            min-width: 0px;
+        }
+        Icon {
+            source: @image-url("@lucide/chevron-up.svg");
+            tint: Theme.text-faint;
+            width: Theme.icon-small;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        x: 0;
+        y: -self.height - Theme.space-xs;
+        width: max(root.width, 320px);
+        height: items.preferred-height;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.control-border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #0006;
+            items := VerticalLayout {
+                padding: Theme.space-xs;
+                spacing: 2px;
+                if root.heading != "": Caption {
+                    text: root.heading;
+                    horizontal-alignment: left;
+                }
+                for item[index] in root.model: Pressable {
+                    selected: index == root.current-index;
+                    clicked => {
+                        root.current-index = index;
+                        root.selected(index);
+                    }
+                    HorizontalLayout {
+                        padding: Theme.space-s;
+                        padding-left: Theme.space-m;
+                        spacing: Theme.space-s;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: item.title;
+                                color: Theme.text;
+                            }
+                            if item.description != "": Text {
+                                text: item.description;
+                                color: Theme.text-tertiary;
+                                font-size: 1rem * Theme.small;
+                                wrap: word-wrap;
+                            }
+                        }
+                        Icon {
+                            source: @image-url("@lucide/check.svg");
+                            tint: Theme.accent;
+                            width: Theme.icon-small;
+                            opacity: index == root.current-index ? 1 : 0;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A thin bar for a share (0 to 1), warming as it fills.
+export component Meter inherits Rectangle {
+    in property <float> fraction;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.divider;
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.fraction, 0, 1);
+        height: parent.height;
+        border-radius: 2px;
+        background: Theme.fill(root.fraction);
+    }
+}
+
+// How much of a limit is used: a label, its bar, and the share.
+export component UsageBar inherits HorizontalLayout {
+    in property <string> label;
+    // 0 to 1.
+    in property <float> used;
+    height: 1.5rem;
+    spacing: Theme.space-s;
+    Caption {
+        text: root.label;
+        width: 2.2rem;
+        vertical-alignment: center;
+    }
+    Meter {
+        horizontal-stretch: 1;
+        y: (parent.height - self.height) / 2;
+        fraction: root.used;
+    }
+    Caption {
+        text: "\{round(clamp(root.used, 0, 1) * 100)}%";
+        width: 2.4rem;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}

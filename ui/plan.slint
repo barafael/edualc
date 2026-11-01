@@ -1,0 +1,193 @@
+// Reviewing Claude's plan before approving it: the plan part by part, a comment on any part,
+// and the comments going back with the answer chosen in the bar below (see `src/plan.rs`).
+
+import { ListView } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { PlanSection } from "types.slint";
+import { Prompt } from "state.slint";
+import { Caption, Icon, IconButton, TextButton, Title } from "widgets.slint";
+import { BlockView } from "transcript.slint";
+
+// Writing a comment: Ctrl+Enter keeps it, Esc drops the edit.
+component CommentEditor inherits Rectangle {
+    in property <string> text;
+    callback save(string);
+    callback cancel;
+    property <length> line: one-line.preferred-height;
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: Theme.accent;
+    background: Theme.field;
+    one-line := Text {
+        visible: false;
+        text: " ";
+    }
+    measure := Text {
+        visible: false;
+        width: input.width;
+        text: input.text + " ";
+        wrap: word-wrap;
+    }
+    init => {
+        input.focus();
+        input.set-selection-offsets(2147483647, 2147483647);
+    }
+    VerticalLayout {
+        padding: Theme.space-s;
+        spacing: Theme.space-s;
+        input := TextInput {
+            height: max(measure.preferred-height, 2 * root.line);
+            text: root.text;
+            single-line: false;
+            wrap: word-wrap;
+            color: Theme.text;
+            selection-background-color: Theme.selection;
+            selection-foreground-color: Theme.selection-text;
+            accessible-placeholder-text: "Your comment on this part";
+            key-pressed(event) => {
+                if event.text == Key.Return && event.modifiers.control {
+                    root.save(self.text);
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    root.cancel();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-s;
+            Caption {
+                text: "Ctrl+Enter to keep, Esc to drop";
+                vertical-alignment: center;
+            }
+            TextButton {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+            TextButton {
+                text: "Comment";
+                primary: true;
+                clicked => { root.save(input.text); }
+            }
+        }
+    }
+}
+
+component SectionRow inherits HorizontalLayout {
+    in property <PlanSection> section;
+    in property <int> index;
+    spacing: Theme.space-s;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: Theme.space-xs;
+        BlockView {
+            block: root.section.block;
+            key: "plan:\{root.index}";
+            first: root.index == 0;
+        }
+        if root.section.comment != "" && !root.section.editing: Rectangle {
+            border-radius: Theme.radius-m;
+            background: Theme.selected;
+            HorizontalLayout {
+                padding: Theme.space-s;
+                padding-left: Theme.space-m;
+                spacing: Theme.space-s;
+                Icon {
+                    source: @image-url("@lucide/message-square-text.svg");
+                    tint: Theme.accent;
+                    width: Theme.icon-small;
+                }
+                Text {
+                    text: root.section.comment;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: @image-url("@lucide/pencil.svg");
+                    label: "Edit the comment";
+                    width: 24px;
+                    height: 24px;
+                    icon-size: Theme.icon-small;
+                    clicked => { Prompt.edit-comment(root.index); }
+                }
+                IconButton {
+                    icon: @image-url("@lucide/trash.svg");
+                    label: "Remove the comment";
+                    width: 24px;
+                    height: 24px;
+                    icon-size: Theme.icon-small;
+                    clicked => { Prompt.set-comment(root.index, ""); }
+                }
+            }
+        }
+        if root.section.editing: CommentEditor {
+            text: root.section.comment;
+            save(text) => { Prompt.set-comment(root.index, text); }
+            cancel => { Prompt.cancel-comment(); }
+        }
+    }
+    VerticalLayout {
+        alignment: start;
+        IconButton {
+            icon: root.section.comment == "" ? @image-url("@lucide/message-square-plus.svg") : @image-url("@lucide/message-square-text.svg");
+            label: root.section.comment == "" ? "Comment on this part" : "Edit the comment";
+            tint: root.section.comment == "" ? Theme.text-faint : Theme.accent;
+            clicked => { Prompt.edit-comment(root.index); }
+        }
+    }
+}
+
+export component PlanReview inherits Rectangle {
+    background: Theme.surface;
+    VerticalLayout {
+        HorizontalLayout {
+            height: 56px;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/list-checks.svg");
+                tint: Theme.claude;
+                width: 22px;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Title {
+                    text: "Claude's plan";
+                }
+                Caption {
+                    text: "Comment on any part with the button beside it. Your comments go back with what you choose below.";
+                    overflow: elide;
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Back to the conversation";
+                y: (parent.height - self.height) / 2;
+                clicked => { Prompt.reviewing = false; }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        sections := ListView {
+            for section[index] in Prompt.plan: HorizontalLayout {
+                alignment: center;
+                padding-top: index == 0 ? Theme.space-xl : Theme.space-xs;
+                padding-bottom: index == Prompt.plan.length - 1 ? Theme.space-xl : Theme.space-xs;
+                SectionRow {
+                    width: min(sections.visible-width - 2 * Theme.space-xl, Theme.column);
+                    section: section;
+                    index: index;
+                }
+            }
+        }
+    }
+}

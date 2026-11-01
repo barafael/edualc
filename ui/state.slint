@@ -1,0 +1,203 @@
+// What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
+// the callbacks; the components read them where they're shown.
+
+import { CommandItem, Entry, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
+
+// The CLI process and the conversation it holds.
+export global Session {
+    // The working directory, its last part, and the session's title.
+    in property <string> cwd;
+    in property <string> project;
+    in property <string> title: "New session";
+    // A turn is running.
+    in property <bool> busy;
+    // What Claude is doing ("Thinking", "Running Bash"); empty when idle.
+    in property <string> status;
+    // The context used ("25k / 1M") and how full it is, 0 to 1.
+    in property <string> context;
+    in property <float> context-fraction;
+    // The sidebar's foot: the plan, and its limits used (0 to 1; less than 0 when unknown) and
+    // when they start over. Who is signed in waits behind an info button.
+    in property <string> plan;
+    in property <float> limit-five-hour: -1;
+    in property <string> limit-five-hour-resets;
+    in property <float> limit-seven-day: -1;
+    in property <string> email;
+    in property <string> organization;
+    in property <string> provider;
+    in property <string> version;
+    in property <string> cost;
+    callback show-usage;
+    in property <[MenuItem]> models;
+    in-out property <int> model-index;
+    in property <[MenuItem]> modes;
+    in-out property <int> mode-index;
+    in property <PermissionKind> mode;
+    callback choose-model(int);
+    callback choose-mode(int);
+    callback interrupt;
+    // The folder isn't trusted yet: Claude Code waits to start in it.
+    in property <bool> needs-trust;
+    callback trust-folder;
+    // What keeps Claude Code in: a word for the header, and what it means.
+    in property <string> sandbox-label;
+    in property <string> sandbox-detail;
+    in property <bool> sandboxed;
+    // What the settings ask: the sandbox, and the display let into it.
+    in property <bool> sandbox-on;
+    in property <bool> sandbox-desktop;
+    callback toggle-sandbox;
+    callback toggle-sandbox-desktop;
+    // A session another process runs is shown here, not driven: what runs it, and what
+    // can be done about it.
+    in property <bool> watching;
+    in property <string> watch-text;
+    in property <bool> can-go-to-window;
+    callback continue-here;
+    callback go-to-window;
+    // Stops the watched session in its window and continues it here.
+    callback bring-here;
+    // The git worktree the session works in (empty if none), and what it can be opened in:
+    // the first entry is this window.
+    in property <string> worktree-name;
+    in property <string> worktree-branch;
+    in property <[string]> openers;
+    callback open-worktree(int);
+    // A web page, in the browser.
+    callback open-url(string);
+    // The text bigger (1), smaller (-1), or back to the desktop's size (0).
+    callback zoom(int);
+}
+
+// The composer: the draft, and slash commands matching it.
+export global Composer {
+    in-out property <string> draft;
+    in property <[CommandItem]> commands;
+    callback send(string);
+    callback draft-edited(string);
+    // Puts the command at `index` in the draft.
+    callback pick-command(int);
+    // Bumped to focus the composer (a new session, a session opened).
+    in property <int> focus-serial;
+}
+
+// The sidebar: the sessions of this directory, and the directories to switch to.
+export global Sessions {
+    in property <[SessionItem]> items;
+    in property <[ProjectItem]> projects;
+    // Sessions other Claude Code processes run now, in any directory, and how many of them
+    // wait for their user.
+    in property <[LiveItem]> live;
+    in property <int> needs-you;
+    callback watch(string);
+    // What the list of this directory's sessions is narrowed to.
+    callback filter-edited(string);
+    callback new-session;
+    callback open(string);
+    callback open-project(string);
+    callback browse-project;
+    callback refresh-projects;
+}
+
+// The conversation.
+export global Transcript {
+    in property <[Entry]> entries;
+    // Bumped to go to the end, whether or not it was being followed.
+    in property <int> scroll-to-end-serial;
+    callback toggle(int);
+    // Opens or folds the run of tool calls whose first call is at this place.
+    callback toggle-group(int);
+    // Copies the entry's whole text (an assistant message's Markdown, a tool's whole output).
+    callback copy-entry(int);
+}
+
+// The bar above the composer, while Claude waits for an answer.
+export global Prompt {
+    in property <PromptKind> kind;
+    in property <string> title;
+    in property <string> summary;
+    in property <string> detail;
+    // E.g. "Always allow Bash(npm test)"; empty if the CLI suggests nothing to remember.
+    in property <string> always-label;
+    // More requests waiting behind this one.
+    in property <int> queued;
+    // Bumped for every request shown, so the bar's buttons arm again.
+    in property <int> serial;
+    // The request shown. Every answer names it: one meant for a request that went away is
+    // not given to the next.
+    in property <string> request;
+    in property <[Question]> questions;
+    callback allow(string);
+    callback allow-always(string);
+    // With what to do instead, or empty.
+    callback deny(string, string);
+    callback toggle-option(int, int);
+    callback set-other(int, string);
+    callback answer(string);
+    // Claude's plan, part by part, with the user's comments; shown over the transcript
+    // while `reviewing`.
+    in property <[PlanSection]> plan;
+    in-out property <bool> reviewing;
+    in property <int> comment-count;
+    callback edit-comment(int);
+    callback set-comment(int, string);
+    callback cancel-comment;
+    // Approves the plan (auto-accepting edits, or asking before each), with a comment on the
+    // whole of it.
+    callback approve-plan(string, bool, string);
+}
+
+// Side questions (`/btw`): answered with the conversation's context, never part of it.
+export global Side {
+    in property <SideView> view;
+    in property <[SideExchange]> exchanges;
+    // An answer came while folded away.
+    in property <bool> unseen;
+    // A session runs here to ask (not one watched from elsewhere).
+    in property <bool> can-ask;
+    in property <bool> can-branch;
+    in property <bool> has-answers;
+    in property <bool> pending;
+    // Bumped to focus the panel's input.
+    // Asked to take the focus: a panel just made takes it once (see `SidePanel`).
+    in-out property <bool> focus-wanted;
+    in property <int> focus-serial;
+    callback ask(string);
+    callback toggle;
+    callback dismiss;
+    callback copy(int);
+    callback to-conversation;
+    callback branch;
+}
+
+// The usage panel: the CLI's `/usage` and `/context`, shown over the conversation.
+export global Usage {
+    in property <bool> open;
+    // Answers still owed.
+    in property <bool> loading;
+    // Why something is missing, if it is.
+    in property <string> note;
+    in property <[StatSection]> sections;
+    callback close;
+    callback refresh;
+}
+
+// Copies through a text input, the way Slint reaches the clipboard (`AppWindow.copy-text`).
+export global Clipboard {
+    callback copy(string);
+}
+
+// The text selected in the transcript, for copying with Ctrl+C: one element's at a time, the
+// one whose key is `owner` ("" for none); the others drop theirs when it changes. The text
+// stays in the `StyledText`, which reaches the clipboard itself.
+export global TextSelection {
+    in-out property <string> owner;
+    // Bumped to ask the element at `owner` to copy its selection.
+    in-out property <int> copy-request;
+    public function clear() {
+        self.owner = "";
+    }
+    public function copy() {
+        self.copy-request += 1;
+    }
+}

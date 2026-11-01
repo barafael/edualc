@@ -1,0 +1,161 @@
+// What Rust hands the window: one struct per kind of row, built in `src/ui.rs`.
+
+// A block of assistant Markdown that the window draws itself; inline Markdown (emphasis, code,
+// links, lists) is inside `body`, parsed by Slint.
+export enum BlockKind { text, heading, code, quote, table, rule }
+
+export struct MdBlock {
+    kind: BlockKind,
+    body: styled-text,
+    // The code's language, from its fence.
+    lang: string,
+    // A heading's level, 1 to 6.
+    level: int,
+    // Code and tables as they are, for copying.
+    raw: string,
+}
+
+export enum EntryKind { user, assistant, thinking, tool, info, error }
+
+export enum ToolState { streaming, running, awaiting, done, failed, denied, cancelled }
+
+export enum DiffKind { context, added, removed, hunk }
+
+// Runs of tool calls fold into one line, carried by the run's first call (see
+// `src/grouping.rs`).
+export enum GroupRole { alone, head, member }
+
+export struct DiffLine {
+    kind: DiffKind,
+    text: string,
+}
+
+// One row of the transcript.
+export struct Entry {
+    kind: EntryKind,
+    // The text of user messages, notes, errors and thinking.
+    body: styled-text,
+    // Assistant text; a plan to approve.
+    blocks: [MdBlock],
+    tool-title: string,
+    tool-summary: string,
+    tool-state: ToolState,
+    // A tool call's input worth showing (the full command, a subagent's prompt).
+    detail: styled-text,
+    has-detail: bool,
+    output: styled-text,
+    has-output: bool,
+    // What was left out of a long output.
+    output-note: string,
+    diff: [DiffLine],
+    expanded: bool,
+    // Made by a subagent: indented under the call that started it.
+    nested: bool,
+    group: GroupRole,
+    // The head's line ("Read 2 files, ran 1 command"), and how the run went: running, done or
+    // failed.
+    group-summary: string,
+    group-state: ToolState,
+    group-open: bool,
+    // A later call of a folded run: not shown.
+    hidden: bool,
+}
+
+export struct SessionItem {
+    id: string,
+    title: string,
+    age: string,
+    active: bool,
+    // Some other Claude Code process runs it right now.
+    running: bool,
+    // The worktree it worked in; empty if none.
+    worktree: string,
+}
+
+export enum LiveState { idle, busy, waiting, other }
+
+// A session another Claude Code process runs: a terminal, an editor, the background.
+export struct LiveItem {
+    id: string,
+    name: string,
+    project: string,
+    state: LiveState,
+    // Shown in the window now.
+    watched: bool,
+    worktree: string,
+}
+
+// The side panel (`/btw`): open, folded away into the header's button, or not there.
+export enum SideView { hidden, shown, folded }
+
+export enum SideState { pending, retrying, answered, failed }
+
+// A side question and its answer (Markdown blocks), or why there is none.
+export struct SideExchange {
+    question: string,
+    state: SideState,
+    answer: [MdBlock],
+    error: string,
+}
+
+// A part of Claude's plan, and the user's comment on it.
+export struct PlanSection {
+    block: MdBlock,
+    comment: string,
+    editing: bool,
+}
+
+export struct ProjectItem {
+    path: string,
+    name: string,
+    age: string,
+}
+
+// A line of the usage panel: what, how much, more about it, and a bar when it is a share
+// (0 to 1; less than 0 for none), which warms as it fills.
+export struct StatRow {
+    label: string,
+    value: string,
+    detail: string,
+    fraction: float,
+}
+
+export struct StatSection {
+    title: string,
+    note: string,
+    rows: [StatRow],
+}
+
+// A choice in a menu, with what choosing it means.
+export struct MenuItem {
+    title: string,
+    description: string,
+}
+
+// A slash command matching what the composer holds.
+export struct CommandItem {
+    name: string,
+    hint: string,
+    description: string,
+}
+
+export struct QuestionOption {
+    label: string,
+    description: string,
+    selected: bool,
+}
+
+// One of the questions Claude asks with AskUserQuestion.
+export struct Question {
+    question: string,
+    multi: bool,
+    options: [QuestionOption],
+}
+
+// The permission mode in use, for the composer's icon; `unknown` for one the CLI names that
+// this window doesn't know.
+export enum PermissionKind { default, accept-edits, plan, auto, bypass, unknown }
+
+// What the bar above the composer asks: nothing, whether a tool may run, Claude's questions,
+// or whether its plan is approved.
+export enum PromptKind { none, tool, question, plan }

@@ -1,0 +1,96 @@
+[package]
+name = "edualc"
+description = "edualc: a native desktop window for Claude Code, built with Slint"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "edualc"
+path = "src/main.rs"
+
+[dependencies]
+# Slint master (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
+# `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
+# on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
+# the latest). These are the patches b33p's fork carries. Go back to crates.io once 1.19 is out.
+# Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
+# widgets, so Qt would only add a dependency (and, at this revision, garbled italics).
+slint = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Splitting assistant text into blocks; the inline Markdown inside them is Slint's to parse.
+pulldown-cmark = { version = "0.13", default-features = false }
+# Line diffs for Edit and Write tool calls.
+similar = "3"
+dirs = "7"
+# Opens links in the browser.
+open = "5"
+# The desktop's own folder picker, through its portal on Linux.
+rfd = "0.17"
+thiserror = "2"
+strum = { version = "0.27", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+jiff = { version = "0.2.38", features = ["serde"] }
+# inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
+# socket; already built for winit.
+rustix = { version = "1", features = ["fs", "net", "process"] }
+# The window refusing itself every socket but Unix ones (no network at all), and io_uring.
+seccompiler = "0.5"
+# The system calls and socket families that filter names; already built for most dependencies.
+libc = "0.2"
+# Sandboxing the claude process (and what it starts) with the kernel's Landlock.
+landlock = "0.4"
+# The daemon's actors (connections, sessions), their channels, its processes and sockets;
+# already built for a dependency.
+tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
+# The messages between the window and its daemon: compact, strictly checked serde.
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+# Newtypes' `Display` and `From`; already built for Slint.
+derive_more = { version = "2", features = ["display", "from"] }
+
+[build-dependencies]
+slint-build = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d" }
+# The icons (Lucide), written out for the UI as `@image-url("@lucide/<name>.svg")`.
+lucide-static-svg = "1.55"
+
+# "deny", not "forbid": Slint's generated code allows `unsafe` for itself, which "forbid" refuses.
+[lints.rust]
+unsafe_code = "deny"
+
+# The harness workspace's set (../edit-epistemology/benchmark/harness): errors are not swallowed,
+# casts don't lose, matches name every variant. Shared mutable state is refused in clippy.toml.
+[lints.clippy]
+map_err_ignore = "deny"
+indexing_slicing = "deny"
+fallible_impl_from = "deny"
+wildcard_enum_match_arm = "deny"
+unneeded_field_pattern = "deny"
+fn_params_excessive_bools = "deny"
+missing_fields_in_debug = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+unused_result_ok = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+redundant_clone = "deny"
+needless_pass_by_ref_mut = "deny"
+needless_pass_by_value = "deny"
+items_after_statements = "deny"
+manual_assert = "deny"
+match_same_arms = "deny"
+default_trait_access = "deny"
+format_push_string = "deny"
+map_unwrap_or = "deny"
+ignored_unit_patterns = "deny"
+redundant_closure_for_method_calls = "deny"
+derive_partial_eq_without_eq = "deny"
+bool_to_int_with_if = "deny"
+disallowed_types = "deny"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

@@ -1,0 +1,394 @@
+// The rows of the transcript: the user's messages, Claude's Markdown, tool calls with their
+// input, output and diffs, and notes. Selectable text is keyed by entry and part: `e3:b0` for
+// the first Markdown block of entry 3, `e3:detail`, `e3:output`, `e3:text`.
+
+import { Theme } from "theme.slint";
+import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, MdBlock, ToolState } from "types.slint";
+import { Clipboard, Transcript } from "state.slint";
+import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small } from "widgets.slint";
+
+// One block of Markdown; `key` tells its selection apart (see `TextSelection`).
+export component BlockView inherits VerticalLayout {
+    in property <MdBlock> block;
+    in property <string> key;
+    in property <bool> first;
+    if root.block.kind == BlockKind.text: Selectable {
+        text: root.block.body;
+        key: root.key;
+    }
+    // Bold already (see `src/ui/mod.rs`); a size by level.
+    if root.block.kind == BlockKind.heading: VerticalLayout {
+        padding-top: root.first ? 0 : Theme.space-xs;
+        Selectable {
+            text: root.block.body;
+            key: root.key;
+            default-font-size: 1rem * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
+        }
+    }
+    if root.block.kind == BlockKind.code || root.block.kind == BlockKind.table: CodeBox {
+        body: root.block.body;
+        key: root.key;
+        label: root.block.lang;
+        copyable: true;
+        copy => { Clipboard.copy(root.block.raw); }
+    }
+    if root.block.kind == BlockKind.quote: HorizontalLayout {
+        spacing: Theme.space-m;
+        Rectangle {
+            width: 3px;
+            border-radius: 1.5px;
+            background: Theme.divider;
+        }
+        Selectable {
+            text: root.block.body;
+            key: root.key;
+            default-color: Theme.text-secondary;
+        }
+    }
+    if root.block.kind == BlockKind.rule: VerticalLayout {
+        padding-top: Theme.space-xs;
+        padding-bottom: Theme.space-xs;
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+    }
+}
+
+export component MarkdownView inherits VerticalLayout {
+    in property <[MdBlock]> blocks;
+    in property <int> index;
+    spacing: Theme.space-s;
+    for block[i] in root.blocks: BlockView {
+        block: block;
+        key: "e\{root.index}:b\{i}";
+        first: i == 0;
+    }
+}
+
+component DiffView inherits Rectangle {
+    in property <[DiffLine]> lines;
+    background: Theme.code;
+    border-radius: Theme.radius-m;
+    clip: true;
+    VerticalLayout {
+        padding-top: Theme.space-xs;
+        padding-bottom: Theme.space-xs;
+        for line in root.lines: Rectangle {
+            background: line.kind == DiffKind.added ? Theme.added : line.kind == DiffKind.removed ? Theme.removed : transparent;
+            HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-m;
+                spacing: Theme.space-s;
+                Text {
+                    width: 10px;
+                    text: line.kind == DiffKind.added ? "+" : line.kind == DiffKind.removed ? "−" : "";
+                    color: line.kind == DiffKind.added ? Theme.added-text : Theme.removed-text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    text: line.text;
+                    wrap: word-wrap;
+                    color: line.kind == DiffKind.hunk ? Theme.text-faint : Theme.text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                }
+            }
+        }
+    }
+}
+
+// Before a tool call's name: how far it got, by shape as well as colour (Gruvbox's green and
+// yellow are close): a dot while it runs, a hand while it waits for the user, a check,
+// a cross, a slashed circle.
+component StateMark inherits Rectangle {
+    in property <ToolState> state;
+    property <bool> working: root.state == ToolState.running || root.state == ToolState.streaming;
+    width: Theme.icon-small;
+    height: Theme.icon-small;
+    if root.working: Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.claude;
+    }
+    if !root.working: Icon {
+        width: parent.width;
+        source: root.state == ToolState.done ? @image-url("@lucide/check.svg")
+            : root.state == ToolState.failed ? @image-url("@lucide/x.svg")
+            : root.state == ToolState.awaiting ? @image-url("@lucide/hand.svg")
+            : root.state == ToolState.denied ? @image-url("@lucide/ban.svg")
+            : @image-url("@lucide/circle-slash.svg");
+        tint: root.state == ToolState.done ? Theme.success
+            : root.state == ToolState.failed ? Theme.danger-text
+            : root.state == ToolState.awaiting ? Theme.warning
+            : Theme.text-faint;
+    }
+}
+
+// A run of tool calls in one line: open or folded, how it went, what it did.
+component RunLine inherits Pressable {
+    in property <Entry> entry;
+    in property <int> index;
+    height: Theme.row;
+    accessible-label: root.entry.group-summary;
+    clicked => { Transcript.toggle-group(root.index); }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        Icon {
+            source: root.entry.group-open ? @image-url("@lucide/chevron-down.svg") : @image-url("@lucide/chevron-right.svg");
+            width: Theme.icon-small;
+            tint: Theme.text-faint;
+            y: (parent.height - self.height) / 2;
+        }
+        StateMark {
+            state: root.entry.group-state;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.entry.group-summary;
+            color: root.entry.group-state == ToolState.failed ? Theme.danger-text : Theme.text-secondary;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+        }
+    }
+}
+
+component ToolCard inherits Rectangle {
+    in property <Entry> entry;
+    in property <int> index;
+    property <string> state-label: root.entry.tool-state == ToolState.awaiting ? "Waiting for you"
+        : root.entry.tool-state == ToolState.failed ? "Failed"
+        : root.entry.tool-state == ToolState.denied ? "Denied"
+        : root.entry.tool-state == ToolState.cancelled ? "Cancelled"
+        : "";
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: root.entry.tool-state == ToolState.awaiting ? Theme.warning : Theme.divider;
+    background: Theme.card;
+    VerticalLayout {
+        Pressable {
+            border-radius: Theme.radius-m;
+            clicked => { Transcript.toggle(root.index); }
+            HorizontalLayout {
+                padding: Theme.space-s;
+                padding-left: Theme.space-m;
+                spacing: Theme.space-s;
+                StateMark {
+                    state: root.entry.tool-state;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.entry.tool-title;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.entry.tool-summary;
+                    color: Theme.text-secondary;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                }
+                if root.state-label != "": Small {
+                    text: root.state-label;
+                    vertical-alignment: center;
+                    color: root.entry.tool-state == ToolState.failed ? Theme.danger-text : Theme.text-tertiary;
+                }
+                Icon {
+                    source: root.entry.expanded ? @image-url("@lucide/chevron-down.svg") : @image-url("@lucide/chevron-right.svg");
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        if root.entry.expanded: VerticalLayout {
+            padding: Theme.space-s;
+            padding-top: 0;
+            spacing: Theme.space-s;
+            if root.entry.diff.length > 0: DiffView {
+                lines: root.entry.diff;
+            }
+            if root.entry.has-detail: CodeBox {
+                body: root.entry.detail;
+                key: "e\{root.index}:detail";
+                ink: Theme.text-secondary;
+            }
+            if root.entry.blocks.length > 0: Rectangle {
+                border-radius: Theme.radius-m;
+                background: Theme.surface;
+                VerticalLayout {
+                    padding: Theme.space-m;
+                    MarkdownView {
+                        blocks: root.entry.blocks;
+                        index: root.index;
+                    }
+                }
+            }
+            if root.entry.has-output: CodeBox {
+                body: root.entry.output;
+                key: "e\{root.index}:output";
+                ink: root.entry.tool-state == ToolState.failed ? Theme.danger-text : Theme.text;
+                note: root.entry.output-note;
+                copyable: true;
+                copy => { Transcript.copy-entry(root.index); }
+            }
+        }
+    }
+}
+
+component UserBubble inherits HorizontalLayout {
+    in property <Entry> entry;
+    in property <int> index;
+    alignment: end;
+    Rectangle {
+        max-width: root.width * 0.85;
+        border-radius: Theme.bubble-radius;
+        background: Theme.bubble;
+        HorizontalLayout {
+            padding-left: Theme.space-l;
+            padding-right: Theme.space-l;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            Selectable {
+                text: root.entry.body;
+                key: "e\{root.index}:text";
+            }
+        }
+    }
+}
+
+component AssistantText inherits VerticalLayout {
+    in property <Entry> entry;
+    in property <int> index;
+    spacing: 2px;
+    MarkdownView {
+        blocks: root.entry.blocks;
+        index: root.index;
+    }
+    HorizontalLayout {
+        alignment: start;
+        IconButton {
+            icon: @image-url("@lucide/copy.svg");
+            label: "Copy message";
+            width: 24px;
+            height: 24px;
+            icon-size: Theme.icon-small;
+            tint: Theme.text-faint;
+            clicked => { Transcript.copy-entry(root.index); }
+        }
+    }
+}
+
+component Thinking inherits VerticalLayout {
+    in property <Entry> entry;
+    in property <int> index;
+    spacing: Theme.space-xs;
+    HorizontalLayout {
+        alignment: start;
+        Pressable {
+            clicked => { Transcript.toggle(root.index); }
+            HorizontalLayout {
+                padding: Theme.space-xs;
+                padding-right: Theme.space-s;
+                spacing: Theme.space-xs;
+                Icon {
+                    source: @image-url("@lucide/brain.svg");
+                    width: Theme.icon-small;
+                    tint: Theme.text-tertiary;
+                    y: (parent.height - self.height) / 2;
+                }
+                Small {
+                    text: "Thinking";
+                    vertical-alignment: center;
+                }
+                Icon {
+                    source: root.entry.expanded ? @image-url("@lucide/chevron-down.svg") : @image-url("@lucide/chevron-right.svg");
+                    width: Theme.icon-small;
+                    tint: Theme.text-tertiary;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+    }
+    if root.entry.expanded: HorizontalLayout {
+        padding-left: Theme.space-s;
+        spacing: Theme.space-m;
+        Rectangle {
+            width: 2px;
+            background: Theme.divider;
+        }
+        Selectable {
+            text: root.entry.body;
+            key: "e\{root.index}:text";
+            default-color: Theme.text-tertiary;
+        }
+    }
+}
+
+export component EntryView inherits VerticalLayout {
+    in property <Entry> entry;
+    in property <int> index;
+    padding-left: root.entry.nested ? Theme.space-xl : 0;
+    if root.entry.kind == EntryKind.user: UserBubble {
+        entry: root.entry;
+        index: root.index;
+    }
+    if root.entry.kind == EntryKind.assistant: AssistantText {
+        entry: root.entry;
+        index: root.index;
+    }
+    if root.entry.kind == EntryKind.thinking: Thinking {
+        entry: root.entry;
+        index: root.index;
+    }
+    if root.entry.group == GroupRole.head: RunLine {
+        entry: root.entry;
+        index: root.index;
+    }
+    // An open run's calls, indented under its line; a folded run shows only the line.
+    if root.entry.kind == EntryKind.tool && (root.entry.group == GroupRole.alone || root.entry.group-open): HorizontalLayout {
+        padding-left: root.entry.group == GroupRole.alone ? 0 : Theme.space-l;
+        padding-top: root.entry.group == GroupRole.head ? Theme.space-xs : 0;
+        ToolCard {
+            entry: root.entry;
+            index: root.index;
+        }
+    }
+    if root.entry.kind == EntryKind.info: Selectable {
+        text: root.entry.body;
+        key: "e\{root.index}:text";
+        horizontal-alignment: center;
+        default-color: Theme.text-tertiary;
+        default-font-size: 1rem * Theme.small;
+    }
+    if root.entry.kind == EntryKind.error: Rectangle {
+        border-radius: Theme.radius-m;
+        background: Theme.danger-fill;
+        HorizontalLayout {
+            padding: Theme.space-m;
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/circle-alert.svg");
+                tint: Theme.danger-text;
+                width: Theme.icon-small;
+            }
+            Selectable {
+                text: root.entry.body;
+                key: "e\{root.index}:text";
+                default-color: Theme.danger-text;
+            }
+        }
+    }
+}

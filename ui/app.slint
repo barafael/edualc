@@ -1,0 +1,1398 @@
+// The window: the sessions on the left; the conversation, what Claude asks and the composer in
+// the middle; side questions on the right.
+
+import { ListView } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
+import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
+import { EntryView } from "transcript.slint";
+import { PlanReview } from "plan.slint";
+import { SidePanel } from "side.slint";
+import { UsagePanel } from "usage.slint";
+
+export { Motion, Theme } from "theme.slint";
+export { BlockKind, CommandItem, DiffKind, DiffLine, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
+export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+
+// How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
+// work is another window's to show, and a moving dot here would keep this one drawing.
+component LiveDot inherits Rectangle {
+    in property <LiveState> state;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: root.state == LiveState.waiting ? Theme.warning
+        : root.state == LiveState.busy ? Theme.claude
+        : transparent;
+    border-width: root.state == LiveState.busy || root.state == LiveState.waiting ? 0 : 1.5px;
+    border-color: Theme.text-faint;
+}
+
+// Narrow windows give up the sidebar's width first, then the side panel's; the conversation
+// keeps the rest.
+component Sidebar inherits Rectangle {
+    // 0: this folder's sessions; 1: those running anywhere.
+    property <int> tab: 0;
+    min-width: 200px;
+    preferred-width: Theme.sidebar;
+    max-width: Theme.sidebar;
+    horizontal-stretch: 0;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            padding-left: Theme.space-xs;
+            Icon {
+                source: @image-url("@lucide/sparkles.svg");
+                tint: Theme.claude;
+                width: 22px;
+                y: (parent.height - self.height) / 2;
+            }
+            Title {
+                text: "edualc";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: @image-url("@lucide/square-pen.svg");
+                label: "New session (Ctrl+N)";
+                clicked => { Sessions.new-session(); }
+            }
+        }
+        // The working directory; a click offers the others Claude Code was used in.
+        project-button := Pressable {
+            clicked => {
+                Sessions.refresh-projects();
+                projects.show();
+            }
+            HorizontalLayout {
+                padding: Theme.space-s;
+                spacing: Theme.space-s;
+                Icon {
+                    source: @image-url("@lucide/folder.svg");
+                    y: (parent.height - self.height) / 2;
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    Text {
+                        text: Session.project;
+                        font-weight: 600;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    Caption {
+                        text: Session.cwd;
+                        overflow: elide;
+                    }
+                }
+                Icon {
+                    source: @image-url("@lucide/chevrons-up-down.svg");
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        projects := PopupWindow {
+            x: project-button.x;
+            y: project-button.y + project-button.height + Theme.space-xs;
+            width: 440px;
+            height: 460px;
+            close-policy: close-on-click-outside;
+            Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-l;
+                border-width: 1px;
+                border-color: Theme.divider;
+                drop-shadow-blur: 12px;
+                drop-shadow-color: #0004;
+                VerticalLayout {
+                    padding: Theme.space-s;
+                    spacing: Theme.space-s;
+                    HorizontalLayout {
+                        spacing: Theme.space-s;
+                        path := Field {
+                            horizontal-stretch: 1;
+                            placeholder: "Path to a folder";
+                            accepted(text) => {
+                                Sessions.open-project(text);
+                                projects.close();
+                            }
+                        }
+                        TextButton {
+                            text: "Browse…";
+                            clicked => {
+                                Sessions.browse-project();
+                                projects.close();
+                            }
+                        }
+                    }
+                    Caption {
+                        text: "Recent";
+                    }
+                    ListView {
+                        for project in Sessions.projects: Pressable {
+                            height: Theme.row-tall;
+                            clicked => {
+                                Sessions.open-project(project.path);
+                                projects.close();
+                            }
+                            HorizontalLayout {
+                                padding-left: Theme.space-s;
+                                padding-right: Theme.space-s;
+                                spacing: Theme.space-s;
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: project.name;
+                                        color: Theme.text;
+                                        overflow: elide;
+                                    }
+                                    Caption {
+                                        text: project.path;
+                                        overflow: elide;
+                                    }
+                                }
+                                Caption {
+                                    text: project.age;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Two lists, one at a time: this folder's sessions (to continue), and the sessions
+        // running anywhere right now (to follow, or bring here).
+        HorizontalLayout {
+            spacing: Theme.space-xs;
+            for tab[index] in ["This folder", "Running"]: Pressable {
+                height: Theme.chip;
+                horizontal-stretch: 1;
+                selected: root.tab == index;
+                clicked => { root.tab = index; }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.space-xs;
+                    Text {
+                        text: index == 1 ? tab + " · \{Sessions.live.length}" : tab;
+                        color: root.tab == index ? Theme.text : Theme.text-secondary;
+                        font-size: 1rem * Theme.small;
+                        font-weight: root.tab == index ? 600 : 400;
+                        vertical-alignment: center;
+                    }
+                    // Some running session waits for its user.
+                    if index == 1 && Sessions.needs-you > 0: Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: Theme.warning;
+                    }
+                }
+            }
+        }
+        if root.tab == 0: VerticalLayout {
+            spacing: Theme.space-s;
+            vertical-stretch: 1;
+            Caption {
+                text: "Sessions started in this folder. Click one to continue it.";
+                wrap: word-wrap;
+            }
+            Field {
+                placeholder: "Filter";
+                edited(text) => { Sessions.filter-edited(text); }
+            }
+            if Sessions.items.length == 0: Small {
+                text: "None yet: what you start here is listed here.";
+                wrap: word-wrap;
+            }
+            ListView {
+                vertical-stretch: 1;
+                for session in Sessions.items: Pressable {
+                    height: Theme.row;
+                    selected: session.active;
+                    clicked => { Sessions.open(session.id); }
+                    HorizontalLayout {
+                        padding-left: Theme.space-m;
+                        padding-right: Theme.space-s;
+                        spacing: Theme.space-s;
+                        if session.running: LiveDot {
+                            state: LiveState.busy;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        if session.worktree != "": Icon {
+                            source: @image-url("@lucide/git-branch.svg");
+                            width: Theme.icon-small;
+                            tint: Theme.text-tertiary;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: session.title;
+                            color: Theme.text;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                        }
+                        Caption {
+                            text: session.age;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        if root.tab == 1: VerticalLayout {
+            spacing: Theme.space-s;
+            vertical-stretch: 1;
+            Caption {
+                text: "Claude Code running in other windows, in any folder. Click one to follow it here.";
+                wrap: word-wrap;
+            }
+            if Sessions.live.length == 0: Small {
+                text: "Nothing is running elsewhere.";
+                wrap: word-wrap;
+            }
+            ListView {
+                vertical-stretch: 1;
+                for session in Sessions.live: Pressable {
+                    height: Theme.row;
+                    selected: session.watched;
+                    clicked => { Sessions.watch(session.id); }
+                    HorizontalLayout {
+                        padding-left: Theme.space-m;
+                        padding-right: Theme.space-s;
+                        spacing: Theme.space-s;
+                        LiveDot {
+                            state: session.state;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: session.name;
+                            color: Theme.text;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                        }
+                        if session.state == LiveState.waiting || session.worktree != "" || session.project != "": Caption {
+                            text: session.state == LiveState.waiting ? "needs you"
+                                : session.worktree != "" ? "⎇ " + session.worktree : session.project;
+                            color: session.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            max-width: Theme.sidebar * 0.45;
+                        }
+                    }
+                }
+            }
+        }
+        // The plan and how much of it is used (a click shows the details); who is signed in
+        // waits behind the info button.
+        VerticalLayout {
+            vertical-stretch: 0;
+            padding-top: Theme.space-s;
+            spacing: Theme.space-xs;
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-top: Theme.space-xs;
+                spacing: Theme.space-s;
+                Text {
+                    text: Session.plan != "" ? Session.plan : "Claude Code";
+                    color: Theme.text;
+                    font-weight: 600;
+                    font-size: 1rem * Theme.small;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                }
+                info-button := IconButton {
+                    icon: @image-url("@lucide/info.svg");
+                    label: "Account";
+                    width: Theme.chip;
+                    height: Theme.chip;
+                    icon-size: Theme.icon-small;
+                    clicked => { account.show(); }
+                }
+            }
+            usage := Pressable {
+                height: bars.preferred-height + Theme.space-s;
+                accessible-label: "Usage details";
+                clicked => { Session.show-usage(); }
+                bars := VerticalLayout {
+                    padding-left: Theme.space-xs;
+                    padding-right: Theme.space-xs;
+                    if Session.limit-five-hour >= 0: UsageBar {
+                        label: "5h";
+                        used: Session.limit-five-hour;
+                    }
+                    if Session.limit-five-hour-resets != "": Caption {
+                        text: Session.limit-five-hour-resets;
+                        horizontal-alignment: right;
+                    }
+                    if Session.limit-seven-day >= 0: UsageBar {
+                        label: "7d";
+                        used: Session.limit-seven-day;
+                    }
+                    if Session.limit-five-hour < 0 && Session.limit-seven-day < 0: Caption {
+                        text: "Usage";
+                    }
+                }
+            }
+        }
+    }
+    account := PopupWindow {
+        x: root.width - self.width - Theme.space-s;
+        y: root.height - self.height - Theme.row * 3;
+        width: 300px;
+        height: details.preferred-height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.control-border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #0006;
+            details := VerticalLayout {
+                padding: Theme.space-m;
+                spacing: Theme.space-xs;
+                Caption {
+                    text: "Signed in";
+                }
+                for line in [
+                    { label: "Plan", value: Session.plan },
+                    { label: "Email", value: Session.email },
+                    { label: "Organization", value: Session.organization },
+                    { label: "Provider", value: Session.provider },
+                    { label: "Claude Code", value: Session.version },
+                    { label: "This session", value: Session.cost },
+                ]: HorizontalLayout {
+                    spacing: Theme.space-s;
+                    visible: line.value != "";
+                    height: line.value != "" ? self.preferred-height : 0;
+                    Small {
+                        text: line.label;
+                        width: 90px;
+                    }
+                    Text {
+                        text: line.value;
+                        color: Theme.text;
+                        font-size: 1rem * Theme.small;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// What Claude waits for: may a tool run, its questions answered, its plan approved. Its buttons
+// take clicks only a moment after a request appears: a click meant for what was under the
+// pointer (another window, as this one opened) must not answer it.
+component PromptBar inherits Rectangle {
+    property <bool> armed;
+    property <int> serial: Prompt.serial;
+    changed serial => {
+        root.armed = false;
+        arm-timer.running = true;
+    }
+    init => { arm-timer.running = true; }
+    arm-timer := Timer {
+        interval: 700ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.armed = true;
+        }
+    }
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.warning;
+    background: Theme.card;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            Icon {
+                source: Prompt.kind == PromptKind.question ? @image-url("@lucide/message-circle-question-mark.svg")
+                    : Prompt.kind == PromptKind.plan ? @image-url("@lucide/list-checks.svg")
+                    : @image-url("@lucide/shield-question-mark.svg");
+                tint: Theme.warning;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: Prompt.title;
+                font-weight: 600;
+                color: Theme.text;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if Prompt.queued > 0: Small {
+                text: "\{Prompt.queued} more waiting";
+                vertical-alignment: center;
+            }
+        }
+        if Prompt.kind == PromptKind.tool: VerticalLayout {
+            spacing: Theme.space-s;
+            if Prompt.summary != "": Rectangle {
+                background: Theme.code;
+                border-radius: Theme.radius-m;
+                HorizontalLayout {
+                    padding: Theme.space-m;
+                    Text {
+                        text: Prompt.summary;
+                        color: Theme.text;
+                        font-family: Theme.mono;
+                        font-size: 1rem * Theme.code-size;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            if Prompt.detail != "": Small {
+                text: Prompt.detail;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                TextButton {
+                    enabled: root.armed;
+                    text: "Allow";
+                    primary: true;
+                    clicked => { Prompt.allow(Prompt.request); }
+                }
+                if Prompt.always-label != "": TextButton {
+                    enabled: root.armed;
+                    text: Prompt.always-label;
+                    clicked => { Prompt.allow-always(Prompt.request); }
+                }
+                TextButton {
+                    enabled: root.armed;
+                    text: "Deny";
+                    danger: true;
+                    clicked => {
+                        Prompt.deny(Prompt.request, feedback.text);
+                        feedback.text = "";
+                    }
+                }
+                feedback := Field {
+                    horizontal-stretch: 1;
+                    placeholder: "Or tell Claude what to do instead";
+                    accepted(text) => {
+                        Prompt.deny(Prompt.request, text);
+                        self.text = "";
+                    }
+                }
+            }
+        }
+        if Prompt.kind == PromptKind.question: VerticalLayout {
+            spacing: Theme.space-m;
+            for question[q] in Prompt.questions: VerticalLayout {
+                spacing: Theme.space-xs;
+                Text {
+                    text: question.question;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if question.multi: Caption {
+                    text: "Pick any";
+                }
+                for option[o] in question.options: Pressable {
+                    selected: option.selected;
+                    clicked => { Prompt.toggle-option(q, o); }
+                    HorizontalLayout {
+                        padding: Theme.space-s;
+                        spacing: Theme.space-s;
+                        Icon {
+                            source: question.multi
+                                ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
+                                : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
+                            tint: option.selected ? Theme.accent : Theme.text-tertiary;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: option.label;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            if option.description != "": Small {
+                                text: option.description;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                Field {
+                    placeholder: "Something else";
+                    edited(text) => { Prompt.set-other(q, text); }
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                alignment: start;
+                TextButton {
+                    enabled: root.armed;
+                    text: "Answer";
+                    primary: true;
+                    clicked => { Prompt.answer(Prompt.request); }
+                }
+                TextButton {
+                    enabled: root.armed;
+                    text: "Skip";
+                    clicked => { Prompt.deny(Prompt.request, ""); }
+                }
+            }
+        }
+        if Prompt.kind == PromptKind.plan: VerticalLayout {
+            spacing: Theme.space-s;
+            if Prompt.comment-count > 0: Small {
+                text: Prompt.comment-count == 1 ? "1 comment on the plan goes with your answer." : "\{Prompt.comment-count} comments on the plan go with your answer.";
+            }
+            overall := Field {
+                placeholder: "A comment on the whole plan (optional)";
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                TextButton {
+                    enabled: root.armed;
+                    text: "Approve, accept edits";
+                    primary: true;
+                    clicked => {
+                        Prompt.approve-plan(Prompt.request, true, overall.text);
+                        overall.text = "";
+                    }
+                }
+                TextButton {
+                    enabled: root.armed;
+                    text: "Approve, ask before edits";
+                    clicked => {
+                        Prompt.approve-plan(Prompt.request, false, overall.text);
+                        overall.text = "";
+                    }
+                }
+                TextButton {
+                    enabled: root.armed;
+                    text: "Keep planning";
+                    clicked => {
+                        Prompt.deny(Prompt.request, overall.text);
+                        overall.text = "";
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                TextButton {
+                    text: Prompt.reviewing ? "Show the conversation" : "Review the plan";
+                    clicked => { Prompt.reviewing = !Prompt.reviewing; }
+                }
+            }
+        }
+    }
+}
+
+// Slash commands matching the draft; Tab takes the first.
+component CommandList inherits Rectangle {
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: Theme.space-xs;
+        for command[i] in Composer.commands: Pressable {
+            clicked => { Composer.pick-command(i); }
+            HorizontalLayout {
+                padding: Theme.space-s;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: Theme.space-m;
+                Text {
+                    text: "/" + command.name + (command.hint == "" ? "" : " " + command.hint);
+                    color: Theme.text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    vertical-alignment: center;
+                }
+                Small {
+                    text: command.description;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                }
+            }
+        }
+    }
+}
+
+// How full the context is: a short bar that warms as it fills, and the count.
+component ContextMeter inherits HorizontalLayout {
+    spacing: Theme.space-xs;
+    Meter {
+        width: 28px;
+        y: (parent.height - self.height) / 2;
+        fraction: Session.context-fraction;
+    }
+    Caption {
+        text: Session.context;
+        vertical-alignment: center;
+    }
+}
+
+// Send, or stop while Claude works and nothing new is written (a message written meanwhile is
+// sent and waits its turn).
+component SendButton inherits Rectangle {
+    property <bool> stop: Session.busy && Composer.draft == "";
+    property <bool> ready: self.stop || Composer.draft != "";
+    callback sent;
+    accessible-role: button;
+    accessible-label: root.stop ? "Stop" : "Send";
+    width: Theme.button;
+    height: Theme.button;
+    border-radius: Theme.radius-m;
+    background: root.stop ? (touch.has-hover ? Theme.danger.with-alpha(0.24) : Theme.danger-fill)
+        : !root.ready ? Theme.subtle
+        : touch.pressed ? Theme.accent.darker(0.2)
+        : touch.has-hover ? Theme.accent.brighter(0.1) : Theme.accent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    Icon {
+        source: root.stop ? @image-url("@lucide/square.svg") : @image-url("@lucide/arrow-up.svg");
+        tint: root.stop ? Theme.danger-text : root.ready ? Theme.on-accent : Theme.text-faint;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    touch := TouchArea {
+        enabled: root.ready;
+        mouse-cursor: pointer;
+        clicked => {
+            if root.stop {
+                Session.interrupt();
+            } else {
+                Composer.send(Composer.draft);
+                root.sent();
+            }
+        }
+        if self.has-hover: Tooltip {
+            text: @markdown("\{root.stop ? "Stop (Esc)" : "Send (Enter)"}");
+        }
+    }
+}
+
+// The bottom of the conversation, edge to edge, is the text box: a line sets it apart from
+// the conversation and takes the accent while writing, and a click anywhere in it writes. It
+// grows with the draft, then scrolls (measured by an invisible copy that wraps like it, as in
+// b33p). Under the text: the mode and model, what Claude is doing, the context, send.
+component EditArea inherits Rectangle {
+    in property <length> tallest: 320px;
+    property <length> line: one-line.preferred-height;
+    // The permission modes in `PermissionMode`'s order (src/app.rs): ask, edits, plan, auto,
+    // bypass. Each its own colour, by how much is let through.
+    property <PermissionKind> mode: Session.mode;
+    // Focuses the input with the caret at the end.
+    public function focus-end() {
+        input.focus();
+        input.set-selection-offsets(2147483647, 2147483647);
+    }
+    background: Theme.card;
+    TouchArea {
+        mouse-cursor: text;
+        clicked => { root.focus-end(); }
+    }
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: input.has-focus ? 2px : 1px;
+        background: input.has-focus ? Theme.accent : Theme.divider;
+        animate background { duration: Motion.fast; easing: ease-out; }
+    }
+    one-line := Text {
+        visible: false;
+        text: " ";
+    }
+    measure := Text {
+        visible: false;
+        width: input.width;
+        text: Composer.draft + " ";
+        wrap: word-wrap;
+    }
+    VerticalLayout {
+        padding-left: Theme.space-xl;
+        padding-right: Theme.space-l;
+        padding-top: Theme.space-m;
+        padding-bottom: Theme.space-s;
+        spacing: Theme.space-s;
+        scroll := Flickable {
+            height: clamp(measure.preferred-height, 2 * root.line, root.tallest);
+            interactive: false;
+            content-height: input.height;
+            // Shorter text leaves no gap below it.
+            changed content-height => {
+                self.content-y = max(self.content-y, self.height - self.content-height);
+            }
+            if Composer.draft == "": Text {
+                x: 0;
+                y: 0;
+                width: scroll.width;
+                text: Session.busy ? "Write the next message; it waits until Claude is done" : "Message Claude  ·  / for commands  ·  Shift+Enter for a new line";
+                overflow: elide;
+                color: Theme.text-faint;
+            }
+            input := TextInput {
+                width: scroll.width;
+                height: max(scroll.height, measure.preferred-height);
+                text <=> Composer.draft;
+                single-line: false;
+                wrap: word-wrap;
+                color: Theme.text;
+                selection-background-color: Theme.selection;
+                selection-foreground-color: Theme.selection-text;
+                accessible-placeholder-text: "Message Claude";
+                edited => { Composer.draft-edited(self.text); }
+                // The caret stays in view; writing here drops what is selected in the
+                // transcript, so Ctrl+C copies the draft's own selection.
+                cursor-position-changed(at) => {
+                    TextSelection.clear();
+                    if at.y + scroll.content-y < 0px {
+                        scroll.content-y = -at.y;
+                    } else if at.y + root.line + scroll.content-y > scroll.height {
+                        scroll.content-y = scroll.height - at.y - root.line;
+                    }
+                }
+                // Enter sends, Shift+Enter starts a new line, Tab takes the first command.
+                key-pressed(event) => {
+                    if event.text == Key.Tab && Composer.commands.length > 0 {
+                        Composer.pick-command(0);
+                        self.set-selection-offsets(2147483647, 2147483647);
+                        return accept;
+                    }
+                    if event.text == Key.Return && !event.modifiers.shift {
+                        Composer.send(Composer.draft);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.space-xs;
+            MenuButton {
+                heading: "Permission mode";
+                model: Session.modes;
+                current-index <=> Session.mode-index;
+                max-width: 220px;
+                icon: root.mode == PermissionKind.accept-edits ? @image-url("@lucide/file-pen-line.svg")
+                    : root.mode == PermissionKind.plan ? @image-url("@lucide/map.svg")
+                    : root.mode == PermissionKind.auto ? @image-url("@lucide/zap.svg")
+                    : root.mode == PermissionKind.bypass ? @image-url("@lucide/shield-alert.svg")
+                    : root.mode == PermissionKind.unknown ? @image-url("@lucide/shield-question-mark.svg")
+                    : @image-url("@lucide/shield-check.svg");
+                tint: root.mode == PermissionKind.accept-edits ? Theme.warning-text
+                    : root.mode == PermissionKind.plan ? Theme.link
+                    : root.mode == PermissionKind.auto ? Theme.info
+                    : root.mode == PermissionKind.bypass ? Theme.danger-text
+                    : Theme.text-secondary;
+                selected(index) => { Session.choose-mode(index); }
+            }
+            MenuButton {
+                heading: "Model";
+                model: Session.models;
+                current-index <=> Session.model-index;
+                max-width: 240px;
+                icon: @image-url("@lucide/sparkle.svg");
+                selected(index) => { Session.choose-model(index); }
+            }
+            if Session.busy: Rectangle {
+                width: 8px;
+                height: 8px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: Theme.claude;
+            }
+            if Session.busy: Small {
+                text: Session.status;
+                vertical-alignment: center;
+                overflow: elide;
+                min-width: 0px;
+                horizontal-stretch: 1;
+            }
+            // Always here, and without a largest size: the window's largest size comes from its
+            // layout, and a row of only bounded parts would keep niri from widening the window
+            // (Super+F did nothing).
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if Session.context != "": ContextMeter { }
+            SendButton {
+                sent => { root.focus-end(); }
+            }
+        }
+    }
+}
+
+// Above the conversation: its title, the worktree it works in, and the side questions.
+component Header inherits Rectangle {
+    in property <bool> sidebar-shown;
+    callback toggle-sidebar;
+    height: Theme.header;
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-m;
+        spacing: Theme.space-s;
+        IconButton {
+            icon: root.sidebar-shown ? @image-url("@lucide/panel-left-close.svg") : @image-url("@lucide/panel-left-open.svg");
+            label: root.sidebar-shown ? "Hide the sessions (Ctrl+B)" : "Show the sessions (Ctrl+B)";
+            y: (parent.height - self.height) / 2;
+            clicked => { root.toggle-sidebar(); }
+        }
+        Text {
+            text: Session.title;
+            font-weight: 600;
+            color: Theme.text;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if Session.worktree-name != "": worktree := Pressable {
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.divider;
+            clicked => { openers.show(); }
+            HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-s;
+                spacing: Theme.space-xs;
+                Icon {
+                    source: @image-url("@lucide/git-branch.svg");
+                    tint: Theme.claude;
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: Session.worktree-name;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                if Session.worktree-branch != "" && Session.worktree-branch != Session.worktree-name: Caption {
+                    text: Session.worktree-branch;
+                    vertical-alignment: center;
+                }
+                Icon {
+                    source: @image-url("@lucide/chevron-down.svg");
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            openers := PopupWindow {
+                x: parent.width - self.width;
+                y: parent.height + Theme.space-xs;
+                width: 220px;
+                height: menu.preferred-height;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.surface;
+                    border-radius: Theme.radius-m;
+                    border-width: 1px;
+                    border-color: Theme.divider;
+                    drop-shadow-blur: 12px;
+                    drop-shadow-color: #0004;
+                    menu := VerticalLayout {
+                        padding: Theme.space-xs;
+                        Caption {
+                            text: "Open the worktree in";
+                        }
+                        for opener[index] in Session.openers: Pressable {
+                            height: Theme.control;
+                            clicked => {
+                                Session.open-worktree(index);
+                                openers.close();
+                            }
+                            Text {
+                                x: Theme.space-s;
+                                text: opener;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // What keeps Claude Code in; its menu says what that means and changes it.
+        sandbox := Pressable {
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Session.sandboxed ? Theme.divider : Theme.warning;
+            accessible-label: Session.sandbox-label;
+            clicked => { sandbox-menu.show(); }
+            HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-s;
+                spacing: Theme.space-xs;
+                Icon {
+                    source: Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
+                    tint: Session.sandboxed ? Theme.info : Theme.warning-text;
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: Session.sandbox-label;
+                    color: Theme.text-secondary;
+                    font-size: 1rem * Theme.small;
+                    vertical-alignment: center;
+                }
+            }
+            sandbox-menu := PopupWindow {
+                x: parent.width - self.width;
+                y: parent.height + Theme.space-xs;
+                width: 340px;
+                height: sandbox-body.preferred-height;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.surface;
+                    border-radius: Theme.radius-m;
+                    border-width: 1px;
+                    border-color: Theme.divider;
+                    drop-shadow-blur: 12px;
+                    drop-shadow-color: #0004;
+                    sandbox-body := VerticalLayout {
+                        padding: Theme.space-m;
+                        spacing: Theme.space-s;
+                        Text {
+                            text: Session.sandbox-label;
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        Small {
+                            text: Session.sandbox-detail;
+                            wrap: word-wrap;
+                        }
+                        TextButton {
+                            text: Session.sandbox-on ? "Turn the sandbox off" : "Sandbox Claude Code";
+                            danger: Session.sandbox-on;
+                            clicked => {
+                                Session.toggle-sandbox();
+                                sandbox-menu.close();
+                            }
+                        }
+                        if Session.sandbox-on: TextButton {
+                            text: Session.sandbox-desktop ? "Close the display to Claude" : "Let Claude use the display (UI tests)";
+                            clicked => {
+                                Session.toggle-sandbox-desktop();
+                                sandbox-menu.close();
+                            }
+                        }
+                        Caption {
+                            text: "Changing it starts Claude Code again; the conversation goes on.";
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+        // Side questions: labelled, as a bare question mark reads as help.
+        Pressable {
+            selected: Side.view == SideView.shown;
+            width: btw.preferred-width;
+            height: Theme.chip;
+            y: (parent.height - self.height) / 2;
+            accessible-label: Side.view == SideView.shown ? "Fold the side questions away" : "Side questions (/btw)";
+            clicked => { Side.toggle(); }
+            btw := HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-s;
+                spacing: Theme.space-xs;
+                Icon {
+                    source: @image-url("@lucide/message-circle-dashed.svg");
+                    tint: Side.view != SideView.hidden ? Theme.claude : Theme.text-secondary;
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: "btw";
+                    color: Side.view != SideView.hidden ? Theme.text : Theme.text-secondary;
+                    font-size: 1rem * Theme.small;
+                    vertical-alignment: center;
+                }
+                // An answer came while folded away.
+                if Side.unseen: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 4px;
+                    background: Theme.claude;
+                }
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.divider;
+    }
+}
+
+// In place of the composer while a session another process runs is shown.
+// Before Claude Code starts in a folder not trusted yet: what it would run there.
+component TrustBar inherits Rectangle {
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.warning;
+    background: Theme.card;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/shield-alert.svg");
+                tint: Theme.warning-text;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "Do you trust the files in " + Session.project + "? Claude Code runs this folder's hooks and settings as soon as it starts here, before you send anything.";
+                color: Theme.text;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            alignment: end;
+            TextButton {
+                text: "Open another folder";
+                clicked => { Sessions.browse-project(); }
+            }
+            TextButton {
+                text: "Trust this folder";
+                primary: true;
+                clicked => { Session.trust-folder(); }
+            }
+        }
+    }
+}
+
+// Bringing it here stops it in its window, so it asks first.
+component WatchBar inherits Rectangle {
+    property <bool> confirming;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: root.confirming ? Theme.warning : Theme.divider;
+    background: Theme.card;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/eye.svg");
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: root.confirming
+                    ? "Stop it in its window and continue it here? If it is working, its current step is interrupted."
+                    : Session.watch-text;
+                color: root.confirming ? Theme.text : Theme.text-secondary;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        if !root.confirming: HorizontalLayout {
+            spacing: Theme.space-s;
+            alignment: end;
+            if Session.can-go-to-window: TextButton {
+                text: "Go to its window";
+                has-icon: true;
+                icon: @image-url("@lucide/app-window.svg");
+                clicked => { Session.go-to-window(); }
+            }
+            TextButton {
+                text: "Continue here as a copy";
+                has-icon: true;
+                icon: @image-url("@lucide/copy.svg");
+                clicked => { Session.continue-here(); }
+            }
+            TextButton {
+                text: "Bring it here";
+                primary: true;
+                has-icon: true;
+                icon: @image-url("@lucide/arrow-down-to-line.svg");
+                clicked => { root.confirming = true; }
+            }
+        }
+        if root.confirming: HorizontalLayout {
+            spacing: Theme.space-s;
+            alignment: end;
+            TextButton {
+                text: "Cancel";
+                clicked => { root.confirming = false; }
+            }
+            TextButton {
+                text: "Stop it there, continue here";
+                primary: true;
+                clicked => {
+                    root.confirming = false;
+                    Session.bring-here();
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: Session.title + " — " + Session.project + " — edualc";
+    icon: @image-url("@lucide/sparkles.svg");
+    preferred-width: 1280px;
+    preferred-height: 880px;
+    min-width: 760px;
+    min-height: 480px;
+    background: Theme.surface;
+    default-font-family: Theme.sans;
+    default-font-size: Theme.base-size;
+
+    // Copies through a text input, the way Slint reaches the clipboard.
+    clipboard := TextInput {
+        visible: false;
+        width: 0;
+        height: 0;
+    }
+    public function copy-text(text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+    }
+
+    property <int> focus-serial: Composer.focus-serial;
+    changed focus-serial => { composer.focus-end(); }
+
+    // Hidden for room in a narrow window (Ctrl+B).
+    in-out property <bool> sidebar-shown: true;
+
+    // Shortcuts that work wherever the focus is.
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            if TextSelection.owner != "" {
+                if event.modifiers.control && (event.text == "c" || event.text == "C") {
+                    TextSelection.copy();
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    TextSelection.clear();
+                    return accept;
+                }
+            }
+            if event.text == Key.Escape && Usage.open {
+                Usage.close();
+                return accept;
+            }
+            // While Claude waits for an answer, Esc belongs to what asks (a comment being written).
+            if event.text == Key.Escape && Session.busy && Prompt.kind == PromptKind.none {
+                Session.interrupt();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "n" || event.text == "N") {
+                Sessions.new-session();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "b" || event.text == "B") {
+                root.sidebar-shown = !root.sidebar-shown;
+                return accept;
+            }
+            // Text size: Ctrl and +/= (both, for layouts where + needs Shift), -, 0.
+            if event.modifiers.control && (event.text == "+" || event.text == "=") {
+                Session.zoom(1);
+                return accept;
+            }
+            if event.modifiers.control && event.text == "-" {
+                Session.zoom(-1);
+                return accept;
+            }
+            if event.modifiers.control && event.text == "0" {
+                Session.zoom(0);
+                return accept;
+            }
+            return reject;
+        }
+        HorizontalLayout {
+            if root.sidebar-shown: Sidebar { }
+            if root.sidebar-shown: Rectangle {
+                width: 1px;
+                background: Theme.divider;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 360px;
+                Header {
+                    sidebar-shown: root.sidebar-shown;
+                    toggle-sidebar => { root.sidebar-shown = !root.sidebar-shown; }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    transcript := ListView {
+                        // Follow new output only while the end is in view, so reading back
+                        // isn't interrupted. Opening a session starts at the end.
+                        property <bool> follow: true;
+                        function at-end() -> bool {
+                            self.content-y <= self.visible-height - self.content-height + 8px
+                        }
+                        function go-to-end() {
+                            self.follow = true;
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                            end-timer.running = true;
+                        }
+                        property <int> scroll-to-end-serial: Transcript.scroll-to-end-serial;
+                        changed scroll-to-end-serial => { self.go-to-end(); }
+                        // Only the user's own scrolling decides; content growing (streamed
+                        // text, rows being measured) moves the viewport too.
+                        scrolled => {
+                            self.follow = self.at-end();
+                            settle-timer.running = true;
+                        }
+                        changed content-height => {
+                            if self.follow {
+                                self.content-y = min(0px, self.visible-height - self.content-height);
+                                end-timer.running = true;
+                            }
+                        }
+                        // E.g. the prompt bar opening below.
+                        changed visible-height => {
+                            if self.follow {
+                                self.content-y = min(0px, self.visible-height - self.content-height);
+                            }
+                        }
+                        // A folded run's later calls take no room.
+                        for entry[index] in Transcript.entries: HorizontalLayout {
+                            alignment: center;
+                            padding-top: entry.hidden ? 0 : index == 0 ? Theme.space-xl : Theme.space-s;
+                            padding-bottom: entry.hidden ? 0 : index == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
+                            if !entry.hidden: EntryView {
+                                width: min(transcript.visible-width - 2 * Theme.space-xl, Theme.column);
+                                entry: entry;
+                                index: index;
+                            }
+                        }
+                    }
+                    // A wheel turn animates the scroll, and `scrolled` comes at its start: look
+                    // again once it has settled.
+                    settle-timer := Timer {
+                        interval: 250ms;
+                        running: false;
+                        triggered => {
+                            self.running = false;
+                            transcript.follow = transcript.at-end();
+                        }
+                    }
+                    // The list moves rows itself after measuring them, after `changed
+                    // content-height` ran: once that settles, following means at the end.
+                    end-timer := Timer {
+                        interval: 120ms;
+                        running: false;
+                        triggered => {
+                            self.running = false;
+                            if transcript.follow {
+                                transcript.content-y = min(0px, transcript.visible-height - transcript.content-height);
+                            }
+                        }
+                    }
+                    if Transcript.entries.length == 0: VerticalLayout {
+                        alignment: center;
+                        spacing: Theme.space-m;
+                        HorizontalLayout {
+                            alignment: center;
+                            Icon {
+                                source: @image-url("@lucide/sparkles.svg");
+                                tint: Theme.claude;
+                                width: 40px;
+                            }
+                        }
+                        Text {
+                            text: "What should we work on?";
+                            font-size: 1rem * Theme.display;
+                            font-weight: 600;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                        }
+                        Small {
+                            text: "in " + Session.cwd;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    if Prompt.kind == PromptKind.plan && Prompt.reviewing: PlanReview {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                    if Usage.open: UsagePanel {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                    if !transcript.follow && !(Prompt.kind == PromptKind.plan && Prompt.reviewing): IconButton {
+                        x: parent.width - self.width - Theme.space-xl;
+                        y: parent.height - self.height - Theme.space-m;
+                        icon: @image-url("@lucide/arrow-down.svg");
+                        label: "Go to the end";
+                        background: Theme.surface-raised;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        clicked => { transcript.go-to-end(); }
+                    }
+                }
+                // What Claude asks and the commands matching the draft, in the transcript's
+                // column above the composer. Placed (`x`), so that their width, taken from the
+                // space there is, doesn't size that space in turn.
+                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust: Rectangle {
+                    height: dock.preferred-height;
+                    dock := VerticalLayout {
+                        x: (parent.width - self.width) / 2;
+                        y: 0;
+                        width: min(parent.width - 2 * Theme.space-xl, Theme.column);
+                        height: self.preferred-height;
+                        padding-bottom: Theme.space-s;
+                        spacing: Theme.space-s;
+                        if Prompt.kind != PromptKind.none: PromptBar { }
+                        if Composer.commands.length > 0: CommandList { }
+                        if Session.watching: WatchBar { }
+                        if Session.needs-trust && !Session.watching: TrustBar { }
+                    }
+                }
+                // The text box, edge to edge (see `EditArea`); a watched session is only read, and
+                // nothing is sent before the folder is trusted.
+                composer := EditArea {
+                    visible: !Session.watching && !Session.needs-trust;
+                    height: self.visible ? self.preferred-height : 0;
+                }
+            }
+            if Side.view == SideView.shown: Rectangle {
+                width: 1px;
+                background: Theme.divider;
+            }
+            if Side.view == SideView.shown: SidePanel {
+                min-width: 280px;
+                preferred-width: Theme.side-panel;
+                max-width: Theme.side-panel;
+                horizontal-stretch: 0;
+            }
+        }
+    }
+}
