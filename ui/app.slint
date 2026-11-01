@@ -588,10 +588,15 @@ component Sidebar inherits Rectangle {
 // take clicks only a moment after a request appears: a click meant for what was under the
 // pointer (another window, as this one opened) must not answer it.
 component PromptBar inherits Rectangle {
+    // The most it may take of the height; Claude's questions scroll within it.
+    in property <length> tallest;
     property <bool> armed;
     property <int> serial: Prompt.serial;
+    // The question shown: they come one at a time.
+    property <int> current;
     changed serial => {
         root.armed = false;
+        root.current = 0;
         arm-timer.running = true;
     }
     init => { arm-timer.running = true; }
@@ -610,7 +615,7 @@ component PromptBar inherits Rectangle {
     VerticalLayout {
         padding: Theme.space-m;
         spacing: Theme.space-s;
-        HorizontalLayout {
+        heading := HorizontalLayout {
             spacing: Theme.space-s;
             Icon {
                 source: Prompt.kind == PromptKind.question ? @image-url("@lucide/message-circle-question-mark.svg")
@@ -688,97 +693,153 @@ component PromptBar inherits Rectangle {
                 }
             }
         }
+        // One question at a time, as in the terminal: a tab for each, marked once answered, and
+        // Back and Next between them. The others stay, folded away, with what was written in
+        // them.
         if Prompt.kind == PromptKind.question: VerticalLayout {
-            spacing: Theme.space-m;
-            for question[q] in Prompt.questions: entry := VerticalLayout {
-                // The option whose preview shows: the last one pointed at, else the last one
-                // picked, else the first.
-                property <int> pointed: -1;
-                property <int> picked: -1;
-                property <int> shown: self.pointed >= 0 ? self.pointed : self.picked >= 0 ? self.picked : 0;
+            spacing: Theme.space-s;
+            tabs := HorizontalLayout {
                 spacing: Theme.space-xs;
-                Text {
-                    text: question.question;
-                    color: Theme.text;
-                    wrap: word-wrap;
-                }
-                if question.multi: Caption {
-                    text: "Pick any";
-                }
-                HorizontalLayout {
-                    spacing: Theme.space-m;
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: start;
-                        spacing: Theme.space-xs;
-                        for option[o] in question.options: Pressable {
-                            selected: option.selected;
-                            changed hovered => {
-                                if self.hovered {
-                                    entry.pointed = o;
-                                }
+                alignment: start;
+                if Prompt.questions.length > 1: HorizontalLayout {
+                    spacing: Theme.space-xs;
+                    for question[q] in Prompt.questions: Pressable {
+                        selected: q == root.current;
+                        accessible-label: question.header != "" ? question.header : "Question \{q + 1}";
+                        clicked => { root.current = q; }
+                        HorizontalLayout {
+                            padding-left: Theme.space-m;
+                            padding-right: Theme.space-m;
+                            padding-top: Theme.space-s;
+                            padding-bottom: Theme.space-s;
+                            spacing: Theme.space-xs;
+                            Icon {
+                                source: question.answered ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg");
+                                tint: question.answered ? Theme.accent : Theme.text-faint;
+                                width: Theme.icon-small;
+                                y: (parent.height - self.height) / 2;
                             }
-                            clicked => {
-                                entry.picked = o;
-                                Prompt.toggle-option(q, o);
-                            }
-                            HorizontalLayout {
-                                padding: Theme.space-s;
-                                spacing: Theme.space-s;
-                                Icon {
-                                    source: question.multi
-                                        ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
-                                        : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
-                                    tint: option.selected ? Theme.accent : Theme.text-tertiary;
-                                }
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    Text {
-                                        text: option.label;
-                                        color: Theme.text;
-                                        wrap: word-wrap;
-                                    }
-                                    if option.description != "": Small {
-                                        text: option.description;
-                                        wrap: word-wrap;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // As it is laid out (code, a mockup): not wrapped, and cut at the box's edge.
-                    if question.previews: Rectangle {
-                        horizontal-stretch: 1;
-                        background: Theme.code;
-                        border-radius: Theme.radius-m;
-                        clip: true;
-                        VerticalLayout {
-                            padding: Theme.space-m;
-                            alignment: start;
                             Text {
-                                min-width: 0px;
-                                text: question.options[entry.shown].preview;
-                                font-family: Theme.mono;
-                                font-size: 1rem * Theme.code-size;
-                                color: Theme.text;
-                                wrap: no-wrap;
+                                text: question.header != "" ? question.header : "Question \{q + 1}";
+                                color: q == root.current ? Theme.text : Theme.text-secondary;
+                                font-size: 1rem * Theme.small;
+                                vertical-alignment: center;
                             }
                         }
                     }
-                }
-                Field {
-                    placeholder: "Something else";
-                    edited(text) => { Prompt.set-other(q, text); }
-                }
-                Field {
-                    placeholder: "Notes for Claude, with the answer (optional)";
-                    edited(text) => { Prompt.set-notes(q, text); }
                 }
             }
-            HorizontalLayout {
+            // What doesn't fit scrolls; the tabs and the buttons stay in view.
+            body := Flickable {
+                property <length> room: root.tallest - heading.preferred-height - tabs.preferred-height - choices.preferred-height - 2 * Theme.space-m - 3 * Theme.space-s;
+                height: min(asked.preferred-height, max(6rem, self.room));
+                content-height: asked.preferred-height;
+                asked := VerticalLayout {
+                    width: body.width;
+                    for question[q] in Prompt.questions: entry := VerticalLayout {
+                        // The option whose preview shows: the last one pointed at, else the last
+                        // one picked, else the first.
+                        property <int> pointed: -1;
+                        property <int> picked: -1;
+                        property <int> shown: self.pointed >= 0 ? self.pointed : self.picked >= 0 ? self.picked : 0;
+                        visible: q == root.current;
+                        height: self.visible ? self.preferred-height : 0px;
+                        spacing: Theme.space-xs;
+                        Text {
+                            text: question.question;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        if question.multi: Caption {
+                            text: "Pick any";
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-m;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: start;
+                                spacing: Theme.space-xs;
+                                for option[o] in question.options: Pressable {
+                                    selected: option.selected;
+                                    changed hovered => {
+                                        if self.hovered {
+                                            entry.pointed = o;
+                                        }
+                                    }
+                                    clicked => {
+                                        entry.picked = o;
+                                        Prompt.toggle-option(q, o);
+                                    }
+                                    HorizontalLayout {
+                                        padding: Theme.space-s;
+                                        spacing: Theme.space-s;
+                                        Icon {
+                                            source: question.multi
+                                                ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
+                                                : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
+                                            tint: option.selected ? Theme.accent : Theme.text-tertiary;
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            Text {
+                                                text: option.label;
+                                                color: Theme.text;
+                                                wrap: word-wrap;
+                                            }
+                                            if option.description != "": Small {
+                                                text: option.description;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // As it is laid out (code, a mockup): not wrapped, and cut at the
+                            // box's edge.
+                            if question.previews: Rectangle {
+                                horizontal-stretch: 1;
+                                background: Theme.code;
+                                border-radius: Theme.radius-m;
+                                clip: true;
+                                VerticalLayout {
+                                    padding: Theme.space-m;
+                                    alignment: start;
+                                    Text {
+                                        min-width: 0px;
+                                        text: question.options[entry.shown].preview;
+                                        font-family: Theme.mono;
+                                        font-size: 1rem * Theme.code-size;
+                                        color: Theme.text;
+                                        wrap: no-wrap;
+                                    }
+                                }
+                            }
+                        }
+                        Field {
+                            placeholder: "Something else";
+                            edited(text) => { Prompt.set-other(q, text); }
+                        }
+                        Field {
+                            placeholder: "Notes for Claude, with the answer (optional)";
+                            edited(text) => { Prompt.set-notes(q, text); }
+                        }
+                    }
+                }
+            }
+            // Next until the last question, which is answered; Skip leaves them all.
+            choices := HorizontalLayout {
                 spacing: Theme.space-s;
                 alignment: start;
-                TextButton {
+                if root.current > 0: TextButton {
+                    text: "Back";
+                    clicked => { root.current -= 1; }
+                }
+                if root.current < Prompt.questions.length - 1: TextButton {
+                    text: "Next";
+                    primary: true;
+                    clicked => { root.current += 1; }
+                }
+                if root.current >= Prompt.questions.length - 1: TextButton {
                     enabled: root.armed;
                     text: "Answer";
                     primary: true;
@@ -786,7 +847,7 @@ component PromptBar inherits Rectangle {
                 }
                 TextButton {
                     enabled: root.armed;
-                    text: "Skip";
+                    text: Prompt.questions.length > 1 ? "Skip all" : "Skip";
                     clicked => { Prompt.deny(Prompt.request, ""); }
                 }
             }
@@ -1568,6 +1629,11 @@ export component AppWindow inherits Window {
     property <int> focus-serial: Composer.focus-serial;
     changed focus-serial => { composer.focus-end(); }
 
+    // The most Claude's prompt may take: half the window. Kept as the window is resized, not
+    // bound, as a binding would loop through the layout the prompt is part of.
+    property <length> prompt-tallest: 400px;
+    changed height => { self.prompt-tallest = self.height / 2; }
+
     // Hidden for room in a narrow window (Ctrl+B).
     in-out property <bool> sidebar-shown: true;
 
@@ -1802,14 +1868,18 @@ export component AppWindow inherits Window {
                 // space there is, doesn't size that space in turn.
                 if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust: Rectangle {
                     height: dock.preferred-height;
+                    // At the left, a margin in, as the transcript's column is.
                     dock := VerticalLayout {
-                        x: (parent.width - self.width) / 2;
+                        x: Theme.space-xl;
                         y: 0;
                         width: min(parent.width - 2 * Theme.space-xl, Theme.column);
                         height: self.preferred-height;
                         padding-bottom: Theme.space-s;
                         spacing: Theme.space-s;
-                        if Prompt.kind != PromptKind.none: PromptBar { }
+                        // At most half the window: the conversation stays in view.
+                        if Prompt.kind != PromptKind.none: PromptBar {
+                            tallest: root.prompt-tallest;
+                        }
                         if Composer.commands.length > 0: CommandList { }
                         if Session.watching: WatchBar { }
                         if Session.needs-trust && !Session.watching: TrustBar { }

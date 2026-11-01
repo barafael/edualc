@@ -1850,6 +1850,8 @@ impl App {
             && let Some(slot) = other.get_mut(question)
         {
             *slot = text;
+            // Writing something answers the question: its tab is marked.
+            self.redraw.prompt = true;
         }
     }
 

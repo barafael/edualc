@@ -178,6 +178,10 @@ export struct QuestionOption {
 // One of the questions Claude asks with AskUserQuestion.
 export struct Question {
     question: string,
+    // A short label for its tab (AskUserQuestion's `header`); empty if Claude gave none.
+    header: string,
+    // An option is picked, or something else written.
+    answered: bool,
     multi: bool,
     // Some option has a preview: they are shown beside the options.
     previews: bool,

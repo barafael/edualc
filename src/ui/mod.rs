@@ -769,13 +769,25 @@ impl View {
             prompt.set_serial(prompt.get_serial().wrapping_add(1));
         }
         match &ask.kind {
-            AskKind::Questions { asked, picked, .. } => {
+            AskKind::Questions {
+                asked,
+                picked,
+                other,
+                ..
+            } => {
                 prompt.set_kind(PromptKind::Question);
-                prompt.set_title("Claude has a question".into());
+                prompt.set_title(
+                    if asked.questions.len() > 1 {
+                        "Claude has questions"
+                    } else {
+                        "Claude has a question"
+                    }
+                    .into(),
+                );
                 if fresh {
-                    self.show_questions(&asked.questions, picked);
+                    self.show_questions(&asked.questions, picked, other);
                 } else {
-                    self.update_picked(picked);
+                    self.update_answers(picked, other);
                 }
             }
             AskKind::Plan { parts, editing, .. } => {
@@ -838,12 +850,18 @@ impl View {
         self.prompt = Some(ask.request.clone());
     }
 
-    fn show_questions(&mut self, questions: &[wire::Question], picked: &[Vec<bool>]) {
+    fn show_questions(
+        &mut self,
+        questions: &[wire::Question],
+        picked: &[Vec<bool>],
+        other: &[String],
+    ) {
         let mut models = Vec::new();
         let rows: Vec<Question> = questions
             .iter()
             .zip(picked)
-            .map(|(question, picks)| {
+            .zip(other)
+            .map(|((question, picks), other)| {
                 let options: Vec<QuestionOption> = question
                     .options
                     .iter()
@@ -859,6 +877,8 @@ impl View {
                 models.push(options.clone());
                 Question {
                     question: question.question.as_str().into(),
+                    header: question.header.as_str().into(),
+                    answered: answered(picks, other),
                     multi: question.multi_select,
                     previews: question
                         .options
@@ -874,7 +894,8 @@ impl View {
         self.options = models;
     }
 
-    fn update_picked(&self, picked: &[Vec<bool>]) {
+    /// The options picked anew, and which questions are answered, in the rows shown.
+    fn update_answers(&self, picked: &[Vec<bool>], other: &[String]) {
         for (model, picks) in self.options.iter().zip(picked) {
             let rows = vec_model(model);
             for (index, &selected) in picks.iter().enumerate() {
@@ -884,6 +905,16 @@ impl View {
                     option.selected = selected;
                     rows.set_row_data(index, option);
                 }
+            }
+        }
+        let questions = self.window.global::<Prompt>().get_questions();
+        for (index, (picks, other)) in picked.iter().zip(other).enumerate() {
+            let now = answered(picks, other);
+            if let Some(mut question) = questions.row_data(index)
+                && question.answered != now
+            {
+                question.answered = now;
+                questions.set_row_data(index, question);
             }
         }
     }
@@ -1423,6 +1454,11 @@ fn index_for_slint(index: usize) -> i32 {
     i32::try_from(index).unwrap_or(i32::MAX)
 }
 
+/// Whether a question of Claude's is answered: an option picked, or something else written.
+fn answered(picks: &[bool], other: &str) -> bool {
+    picks.contains(&true) || !other.trim().is_empty()
+}
+
 /// Pixels as Slint shows them; none if their bytes don't make their size (the decoder's
 /// answer is checked, so this would be a fault here).
 fn slint_image(pixels: &Pixels) -> Option<slint::Image> {
@@ -1570,6 +1606,17 @@ pub(crate) fn short_count(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A question's tab is marked answered once an option is picked or something else is
+    /// written; blanks don't count.
+    #[test]
+    fn a_question_is_answered_by_a_pick_or_by_writing() {
+        assert!(!answered(&[false, false], ""));
+        assert!(answered(&[false, true], ""));
+        assert!(answered(&[false, false], "neither, build it in CI"));
+        assert!(!answered(&[false, false], "  \n"));
+        assert!(!answered(&[], ""));
+    }
 
     #[test]
     fn a_folder_the_name_repeats_is_left_out() {
