@@ -30,7 +30,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::buses::{self, Buses};
-use crate::claude::Launch;
+use crate::claude::{Conversation, Launch};
 use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId};
@@ -721,9 +721,11 @@ impl Hub {
                     id,
                     Kept {
                         cwd: launch.cwd.clone(),
-                        session: match &launch.resume {
-                            Some(crate::claude::Resume::Continue(session)) => Some(session.clone()),
-                            Some(crate::claude::Resume::Fork(_)) | None => None,
+                        // A new session or a copy is listed once it has a transcript to
+                        // open, as its window identifies it (`Identify`).
+                        session: match &launch.conversation {
+                            Conversation::Continue(session) => Some(session.clone()),
+                            Conversation::New(_) | Conversation::Fork { .. } => None,
                         },
                         shown: Some((window, key)),
                     },
@@ -1181,7 +1183,10 @@ mod tests {
     fn launch() -> Launch {
         Launch {
             cwd: PathBuf::from("/tmp"),
-            resume: None,
+            conversation: Conversation::New(
+                SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
+                    .expect("a session id"),
+            ),
             model: None,
             sandbox: None,
         }

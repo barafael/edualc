@@ -64,6 +64,11 @@ other way around.
   leaves it running; opening it again (from the list, or with `--resume`) shows it where it is: its
   transcript, then what it asked meanwhile, asked again. An idle session ends with its window, as its
   transcript continues it anyway. One left alone and quiet for an hour ends.
+- **A name to message a session by.** Other Claude Code sessions message a session by its name,
+  which Claude Code takes from the process id, so it changes whenever the session is started again.
+  edualc names each session after its id instead, for example `edualc-proud-moth`: an adjective and
+  a noun from the `petname` word lists, the same however often the session is started. It picks a
+  new session's id itself (`--session-id`), so the name holds from the first start.
 - **Running sessions, everywhere.** Every Claude Code session running on the machine, in any
   terminal or folder, is listed with what it's doing. You get a desktop notification when one starts
   waiting for its user. Opening one follows it live without touching it. From there, **Go to its

@@ -61,7 +61,7 @@ pub(crate) enum Error {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Launch {
     pub(crate) cwd: PathBuf,
-    pub(crate) resume: Option<Resume>,
+    pub(crate) conversation: Conversation,
     /// A model or alias for `--model`; the user's default if none.
     pub(crate) model: Option<String>,
     /// Sandboxed, and with what let in, unless `None`.
@@ -77,12 +77,51 @@ pub(crate) struct SandboxWish {
     pub(crate) write: Vec<PathBuf>,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// A saved session for a process to go on with.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Resume {
     /// Continues the session itself.
     Continue(SessionId),
     /// Continues a copy under a new id, as the session runs elsewhere too.
     Fork(SessionId),
+}
+
+impl Resume {
+    /// The conversation a process runs for `resume` (none: a new one), the ids of new
+    /// sessions chosen here.
+    pub(crate) fn conversation(resume: Option<Self>) -> Conversation {
+        match resume {
+            None => Conversation::New(SessionId::new_random()),
+            Some(Self::Continue(id)) => Conversation::Continue(id),
+            Some(Self::Fork(of)) => Conversation::Fork {
+                of,
+                id: SessionId::new_random(),
+            },
+        }
+    }
+}
+
+/// The conversation a process runs, and the id it runs it under, which its `init` tells. A new
+/// session's or a copy's is chosen here (`--session-id`), so it is known from the start, and
+/// the session's name for other sessions with it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum Conversation {
+    New(SessionId),
+    Continue(SessionId),
+    /// A copy of `of`, under `id`.
+    Fork {
+        of: SessionId,
+        id: SessionId,
+    },
+}
+
+impl Conversation {
+    pub(crate) fn id(&self) -> &SessionId {
+        match self {
+            Self::New(id) | Self::Continue(id) | Self::Fork { id, .. } => id,
+        }
+    }
 }
 
 /// The window's handle on a session's process, which the daemon runs. Dropped, it ends the

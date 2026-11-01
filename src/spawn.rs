@@ -7,7 +7,8 @@ use std::process::Stdio;
 
 use tokio::process::{Child, Command};
 
-use crate::claude::{Launch, Resume};
+use crate::claude::{Conversation, Launch};
+use crate::external::wire::SessionId;
 use crate::sandbox::{self, Allowances, Enforcement, Policy};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
@@ -40,6 +41,40 @@ pub(crate) enum Error {
     Start(#[source] std::io::Error),
     #[error(transparent)]
     Sandbox(#[from] sandbox::Error),
+}
+
+/// The name other Claude Code sessions message a session's process by (`--name`): "edualc-",
+/// then an adjective and a noun picked by the session's id, so the same each time it runs. The
+/// CLI's own name comes from the process id, and changes as the session is started again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
+struct MessagingName(String);
+
+impl MessagingName {
+    fn of(id: &SessionId) -> Self {
+        let digits: String = id
+            .as_str()
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .collect();
+        let number = |at: usize| {
+            digits
+                .get(at..at + 8)
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .and_then(|number| usize::try_from(number).ok())
+                .unwrap_or(0)
+        };
+        let words = petname::Petnames::small();
+        let word = |list: &[&'static str], number: usize| {
+            list.get(number % list.len().max(1))
+                .copied()
+                .unwrap_or("session")
+        };
+        Self(format!(
+            "edualc-{}-{}",
+            word(&words.adjectives, number(0)),
+            word(&words.nouns, number(8))
+        ))
+    }
 }
 
 /// A started process, its pipes still in it, and how far it is sandboxed. Dropped, it is
@@ -77,17 +112,27 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
         "--permission-prompt-tool",
         "stdio",
     ]);
-    match &launch.resume {
-        // One argument: the CLI's `--resume` takes its value only if it doesn't look like an
-        // option. The id is a UUID, checked as it was read.
-        Some(Resume::Continue(id)) => {
+    // One argument each: the CLI takes an option's value only if it doesn't look like an
+    // option. The ids are UUIDs, checked as they were read or made.
+    match &launch.conversation {
+        Conversation::New(id) => {
+            command.arg(format!("--session-id={id}"));
+        }
+        Conversation::Continue(id) => {
             command.arg(format!("--resume={id}"));
         }
-        Some(Resume::Fork(id)) => {
-            command.args([format!("--resume={id}"), "--fork-session".to_owned()]);
+        Conversation::Fork { of, id } => {
+            command.args([
+                format!("--resume={of}"),
+                "--fork-session".to_owned(),
+                format!("--session-id={id}"),
+            ]);
         }
-        None => {}
     }
+    command.arg(format!(
+        "--name={}",
+        MessagingName::of(launch.conversation.id())
+    ));
     if let Some(model) = &launch.model {
         command.arg(format!("--model={}", model_name(model)?));
     }
@@ -190,5 +235,29 @@ mod tests {
         assert!(model_name("--dangerously-skip-permissions").is_err());
         assert!(model_name("haiku; rm -rf ~").is_err());
         assert!(model_name("").is_err());
+    }
+
+    /// A session keeps its name however often it is started: the name comes from its id alone,
+    /// "edualc-" and two lowercase words; other ids get other names, but for rare collisions.
+    #[test]
+    fn a_session_is_named_by_its_id() {
+        let id = |text: &str| SessionId::try_from(text.to_owned()).expect("a session id");
+        let session = "d1ba2743-c47a-4446-aefc-d4594dbc045d";
+        let name = MessagingName::of(&id(session));
+        assert_eq!(name, MessagingName::of(&id(session)), "started again");
+        let words: Vec<&str> = name.0.split('-').collect();
+        assert_eq!(words.len(), 3, "{name}");
+        assert_eq!(words.first(), Some(&"edualc"));
+        assert!(
+            words
+                .iter()
+                .all(|word| !word.is_empty()
+                    && word.chars().all(|letter| letter.is_ascii_lowercase())),
+            "{name}"
+        );
+        let names: std::collections::HashSet<MessagingName> = (0..200)
+            .map(|_| MessagingName::of(&SessionId::new_random()))
+            .collect();
+        assert!(names.len() > 190, "only {} names of 200", names.len());
     }
 }

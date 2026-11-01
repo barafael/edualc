@@ -926,7 +926,7 @@ impl App {
         let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
         let launch = Launch {
             cwd: self.cwd.clone(),
-            resume,
+            conversation: Resume::conversation(resume),
             model: self.status.model_choice.clone(),
             sandbox: (self.settings.sandbox && !own_sandbox).then(|| SandboxWish {
                 desktop: self.settings.sandbox_desktop,
