@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
 /// What a proxy took to listen, at most.
@@ -25,10 +26,17 @@ pub(crate) struct Buses {
 }
 
 /// The running proxies: they end with the daemon (killed with it, and stopping when their
-/// input closes, should it be killed itself).
+/// end of the sync socket closes, should it be killed itself).
 #[derive(Debug)]
 pub(crate) struct Proxies {
-    _running: Vec<Child>,
+    _running: Vec<Proxy>,
+}
+
+/// A proxy, and the daemon's end of the socket it says it is ready on and stops when closed.
+#[derive(Debug)]
+struct Proxy {
+    _child: Child,
+    _sync: tokio::net::UnixStream,
 }
 
 /// Starts the proxies in the daemon's folder; those that can't be started are left out.
@@ -84,14 +92,26 @@ pub(crate) async fn start(folder: &Path) -> (Buses, Proxies) {
     (buses, Proxies { _running: running })
 }
 
-/// One proxy, once it listens.
-async fn proxy(address: &str, socket: &Path, rules: &[String]) -> Option<Child> {
+/// One proxy, once it listens. Its `--fd` is one end of a socket pair: it writes a byte there
+/// when it listens, and stops when the daemon's end closes, however the daemon ends.
+async fn proxy(address: &str, socket: &Path, rules: &[String]) -> Option<Proxy> {
     if let Err(error) = std::fs::remove_file(socket)
         && error.kind() != std::io::ErrorKind::NotFound
     {
         tracing::warn!(%error, "an old proxy's socket stays");
         return None;
     }
+    let paired = std::os::unix::net::UnixStream::pair().and_then(|(ours, theirs)| {
+        ours.set_nonblocking(true)?;
+        Ok((tokio::net::UnixStream::from_std(ours)?, theirs))
+    });
+    let (mut sync, theirs) = match paired {
+        Ok(paired) => paired,
+        Err(error) => {
+            tracing::warn!(%error, "no socket for a D-Bus proxy: the window goes without D-Bus");
+            return None;
+        }
+    };
     let mut command = Command::new("xdg-dbus-proxy");
     command
         .arg(address)
@@ -99,9 +119,8 @@ async fn proxy(address: &str, socket: &Path, rules: &[String]) -> Option<Child> 
         .arg("--filter")
         .arg("--sloppy-names")
         .args(rules)
-        // It stops when its input closes: when the daemon ends, however it ends.
         .arg("--fd=0")
-        .stdin(Stdio::piped())
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
         .stdout(Stdio::null())
         .kill_on_drop(true);
     let child = match command.spawn() {
@@ -111,15 +130,17 @@ async fn proxy(address: &str, socket: &Path, rules: &[String]) -> Option<Child> 
             return None;
         }
     };
-    let deadline = tokio::time::Instant::now() + READY;
-    while !socket.exists() {
-        if tokio::time::Instant::now() > deadline {
+    let mut ready = [0u8; 1];
+    match tokio::time::timeout(READY, sync.read(&mut ready)).await {
+        Ok(Ok(1)) => Some(Proxy {
+            _child: child,
+            _sync: sync,
+        }),
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
             tracing::warn!(socket = %socket.display(), "a D-Bus proxy didn't listen");
-            return None;
+            None
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    Some(child)
 }
 
 /// The accessibility bus's address, as its launcher says; none without one.
