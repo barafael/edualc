@@ -232,6 +232,8 @@ pub(crate) enum Action {
     PasteImage,
     /// An image taken off the next message, by its place.
     RemoveImage(usize),
+    /// The `>_` button: the draft made a shell command, or a message again.
+    ToggleShell,
     FilterSessions(String),
     /// Opens or folds the run of tool calls whose first call is at this place.
     ToggleRun(usize),
@@ -827,6 +829,7 @@ impl App {
                     self.view.render_attached(&self.attached);
                 }
             }
+            Action::ToggleShell => self.toggle_shell(),
             Action::Quit => {
                 self.quit();
                 return ControlFlow::Break(());
@@ -1449,18 +1452,17 @@ impl App {
     }
 
     fn send(&mut self, text: &str) {
-        let text = text.trim();
+        let text = normalized(text.trim());
+        let text = text.as_ref();
         if text.is_empty() && self.attached.is_empty() {
             return;
         }
         // Nothing runs before the folder is trusted: the prompt waits in the composer.
         if self.awaiting_trust.is_some() {
-            self.view.set_draft(text);
+            self.put_draft(text);
             return;
         }
-        self.view.set_draft("");
-        self.command_matches.clear();
-        self.view.render_commands(&[]);
+        self.put_draft("");
         // In the terminal these start over; the CLI behind a pipe doesn't.
         if matches!(text, "/clear" | "/new") {
             self.new_session();
@@ -1476,7 +1478,7 @@ impl App {
         if self.watch.is_some() {
             return;
         }
-        if let Some(command) = text.strip_prefix('!') {
+        if let Some(command) = shell_command(text) {
             self.run_shell(text, command.trim());
             return;
         }
@@ -1504,9 +1506,9 @@ impl App {
         }
         // Claude Code runs one at a time and would refuse this; it waits in the composer.
         if self.chat.shell_running() {
-            self.view.set_draft(written);
+            self.put_draft(written);
             self.chat
-                .info("A `!` command still runs: wait for it, or stop it (Esc), then send this.");
+                .info("A `!` command still runs: wait for it, or stop it (Stop), then send this.");
             self.view.scroll_to_end();
             return;
         }
@@ -1569,6 +1571,8 @@ impl App {
 
     /// Lists the slash commands the draft could become.
     fn draft_edited(&mut self, draft: &str) {
+        let draft = normalized(draft);
+        self.view.set_shell_mode(shell_command(&draft).is_some());
         let matches: Vec<usize> = match draft.strip_prefix('/') {
             Some(typed) if !typed.contains(char::is_whitespace) => self
                 .status
@@ -1601,9 +1605,25 @@ impl App {
         else {
             return;
         };
-        self.command_matches.clear();
-        self.view.set_draft(&format!("/{name} "));
-        self.view.render_commands(&[]);
+        self.put_draft(&format!("/{name} "));
+        self.view.focus_composer();
+    }
+
+    /// Puts `text` in the composer, and reads it as an edit is read (the command list, the
+    /// shell mode).
+    fn put_draft(&mut self, text: &str) {
+        self.view.set_draft(text);
+        self.draft_edited(text);
+    }
+
+    /// The `>_` button: `!` put in front of the draft, or taken away.
+    fn toggle_shell(&mut self) {
+        let draft = self.view.draft();
+        let toggled = match shell_command(&normalized(&draft)) {
+            Some(command) => command.trim_start().to_owned(),
+            None => format!("! {}", draft.trim_start()),
+        };
+        self.put_draft(&toggled);
         self.view.focus_composer();
     }
 
@@ -1877,6 +1897,26 @@ impl App {
     }
 }
 
+/// A draft as its start is read: the full-width `！` and `／` that input methods type in
+/// Japanese or Chinese mode count as `!` and `/`.
+fn normalized(draft: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = draft.strip_prefix('！') {
+        format!("!{rest}").into()
+    } else if let Some(rest) = draft.strip_prefix('／') {
+        format!("/{rest}").into()
+    } else {
+        draft.into()
+    }
+}
+
+/// The command a (normalized) draft runs with `!`, if it is one: not a Markdown image
+/// (`![…](…)`), as a pasted text may start with.
+fn shell_command(draft: &str) -> Option<&str> {
+    draft
+        .strip_prefix('!')
+        .filter(|command| !command.starts_with('['))
+}
+
 /// Claude's questions with the user's answers (the labels picked, or what was typed), the notes
 /// written, and the preview of the option picked, by question.
 fn answered(
@@ -2023,6 +2063,23 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell command starts with `!`, or the `！` a Japanese or Chinese input method types; a
+    /// Markdown image doesn't run. `／` opens commands as `/` does.
+    #[test]
+    fn a_draft_is_read_by_how_it_starts() {
+        let shell = |draft: &str| shell_command(&normalized(draft)).map(str::to_owned);
+        assert_eq!(shell("!ls -a"), Some("ls -a".to_owned()));
+        assert_eq!(shell("！ls"), Some("ls".to_owned()));
+        assert_eq!(shell("![screenshot](shot.png) why is this blank?"), None);
+        assert_eq!(shell("hi! there"), None);
+        assert_eq!(normalized("／clear"), "/clear");
+        assert_eq!(normalized("今日は！"), "今日は！");
+        assert!(matches!(
+            normalized("plain"),
+            std::borrow::Cow::Borrowed("plain")
+        ));
+    }
 
     /// Notes go with any answer; a preview only with a single option picked, the way
     /// AskUserQuestion takes them; nothing is added where nothing was written or previewed.

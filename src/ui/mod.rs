@@ -194,6 +194,15 @@ impl View {
         self.window.global::<Composer>().set_draft(text.into());
     }
 
+    pub(crate) fn draft(&self) -> String {
+        self.window.global::<Composer>().get_draft().into()
+    }
+
+    /// Whether the composer shows the draft as a shell command.
+    pub(crate) fn set_shell_mode(&self, shell: bool) {
+        self.window.global::<Composer>().set_shell(shell);
+    }
+
     /// Adds `text` to the end of the draft, after what is there.
     pub(crate) fn append_draft(&self, text: &str) {
         let composer = self.window.global::<Composer>();

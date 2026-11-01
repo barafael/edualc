@@ -942,6 +942,7 @@ component EditArea inherits Rectangle {
         width: input.width;
         // With what an input method still composes, which isn't in the draft yet.
         text: Composer.draft + input.preedit-text + " ";
+        font-family: input.font-family;
         wrap: word-wrap;
     }
     // As tall as its layout: what it holds outside the layout (the draft measured, the text
@@ -991,6 +992,22 @@ component EditArea inherits Rectangle {
                 }
             }
         }
+        // What a shell command does, said while the draft is one, before Enter runs it.
+        if Composer.shell: HorizontalLayout {
+            spacing: Theme.space-xs;
+            Icon {
+                source: @image-url("@lucide/square-terminal.svg");
+                tint: Theme.info;
+                width: Theme.icon-small;
+                y: (parent.height - self.height) / 2;
+            }
+            Small {
+                text: "Shell command: Enter runs it in Claude Code's sandbox, beside the conversation. Claude sees it, and what it printed, with your next message.";
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
         scroll := Flickable {
             property <length> fixed: Composer.size == ComposerSize.chosen
                 ? max(Composer.chosen-height, 2 * root.line)
@@ -1019,9 +1036,11 @@ component EditArea inherits Rectangle {
                 single-line: false;
                 wrap: word-wrap;
                 color: Theme.text;
+                // A shell command is set as code.
+                font-family: Composer.shell ? Theme.mono : Theme.sans;
                 selection-background-color: Theme.selection;
                 selection-foreground-color: Theme.selection-text;
-                accessible-placeholder-text: "Message Claude";
+                accessible-placeholder-text: "Message Claude, or start with ! for a shell command";
                 edited => { Composer.draft-edited(self.text); }
                 // The caret stays in view; writing here drops what is selected in the
                 // transcript, so Ctrl+C copies the draft's own selection.
@@ -1111,6 +1130,13 @@ component EditArea inherits Rectangle {
                 horizontal-stretch: 1;
             }
             if Session.context != "": ContextMeter { }
+            IconButton {
+                icon: @image-url("@lucide/square-terminal.svg");
+                label: Composer.shell ? "Make it a message again" : "Run a shell command (start with !)";
+                tint: Composer.shell ? Theme.info : Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+                clicked => { Composer.toggle-shell(); }
+            }
             IconButton {
                 icon: Composer.size == ComposerSize.tall ? @image-url("@lucide/minimize-2.svg") : @image-url("@lucide/maximize-2.svg");
                 label: Composer.size == ComposerSize.tall ? "Make the message box small again" : "Make the message box taller";

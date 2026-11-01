@@ -84,7 +84,10 @@ other way around.
   undocumented `bash_command` input, so in the same sandbox as its own commands. It runs beside the
   conversation, as a card that shows its output; prompts can be sent meanwhile. The command and what it
   printed go to Claude with your next prompt, as the terminal gives them. One runs at a time, and Stop
-  (Esc) stops it. Stop interrupts, so it stops Claude's turn too if one is running.
+  (Esc) stops it. Stop interrupts, so it stops Claude's turn too if one is running. While the draft
+  starts with `!` (or the full-width `！` a Japanese or Chinese input method types), the composer
+  shows it as a command, in monospace, and says what Enter will do. The `>_` button puts the `!` in
+  front or takes it away. A draft starting with a Markdown image (`![…](…)`) stays a message.
 - **Worktrees.** When a session works in a git worktree (`claude --worktree`, the EnterWorktree
   tool), the header shows its name and branch, and the session lists mark it. **Open in** offers this
   window, Zed, VS Code, a terminal or the file manager, whichever are installed. Worktrees come from
