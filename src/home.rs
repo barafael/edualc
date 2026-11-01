@@ -2,6 +2,8 @@
 //! the sandbox writes there, nothing outside it reads as configuration: the user's own home
 //! (`~/.claude`, `~/.claude.json`) stays read-only to the sandbox, and edualc copies into the
 //! session's home, at each launch, what a session needs from it. Trust flows in, never out.
+//! Only the transcript goes back as the session ends, checked to be one, so that a terminal
+//! resumes the session where it stopped: what Claude reads again then, not what it runs.
 //!
 //! A project's sandboxed sessions share its home, so one may leave something there for the next
 //! (a memory, say), which only sandboxed sessions read. What edualc seeds it with is seeded
@@ -13,7 +15,7 @@
 //! link to `~/.bashrc`, say) can turn edualc's write into one somewhere else.
 
 use std::ffi::OsStr;
-use std::io::Write as _;
+use std::io::{BufRead, BufReader, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
@@ -33,18 +35,20 @@ use crate::sessions;
 const MEMORY_INDEX_BYTES: u64 = 1024 * 1024;
 /// The sign-in file holds a few tokens.
 const CREDENTIALS_BYTES: u64 = 64 * 1024;
+/// A transcript longer than this isn't copied; Claude Code's run to a few hundred megabytes.
+const TRANSCRIPT_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("no folder for edualc's state: neither XDG_STATE_HOME nor HOME is set")]
     NoStateFolder,
-    #[error("couldn't prepare {path}: {source}")]
+    #[error("couldn't read or write {path}: {source}")]
     Io {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    #[error("couldn't prepare {path} without following links: {source}")]
+    #[error("couldn't reach {path} without following links: {source}")]
     Os {
         path: PathBuf,
         #[source]
@@ -58,6 +62,12 @@ pub(crate) enum Error {
     },
     #[error("{0} isn't a folder of this user's alone, so no session's temporary files go there")]
     SharedTemporaryFolder(PathBuf),
+    #[error("{0} is a link, or a file with another name too, so it isn't copied")]
+    NotOwnFile(PathBuf),
+    #[error("{0} is longer than a transcript runs, so it isn't copied")]
+    TooLong(PathBuf),
+    #[error("{path} isn't this session's transcript: line {line} is none of its entries")]
+    NotTheTranscript { path: PathBuf, line: usize },
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
@@ -387,7 +397,7 @@ fn read_beneath(folder: &OwnedFd, name: &str) -> Option<String> {
 }
 
 /// A session resumed from the user's own home: its transcript and its subagents' copied in,
-/// unless the home has it already.
+/// unless the home has it already, as long as the user's copy or longer.
 fn copy_in_transcript(
     staging: &Staging,
     home_fd: &OwnedFd,
@@ -395,14 +405,6 @@ fn copy_in_transcript(
     id: &SessionId,
 ) -> Result<(), Error> {
     let name = format!("{}.jsonl", id.as_str());
-    let in_home = std::fs::read_dir(home.projects())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|project| project.path().join(&name).is_file());
-    if in_home {
-        return Ok(());
-    }
     let Some(source) = sessions::find_user_transcript(id) else {
         return Ok(());
     };
@@ -414,6 +416,9 @@ fn copy_in_transcript(
         return Ok(());
     };
     let relative = Path::new("projects").join(project);
+    if !users_goes_on(&source, home, &relative, &name)? {
+        return Ok(());
+    }
     let target_path = home.path().join(&relative);
     let target = open_beneath(home_fd, &target_path, &relative)?;
     copy_tree(&source, &staging.path().join(&name))?;
@@ -425,6 +430,291 @@ fn copy_in_transcript(
         staging.move_into(&target, &target_path, folder, folder)?;
     }
     Ok(())
+}
+
+/// Whether the user's transcript at `users` is to be copied in over the home's copy at
+/// `relative`/`name`: where the home has none, or the user's goes on from it (the session was
+/// resumed in a terminal since). A copy that is no plain file is replaced, never read.
+fn users_goes_on(users: &Path, home: &Home, relative: &Path, name: &str) -> Result<bool, Error> {
+    let own = match open_existing(home.path(), relative, name) {
+        Ok(Some(own)) => own,
+        Ok(None) | Err(Error::NotOwnFile(_)) => return Ok(true),
+        Err(Error::TooLong(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let own_path = home.path().join(relative).join(name);
+    let theirs = std::fs::File::open(users).map_err(io(users))?;
+    let length_of = |file: &std::fs::File| file.metadata().map(|metadata| metadata.len());
+    if length_of(&theirs).map_err(io(users))? <= length_of(&own).map_err(io(&own_path))? {
+        return Ok(false);
+    }
+    let related = relation(BufReader::new(theirs), BufReader::new(own)).map_err(io(users))?;
+    Ok(related == Relation::Extends)
+}
+
+/// What became of a sandboxed session's transcript as the session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyBack {
+    /// The user's own home has it now.
+    Copied,
+    /// The user's own home had it as it is.
+    Unchanged,
+    /// The session wrote none.
+    NoneWritten,
+    /// The user's copy went on without it (the session was resumed in a terminal meanwhile),
+    /// so it stays as it is.
+    KeptTheUsers,
+}
+
+/// Copies the transcript a sandboxed session wrote in `home` into the user's own home, so that
+/// a terminal resumes the session where it ended. For a session whose process has ended, so
+/// that the transcript no longer grows. Only a plain file of the session's own entries is
+/// copied, and only where the user has no copy or one it goes on from.
+pub(crate) fn copy_back_transcript(
+    home: &Home,
+    cwd: &Path,
+    id: &SessionId,
+) -> Result<CopyBack, Error> {
+    let relative = Path::new("projects").join(sessions::project_name(cwd));
+    copy_back(home, &relative, &sessions::config_dir().join(&relative), id)
+}
+
+/// Copies session `id`'s transcript from the folder `relative` in `home` into the folder
+/// `target_path` (see `copy_back_transcript`).
+fn copy_back(
+    home: &Home,
+    relative: &Path,
+    target_path: &Path,
+    id: &SessionId,
+) -> Result<CopyBack, Error> {
+    let name = format!("{}.jsonl", id.as_str());
+    let source_path = home.path().join(relative).join(&name);
+    let Some(source) = open_existing(home.path(), relative, &name)? else {
+        return Ok(CopyBack::NoneWritten);
+    };
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(target_path)
+        .map_err(io(target_path))?;
+    let target = open_folder(CWD, target_path)?;
+    let mut copy = Unplaced::make(&target, target_path, &name)?;
+    copy_entries(source, &source_path, &copy.file, &copy.path(), id)?;
+    let placed = target_path.join(&name);
+    let users = match rustix::fs::openat(
+        &target,
+        name.as_str(),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(users) => std::fs::File::from(users),
+        Err(Errno::NOENT) => {
+            copy.place(&name)?;
+            return Ok(CopyBack::Copied);
+        }
+        Err(error) => return Err(os(&placed)(error)),
+    };
+    let ours = copy.reread()?;
+    match relation(ours, BufReader::new(users)).map_err(io(&placed))? {
+        Relation::Same => Ok(CopyBack::Unchanged),
+        Relation::Extends => {
+            copy.place(&name)?;
+            Ok(CopyBack::Copied)
+        }
+        Relation::Extended | Relation::Apart => Ok(CopyBack::KeptTheUsers),
+    }
+}
+
+/// Opens the file `name` in the folder `relative` under `root`, one name at a time and
+/// following no link; none where something on the way is missing. Only a plain file with no
+/// other name, as a sandbox could otherwise hand in, by a link, a file it can't read itself.
+fn open_existing(root: &Path, relative: &Path, name: &str) -> Result<Option<std::fs::File>, Error> {
+    let full = root.join(relative).join(name);
+    let mut folder = open_folder(CWD, root)?;
+    for part in relative.components() {
+        let std::path::Component::Normal(part) = part else {
+            continue;
+        };
+        folder = match open_folder(&folder, Path::new(part)) {
+            Ok(opened) => opened,
+            Err(Error::Os {
+                source: Errno::NOENT,
+                ..
+            }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    }
+    // Not blocking: a pipe put there would otherwise hold the open until something writes.
+    let file = match rustix::fs::openat(
+        &folder,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file) => file,
+        Err(Errno::NOENT) => return Ok(None),
+        Err(Errno::LOOP) => return Err(Error::NotOwnFile(full)),
+        Err(error) => return Err(os(&full)(error)),
+    };
+    let stat = rustix::fs::fstat(&file).map_err(os(&full))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
+        return Err(Error::NotOwnFile(full));
+    }
+    if u64::try_from(stat.st_size)
+        .ok()
+        .is_none_or(|length| length > TRANSCRIPT_BYTES)
+    {
+        return Err(Error::TooLong(full));
+    }
+    Ok(Some(std::fs::File::from(file)))
+}
+
+/// Copies the ended lines of `source`, a transcript of session `id`, to `to`, each checked to
+/// be one of its entries. A last line not ended (the process stopped as it wrote it) is left
+/// out.
+fn copy_entries(
+    source: std::fs::File,
+    source_path: &Path,
+    to: &std::fs::File,
+    to_path: &Path,
+    id: &SessionId,
+) -> Result<(), Error> {
+    let mut lines = BufReader::new(std::io::Read::take(source, TRANSCRIPT_BYTES));
+    let mut out = std::io::BufWriter::new(to);
+    let mut line = Vec::new();
+    for number in 1.. {
+        line.clear();
+        lines
+            .read_until(b'\n', &mut line)
+            .map_err(io(source_path))?;
+        let Some(entry) = line.strip_suffix(b"\n") else {
+            break;
+        };
+        if !is_entry_of(entry, id) {
+            return Err(Error::NotTheTranscript {
+                path: source_path.to_owned(),
+                line: number,
+            });
+        }
+        out.write_all(&line).map_err(io(to_path))?;
+    }
+    out.flush().map_err(io(to_path))
+}
+
+/// Whether `line` is an entry of session `id`'s transcript: a JSON object whose `sessionId`,
+/// where it has one (file-history entries have none), is `id`.
+fn is_entry_of(line: &[u8], id: &SessionId) -> bool {
+    serde_json::from_slice::<Map<String, Value>>(line).is_ok_and(|entry| {
+        match entry.get("sessionId") {
+            None => true,
+            Some(Value::String(owner)) => owner == id.as_str(),
+            Some(
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::Array(_)
+                | Value::Object(_),
+            ) => false,
+        }
+    })
+}
+
+/// How one copy of a transcript stands to another, which Claude Code only ever appends to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    Same,
+    /// The first goes on where the second ends.
+    Extends,
+    /// The second goes on where the first ends.
+    Extended,
+    /// They part somewhere.
+    Apart,
+}
+
+/// How `first` stands to `second`, read through to where they part or end.
+fn relation(mut first: impl BufRead, mut second: impl BufRead) -> std::io::Result<Relation> {
+    loop {
+        let step = {
+            let mine = first.fill_buf()?;
+            let other = second.fill_buf()?;
+            match (mine.is_empty(), other.is_empty()) {
+                (true, true) => return Ok(Relation::Same),
+                (false, true) => return Ok(Relation::Extends),
+                (true, false) => return Ok(Relation::Extended),
+                (false, false) => {}
+            }
+            if mine.iter().zip(other).any(|(mine, other)| mine != other) {
+                return Ok(Relation::Apart);
+            }
+            mine.len().min(other.len())
+        };
+        first.consume(step);
+        second.consume(step);
+    }
+}
+
+/// A file being written into a folder of the user's own home, under a name of its own until it
+/// is placed; removed if it never is.
+struct Unplaced<'folder> {
+    folder: &'folder OwnedFd,
+    folder_path: &'folder Path,
+    /// While it isn't placed.
+    name: Option<String>,
+    file: std::fs::File,
+}
+
+impl<'folder> Unplaced<'folder> {
+    fn make(
+        folder: &'folder OwnedFd,
+        folder_path: &'folder Path,
+        for_name: &str,
+    ) -> Result<Self, Error> {
+        let name = format!(".{for_name}.edualc-{}", uuid::Uuid::new_v4());
+        let file = rustix::fs::openat(
+            folder,
+            name.as_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(os(&folder_path.join(&name)))?;
+        Ok(Self {
+            folder,
+            folder_path,
+            name: Some(name),
+            file: std::fs::File::from(file),
+        })
+    }
+
+    fn path(&self) -> PathBuf {
+        self.folder_path
+            .join(self.name.as_deref().unwrap_or_default())
+    }
+
+    /// What was written, from its start.
+    fn reread(&mut self) -> Result<BufReader<&std::fs::File>, Error> {
+        std::io::Seek::rewind(&mut self.file).map_err(io(&self.path()))?;
+        Ok(BufReader::new(&self.file))
+    }
+
+    /// Renames it to `name`, over what is there.
+    fn place(mut self, name: &str) -> Result<(), Error> {
+        if let Some(unplaced) = &self.name {
+            rustix::fs::renameat(self.folder, unplaced.as_str(), self.folder, name)
+                .map_err(os(&self.folder_path.join(name)))?;
+        }
+        self.name = None;
+        Ok(())
+    }
+}
+
+impl Drop for Unplaced<'_> {
+    fn drop(&mut self) {
+        if let Some(name) = self.name.take()
+            && let Err(error) = rustix::fs::unlinkat(self.folder, name.as_str(), AtFlags::empty())
+        {
+            tracing::warn!(%error, %name, "a copy that wasn't placed stays");
+        }
+    }
 }
 
 /// A folder beside the homes, out of the sandbox's reach, where what goes into a home is
@@ -703,5 +993,229 @@ mod tests {
         );
         remove_at(&home_fd, &home, OsStr::new("skills")).expect("a missing one is fine");
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
+    }
+
+    const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+    const SNAPSHOT: &str = "{\"type\":\"file-history-snapshot\",\"messageId\":\"m\"}\n";
+
+    /// A line of the session's transcript.
+    fn entry(text: &str) -> String {
+        format!("{{\"type\":\"user\",\"sessionId\":\"{SESSION}\",\"text\":\"{text}\"}}\n")
+    }
+
+    /// A sandboxed session's home with its transcript folder, and the folder of the user's own
+    /// home its transcript goes back to.
+    struct Copying {
+        scratch: PathBuf,
+        home: Home,
+        relative: PathBuf,
+        users: PathBuf,
+        id: SessionId,
+    }
+
+    impl Copying {
+        fn new(test: &str) -> Self {
+            let scratch =
+                std::env::temp_dir().join(format!("edualc-{test}-{}", std::process::id()));
+            let home = Home(scratch.join("home"));
+            let relative = Path::new("projects").join("-work");
+            std::fs::create_dir_all(home.path().join(&relative)).expect("a transcript folder");
+            Self {
+                users: scratch.join("users").join(&relative),
+                scratch,
+                home,
+                relative,
+                id: SessionId::try_from(SESSION.to_owned()).expect("a session id"),
+            }
+        }
+
+        fn name() -> String {
+            format!("{SESSION}.jsonl")
+        }
+
+        fn sandboxed(&self) -> PathBuf {
+            self.home.path().join(&self.relative).join(Self::name())
+        }
+
+        fn users_copy(&self) -> PathBuf {
+            self.users.join(Self::name())
+        }
+
+        fn write_users(&self, text: &str) {
+            std::fs::create_dir_all(&self.users).expect("the user's folder");
+            std::fs::write(self.users_copy(), text).expect("the user's copy");
+        }
+
+        fn copy_back(&self) -> Result<CopyBack, Error> {
+            copy_back(&self.home, &self.relative, &self.users, &self.id)
+        }
+
+        fn users_text(&self) -> String {
+            std::fs::read_to_string(self.users_copy()).expect("the user's copy")
+        }
+
+        /// What the user's folder holds: no copy is ever left there unplaced.
+        fn users_folder(&self) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(&self.users)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn done(self) {
+            std::fs::remove_dir_all(&self.scratch).expect("the scratch folder goes");
+        }
+    }
+
+    #[test]
+    fn a_transcript_goes_back_where_the_user_has_none() {
+        let copying = Copying::new("back-new");
+        let transcript = entry("a") + SNAPSHOT + &entry("b");
+        std::fs::write(copying.sandboxed(), &transcript).expect("a transcript");
+        assert_eq!(copying.copy_back().expect("copied"), CopyBack::Copied);
+        assert_eq!(copying.users_text(), transcript);
+        assert_eq!(copying.users_folder(), [Copying::name()]);
+        let mode = std::fs::metadata(copying.users_copy())
+            .expect("the copy")
+            .permissions();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+            0o600
+        );
+        copying.done();
+    }
+
+    #[test]
+    fn a_transcript_goes_back_over_the_copy_it_continues() {
+        let copying = Copying::new("back-over");
+        copying.write_users(&entry("a"));
+        std::fs::write(copying.sandboxed(), entry("a") + &entry("b")).expect("a transcript");
+        assert_eq!(copying.copy_back().expect("copied"), CopyBack::Copied);
+        assert_eq!(copying.users_text(), entry("a") + &entry("b"));
+        assert_eq!(copying.copy_back().expect("compared"), CopyBack::Unchanged);
+        assert_eq!(copying.users_folder(), [Copying::name()]);
+        copying.done();
+    }
+
+    /// Resumed in a terminal meanwhile, the user's copy went on its own way, or further: it
+    /// stays as it is.
+    #[test]
+    fn the_users_copy_that_went_on_stays() {
+        let copying = Copying::new("back-kept");
+        std::fs::write(copying.sandboxed(), entry("a") + &entry("b")).expect("a transcript");
+        for users in [
+            entry("a") + &entry("c"),
+            entry("a") + &entry("b") + &entry("c"),
+        ] {
+            copying.write_users(&users);
+            assert_eq!(
+                copying.copy_back().expect("compared"),
+                CopyBack::KeptTheUsers
+            );
+            assert_eq!(copying.users_text(), users);
+            assert_eq!(copying.users_folder(), [Copying::name()]);
+        }
+        copying.done();
+    }
+
+    /// The process stopped as it wrote its last line.
+    #[test]
+    fn an_unended_last_line_stays_behind() {
+        let copying = Copying::new("back-unended");
+        std::fs::write(copying.sandboxed(), entry("a") + "{\"type\":\"us").expect("a transcript");
+        assert_eq!(copying.copy_back().expect("copied"), CopyBack::Copied);
+        assert_eq!(copying.users_text(), entry("a"));
+        copying.done();
+    }
+
+    #[test]
+    fn what_isnt_the_sessions_transcript_isnt_copied() {
+        let other = "{\"type\":\"user\",\"sessionId\":\"99999999-2222-4333-8444-555555555555\"}\n";
+        for (test, second) in [
+            ("back-other", other),
+            ("back-text", "export PATH=/planted:$PATH\n"),
+            ("back-array", "[]\n"),
+            ("back-blank", "\n"),
+        ] {
+            let copying = Copying::new(test);
+            std::fs::write(copying.sandboxed(), entry("a") + second).expect("a transcript");
+            let refused = copying.copy_back();
+            assert!(
+                matches!(refused, Err(Error::NotTheTranscript { line: 2, .. })),
+                "{test}: {refused:?}"
+            );
+            assert!(
+                copying.users_folder().is_empty(),
+                "{test}: nothing left behind"
+            );
+            copying.done();
+        }
+    }
+
+    /// A sandbox could otherwise have a file it can't read, linked from its home, copied out to
+    /// where a later resume copies it in.
+    #[test]
+    fn a_link_or_a_second_name_isnt_copied() {
+        let copying = Copying::new("back-link");
+        let outside = copying.scratch.join("secret.jsonl");
+        std::fs::write(&outside, entry("secret")).expect("a file outside");
+        std::os::unix::fs::symlink(&outside, copying.sandboxed()).expect("a planted link");
+        assert!(matches!(copying.copy_back(), Err(Error::NotOwnFile(_))));
+        std::fs::remove_file(copying.sandboxed()).expect("the link goes");
+        std::fs::hard_link(&outside, copying.sandboxed()).expect("a second name");
+        assert!(matches!(copying.copy_back(), Err(Error::NotOwnFile(_))));
+        std::fs::remove_file(copying.sandboxed()).expect("the second name goes");
+        // A pipe would hold the copy at its opening until something wrote to it.
+        rustix::fs::mknodat(
+            CWD,
+            copying.sandboxed(),
+            FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("a planted pipe");
+        assert!(matches!(copying.copy_back(), Err(Error::NotOwnFile(_))));
+        assert!(copying.users_folder().is_empty());
+        copying.done();
+    }
+
+    #[test]
+    fn a_session_that_wrote_nothing_leaves_the_users_home_alone() {
+        let copying = Copying::new("back-none");
+        assert_eq!(copying.copy_back().expect("nothing"), CopyBack::NoneWritten);
+        assert!(!copying.users.exists(), "no folder was made for it");
+        copying.done();
+    }
+
+    /// Resuming, the user's copy is taken where it goes on from the home's (the session went on
+    /// in a terminal), and where the home's is no plain file.
+    #[test]
+    fn copying_in_takes_the_users_copy_only_where_it_goes_on() {
+        let copying = Copying::new("in-goes-on");
+        let name = Copying::name();
+        let goes_on = |users: &str| {
+            copying.write_users(users);
+            users_goes_on(
+                &copying.users_copy(),
+                &copying.home,
+                &copying.relative,
+                &name,
+            )
+            .expect("compared")
+        };
+        assert!(goes_on(&entry("a")), "the home has none");
+        std::fs::write(copying.sandboxed(), entry("a") + &entry("b")).expect("the home's copy");
+        assert!(goes_on(&(entry("a") + &entry("b") + &entry("c"))));
+        assert!(!goes_on(&(entry("a") + &entry("b"))), "the same");
+        assert!(!goes_on(&entry("a")), "shorter");
+        assert!(!goes_on(&(entry("a") + &entry("c") + &entry("d"))), "apart");
+        std::fs::remove_file(copying.sandboxed()).expect("the copy goes");
+        std::os::unix::fs::symlink(copying.users_copy(), copying.sandboxed()).expect("a link");
+        assert!(goes_on(&entry("a")), "a link is replaced");
+        copying.done();
     }
 }

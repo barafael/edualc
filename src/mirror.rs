@@ -266,9 +266,9 @@ pub(crate) struct Mirror {
 impl Mirror {
     /// Follows the record of the session `source` started as process `pid`; call from the
     /// daemon's runtime.
-    pub(crate) fn start(source: Source, pid: u32) -> Result<Self, Error> {
+    pub(crate) fn start(source: &Source, pid: u32) -> Result<Self, Error> {
         let Source { home, id, cwd } = source;
-        let expected = Expected::of(pid, id, cwd)?;
+        let expected = Expected::of(pid, id.clone(), cwd.clone())?;
         let own_path = home.path().join("sessions");
         let watch = |source: std::io::Error| Error::Watch {
             path: own_path.clone(),

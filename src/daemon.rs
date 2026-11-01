@@ -38,8 +38,8 @@ use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
     PasteFailure, StartFailure, Stream, ToDaemon,
 };
-use crate::mirror::Mirror;
-use crate::{spawn, trust};
+use crate::mirror::{self, Mirror};
+use crate::{home, spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -958,13 +958,15 @@ impl Session {
             return self;
         };
         // A sandboxed session's record, mirrored for others to message it by, until this ends.
-        let mut mirror = record.and_then(|record| match Mirror::start(record, pid) {
-            Ok(mirror) => Some(mirror),
-            Err(error) => {
-                tracing::warn!(%error, id = ?self.id, "other sessions can't message this one");
-                None
-            }
-        });
+        let mut mirror = record
+            .as_ref()
+            .and_then(|record| match Mirror::start(record, pid) {
+                Ok(mirror) => Some(mirror),
+                Err(error) => {
+                    tracing::warn!(%error, id = ?self.id, "other sessions can't message this one");
+                    None
+                }
+            });
         let mut shown = shown;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
@@ -1080,6 +1082,19 @@ impl Session {
         }
         if let Some((key, outbox)) = &shown {
             tell(outbox, FromDaemon::Ended { key: *key, code }).await;
+        }
+        drop(mirror);
+        if let Some(mirror::Source { home, id, cwd }) = record {
+            let copied =
+                tokio::task::spawn_blocking(move || home::copy_back_transcript(&home, &cwd, &id))
+                    .await;
+            match copied {
+                Ok(Ok(outcome)) => tracing::info!(?outcome, id = ?self.id, "transcript back home"),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, id = ?self.id, "the transcript stays in the session's home");
+                }
+                Err(error) => tracing::error!(%error, "copying a transcript back failed"),
+            }
         }
         self
     }
