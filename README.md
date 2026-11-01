@@ -116,6 +116,9 @@ is kept. Text is Fira Sans, code Fira Code
 10% steps, Ctrl+0 resets; the zoom is kept in `~/.config/edualc/settings.json`. Controls
 and rows grow with the text, and the sidebar and side panel give way first in narrow windows.
 
+edualc is a heron (`assets/heron.svg`): it stands at the top of the sidebar and greets a new
+session, and it is the app's icon (`assets/edualc.svg`, on Gruvbox's light background).
+
 ## Running
 
 ```sh
@@ -125,6 +128,17 @@ cargo run --release -- [--model MODEL] [--permission-mode MODE] [--resume SESSIO
 `DIR` defaults to the current directory. `CLAUDE_BIN` names another `claude`, and `RUST_LOG=edualc=debug`
 shows what the CLI writes to stderr. Slint draws the window itself (winit and femtovg), so there is no
 Qt or GTK dependency.
+
+To start it from the desktop's launcher, with its icon on the window and on its notifications:
+
+```sh
+cargo install --path .
+install -Dm644 assets/edualc.desktop ~/.local/share/applications/edualc.desktop
+install -Dm644 assets/edualc.svg ~/.local/share/icons/hicolor/scalable/apps/edualc.svg
+```
+
+The window's Wayland app id is `edualc`, which is how the desktop finds the entry and its icon.
+Without them installed, notifications come without an icon.
 
 ## Layout
 
@@ -150,6 +164,7 @@ Qt or GTK dependency.
 | `src/appearance.rs`, `src/settings.rs` | fonts, the desktop's text size, the kept zoom |
 | `src/ui/` | the Slint models kept in line with the state, and the callbacks |
 | `ui/*.slint` | the window |
+| `assets/` | the heron, the app's icon and its desktop entry |
 
 The window doesn't run Claude Code itself: the first window starts `edualc --daemon`, which runs
 the `claude` processes and does what the desktop is asked (opening editors, notifications,

@@ -167,6 +167,10 @@ pub(crate) fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
     }
 }
 
+/// What the desktop knows edualc by: the window's Wayland app id, and the name of its desktop
+/// entry (`assets/edualc.desktop`) and of its icon, which the entry's `Icon` names.
+pub(crate) const APP_ID: &str = "edualc";
+
 /// Shows a desktop notification. Its texts come from other sessions' records: they are taken
 /// as text, never as options or markup (which notification daemons render in the body).
 pub(crate) fn notify(summary: &str, body: &str) -> Result<(), Error> {
@@ -174,13 +178,16 @@ pub(crate) fn notify(summary: &str, body: &str) -> Result<(), Error> {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
+    let desktop_entry = format!("string:desktop-entry:{APP_ID}");
     run(
         Program::NotifySend,
         &[
             "--app-name",
-            "edualc",
+            APP_ID,
             "--icon",
-            "dialog-information",
+            APP_ID,
+            "--hint",
+            &desktop_entry,
             "--",
             summary,
             &body,

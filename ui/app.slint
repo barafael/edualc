@@ -213,10 +213,11 @@ component Sidebar inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.space-s;
             padding-left: Theme.space-xs;
+            // edualc's heron, at the size of the grid it is drawn on.
             Icon {
-                source: @image-url("@lucide/sparkles.svg");
+                source: @image-url("../assets/heron.svg");
                 tint: Theme.claude;
-                width: 22px;
+                width: 24px;
                 y: (parent.height - self.height) / 2;
             }
             Title {
@@ -1542,7 +1543,8 @@ component WatchBar inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: Session.title + " — " + Session.project + " — edualc";
-    icon: @image-url("@lucide/sparkles.svg");
+    // Where windows show their own icon (X11); Wayland's come from `assets/edualc.desktop`.
+    icon: @image-url("../assets/edualc.svg");
     preferred-width: 1280px;
     preferred-height: 880px;
     min-width: 760px;
@@ -1726,9 +1728,9 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             alignment: center;
                             Icon {
-                                source: @image-url("@lucide/sparkles.svg");
+                                source: @image-url("../assets/heron.svg");
                                 tint: Theme.claude;
-                                width: 40px;
+                                width: 64px;
                             }
                         }
                         Text {
