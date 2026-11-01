@@ -16,6 +16,47 @@ use crate::external::wire::{self, SessionId, TranscriptCwd, TranscriptLine, User
 use crate::home::Home;
 use crate::process;
 
+/// A session's two words, an adjective and a noun picked by its id, so the same each time it
+/// runs: edualc names a session's process by them (see `spawn`), and Claude Code keeps that name
+/// as the session's custom title too, which is a name then, not a title.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+pub(crate) struct PetName(String);
+
+impl PetName {
+    pub(crate) fn of(id: &SessionId) -> Self {
+        let words = petname::Petnames::small();
+        let word = |list: &[&'static str], number: usize| {
+            list.get(number % list.len().max(1))
+                .copied()
+                .unwrap_or("session")
+        };
+        Self(format!(
+            "{}-{}",
+            word(&words.adjectives, id_number(id, 0)),
+            word(&words.nouns, id_number(id, 8))
+        ))
+    }
+
+    /// Whether `text` holds the two words, as each name edualc gave the session has.
+    fn is_in(&self, text: &str) -> bool {
+        text.contains(self.0.as_str())
+    }
+}
+
+/// A number a session's id holds: eight of its hex digits, from the `at`th on.
+pub(crate) fn id_number(id: &SessionId, at: usize) -> usize {
+    let digits: String = id
+        .as_str()
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .collect();
+    digits
+        .get(at..at + 8)
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+        .and_then(|number| usize::try_from(number).ok())
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SessionInfo {
     pub(crate) id: SessionId,
@@ -453,6 +494,12 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
         }
     }
     let worktree = worktree.flatten().and_then(Worktree::existing);
+    // A custom title holding the session's two words is the name edualc gave its process.
+    let own_name = path
+        .file_stem()
+        .and_then(|stem| SessionId::try_from(stem.to_string_lossy().into_owned()).ok())
+        .map(|id| PetName::of(&id));
+    let custom = custom.filter(|title| !own_name.as_ref().is_some_and(|name| name.is_in(title)));
     if let Some(title) = custom.or(generated).or(summary) {
         return Some((title, worktree));
     }
@@ -588,6 +635,42 @@ mod tests {
         let (lines, offset) = read_from(&path, 0).expect("readable");
         assert_eq!(lines.len(), 1);
         assert_eq!(offset, whole.len() as u64);
+        std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
+    }
+
+    /// The name edualc gave a session's process, in each of its shapes so far, isn't taken for
+    /// its title, which Claude Code's own then is; a title the user gave it is.
+    #[test]
+    fn edualcs_name_for_a_session_is_no_title() {
+        let id = "291365c8-6d45-4dba-ba19-41a5f0eccd6b";
+        let pet = PetName::of(&SessionId::try_from(id.to_owned()).expect("an id"));
+        let dir = std::env::temp_dir().join(format!("edualc-titles-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join(format!("{id}.jsonl"));
+        let title_after = |custom: &str| {
+            let lines = [
+                json!({ "type": "ai-title", "aiTitle": "Floating NPU screen describer" }),
+                json!({ "type": "custom-title", "customTitle": custom }),
+            ];
+            let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+            std::fs::write(&path, text).expect("a transcript");
+            summary(&path).map(|(title, _)| title)
+        };
+        for name in [
+            format!("edualc-{pet}"),
+            format!("edualc-local-npu-screen-con-{pet}-81"),
+            format!("{pet}-local-npu-screen-con-81"),
+        ] {
+            assert_eq!(
+                title_after(&name).as_deref(),
+                Some("Floating NPU screen describer"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            title_after("NPU describer, native").as_deref(),
+            Some("NPU describer, native")
+        );
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
     }
 }

@@ -14,7 +14,7 @@ use crate::claude::{Conversation, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
-use crate::{mirror, process};
+use crate::{mirror, process, sessions};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
 /// child would take them as its own and think itself nested.
@@ -66,30 +66,11 @@ impl MessagingName {
     /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
     /// and two digits, all but the folder picked by the id.
     fn of(id: &SessionId, cwd: &Path) -> Self {
-        let digits: String = id
-            .as_str()
-            .chars()
-            .filter(char::is_ascii_hexdigit)
-            .collect();
-        let number = |at: usize| {
-            digits
-                .get(at..at + 8)
-                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                .and_then(|number| usize::try_from(number).ok())
-                .unwrap_or(0)
-        };
-        let words = petname::Petnames::small();
-        let word = |list: &[&'static str], number: usize| {
-            list.get(number % list.len().max(1))
-                .copied()
-                .unwrap_or("session")
-        };
         Self(format!(
-            "{}-{}-{}-{:02}",
-            word(&words.adjectives, number(0)),
-            word(&words.nouns, number(8)),
+            "{}-{}-{:02}",
+            sessions::PetName::of(id),
             project_part(cwd),
-            number(16) % 100
+            sessions::id_number(id, 16) % 100
         ))
     }
 }
