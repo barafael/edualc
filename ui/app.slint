@@ -122,6 +122,7 @@ component SandboxChip inherits Pressable {
 component Sidebar inherits Rectangle {
     // 0: this folder's sessions; 1: those running anywhere.
     property <int> tab: 0;
+    callback hide;
     min-width: 200px;
     preferred-width: Theme.sidebar;
     max-width: Theme.sidebar;
@@ -153,6 +154,12 @@ component Sidebar inherits Rectangle {
                 icon: @image-url("@lucide/square-pen.svg");
                 label: "New session (Ctrl+N)";
                 clicked => { Sessions.new-session(); }
+            }
+            // Where the header's button to show it again then appears.
+            IconButton {
+                icon: @image-url("@lucide/panel-left-close.svg");
+                label: "Hide the sessions (Ctrl+B)";
+                clicked => { root.hide(); }
             }
         }
         // The working directory; a click offers the others Claude Code was used in.
@@ -1134,12 +1141,13 @@ component Header inherits Rectangle {
     callback toggle-sidebar;
     height: Theme.header;
     HorizontalLayout {
-        padding-left: Theme.space-s;
+        padding-left: root.sidebar-shown ? Theme.space-m : Theme.space-s;
         padding-right: Theme.space-m;
         spacing: Theme.space-s;
-        IconButton {
-            icon: root.sidebar-shown ? @image-url("@lucide/panel-left-close.svg") : @image-url("@lucide/panel-left-open.svg");
-            label: root.sidebar-shown ? "Hide the sessions (Ctrl+B)" : "Show the sessions (Ctrl+B)";
+        // Hidden, the sidebar is brought back from here; shown, it has its own button.
+        if !root.sidebar-shown: IconButton {
+            icon: @image-url("@lucide/panel-left-open.svg");
+            label: "Show the sessions (Ctrl+B)";
             y: (parent.height - self.height) / 2;
             clicked => { root.toggle-sidebar(); }
         }
@@ -1449,7 +1457,9 @@ export component AppWindow inherits Window {
             return reject;
         }
         HorizontalLayout {
-            if root.sidebar-shown: Sidebar { }
+            if root.sidebar-shown: Sidebar {
+                hide => { root.sidebar-shown = false; }
+            }
             if root.sidebar-shown: Rectangle {
                 width: 1px;
                 background: Theme.divider;
