@@ -260,6 +260,8 @@ pub(crate) enum Action {
     Zoom(Zoom),
     /// The other look (Gruvbox or plain).
     SwitchLook,
+    /// The key that sends the draft, as chosen in the settings.
+    SendWith(settings::SendKey),
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
@@ -645,6 +647,7 @@ impl App {
         view.set_text_size(desktop_text_size * settings.scale());
         view.set_composer_height(settings.composer_height_px);
         view.set_look(settings.look);
+        view.set_send_key(settings.send_with);
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -907,6 +910,13 @@ impl App {
                 self.view.set_look(self.settings.look);
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the look");
+                }
+            }
+            Action::SendWith(key) => {
+                self.settings.send_with = key;
+                self.view.set_send_key(key);
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the key that sends");
                 }
             }
             Action::ComposerHeight(height_px) => {

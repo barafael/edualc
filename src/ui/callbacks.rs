@@ -7,10 +7,10 @@ use slint::ComponentHandle;
 use crate::app::{Action, Event, PermissionMode};
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, LineBreak, Prompt, Session, Sessions, Side, Transcript,
-    Usage,
+    AppWindow, Clipboard, Composer, Focus, LineBreak, Preferences, Prompt, SendKey, Session,
+    Sessions, Side, Transcript, Usage,
 };
-use crate::settings::Zoom;
+use crate::settings::{self, Zoom};
 
 /// A way to the app, for a callback to keep.
 #[derive(Clone)]
@@ -129,6 +129,15 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     usage.on_refresh(actions.on(|| Action::ShowUsage));
     session.on_open_worktree(actions.on_index(Action::OpenWorktree));
     session.on_switch_look(actions.on(|| Action::SwitchLook));
+    window.global::<Preferences>().on_choose_send_key({
+        let actions = actions.clone();
+        move |key| {
+            actions.send(Action::SendWith(match key {
+                SendKey::Enter => settings::SendKey::Enter,
+                SendKey::CtrlEnter => settings::SendKey::CtrlEnter,
+            }));
+        }
+    });
     session.on_zoom({
         let actions = actions.clone();
         move |direction| {

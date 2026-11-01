@@ -31,6 +31,19 @@ pub(crate) struct Settings {
     /// The window's colours (dark or light as the desktop asks).
     #[serde(default)]
     pub(crate) look: Look,
+    /// The key that sends what is written in the composer.
+    #[serde(default)]
+    pub(crate) send_with: SendKey,
+}
+
+/// What sends the draft: Enter (Shift+Enter or Ctrl+Enter start a new line), or Ctrl+Enter
+/// (Enter starts a new line, so a stray Enter never sends), as many chat apps let one choose.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SendKey {
+    #[default]
+    Enter,
+    CtrlEnter,
 }
 
 /// The looks to choose from: Gruvbox, or plain greys with a blue accent.
@@ -63,6 +76,7 @@ impl Default for Settings {
             sandbox_write: Vec::new(),
             composer_height_px: None,
             look: Look::default(),
+            send_with: SendKey::default(),
         }
     }
 }
@@ -197,6 +211,21 @@ mod tests {
     fn older_files_without_a_zoom_read_as_full_size() {
         let settings: Settings = serde_json::from_str("{}").expect("parses");
         assert_eq!(settings, Settings::default());
+    }
+
+    /// Enter sends unless the file says Ctrl+Enter, as it is written.
+    #[test]
+    fn the_key_that_sends_is_kept() {
+        let older: Settings = serde_json::from_str(r#"{ "look": "plain" }"#).expect("parses");
+        assert_eq!(older.send_with, SendKey::Enter);
+        let chosen = Settings {
+            send_with: SendKey::CtrlEnter,
+            ..Settings::default()
+        };
+        let written = serde_json::to_string(&chosen).expect("written");
+        assert!(written.contains(r#""send_with":"ctrl_enter""#), "{written}");
+        let read: Settings = serde_json::from_str(&written).expect("read back");
+        assert_eq!(read.send_with, SendKey::CtrlEnter);
     }
 
     /// A file that doesn't parse stays as it is; one that does is written over, as is a missing

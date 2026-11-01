@@ -200,6 +200,10 @@ export enum PromptKind { none, tool, question, plan }
 // of the conversation's column, or all of it.
 export enum ComposerSize { fit, chosen, tall, full }
 
+// What sends the draft: Enter (Shift+Enter or Ctrl+Enter start a new line), or Ctrl+Enter
+// (Enter starts a new line).
+export enum SendKey { enter, ctrl-enter }
+
 // The window's areas for the keyboard, in F6's order: the sidebar, the conversation (its header
 // and transcript), what Claude asks with the composer, and the side panel.
 export enum FocusArea { sidebar, conversation, writing, side }

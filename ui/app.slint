@@ -3,18 +3,19 @@
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
-import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SideView, TaskKind } from "types.slint";
-import { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SideView, TaskKind } from "types.slint";
+import { Clipboard, Composer, Focus, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
 import { Heron, HeronMark } from "heron.slint";
 import { PlanReview } from "plan.slint";
+import { SettingsPanel } from "settings.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
-export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, TaskItem, TaskKind, ToolState } from "types.slint";
-export { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, TaskItem, TaskKind, ToolState } from "types.slint";
+export { Clipboard, Composer, Focus, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
 // work is another window's to show, and a moving dot here would keep this one drawing.
@@ -239,6 +240,14 @@ component Sidebar inherits Rectangle {
                 icon: @image-url("@lucide/palette.svg");
                 label: Theme.look == Look.gruvbox ? "Plain colours" : "Gruvbox colours";
                 clicked => { Session.switch-look(); }
+            }
+            IconButton {
+                icon: @image-url("@lucide/settings.svg");
+                label: "Settings (Ctrl+,)";
+                clicked => {
+                    Usage.close();
+                    Preferences.open = true;
+                }
             }
             IconButton {
                 icon: @image-url("@lucide/square-pen.svg");
@@ -1145,7 +1154,7 @@ component SendButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.press(); }
         if self.has-hover: Tooltip {
-            text: @markdown("\{root.stop ? "Stop (Esc)" : "Send (Enter)"}");
+            text: @markdown("\{root.stop ? "Stop (Esc)" : Preferences.send-key == SendKey.ctrl-enter ? "Send (Ctrl+Enter)" : "Send (Enter)"}");
         }
     }
     KeyPress {
@@ -1183,6 +1192,13 @@ component EditArea inherits Rectangle {
         if Composer.size == ComposerSize.tall || Composer.size == ComposerSize.full {
             root.back();
         }
+    }
+    // Sends the draft, emptied at once (the app puts back what must wait), so an Esc right after
+    // finds it empty and stops the turn.
+    function send-draft() {
+        Composer.send(Composer.draft);
+        Composer.draft = "";
+        root.sent();
     }
     // The permission modes in `PermissionMode`'s order (src/app.rs): ask, edits, plan, auto,
     // bypass. Each its own colour, by how much is let through.
@@ -1352,7 +1368,9 @@ component EditArea inherits Rectangle {
                 x: 0;
                 y: 0;
                 width: scroll.width;
-                text: Session.turn ? "Write the next message; it waits until Claude is done" : "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
+                text: Session.turn ? "Write the next message; it waits until Claude is done"
+                    : Preferences.send-key == SendKey.ctrl-enter ? "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Ctrl+Enter to send"
+                    : "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
                 overflow: elide;
                 color: Theme.text-faint;
             }
@@ -1398,13 +1416,18 @@ component EditArea inherits Rectangle {
                     }
                 }
                 // Enter sends; Shift+Enter and Ctrl+Enter start a new line (Ctrl+Enter as in
-                // WeChat; the box ignores it, so the line break is put in here). While commands
+                // WeChat; the box ignores it, so the line break is put in here). With Ctrl+Enter
+                // chosen to send (Preferences), Enter starts a new line instead. While commands
                 // match the draft, Up and Down choose one, Enter runs it, and → (at the end) or
                 // Tab put it in the draft. Down on the last line goes to the end. Esc dismisses
                 // a command's hint. Ctrl+V asks for the clipboard's image too, and pastes its
                 // text as ever.
                 key-pressed(event) => {
                     if event.text == Key.Return && event.modifiers.control {
+                        if Preferences.send-key == SendKey.ctrl-enter {
+                            root.send-draft();
+                            return accept;
+                        }
                         let broken = Composer.break-line(Composer.draft, min(self.cursor-position-byte-offset, self.anchor-position-byte-offset), max(self.cursor-position-byte-offset, self.anchor-position-byte-offset));
                         Composer.draft = broken.text;
                         self.set-selection-offsets(broken.caret, broken.caret);
@@ -1443,10 +1466,9 @@ component EditArea inherits Rectangle {
                         root.hint-dismissed = true;
                         return accept;
                     }
-                    if event.text == Key.Return && !event.modifiers.shift {
-                        Composer.send(Composer.draft);
-                        Composer.draft = "";
-                        root.sent();
+                    // With Ctrl+Enter to send, Enter goes to the box, which starts a new line.
+                    if event.text == Key.Return && !event.modifiers.shift && Preferences.send-key == SendKey.enter {
+                        root.send-draft();
                         return accept;
                     }
                     return reject;
@@ -1929,6 +1951,15 @@ export component AppWindow inherits Window {
                 Usage.close();
                 return accept;
             }
+            if event.text == Key.Escape && Preferences.open {
+                Preferences.open = false;
+                return accept;
+            }
+            if event.modifiers.control && event.text == "," {
+                Usage.close();
+                Preferences.open = true;
+                return accept;
+            }
             // While Claude waits for an answer, Esc belongs to what asks (a comment being written).
             // With a draft written, it stops nothing: an Esc meant for the writing (one more
             // after an input method's conversion was cancelled, say) mustn't stop a turn; Stop
@@ -2197,6 +2228,37 @@ export component AppWindow inherits Window {
                             UsagePanel {
                                 width: parent.width;
                                 height: parent.height;
+                            }
+                        }
+                    }
+                    // The settings, over the conversation as the usage details are.
+                    if Preferences.open: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: Theme.dim;
+                        TouchArea {
+                            clicked => { Preferences.open = false; }
+                        }
+                        Rectangle {
+                            width: min(parent.width - 2 * Theme.space-xl, 680px);
+                            height: min(parent.height - 2 * Theme.space-xl, settings.preferred-height);
+                            x: (parent.width - self.width) / 2;
+                            y: Theme.space-xl;
+                            background: Theme.surface;
+                            border-radius: Theme.radius-l;
+                            border-width: 1px;
+                            border-color: Theme.divider;
+                            drop-shadow-blur: 24px;
+                            drop-shadow-color: Theme.shadow;
+                            clip: true;
+                            // Clicks on the panel stay with it.
+                            TouchArea { }
+                            settings := SettingsPanel {
+                                width: parent.width;
+                                height: parent.height;
+                                close => { Preferences.open = false; }
                             }
                         }
                     }

@@ -1,0 +1,106 @@
+// edualc's settings, over the conversation as the usage details are; Esc or the cross closes
+// them. Each takes effect at once and is kept in `settings.json`.
+
+import { Theme } from "theme.slint";
+import { SendKey } from "types.slint";
+import { Preferences } from "state.slint";
+import { Caption, Icon, IconButton, Pressable, Small, Title } from "widgets.slint";
+
+// One of a setting's choices: its name, what it means, and whether it is the one in use.
+component Choice inherits Pressable {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> chosen;
+    selected: root.chosen;
+    accessible-role: radio-button;
+    accessible-checked: root.chosen;
+    accessible-label: root.title;
+    HorizontalLayout {
+        padding: Theme.space-s;
+        padding-left: Theme.space-m;
+        spacing: Theme.space-s;
+        Icon {
+            source: root.chosen ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg");
+            tint: root.chosen ? Theme.accent : Theme.text-tertiary;
+            width: Theme.icon-small;
+            y: Theme.space-xs;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: Theme.text;
+            }
+            Small {
+                text: root.detail;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+export component SettingsPanel inherits Rectangle {
+    callback close;
+    background: Theme.surface;
+    VerticalLayout {
+        HorizontalLayout {
+            height: Theme.header;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/settings.svg");
+                tint: Theme.claude;
+                width: 22px;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Title {
+                    text: "Settings";
+                }
+                Caption {
+                    text: "Kept in edualc's settings.json; each takes effect at once";
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Back to the conversation (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        HorizontalLayout {
+            alignment: center;
+            padding-top: Theme.space-l;
+            padding-bottom: Theme.space-xl;
+            VerticalLayout {
+                width: min(root.width - 2 * Theme.space-xl, 640px);
+                spacing: Theme.space-xs;
+                alignment: start;
+                Text {
+                    text: "Sending";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Choice {
+                    title: "Enter sends";
+                    detail: "Shift+Enter or Ctrl+Enter start a new line.";
+                    chosen: Preferences.send-key == SendKey.enter;
+                    clicked => { Preferences.choose-send-key(SendKey.enter); }
+                }
+                Choice {
+                    title: "Ctrl+Enter sends";
+                    detail: "Enter starts a new line, so a stray Enter never sends half a message.";
+                    chosen: Preferences.send-key == SendKey.ctrl-enter;
+                    clicked => { Preferences.choose-send-key(SendKey.ctrl-enter); }
+                }
+            }
+        }
+    }
+}

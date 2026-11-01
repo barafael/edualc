@@ -121,6 +121,9 @@ other way around.
   question (never onto Allow), unless you are writing a draft: Up and Down go through the options,
   Space picks one, Enter picks one and goes on to the next question, Left and Right go between
   the questions.
+- **Settings.** The gear in the sidebar (or Ctrl+,) opens them over the conversation; each takes
+  effect at once and is kept in `settings.json`. The key that sends is one: Enter, or Ctrl+Enter
+  for those who'd rather Enter started a new line, as many chat apps let one choose.
 
 ## Look
 

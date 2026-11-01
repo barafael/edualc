@@ -23,9 +23,10 @@ use crate::external::wire::{
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
     EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock, MenuItem,
-    PermissionKind, PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption,
-    Session, SessionItem, Sessions, ShownImage, Side, SideExchange, SideState, StatRow,
-    StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
+    PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
+    QuestionOption, SendKey, Session, SessionItem, Sessions, ShownImage, Side, SideExchange,
+    SideState, StatRow, StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript,
+    Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -156,6 +157,13 @@ impl View {
     /// The base text size, in logical pixels; everything else is sized from it.
     pub(crate) fn set_text_size(&self, pixels: f32) {
         self.window.global::<Theme>().set_base_size(pixels);
+    }
+
+    pub(crate) fn set_send_key(&self, key: settings::SendKey) {
+        self.window.global::<Preferences>().set_send_key(match key {
+            settings::SendKey::Enter => SendKey::Enter,
+            settings::SendKey::CtrlEnter => SendKey::CtrlEnter,
+        });
     }
 
     pub(crate) fn set_look(&self, look: settings::Look) {
