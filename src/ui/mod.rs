@@ -211,6 +211,13 @@ impl View {
         self.window.global::<Composer>().set_shell(shell);
     }
 
+    /// What the command in the draft takes, hinted after it; empty for none.
+    pub(crate) fn set_argument_hint(&self, hint: &str) {
+        self.window
+            .global::<Composer>()
+            .set_argument_hint(hint.into());
+    }
+
     /// Adds `text` to the end of the draft, after what is there.
     pub(crate) fn append_draft(&self, text: &str) {
         let composer = self.window.global::<Composer>();

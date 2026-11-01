@@ -1265,6 +1265,15 @@ component EditArea inherits Rectangle {
         font-family: input.font-family;
         wrap: word-wrap;
     }
+    // The draft's width on one line, where a command's hint starts.
+    typed := Text {
+        visible: false;
+        text: Composer.draft;
+        font-family: input.font-family;
+    }
+    // The line the caret is on, from its top (Down on the last goes to the end).
+    property <length> caret-y;
+    property <bool> hint-dismissed;
     // As tall as its layout: what it holds outside the layout (the draft measured, the text
     // scrolled in its box) would make its implicit height that of all of a long draft.
     out property <length> fit-height: body.preferred-height;
@@ -1349,6 +1358,14 @@ component EditArea inherits Rectangle {
                 overflow: elide;
                 color: Theme.text-faint;
             }
+            // What the command in the draft takes, after it (the draft is one line then).
+            if Composer.argument-hint != "" && !root.hint-dismissed && input.preedit-text == "": Text {
+                x: typed.preferred-width;
+                y: 0;
+                text: Composer.argument-hint;
+                font-family: input.font-family;
+                color: Theme.text-faint;
+            }
             input := TextInput {
                 width: scroll.width;
                 height: max(scroll.height, measure.preferred-height);
@@ -1368,11 +1385,13 @@ component EditArea inherits Rectangle {
                 accessible-placeholder-text: "Message Claude, or start with ! for a shell command";
                 edited => {
                     Composer.command-index = 0;
+                    root.hint-dismissed = false;
                     Composer.draft-edited(self.text);
                 }
                 // The caret stays in view; writing here drops what is selected in the
                 // transcript, so Ctrl+C copies the draft's own selection.
                 cursor-position-changed(at) => {
+                    root.caret-y = at.y;
                     TextSelection.clear();
                     if at.y + scroll.content-y < 0px {
                         scroll.content-y = -at.y;
@@ -1381,9 +1400,11 @@ component EditArea inherits Rectangle {
                     }
                 }
                 // Enter sends; Shift+Enter and Ctrl+Enter start a new line (Ctrl+Enter as in
-                // WeChat; the box ignores it, so the line break is put in here). Tab takes the
-                // command chosen in the list. Ctrl+V asks for the clipboard's image too, and
-                // pastes its text as ever.
+                // WeChat; the box ignores it, so the line break is put in here). While commands
+                // match the draft, Up and Down choose one, Enter runs it, and → (at the end) or
+                // Tab put it in the draft. Down on the last line goes to the end. Esc dismisses
+                // a command's hint. Ctrl+V asks for the clipboard's image too, and pastes its
+                // text as ever.
                 key-pressed(event) => {
                     if event.text == Key.Return && event.modifiers.control {
                         let broken = Composer.break-line(Composer.draft, min(self.cursor-position-byte-offset, self.anchor-position-byte-offset), max(self.cursor-position-byte-offset, self.anchor-position-byte-offset));
@@ -1395,7 +1416,6 @@ component EditArea inherits Rectangle {
                         Composer.paste-image();
                         return reject;
                     }
-                    // While commands match, Up and Down choose among them.
                     if event.text == Key.UpArrow && Composer.commands.length > 0 {
                         Composer.command-index = max(0, Composer.command-index - 1);
                         return accept;
@@ -1404,9 +1424,25 @@ component EditArea inherits Rectangle {
                         Composer.command-index = min(Composer.commands.length - 1, Composer.command-index + 1);
                         return accept;
                     }
-                    if event.text == Key.Tab && Composer.commands.length > 0 {
+                    // A command's name is ASCII, so a draft that matches one counts its bytes as
+                    // its characters.
+                    if Composer.commands.length > 0 && (event.text == Key.Tab || (event.text == Key.RightArrow && self.cursor-position-byte-offset >= Composer.draft.character-count)) {
                         Composer.pick-command(min(Composer.command-index, Composer.commands.length - 1));
                         self.set-selection-offsets(2147483647, 2147483647);
+                        return accept;
+                    }
+                    if event.text == Key.Return && !event.modifiers.shift && Composer.commands.length > 0 {
+                        Composer.run-command(min(Composer.command-index, Composer.commands.length - 1));
+                        Composer.draft = "";
+                        root.sent();
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow && !event.modifiers.shift && root.caret-y + 1.5 * root.line > measure.preferred-height {
+                        self.set-selection-offsets(2147483647, 2147483647);
+                        return accept;
+                    }
+                    if event.text == Key.Escape && Composer.argument-hint != "" && !root.hint-dismissed {
+                        root.hint-dismissed = true;
                         return accept;
                     }
                     if event.text == Key.Return && !event.modifiers.shift {

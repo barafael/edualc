@@ -84,12 +84,18 @@ export global Session {
 export global Composer {
     in-out property <string> draft;
     in property <[CommandItem]> commands;
-    // The command the arrow keys are on; Tab takes it. Back to the first at each edit.
+    // The command the arrow keys are on; Enter runs it, → and Tab put it in the draft. Back to
+    // the first at each edit.
     in-out property <int> command-index;
+    // What the command in the draft takes (`[instructions]`), hinted after it until something
+    // follows or Esc dismisses it; empty for none.
+    in property <string> argument-hint;
     callback send(string);
     callback draft-edited(string);
     // Puts the command at `index` in the draft.
     callback pick-command(int);
+    // Sends the command at `index` as it is.
+    callback run-command(int);
     // Bumped to focus the composer (a new session, a session opened).
     in property <int> focus-serial;
     in-out property <ComposerSize> size: ComposerSize.fit;

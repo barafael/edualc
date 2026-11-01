@@ -95,6 +95,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     composer.on_send(actions.on_text(Action::Send));
     composer.on_draft_edited(actions.on_text(Action::DraftEdited));
     composer.on_pick_command(actions.on_index(Action::PickCommand));
+    composer.on_run_command(actions.on_index(Action::RunCommand));
     composer.on_height_chosen({
         let actions = actions.clone();
         // Zero (or what doesn't fit a `u16`) goes back to fitting the text.

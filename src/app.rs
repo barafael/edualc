@@ -198,7 +198,10 @@ pub(crate) enum Action {
     ChooseModel(usize),
     ChooseMode(usize),
     DraftEdited(String),
+    /// A command from the list matching the draft, put in the draft.
     PickCommand(usize),
+    /// A command from the list matching the draft, sent as it is.
+    RunCommand(usize),
     Toggle(usize),
     CopyEntry(usize),
     Copy(String),
@@ -772,6 +775,7 @@ impl App {
             Action::ChooseMode(index) => self.choose_mode(index),
             Action::DraftEdited(draft) => self.draft_edited(&draft),
             Action::PickCommand(index) => self.pick_command(index),
+            Action::RunCommand(index) => self.run_command(index),
             Action::Toggle(index) => self.chat.toggle(index),
             Action::CopyEntry(index) => {
                 if let Some(entry) = self.chat.entries.get(index) {
@@ -1690,6 +1694,8 @@ impl App {
     fn draft_edited(&mut self, draft: &str) {
         let draft = normalized(draft);
         self.view.set_shell_mode(shell_command(&draft).is_some());
+        self.view
+            .set_argument_hint(argument_hint(&draft, &self.status.commands));
         let matches: Vec<usize> = match draft.strip_prefix('/') {
             Some(typed) if !typed.contains(char::is_whitespace) => self
                 .status
@@ -1713,17 +1719,34 @@ impl App {
         self.command_matches = matches;
     }
 
-    fn pick_command(&mut self, index: usize) {
-        let Some(name) = self
-            .command_matches
+    /// The command at `index` in the list matching the draft.
+    fn matching_command(&self, index: usize) -> Option<&wire::CommandInfo> {
+        self.command_matches
             .get(index)
             .and_then(|at| self.status.commands.get(*at))
-            .map(|command| command.name.clone())
-        else {
+    }
+
+    /// Puts the command in the draft: with a space after it, for what follows, if it takes
+    /// an argument.
+    fn pick_command(&mut self, index: usize) {
+        let Some(command) = self.matching_command(index) else {
             return;
         };
-        self.put_draft(&format!("/{name} "));
+        let picked = if command.argument_hint.is_empty() {
+            format!("/{}", command.name)
+        } else {
+            format!("/{} ", command.name)
+        };
+        self.put_draft(&picked);
         self.view.focus_composer();
+    }
+
+    fn run_command(&mut self, index: usize) {
+        let Some(command) = self.matching_command(index) else {
+            return;
+        };
+        let sent = format!("/{}", command.name);
+        self.send(&sent);
     }
 
     /// Puts `text` in the composer, and reads it as an edit is read (the command list, the
@@ -2041,6 +2064,17 @@ fn shell_command(draft: &str) -> Option<&str> {
         .filter(|command| !command.starts_with('['))
 }
 
+/// What the command in a (normalized) draft takes, to hint after it: only while the draft is
+/// the command and a space, before anything follows; empty otherwise.
+fn argument_hint<'a>(draft: &str, commands: &'a [wire::CommandInfo]) -> &'a str {
+    draft
+        .strip_prefix('/')
+        .and_then(|typed| typed.strip_suffix(' '))
+        .filter(|name| !name.contains(char::is_whitespace))
+        .and_then(|name| commands.iter().find(|command| command.name == name))
+        .map_or("", |command| command.argument_hint.as_str())
+}
+
 /// What names a session until Claude Code does: the prompt's first line with text. A slash
 /// command names nothing.
 fn provisional_title(prompt: &str) -> Option<&str> {
@@ -2216,6 +2250,24 @@ mod tests {
             normalized("plain"),
             std::borrow::Cow::Borrowed("plain")
         ));
+    }
+
+    /// A command's hint shows while the draft is the command and a space, and goes once anything
+    /// follows; a command that takes nothing, or none known, hints nothing.
+    #[test]
+    fn a_command_hints_what_it_takes_until_something_follows() {
+        let commands: Vec<wire::CommandInfo> = serde_json::from_value(serde_json::json!([
+            { "name": "compact", "argumentHint": "[instructions]" },
+            { "name": "cost" },
+        ]))
+        .expect("commands");
+        assert_eq!(argument_hint("/compact ", &commands), "[instructions]");
+        assert_eq!(argument_hint("/compact", &commands), "");
+        assert_eq!(argument_hint("/compact k", &commands), "");
+        assert_eq!(argument_hint("/compact  ", &commands), "");
+        assert_eq!(argument_hint("/cost ", &commands), "");
+        assert_eq!(argument_hint("/unknown ", &commands), "");
+        assert_eq!(argument_hint("compact ", &commands), "");
     }
 
     /// A session is named by its prompt's first line with text, trimmed; a slash command, in
