@@ -76,7 +76,7 @@ pub(crate) fn send_input(link: &Link, key: Generation, line: &str) -> Result<(),
 #[derive(Debug)]
 pub(crate) struct Connected {
     channel: Channel,
-    deframer: Deframer,
+    deframer: Deframer<FromDaemon>,
     /// The D-Bus the window is to use.
     pub(crate) buses: Buses,
     /// The sessions the daemon runs as the window connected: known before the window opens
@@ -98,7 +98,15 @@ pub(crate) fn connect() -> Result<Connected, Error> {
     };
     let mut deframer = Deframer::default();
     channel.send(&ToDaemon::Hello { protocol: PROTOCOL })?;
-    let buses = match channel.recv(&mut deframer)? {
+    let greeting = match channel.recv(&mut deframer) {
+        Ok(greeting) => greeting,
+        // A daemon of another version may frame messages otherwise, and hang up on ours.
+        Err(ipc::Error::Closed | ipc::Error::Oversized | ipc::Error::Unreadable) => {
+            return Err(Error::Version);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let buses = match greeting {
         FromDaemon::Hello { protocol, buses } if protocol == PROTOCOL => buses,
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
@@ -185,7 +193,7 @@ fn wait_for_daemon(folder: &Folder) -> Result<Channel, Error> {
 }
 
 /// What the daemon says, as the app's events, until the line is lost.
-fn read(mut channel: Channel, mut deframer: Deframer, events: &Sender<Event>) {
+fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sender<Event>) {
     let mut lines: Assembler<(Generation, Stream)> = Assembler::default();
     loop {
         let message = match channel.recv(&mut deframer) {

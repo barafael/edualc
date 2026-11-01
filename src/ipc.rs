@@ -9,15 +9,17 @@
 //!   stale socket and binds anew, so two starting at once can't both bind, nor one unbind the
 //!   other's.
 //! - Each peer is checked as it connects: the same user, running this same program.
-//! - Messages are postcard (compact serde), each after its length: a length over
-//!   [`MAX_MESSAGE`] ends the connection before anything of it is read or kept, as does a
-//!   message that doesn't parse. Nothing in a message makes the reader hold more than it was.
+//! - Messages are postcard (compact serde), each COBS-framed by postcard: a frame longer than
+//!   one of [`MAX_MESSAGE`] ends the connection once the reader's fixed buffer is full, as does
+//!   a message that doesn't parse. Nothing in a message makes the reader hold more than that.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+use postcard::accumulator::{CobsAccumulator, FeedResult};
 use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
@@ -60,8 +62,9 @@ pub(crate) enum Error {
     Io(#[source] std::io::Error),
     #[error("a message bigger than {MAX_MESSAGE} bytes")]
     Oversized,
-    #[error("a message that doesn't parse: {0}")]
-    Unreadable(#[source] postcard::Error),
+    /// postcard's accumulator says no more than that.
+    #[error("a message that doesn't parse")]
+    Unreadable,
     #[error("couldn't encode a message: {0}")]
     Encode(#[source] postcard::Error),
     #[error("the other side hung up")]
@@ -260,11 +263,11 @@ impl Channel {
     /// The next message; waits for it.
     pub(crate) fn recv<T: DeserializeOwned>(
         &mut self,
-        deframer: &mut Deframer,
+        deframer: &mut Deframer<T>,
     ) -> Result<T, Error> {
         let mut bytes = [0u8; READ];
         loop {
-            if let Some(message) = deframer.next()? {
+            if let Some(message) = deframer.next() {
                 return Ok(message);
             }
             let read = self.stream.read(&mut bytes).map_err(closed_or)?;
@@ -303,11 +306,11 @@ pub(crate) async fn send(writing: &mut Writing, message: &impl Serialize) -> Res
 
 pub(crate) async fn recv<T: DeserializeOwned>(
     reading: &mut Reading,
-    deframer: &mut Deframer,
+    deframer: &mut Deframer<T>,
 ) -> Result<T, Error> {
     let mut bytes = [0u8; READ];
     loop {
-        if let Some(message) = deframer.next()? {
+        if let Some(message) = deframer.next() {
             return Ok(message);
         }
         let read = reading.read(&mut bytes).await.map_err(closed_or)?;
@@ -318,60 +321,73 @@ pub(crate) async fn recv<T: DeserializeOwned>(
 /// What is read from a connection at once.
 const READ: usize = 16 * 1024;
 
+/// The largest frame: a message COBS-encoded, at most one byte more per 254, and its `0`.
+const MAX_FRAME: usize = MAX_MESSAGE + MAX_MESSAGE / 254 + 2;
+
 /// A connection's bytes, as they come, made into messages (sans-io: the window's blocking reads
-/// and the daemon's tokio reads feed the same one). It never holds more than one message and a
-/// read: a length over [`MAX_MESSAGE`] is refused as soon as it is read.
-#[derive(Debug, Default)]
-pub(crate) struct Deframer {
-    buffer: Vec<u8>,
+/// and the daemon's tokio reads feed the same one). Frames are postcard's COBS, each ended by a
+/// `0`, taken apart by postcard's own accumulator, which never holds more than [`MAX_FRAME`]: a
+/// longer frame, or one that doesn't parse, ends the connection (the accumulator would go on
+/// with the next frame, as a lossy serial line needs; a peer here sending one is broken or
+/// hostile).
+pub(crate) struct Deframer<Message> {
+    accumulator: CobsAccumulator<MAX_FRAME>,
+    /// Whole messages a read brought, not yet taken.
+    ready: VecDeque<Message>,
 }
 
-impl Deframer {
+impl<Message> Default for Deframer<Message> {
+    fn default() -> Self {
+        Self {
+            accumulator: CobsAccumulator::new(),
+            ready: VecDeque::new(),
+        }
+    }
+}
+
+impl<Message> std::fmt::Debug for Deframer<Message> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Deframer")
+            .field("ready", &self.ready.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Message: DeserializeOwned> Deframer<Message> {
     /// Bytes read; an empty read is the other side hanging up.
     pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<(), Error> {
         if bytes.is_empty() {
             return Err(Error::Closed);
         }
-        self.buffer.extend_from_slice(bytes);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            rest = match self.accumulator.feed::<Message>(rest) {
+                FeedResult::Consumed => break,
+                FeedResult::Success { data, remaining } => {
+                    self.ready.push_back(data);
+                    remaining
+                }
+                FeedResult::OverFull(_) => return Err(Error::Oversized),
+                FeedResult::DeserError(_) => return Err(Error::Unreadable),
+            };
+        }
         Ok(())
     }
 
-    /// The next whole message, if it is all there.
-    pub(crate) fn next<T: DeserializeOwned>(&mut self) -> Result<Option<T>, Error> {
-        let Some(length) = self.buffer.first_chunk::<4>().copied() else {
-            return Ok(None);
-        };
-        let length = checked_length(length)?;
-        let Some(message) = self.buffer.get(4..4 + length) else {
-            return Ok(None);
-        };
-        let message = postcard::from_bytes(message).map_err(Error::Unreadable)?;
-        self.buffer.drain(..4 + length);
-        Ok(Some(message))
+    /// The next whole message, if one came.
+    pub(crate) fn next(&mut self) -> Option<Message> {
+        self.ready.pop_front()
     }
 }
 
-/// A message after its length.
+/// A message as a frame: postcard's COBS, ended by a `0`.
 pub(crate) fn frame(message: &impl Serialize) -> Result<Vec<u8>, Error> {
-    let bytes = postcard::to_stdvec(message).map_err(Error::Encode)?;
-    if bytes.len() > MAX_MESSAGE {
+    let frame = postcard::to_stdvec_cobs(message).map_err(Error::Encode)?;
+    if frame.len() > MAX_FRAME {
         return Err(Error::Oversized);
     }
-    let length = u32::try_from(bytes.len()).map_err(|_overflow| Error::Oversized)?;
-    let mut frame = Vec::with_capacity(bytes.len() + 4);
-    frame.extend_from_slice(&length.to_le_bytes());
-    frame.extend_from_slice(&bytes);
     Ok(frame)
-}
-
-/// A message's length as read, refused before anything is kept for it if it's too long.
-fn checked_length(length: [u8; 4]) -> Result<usize, Error> {
-    let length =
-        usize::try_from(u32::from_le_bytes(length)).map_err(|_overflow| Error::Oversized)?;
-    if length > MAX_MESSAGE {
-        return Err(Error::Oversized);
-    }
-    Ok(length)
 }
 
 fn closed_or(error: std::io::Error) -> Error {
@@ -494,9 +510,9 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Bumped with any change to the messages below: postcard isn't self-describing, so both ends
-/// must agree on every type.
-pub(crate) const PROTOCOL: u32 = 3;
+/// Bumped with any change to the messages below, or to their framing: postcard isn't
+/// self-describing, so both ends must agree on every type.
+pub(crate) const PROTOCOL: u32 = 4;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -764,6 +780,26 @@ mod tests {
         std::fs::remove_dir_all(&folder.path).expect("the scratch folder goes");
     }
 
+    /// Frames come together however reads split them; one that doesn't parse is refused.
+    #[test]
+    fn frames_are_taken_byte_by_byte_and_junk_refused() {
+        let mut deframer = Deframer::<(String, u32)>::default();
+        let mut bytes = frame(&("one", 1u32)).expect("framed");
+        bytes.extend(frame(&("two", 2u32)).expect("framed"));
+        let mut taken = Vec::new();
+        for byte in &bytes {
+            deframer.push(std::slice::from_ref(byte)).expect("fed");
+            taken.extend(deframer.next());
+        }
+        assert_eq!(taken, [("one".to_owned(), 1), ("two".to_owned(), 2)]);
+        assert!(deframer.next().is_none());
+        // A frame ended by its 0, but not a message of this kind.
+        assert!(matches!(
+            Deframer::<(String, u32)>::default().push(&[2, 0xff, 0]),
+            Err(Error::Unreadable)
+        ));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn whole_messages_go_through_and_long_ones_end_it() {
         let folder = scratch("talk");
@@ -779,19 +815,26 @@ mod tests {
             .expect("a peer of ours")
             .split();
         client.send(&("hello", 1u32)).expect("sent");
+        client.send(&("again", 2u32)).expect("sent");
         let got: (String, u32) = recv(&mut reading, &mut deframer).await.expect("taken");
         assert_eq!(got, ("hello".to_owned(), 1));
+        let got: (String, u32) = recv(&mut reading, &mut deframer).await.expect("taken");
+        assert_eq!(
+            got,
+            ("again".to_owned(), 2),
+            "two frames in one read, in order"
+        );
         // Too long for a message: refused on the way out.
         let long = "x".repeat(MAX_MESSAGE);
         assert!(matches!(client.send(&long), Err(Error::Oversized)));
-        // Said to be longer than that: refused on the way in, before anything is kept.
-        let claimed = u32::try_from(MAX_MESSAGE + 1).expect("fits");
+        // A frame that doesn't end in time: refused on the way in, holding no more than one.
         client
             .stream
-            .write_all(&claimed.to_le_bytes())
+            .write_all(&vec![1u8; MAX_FRAME + 1])
             .expect("raw");
+        let mut taking = Deframer::<String>::default();
         assert!(matches!(
-            recv::<String>(&mut reading, &mut deframer).await,
+            recv::<String>(&mut reading, &mut taking).await,
             Err(Error::Oversized)
         ));
         // Refused, the connection ends: what is left of it is read no more.

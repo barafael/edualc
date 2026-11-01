@@ -127,7 +127,8 @@ stopping sessions elsewhere), and ends a few seconds after its last window and s
 speak over a Unix socket in `$XDG_RUNTIME_DIR/edualc`: a folder of the user's alone, checked
 through its descriptor and never through a link; a lock deciding which process is the daemon,
 so no two bind and none unbinds another's; peers checked to be this user running this program;
-messages of bounded length, refused before they are read if longer. The daemon's parts are
+messages framed by postcard's COBS, read into a fixed buffer that ends the connection when a
+frame doesn't fit. The daemon's parts are
 actors in the manner of "More Actors with Tokio" (each its data, run by an event loop it is
 given its channels for, channels without cycles, shutting down as they close), with sans-io
 logic tested without sockets or processes.
