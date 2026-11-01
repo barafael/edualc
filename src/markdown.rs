@@ -8,7 +8,8 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Block {
-    /// A paragraph or a list, as Markdown source for `StyledText`.
+    /// Markdown source for `StyledText`: a run of paragraphs and lists from [`blocks`], a
+    /// paragraph or an item from [`sections`].
     Text(String),
     /// Level 1–6 and the heading's inline Markdown source.
     Heading(u8, String),
@@ -38,11 +39,59 @@ pub(crate) struct Table {
 const TABLE_ROWS: usize = 500;
 const TABLE_COLUMNS: usize = 24;
 
+/// A block as [`split`] finds it: paragraphs and lists apart from other text, for [`blocks`]
+/// to join.
+enum Part {
+    Paragraph(String),
+    List(String),
+    Shown(Block),
+}
+
+impl Part {
+    fn into_block(self) -> Block {
+        match self {
+            Self::Paragraph(source) | Self::List(source) => Block::Text(source),
+            Self::Shown(block) => block,
+        }
+    }
+}
+
+/// Slint draws a text's paragraphs with no space between them. A paragraph that opens with a
+/// hard break (`\` ending a line) opens with an empty line, which copies as a blank one too.
+const BEFORE_PARAGRAPH: &str = "\n\n\\\n";
+/// A list goes right under the text that leads into it.
+const BEFORE_LIST: &str = "\n\n";
+
+/// Each run of paragraphs and lists is one block, so that a selection can span it.
 pub(crate) fn blocks(src: &str) -> Vec<Block> {
-    split(src, false)
-        .into_iter()
-        .map(|(block, _)| block)
-        .collect()
+    let mut out = Vec::new();
+    let mut run: Option<String> = None;
+    for (part, _) in split(src, false) {
+        match part {
+            // Checked with the break it may get: a line of `=` under it would make a heading.
+            Part::Paragraph(source) if slint_parses(&format!("{BEFORE_PARAGRAPH}{source}")) => {
+                join(&mut run, BEFORE_PARAGRAPH, source);
+            }
+            Part::List(source) if slint_parses(&source) => join(&mut run, BEFORE_LIST, source),
+            // Text Slint refuses is shown plain, and on its own: in a run, all of it would be.
+            part @ (Part::Paragraph(_) | Part::List(_) | Part::Shown(_)) => {
+                out.extend(run.take().map(Block::Text));
+                out.push(part.into_block());
+            }
+        }
+    }
+    out.extend(run.map(Block::Text));
+    out
+}
+
+fn join(run: &mut Option<String>, separator: &str, source: String) {
+    match run {
+        Some(joined) => {
+            joined.push_str(separator);
+            joined.push_str(&source);
+        }
+        None => *run = Some(source),
+    }
 }
 
 /// The parts of a plan someone can comment on: [`blocks`], with every item of a list on its
@@ -53,12 +102,12 @@ pub(crate) fn sections(src: &str) -> Vec<(Block, Range<usize>)> {
     let parts = split(src, true);
     let mut out = Vec::with_capacity(parts.len());
     let mut shown_to = 0;
-    for (block, range) in parts {
+    for (part, range) in parts {
         if let Some(hidden) = hidden_between(src, shown_to..range.start) {
             out.push(hidden);
         }
         shown_to = shown_to.max(range.end);
-        out.push((block, range));
+        out.push((part.into_block(), range));
     }
     out.extend(hidden_between(src, shown_to..src.len()));
     out
@@ -82,7 +131,7 @@ fn trimmed(src: &str, range: &Range<usize>) -> Range<usize> {
     range.start..range.start + text.trim_end().len()
 }
 
-fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
+fn split(src: &str, items: bool) -> Vec<(Part, Range<usize>)> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -113,26 +162,26 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                         }
                         Tag::Table(_) => table = Some(TableParse::default()),
                         Tag::Heading { level, .. } => out.push((
-                            Block::Heading(*level as u8, heading_text(&source())),
+                            Part::Shown(Block::Heading(*level as u8, heading_text(&source()))),
                             range.clone(),
                         )),
                         Tag::BlockQuote(_) => {
-                            out.push((Block::Quote(unquote(&source())), range.clone()));
+                            out.push((Part::Shown(Block::Quote(unquote(&source()))), range.clone()))
                         }
                         Tag::List(_) if items => in_list = true,
                         // In a plan, HTML (a comment, say) is shown as it is written: as
                         // Markdown it would show nothing of what is approved.
                         Tag::HtmlBlock if items => out.push((
-                            Block::Code {
+                            Part::Shown(Block::Code {
                                 lang: "html".to_owned(),
                                 code: source(),
-                            },
+                            }),
                             range.clone(),
                         )),
-                        // Paragraphs, lists and HTML; inline tags never stand at the top.
-                        Tag::Paragraph
-                        | Tag::HtmlBlock
-                        | Tag::List(_)
+                        Tag::Paragraph => out.push((Part::Paragraph(source()), range.clone())),
+                        Tag::List(_) => out.push((Part::List(source()), range.clone())),
+                        // HTML; inline tags never stand at the top.
+                        Tag::HtmlBlock
                         | Tag::Item
                         | Tag::FootnoteDefinition(_)
                         | Tag::DefinitionList
@@ -148,10 +197,12 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                         | Tag::Subscript
                         | Tag::Link { .. }
                         | Tag::Image { .. }
-                        | Tag::MetadataBlock(_) => out.push((Block::Text(source()), range.clone())),
+                        | Tag::MetadataBlock(_) => {
+                            out.push((Part::Shown(Block::Text(source())), range.clone()));
+                        }
                     }
                 } else if depth == 1 && in_list && matches!(tag, Tag::Item) {
-                    out.push((Block::Text(source()), range.clone()));
+                    out.push((Part::Shown(Block::Text(source())), range.clone()));
                 }
                 if let Some(table) = table.as_mut() {
                     match tag {
@@ -193,13 +244,13 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                     let whole = trimmed(src, &open);
                     if let Some((lang, text)) = code.take() {
                         let code = text.strip_suffix('\n').unwrap_or(&text).to_owned();
-                        out.push((Block::Code { lang, code }, whole.clone()));
+                        out.push((Part::Shown(Block::Code { lang, code }), whole.clone()));
                     }
                     if matches!(end, TagEnd::Table)
                         && let Some(table) = table.take()
                     {
                         let source = src.get(whole.clone()).unwrap_or("").to_owned();
-                        out.push((Block::Table(table.finish(source)), whole));
+                        out.push((Part::Shown(Block::Table(table.finish(source))), whole));
                     }
                 }
             }
@@ -215,9 +266,9 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                     table.count(&text);
                 }
             }
-            Event::Rule if depth == 0 => out.push((Block::Rule, range)),
+            Event::Rule if depth == 0 => out.push((Part::Shown(Block::Rule), range)),
             Event::Html(_) | Event::InlineHtml(_) if depth == 0 => {
-                out.push((Block::Text(source()), range));
+                out.push((Part::Shown(Block::Text(source())), range));
             }
             Event::Rule
             | Event::Html(_)
@@ -345,6 +396,11 @@ pub(crate) fn styled(source: &str) -> slint::StyledText {
         .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
 }
 
+/// Whether [`styled`] shows the source as Markdown.
+fn slint_parses(source: &str) -> bool {
+    slint::StyledText::from_markdown(&sanitize(source)).is_ok()
+}
+
 /// Text shown as it is (code, tool output): tabs as spaces, as the text layout draws no tab
 /// stops.
 pub(crate) fn plain(text: &str) -> slint::StyledText {
@@ -408,6 +464,70 @@ mod tests {
             sections,
             ["## Steps", "1. First", "2. Second\n   - detail", "Done."]
         );
+    }
+
+    /// The lines Slint draws a text in, as its paragraphs; copying joins them with `\n`.
+    fn drawn_lines(source: &str) -> Vec<String> {
+        let shown = format!("{:?}", styled(source));
+        shown
+            .split("StyledTextParagraph { text: ")
+            .skip(1)
+            .filter_map(|paragraph| paragraph.split(", formatting:").next())
+            .map(|quoted| quoted.trim_matches('"').to_owned())
+            .collect()
+    }
+
+    /// One text, so a selection spans it: an empty line before each paragraph after the
+    /// first, none before a list.
+    #[test]
+    fn a_run_of_paragraphs_and_lists_is_one_text() {
+        let src =
+            "First.\n\nSecond *one*.\n\n- a\n- b\n\nAfter the list.\n\n```\ncode\n```\n\nAlone.";
+        let blocks = blocks(src);
+        let [Block::Text(run), Block::Code { .. }, Block::Text(alone)] = blocks.as_slice() else {
+            panic!("a run, code, a paragraph: not {blocks:?}")
+        };
+        assert_eq!(
+            drawn_lines(run),
+            [
+                "First.",
+                "",
+                "Second one.",
+                "• a",
+                "• b",
+                "",
+                "After the list."
+            ]
+        );
+        assert_eq!(drawn_lines(alone), ["Alone."]);
+    }
+
+    /// In a run, text Slint refuses would turn all of it into plain text, its joins included.
+    #[test]
+    fn text_slint_refuses_stands_alone() {
+        for refused in ["A stray <T> here.", "==="] {
+            let src = format!("Before *this*.\n\n{refused}\n\nAfter *that*.");
+            assert_eq!(
+                blocks(&src),
+                [
+                    Block::Text("Before *this*.".into()),
+                    Block::Text(refused.into()),
+                    Block::Text("After *that*.".into()),
+                ],
+                "{refused}"
+            );
+        }
+    }
+
+    /// A plan's parts are commented on one by one.
+    #[test]
+    fn plan_sections_stay_apart() {
+        let src = "First.\n\nSecond.";
+        let sections: Vec<&str> = sections(src)
+            .into_iter()
+            .filter_map(|(_, range)| src.get(range))
+            .collect();
+        assert_eq!(sections, ["First.", "Second."]);
     }
 
     fn only_table(src: &str) -> Table {
