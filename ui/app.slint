@@ -7,7 +7,7 @@ import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKin
 import { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
-import { Heron } from "heron.slint";
+import { Heron, HeronMark } from "heron.slint";
 import { PlanReview } from "plan.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
@@ -226,9 +226,7 @@ component Sidebar inherits Rectangle {
             spacing: Theme.space-s;
             padding-left: Theme.space-xs;
             // edualc's heron, at the size of the grid it is drawn on.
-            Icon {
-                source: @image-url("../assets/heron.svg");
-                tint: Theme.claude;
+            HeronMark {
                 width: 24px;
                 y: (parent.height - self.height) / 2;
             }

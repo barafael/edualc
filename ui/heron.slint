@@ -115,3 +115,54 @@ export component Heron inherits Rectangle {
         }
     ]
 }
+
+// What the sidebar's heron does now and then, in this order.
+enum Act { looking-back, preening, flapping }
+
+// The heron at the top of the sidebar. It stands still, and about once a minute, for a second
+// or so, it looks over its shoulder, preens or flaps its wings, in turn. In between only a timer
+// waits, so nothing is redrawn for it.
+export component HeronMark inherits Image {
+    // The act it does next, or is doing.
+    property <Act> act: Act.looking-back;
+    // The act's frame; -1 while it stands.
+    property <int> frame: -1;
+    property <int> frames: root.act == Act.looking-back ? 1 : root.act == Act.preening ? 6 : 7;
+
+    height: self.width;
+    image-fit: contain;
+    colorize: Theme.claude;
+    accessible-role: none;
+    source: root.frame < 0 ? @image-url("../assets/heron.svg")
+        : root.act == Act.looking-back ? @image-url("../assets/heron-looking-back.svg")
+        // Nibbling at its back.
+        : root.act == Act.preening ? (Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-preening-1.svg") : @image-url("../assets/heron-preening-2.svg"))
+        // Wing beats: half up, up, half up, folded.
+        : Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-flapping-half.svg")
+        : Math.mod(root.frame, 4) == 1 ? @image-url("../assets/heron-flapping-up.svg")
+        : @image-url("../assets/heron.svg");
+
+    // The wait before each act differs, so that it doesn't tick like a clock.
+    Timer {
+        interval: root.act == Act.looking-back ? 61s : root.act == Act.preening ? 83s : 47s;
+        running: root.frame < 0;
+        triggered => {
+            root.frame = 0;
+        }
+    }
+    // A look held, nibbles, wing beats.
+    Timer {
+        interval: root.act == Act.looking-back ? 1500ms : root.act == Act.preening ? 240ms : 110ms;
+        running: root.frame >= 0;
+        triggered => {
+            if root.frame + 1 < root.frames {
+                root.frame += 1;
+            } else {
+                root.frame = -1;
+                root.act = root.act == Act.looking-back ? Act.preening
+                    : root.act == Act.preening ? Act.flapping
+                    : Act.looking-back;
+            }
+        }
+    }
+}
