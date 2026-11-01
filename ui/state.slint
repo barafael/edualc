@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { CommandItem, ComposerSize, Entry, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
+import { CommandItem, ComposerSize, Entry, ImageChip, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -84,6 +84,11 @@ export global Composer {
     in-out property <length> chosen-height;
     // A height dragged to, in logical pixels, to keep; zero goes back to fitting the text.
     callback height-chosen(int);
+    // Images pasted, to go with the next message.
+    in property <[ImageChip]> images;
+    // Ctrl+V: the clipboard's image, if it holds one (text is pasted as ever).
+    callback paste-image;
+    callback remove-image(int);
 }
 
 // The sidebar: the sessions of this directory, and the directories to switch to.

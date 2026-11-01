@@ -3,6 +3,7 @@
 //! threads carry the line: one writes what the window asks, in order; the other reads what the
 //! daemon says, puts lines together again (sans-io, `ipc::Assembler`) and hands them to the app.
 
+use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{SyncSender, TrySendError};
@@ -13,9 +14,10 @@ use async_channel::Sender;
 use crate::app::Event;
 use crate::buses::Buses;
 use crate::claude::Output;
+use crate::decode;
 use crate::ipc::{
-    self, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL, Stream,
-    ToDaemon,
+    self, ActId, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL,
+    PasteFailure, Pasted, Stream, ToDaemon,
 };
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
@@ -115,7 +117,8 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
-        | FromDaemon::Hosted(_) => return Err(Error::Version),
+        | FromDaemon::Hosted(_)
+        | FromDaemon::Pasted { .. } => return Err(Error::Version),
     };
     let hosted = match channel.recv(&mut deframer)? {
         FromDaemon::Hosted(hosted) => hosted,
@@ -125,7 +128,8 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Output { .. }
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
-        | FromDaemon::Picked { .. } => return Err(Error::OutOfTurn),
+        | FromDaemon::Picked { .. }
+        | FromDaemon::Pasted { .. } => return Err(Error::OutOfTurn),
     };
     Ok(Connected {
         channel,
@@ -195,6 +199,7 @@ fn wait_for_daemon(folder: &Folder) -> Result<Channel, Error> {
 /// What the daemon says, as the app's events, until the line is lost.
 fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sender<Event>) {
     let mut lines: Assembler<(Generation, Stream)> = Assembler::default();
+    let mut pasting: BTreeMap<ActId, Joining> = BTreeMap::new();
     loop {
         let message = match channel.recv(&mut deframer) {
             Ok(message) => message,
@@ -240,6 +245,12 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
+            FromDaemon::Pasted {
+                request,
+                piece,
+                last,
+            } => joined(&mut pasting, request, &piece, last)
+                .map(|pasted| Event::Pasted { request, pasted }),
             FromDaemon::Hello { .. } => None,
         };
         if let Some(event) = event
@@ -252,4 +263,85 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
 
 fn claude(generation: Generation, output: Output) -> Event {
     Event::Claude { generation, output }
+}
+
+/// A pasted image's pieces, as they come.
+#[derive(Debug)]
+enum Joining {
+    Bytes(Vec<u8>),
+    /// More came than an image comes to: told once, the rest dropped.
+    Overflowed,
+}
+
+/// A pasted image, once its last piece came (sans-io); `None` while pieces come, and for the
+/// rest of one that overflowed.
+fn joined(
+    pasting: &mut BTreeMap<ActId, Joining>,
+    request: ActId,
+    piece: &[u8],
+    last: bool,
+) -> Option<Pasted> {
+    let joining = pasting
+        .entry(request)
+        .or_insert_with(|| Joining::Bytes(Vec::new()));
+    let told = match joining {
+        Joining::Bytes(bytes) if bytes.len() + piece.len() > decode::MAX_ANSWER_BYTES => {
+            *joining = Joining::Overflowed;
+            Some(Err(PasteFailure::Decoder(
+                "the image came in more pieces than an image comes to".to_owned(),
+            )))
+        }
+        Joining::Bytes(bytes) => {
+            bytes.extend_from_slice(piece);
+            None
+        }
+        Joining::Overflowed => None,
+    };
+    if !last {
+        return told;
+    }
+    match pasting.remove(&request) {
+        Some(Joining::Bytes(bytes)) => Some(
+            postcard::from_bytes::<Pasted>(&bytes)
+                .unwrap_or_else(|error| Err(PasteFailure::Decoder(error.to_string()))),
+        ),
+        Some(Joining::Overflowed) | None => told,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pasted image's pieces come together in order; too many are told of once and the
+    /// rest dropped; bytes that don't parse are an error, not a panic.
+    #[test]
+    fn pasted_pieces_join_once_and_no_further() {
+        let mut pasting = BTreeMap::new();
+        let request = ActId::default().next();
+        let sent: Pasted = Err(PasteFailure::NoImage);
+        let bytes = postcard::to_stdvec(&sent).expect("encodes");
+        let (first, rest) = bytes.split_at(1);
+        assert_eq!(joined(&mut pasting, request, first, false), None);
+        assert_eq!(joined(&mut pasting, request, rest, true), Some(sent));
+        assert!(pasting.is_empty());
+
+        let huge = vec![0u8; decode::MAX_ANSWER_BYTES + 1];
+        assert!(matches!(
+            joined(&mut pasting, request, &huge, false),
+            Some(Err(PasteFailure::Decoder(_)))
+        ));
+        assert_eq!(joined(&mut pasting, request, b"more", false), None);
+        assert_eq!(
+            joined(&mut pasting, request, b"end", true),
+            None,
+            "told once"
+        );
+        assert!(pasting.is_empty());
+
+        assert!(matches!(
+            joined(&mut pasting, request, &[0xff, 0xff], true),
+            Some(Err(PasteFailure::Decoder(_)))
+        ));
+    }
 }

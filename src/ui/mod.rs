@@ -4,7 +4,9 @@
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::Path;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{
+    ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+};
 use strum::IntoEnumIterator;
 
 use crate::app::{
@@ -12,15 +14,17 @@ use crate::app::{
     UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat};
+use crate::decode::Picture;
 use crate::desktop::Opener;
 use crate::external::wire::{
     self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
 };
 use crate::generated::{
     AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind, PlanSection,
-    ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem, Sessions,
-    Side, SideExchange, SideState, StatRow, StatSection, Theme, ToolState, Transcript, Usage,
+    EntryKind, GroupRole, ImageChip, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind,
+    PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem,
+    Sessions, Side, SideExchange, SideState, StatRow, StatSection, Theme, ToolState, Transcript,
+    Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
@@ -110,6 +114,32 @@ impl View {
     /// The base text size, in logical pixels; everything else is sized from it.
     pub(crate) fn set_text_size(&self, pixels: f32) {
         self.window.global::<Theme>().set_base_size(pixels);
+    }
+
+    /// The images going with the next message, as chips in the composer: their thumbnails are
+    /// the helper's pixels, decoded nowhere here.
+    pub(crate) fn render_attached(&self, attached: &[Picture]) {
+        let chips: Vec<ImageChip> = attached
+            .iter()
+            .filter_map(|picture| {
+                let thumbnail = &picture.thumbnail;
+                let mut pixels =
+                    SharedPixelBuffer::<Rgba8Pixel>::new(thumbnail.width_px, thumbnail.height_px);
+                let bytes = pixels.make_mut_bytes();
+                // Checked by the daemon; a mismatch here would panic in the copy.
+                if bytes.len() != thumbnail.rgba.len() {
+                    return None;
+                }
+                bytes.copy_from_slice(&thumbnail.rgba);
+                Some(ImageChip {
+                    thumbnail: slint::Image::from_rgba8(pixels),
+                    caption: format!("{}×{}", picture.width_px, picture.height_px).into(),
+                })
+            })
+            .collect();
+        self.window
+            .global::<Composer>()
+            .set_images(ModelRc::new(VecModel::from(chips)));
     }
 
     /// The composer's kept height, if it was dragged to one; fitted to its text if not.

@@ -31,11 +31,12 @@ use tokio::time::Instant;
 
 use crate::buses::{self, Buses};
 use crate::claude::Launch;
+use crate::decode::{self, Refusal};
 use crate::desktop;
-use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId};
+use crate::external::wire::{ControlPeek, MediaType, PeekedKind, PeekedSubtype, SessionId};
 use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
-    StartFailure, Stream, ToDaemon,
+    PasteFailure, StartFailure, Stream, ToDaemon,
 };
 use crate::spawn;
 
@@ -51,6 +52,10 @@ const QUIET: Duration = Duration::from_secs(60 * 60);
 const QUEUE: usize = 1024;
 /// Permission requests kept for a window to come: more unanswered than this is a runaway.
 const MAX_PENDING: usize = 64;
+/// How long the clipboard's owner gets to hand over what it holds.
+const CLIPBOARD: Duration = Duration::from_secs(5);
+/// The most of the clipboard's list of types read: a few dozen names.
+const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
 
 /// Runs the daemon; it returns as it ends.
 pub(crate) fn run() -> std::process::ExitCode {
@@ -392,12 +397,111 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         tell(&outbox, FromDaemon::Picked { request, folder }).await;
         return;
     }
+    if act == Act::PasteImage {
+        let pasted = paste_image().await;
+        tell_pasted(&outbox, request, &pasted).await;
+        return;
+    }
     let done = tokio::task::spawn_blocking(move || perform(act)).await;
     let result = done.unwrap_or_else(|error| {
         tracing::error!(%error, "doing what the desktop was asked failed");
         Err(ActFailure::Crashed)
     });
     tell(&outbox, FromDaemon::Done { request, result }).await;
+}
+
+/// The clipboard's image, read with `wl-paste` (the window, confined, never holds its raw
+/// bytes) and decoded in the confined helper (see `decode`).
+async fn paste_image() -> ipc::Pasted {
+    let listed = clipboard(&["--list-types"], MAX_CLIPBOARD_TYPES_BYTES).await?;
+    let media_type = String::from_utf8_lossy(&listed)
+        .lines()
+        .find_map(|line| line.trim().parse::<MediaType>().ok())
+        .ok_or(PasteFailure::NoImage)?;
+    let limit = decode::MAX_INPUT_BYTES + 1;
+    let bytes = clipboard(&["--no-newline", "--type", media_type.as_ref()], limit).await?;
+    if bytes.len() > decode::MAX_INPUT_BYTES {
+        return Err(PasteFailure::Refused(Refusal::TooManyBytes));
+    }
+    decode::decode(&bytes).await.map_err(|error| match error {
+        decode::Error::Refused(refusal) => PasteFailure::Refused(refusal),
+        error @ (decode::Error::Start(_)
+        | decode::Error::NoPipes
+        | decode::Error::Hand(_)
+        | decode::Error::Read(_)
+        | decode::Error::Slow
+        | decode::Error::Failed(_)
+        | decode::Error::TooMuch
+        | decode::Error::Unreadable(_)
+        | decode::Error::Malformed) => PasteFailure::Decoder(error.to_string()),
+    })
+}
+
+/// What `wl-paste` gives with `args`, up to `limit` bytes (reading stops there).
+async fn clipboard(args: &[&str], limit: usize) -> Result<Vec<u8>, PasteFailure> {
+    let failed = |error: std::io::Error| PasteFailure::Clipboard(error.to_string());
+    let mut child = tokio::process::Command::new("wl-paste")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(failed)?;
+    let Some(output) = child.stdout.take() else {
+        return Err(PasteFailure::Clipboard("wl-paste has no output".to_owned()));
+    };
+    let reading = async {
+        let mut bytes = Vec::new();
+        let cap = u64::try_from(limit).unwrap_or(u64::MAX);
+        output
+            .take(cap)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(failed)?;
+        if bytes.len() >= limit {
+            // The caller refuses it; what is left isn't waited for (the child is killed as it
+            // is dropped).
+            return Ok(bytes);
+        }
+        let status = child.wait().await.map_err(failed)?;
+        // It fails when the clipboard is empty, or holds nothing of the type asked.
+        if status.success() {
+            Ok(bytes)
+        } else {
+            Err(PasteFailure::NoImage)
+        }
+    };
+    tokio::time::timeout(CLIPBOARD, reading)
+        .await
+        .map_err(|_elapsed| {
+            PasteFailure::Clipboard("the clipboard's owner didn't hand it over in time".to_owned())
+        })?
+}
+
+/// The pasted image to a window, in pieces that fit messages.
+async fn tell_pasted(outbox: &mpsc::Sender<FromDaemon>, request: ActId, pasted: &ipc::Pasted) {
+    let encoded = match postcard::to_stdvec(pasted) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            tracing::error!(%error, "couldn't encode a pasted image");
+            return;
+        }
+    };
+    let mut pieces = encoded.chunks(ipc::MAX_CHUNK).peekable();
+    while let Some(piece) = pieces.next() {
+        let last = pieces.peek().is_none();
+        let piece = piece.to_vec();
+        tell(
+            outbox,
+            FromDaemon::Pasted {
+                request,
+                piece,
+                last,
+            },
+        )
+        .await;
+    }
 }
 
 /// Tells a window something; a window gone isn't told.
@@ -433,8 +537,8 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         }
         Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
         Act::StopSession(running) => desktop::stop_session(&running)?,
-        // Answered as `Picked`, in `act_for`.
-        Act::PickFolder => {}
+        // Answered as `Picked` and `Pasted`, in `act_for`.
+        Act::PickFolder | Act::PasteImage => {}
     }
     Ok(())
 }

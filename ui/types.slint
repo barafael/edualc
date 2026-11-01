@@ -167,3 +167,10 @@ export enum PromptKind { none, tool, question, plan }
 // How tall the composer is: fitted to its text (up to a limit), as dragged, about two thirds
 // of the conversation's column, or all of it.
 export enum ComposerSize { fit, chosen, tall, full }
+
+// An image pasted into the composer, to go with the next message.
+export struct ImageChip {
+    thumbnail: image,
+    // Its size as sent, e.g. "1920×1080".
+    caption: string,
+}

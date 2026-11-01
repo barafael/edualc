@@ -936,10 +936,23 @@ pub(crate) enum Input<'a> {
 
 impl<'a> Input<'a> {
     pub(crate) fn prompt(text: &'a str) -> Self {
+        Self::user(Content::Text(text))
+    }
+
+    /// A prompt with images: as the Messages API takes them, images first, then the text.
+    pub(crate) fn prompt_with_images(text: &'a str, images: Vec<ImageBlock>) -> Self {
+        let mut blocks: Vec<Block<'a>> = images.into_iter().map(Block::Image).collect();
+        if !text.is_empty() {
+            blocks.push(Block::Text { text });
+        }
+        Self::user(Content::Blocks(blocks))
+    }
+
+    fn user(content: Content<'a>) -> Self {
         Self::User {
             message: Prompt {
                 role: Role::User,
-                content: text,
+                content,
             },
             parent_tool_use_id: None,
             session_id: "default",
@@ -950,7 +963,78 @@ impl<'a> Input<'a> {
 #[derive(Debug, Serialize)]
 pub(crate) struct Prompt<'a> {
     role: Role,
-    content: &'a str,
+    content: Content<'a>,
+}
+
+/// A prompt's content: its text alone, or blocks of images and text.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum Content<'a> {
+    Text(&'a str),
+    Blocks(Vec<Block<'a>>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Block<'a> {
+    Image(ImageBlock),
+    Text { text: &'a str },
+}
+
+/// An image in a prompt, its bytes base64-encoded.
+#[derive(Debug, Serialize)]
+pub(crate) struct ImageBlock {
+    source: ImageSource,
+}
+
+impl ImageBlock {
+    pub(crate) fn base64(media_type: MediaType, data: String) -> Self {
+        Self {
+            source: ImageSource {
+                kind: SourceKind::Base64,
+                media_type,
+                data,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    kind: SourceKind,
+    media_type: MediaType,
+    data: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceKind {
+    Base64,
+}
+
+/// The image formats edualc sends: Anthropic's vision docs, "Claude supports JPEG, PNG, GIF,
+/// and WebP images (`image/jpeg`, `image/png`, `image/gif`, `image/webp`)". Named so in JSON;
+/// postcard, between edualc's processes, writes only the variant.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum::AsRefStr,
+    strum::Display,
+    strum::EnumString,
+)]
+pub(crate) enum MediaType {
+    #[serde(rename = "image/png")]
+    #[strum(serialize = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    #[strum(serialize = "image/jpeg")]
+    Jpeg,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -1257,6 +1341,33 @@ mod tests {
         let mcp = ToolName::from("mcp__github__create_issue".to_owned());
         assert_eq!(mcp.to_string(), "mcp__github__create_issue");
         assert_eq!(ToolName::Edit.to_string(), "Edit");
+    }
+
+    /// Images in a prompt as Anthropic's vision docs send them: `"type": "image"`, its
+    /// `"source"` of `"type": "base64"`, `"media_type"` and `"data"`, then the text. A prompt
+    /// without images stays a plain string.
+    #[test]
+    fn a_prompt_with_images_is_written_as_the_vision_docs_show() {
+        let image = ImageBlock::base64(MediaType::Jpeg, "QUJD".into());
+        assert_eq!(
+            serde_json::to_value(Input::prompt_with_images(
+                "Describe this image.",
+                vec![image]
+            ))
+            .expect("encodable"),
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": [
+                    { "type": "image", "source": {
+                        "type": "base64", "media_type": "image/jpeg", "data": "QUJD" } },
+                    { "type": "text", "text": "Describe this image." },
+                ] },
+                "parent_tool_use_id": null,
+                "session_id": "default",
+            })
+        );
+        let plain = serde_json::to_value(Input::prompt("Hi")).expect("encodable");
+        assert_eq!(plain.pointer("/message/content"), Some(&json!("Hi")));
     }
 
     /// A plan and questions go back as Claude sent them, with the user's part in them.

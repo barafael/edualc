@@ -47,6 +47,13 @@ other way around.
 - **Sessions.** This folder's past sessions are listed with their titles and ages; opening one shows its
   transcript and continues it. Any folder Claude Code was used in is one click away. Links open only
   if they are web pages or mail.
+- **Pasted images.** Ctrl+V in the composer takes the clipboard's PNG or JPEG along with the
+  next message, shown as a thumbnail until it is sent. The image is never decoded in the window:
+  the daemon reads the clipboard and hands the bytes to `edualc --decode-image`, a process that
+  first confines itself (no file, socket or other process to reach, no executable memory, bounded
+  memory and time, seccomp killing it on anything else) and answers with the image encoded again
+  (its metadata gone), scaled to what the current models take (2,576 px on the long edge, 4,784
+  visual tokens), and a thumbnail. A crafted image can take over only that process.
 - **Sessions outlive their window.** Closing the window while a session works, or waits for you,
   leaves it running; opening it again (from the list, or with `--resume`) shows it where it is: its
   transcript, then what it asked meanwhile, asked again. An idle session ends with its window, as its
@@ -159,7 +166,8 @@ sources) and `cargo test` are clean.
   is merged but not yet released. Go back to crates.io once 1.19 is out.
 - Side questions need a session running here; for one watched from another window, continue it here
   as a copy first.
-- Pasting images, `@` file mentions and per-session effort aren't there yet.
+- `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in,
+  and only PNG and JPEG for now; images in saved transcripts show as a count, not as pictures.
 - Finding another session's window needs niri.
 - A window that attaches to a session in the middle of a turn shows what it asked, but not that the
   turn runs, until the process says something new.

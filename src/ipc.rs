@@ -28,6 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::buses::Buses;
 use crate::claude::Launch;
+use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
 use crate::external::wire::SessionId;
 use crate::sandbox::Enforcement;
@@ -512,7 +513,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 4;
+pub(crate) const PROTOCOL: u32 = 5;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -614,6 +615,30 @@ pub(crate) enum FromDaemon {
     },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
+    /// The clipboard's image, or why there is none: a [`Pasted`], postcard-encoded, in pieces
+    /// that fit messages; the last piece ends it.
+    Pasted {
+        request: ActId,
+        piece: Vec<u8>,
+        last: bool,
+    },
+}
+
+/// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.
+pub(crate) type Pasted = Result<Picture, PasteFailure>;
+
+/// Why the clipboard gave no image, as the window is told.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub(crate) enum PasteFailure {
+    /// The clipboard holds something else (text, say): nothing to tell.
+    #[error("the clipboard holds no PNG or JPEG image")]
+    NoImage,
+    #[error("couldn't read the clipboard: {0}")]
+    Clipboard(String),
+    #[error("the image wasn't taken: {0}")]
+    Refused(Refusal),
+    #[error("{0}")]
+    Decoder(String),
 }
 
 /// A session the daemon runs.
@@ -738,6 +763,8 @@ pub(crate) enum Act {
     OpenUrl(String),
     /// The desktop's folder picker; answered by `Picked`.
     PickFolder,
+    /// The clipboard's image, if it holds one; answered by `Pasted`.
+    PasteImage,
     Notify {
         summary: String,
         body: String,

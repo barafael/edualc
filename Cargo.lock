@@ -1104,8 +1104,10 @@ name = "edualc"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "base64",
  "derive_more",
  "dirs",
+ "image",
  "jiff",
  "landlock",
  "libc",

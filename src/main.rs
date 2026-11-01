@@ -13,6 +13,7 @@ mod chat;
 mod claude;
 mod confine;
 mod daemon;
+mod decode;
 mod desktop;
 mod external;
 mod grouping;
@@ -162,6 +163,10 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     // The daemon the windows start: it runs Claude Code, and has no window.
     if std::env::args().nth(1).as_deref() == Some("--daemon") {
         return Ok(daemon::run());
+    }
+    // The image decoder the daemon starts, confined before it reads (see `decode`).
+    if std::env::args().nth(1).as_deref() == Some("--decode-image") {
+        return Ok(decode::run());
     }
 
     let args = match Args::parse(std::env::args().skip(1)) {

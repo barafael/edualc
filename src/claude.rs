@@ -5,8 +5,12 @@
 
 use std::path::PathBuf;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
+use crate::decode::Picture;
 use crate::external::wire::{
-    ControlRequest, Input, Message, PermissionResult, Reply, RequestId, SessionId,
+    ControlRequest, ImageBlock, Input, Message, PermissionResult, Reply, RequestId, SessionId,
 };
 use crate::ipc::{Generation, HostedId, StartFailure, ToDaemon};
 use crate::link::{self, Link};
@@ -152,6 +156,15 @@ impl Claude {
 
     pub(crate) fn prompt(&self, text: &str) -> Result<(), Error> {
         self.send(&Input::prompt(text))
+    }
+
+    /// A prompt with images, as the confined helper encoded them (see `decode`).
+    pub(crate) fn prompt_with_images(&self, text: &str, images: &[Picture]) -> Result<(), Error> {
+        let blocks = images
+            .iter()
+            .map(|picture| ImageBlock::base64(picture.media_type, BASE64.encode(&picture.bytes)))
+            .collect();
+        self.send(&Input::prompt_with_images(text, blocks))
     }
 
     /// Sends a control request; its answer comes back with the returned id.

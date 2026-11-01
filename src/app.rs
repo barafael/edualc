@@ -13,13 +13,14 @@ use serde_json::Value;
 
 use crate::chat::{Chat, ToolState};
 use crate::claude::{self, Claude, Launch, Output, Resume, SandboxWish};
+use crate::decode::Picture;
 use crate::desktop;
 use crate::external::wire::{
     self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
     ToolInput, ToolName, ToolUseId, TranscriptLine,
 };
 use crate::generated::AppWindow;
-use crate::ipc::{Act, ActFailure, ActId, Generation, Hosted, ToDaemon};
+use crate::ipc::{Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, ToDaemon};
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
@@ -125,6 +126,11 @@ pub(crate) enum Event {
         request: ActId,
         folder: Option<PathBuf>,
     },
+    /// The clipboard's image, decoded in the confined helper, or why there is none.
+    Pasted {
+        request: ActId,
+        pasted: Pasted,
+    },
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
     /// The sessions the daemon runs, anew.
@@ -148,6 +154,8 @@ enum Acting {
     Desktop,
     /// Stopping a session elsewhere, to continue it here.
     Bringing(LiveSession),
+    /// Reading the clipboard's image, for the next message.
+    Pasting,
 }
 
 /// What the user did in the window.
@@ -212,6 +220,10 @@ pub(crate) enum Action {
     Zoom(Zoom),
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
+    /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
+    PasteImage,
+    /// An image taken off the next message, by its place.
+    RemoveImage(usize),
     FilterSessions(String),
     /// Opens or folds the run of tool calls whose first call is at this place.
     ToggleRun(usize),
@@ -481,6 +493,8 @@ pub(crate) struct App {
     live: Vec<LiveSession>,
     /// The sessions the daemon runs, which outlive their windows.
     hosted: Vec<Hosted>,
+    /// Images pasted into the composer, to go with the next message.
+    attached: Vec<Picture>,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, std::time::Instant>,
@@ -553,6 +567,7 @@ impl App {
             log: VecDeque::new(),
             live: Vec::new(),
             hosted: Vec::new(),
+            attached: Vec::new(),
             listing_live: Refresh::Idle,
             notified: HashMap::new(),
             watch: None,
@@ -660,6 +675,18 @@ impl App {
                     self.open_project(&folder.to_string_lossy());
                 }
             }
+            Event::Pasted { request, pasted } => {
+                self.acting.remove(&request);
+                match pasted {
+                    Ok(picture) => {
+                        self.attached.push(picture);
+                        self.view.render_attached(&self.attached);
+                    }
+                    // Text was pasted, most likely; the composer took it.
+                    Err(PasteFailure::NoImage) => {}
+                    Err(failure) => self.chat.error(failure.to_string()),
+                }
+            }
             Event::DaemonLost => {
                 self.process = None;
                 self.forget_process();
@@ -760,6 +787,13 @@ impl App {
                 self.settings.composer_height_px = height_px;
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the composer's height");
+                }
+            }
+            Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
+            Action::RemoveImage(index) => {
+                if index < self.attached.len() {
+                    self.attached.remove(index);
+                    self.view.render_attached(&self.attached);
                 }
             }
             Action::Quit => {
@@ -896,7 +930,9 @@ impl App {
                 tracing::warn!(%failure, "the desktop didn't do it");
                 self.chat.error(failure.to_string());
             }
-            (Some(Acting::Desktop), Ok(())) | (None, _) => {}
+            // Answered as `Pasted`.
+            (Some(Acting::Desktop | Acting::Pasting), Ok(())) | (None, _) => {}
+            (Some(Acting::Pasting), Err(failure)) => self.chat.error(failure.to_string()),
         }
     }
 
@@ -1366,7 +1402,7 @@ impl App {
 
     fn send(&mut self, text: &str) {
         let text = text.trim();
-        if text.is_empty() {
+        if text.is_empty() && self.attached.is_empty() {
             return;
         }
         // Nothing runs before the folder is trusted: the prompt waits in the composer.
@@ -1392,11 +1428,17 @@ impl App {
         if self.watch.is_some() {
             return;
         }
-        self.chat.user(text);
+        let images = std::mem::take(&mut self.attached);
+        self.view.render_attached(&self.attached);
+        self.chat.user(with_images(text, images.len()));
         if self.ensure_process() {
             self.status.turns += 1;
             self.status.doing = Doing::Starting;
-            self.write(|process| process.prompt(text));
+            if images.is_empty() {
+                self.write(|process| process.prompt(text));
+            } else {
+                self.write(|process| process.prompt_with_images(text, &images));
+            }
         }
         self.view.scroll_to_end();
     }
@@ -1761,6 +1803,20 @@ impl App {
     }
 }
 
+/// The user's message as the conversation shows it: the images it took counted under its text.
+fn with_images(text: &str, images: usize) -> String {
+    let count = match images {
+        0 => return text.to_owned(),
+        1 => "with 1 image".to_owned(),
+        many => format!("with {many} images"),
+    };
+    if text.is_empty() {
+        count
+    } else {
+        format!("{text}\n\n{count}")
+    }
+}
+
 /// Claude's questions with the user's answers (the labels picked, or what was typed), the notes
 /// written, and the preview of the option picked, by question.
 fn answered(
@@ -1907,6 +1963,13 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_counts_the_images_it_took() {
+        assert_eq!(with_images("Look", 0), "Look");
+        assert_eq!(with_images("Look", 1), "Look\n\nwith 1 image");
+        assert_eq!(with_images("", 2), "with 2 images");
+    }
 
     /// Notes go with any answer; a preview only with a single option picked, the way
     /// AskUserQuestion takes them; nothing is added where nothing was written or previewed.

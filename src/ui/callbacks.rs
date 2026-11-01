@@ -104,6 +104,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             actions.send(Action::ComposerHeight(kept));
         }
     });
+    composer.on_paste_image(actions.on(|| Action::PasteImage));
+    composer.on_remove_image(actions.on_index(Action::RemoveImage));
 
     let session = window.global::<Session>();
     session.on_interrupt(actions.on(|| Action::Interrupt));

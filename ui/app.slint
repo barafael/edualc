@@ -12,7 +12,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Motion, Theme } from "theme.slint";
-export { BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
+export { BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
 export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -832,6 +832,44 @@ component EditArea inherits Rectangle {
         padding-top: Theme.space-m;
         padding-bottom: Theme.space-s;
         spacing: Theme.space-s;
+        // The images pasted, going with the next message; each can be taken off.
+        if Composer.images.length > 0: HorizontalLayout {
+            spacing: Theme.space-s;
+            alignment: start;
+            for chip[index] in Composer.images: Rectangle {
+                border-radius: Theme.radius-m;
+                border-width: 1px;
+                border-color: Theme.divider;
+                background: Theme.code;
+                clip: true;
+                HorizontalLayout {
+                    padding: Theme.space-xs;
+                    spacing: Theme.space-xs;
+                    Image {
+                        source: chip.thumbnail;
+                        height: 56px;
+                        width: 56px * max(1, chip.thumbnail.width) / max(1, chip.thumbnail.height);
+                        image-fit: contain;
+                        accessible-role: image;
+                        accessible-label: "A pasted image, " + chip.caption;
+                    }
+                    VerticalLayout {
+                        alignment: space-between;
+                        IconButton {
+                            icon: @image-url("@lucide/x.svg");
+                            label: "Take this image off the message";
+                            width: 24px;
+                            height: 24px;
+                            icon-size: Theme.icon-small;
+                            clicked => { Composer.remove-image(index); }
+                        }
+                        Caption {
+                            text: chip.caption;
+                        }
+                    }
+                }
+            }
+        }
         scroll := Flickable {
             property <length> fixed: Composer.size == ComposerSize.chosen
                 ? max(Composer.chosen-height, 2 * root.line)
@@ -875,7 +913,12 @@ component EditArea inherits Rectangle {
                     }
                 }
                 // Enter sends, Shift+Enter starts a new line, Tab takes the first command.
+                // Ctrl+V asks for the clipboard's image too, and pastes its text as ever.
                 key-pressed(event) => {
+                    if event.modifiers.control && (event.text == "v" || event.text == "V") {
+                        Composer.paste-image();
+                        return reject;
+                    }
                     if event.text == Key.Tab && Composer.commands.length > 0 {
                         Composer.pick-command(0);
                         self.set-selection-offsets(2147483647, 2147483647);
