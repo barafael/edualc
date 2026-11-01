@@ -2,7 +2,7 @@
 // the middle; side questions on the right.
 
 import { ListView } from "std-widgets.slint";
-import { Motion, Theme } from "theme.slint";
+import { Look, Motion, Theme } from "theme.slint";
 import { Activity, ComposerSize, LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
 import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
@@ -11,7 +11,7 @@ import { PlanReview } from "plan.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
-export { Motion, Theme } from "theme.slint";
+export { Look, Motion, Theme } from "theme.slint";
 export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
 export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
@@ -143,6 +143,11 @@ component Sidebar inherits Rectangle {
                 text: "edualc";
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: @image-url("@lucide/palette.svg");
+                label: Theme.look == Look.gruvbox ? "Plain colours" : "Gruvbox colours";
+                clicked => { Session.switch-look(); }
             }
             IconButton {
                 icon: @image-url("@lucide/square-pen.svg");

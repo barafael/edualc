@@ -70,6 +70,8 @@ export global Session {
     callback open-url(string);
     // The text bigger (1), smaller (-1), or back to the desktop's size (0).
     callback zoom(int);
+    // The other look: Gruvbox or plain.
+    callback switch-look;
 }
 
 // The composer: the draft, and slash commands matching it.

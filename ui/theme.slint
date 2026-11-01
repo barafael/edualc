@@ -1,7 +1,8 @@
-// The window's look in one place: Gruvbox (github.com/morhetz/gruvbox), dark or light as the
-// desktop asks. Where a Gruvbox colour falls short of WCAG AA (4.5:1 for text, 3:1 for the
-// edge of a control) on the surface it is used on, it is moved towards the text colour just
-// far enough; those are marked "lifted". Elements use these, never literal values.
+// The window's look in one place: Gruvbox (github.com/morhetz/gruvbox), or plain greys with a
+// blue accent; each dark or light as the desktop asks. Where a Gruvbox colour falls short of
+// WCAG AA (4.5:1 for text, 3:1 for the edge of a control) on the surface it is used on, it is
+// moved towards the text colour just far enough; those are marked "lifted". The plain look
+// keeps those floors on every surface. Elements use these, never literal values.
 
 import { Palette } from "std-widgets.slint";
 
@@ -10,40 +11,198 @@ export global Motion {
     out property <duration> fast: 120ms;
 }
 
+// The looks to choose from (the sidebar's palette button).
+export enum Look { gruvbox, plain }
+
+// One look's colours, dark or light; what each is for is told at the `Theme` property that
+// takes it.
+struct Colours {
+    surface: color,
+    surface-raised: color,
+    card: color,
+    shadow: color,
+    dim: color,
+    bubble: color,
+    code: color,
+    field: color,
+    divider: color,
+    control-border: color,
+    text: color,
+    text-secondary: color,
+    text-tertiary: color,
+    text-faint: color,
+    accent: color,
+    on-accent: color,
+    link: color,
+    selection: color,
+    selection-text: color,
+    claude: color,
+    success: color,
+    warning: color,
+    warning-text: color,
+    danger: color,
+    danger-text: color,
+    info: color,
+    // A diff's added line, behind it (faint).
+    added: color,
+}
+
 export global Theme {
     // Dark unless the desktop asks for light.
     out property <bool> dark: Palette.color-scheme != ColorScheme.light;
+    in property <Look> look: Look.gruvbox;
+
+    // Gruvbox's names for its colours, dark / light.
+    property <Colours> gruvbox-dark: {
+        surface: #282828, // bg0
+        surface-raised: #1d2021, // bg0_h
+        card: #32302f, // bg0_s
+        shadow: #0009,
+        dim: #0004,
+        bubble: #3c3836, // bg1
+        code: #1d2021, // bg0_h
+        field: #32302f,
+        divider: #3c3836, // bg1
+        control-border: #837769, // lifted
+        text: #ebdbb2, // fg1
+        text-secondary: #bdae93, // fg3
+        text-tertiary: #a89984, // fg4
+        text-faint: #928374, // gray
+        accent: #fe8019, // orange
+        on-accent: #1d2021, // 6.5:1
+        link: #83a598, // blue
+        selection: #504945, // bg2
+        selection-text: #fbf1c7,
+        claude: #fe8019,
+        success: #b8bb26, // green
+        warning: #fabd2f, // yellow
+        warning-text: #fabd2f,
+        danger: #fb4934, // red
+        danger-text: #fb5841, // lifted to 4.6:1
+        info: #8ec07c, // aqua
+        added: #b8bb26,
+    };
+    property <Colours> gruvbox-light: {
+        surface: #fbf1c7, // bg0
+        surface-raised: #f2e5bc, // bg0_s
+        card: #f9f5d7, // bg0_h
+        shadow: #0005,
+        dim: #0002,
+        bubble: #ebdbb2, // bg1
+        code: #f2e5bc, // bg0_s
+        field: #f9f5d7,
+        divider: #d5c4a1, // bg2
+        control-border: #968977, // lifted
+        text: #3c3836, // fg1
+        text-secondary: #504945, // fg3
+        text-tertiary: #665c54, // fg4
+        text-faint: #7c6f64, // gray
+        accent: #af3a03, // orange
+        on-accent: #fbf1c7, // 5.4:1
+        link: #076678, // blue
+        selection: #d5c4a1, // bg2
+        selection-text: #282828,
+        claude: #d65d0e,
+        success: #736f10, // green, lifted
+        warning: #b57614, // yellow
+        warning-text: #926219, // lifted
+        danger: #9d0006, // red
+        danger-text: #9d0006,
+        info: #417756, // aqua, lifted to 4.6:1
+        added: #79740e,
+    };
+    // Plain greys, a blue accent, Claude's clay for its mark.
+    property <Colours> plain-dark: {
+        surface: #202020,
+        surface-raised: #181818,
+        card: #262626,
+        shadow: #0009,
+        dim: #0004,
+        bubble: #2f2f2f,
+        code: #181818,
+        field: #262626,
+        divider: #2f2f2f,
+        control-border: #7a7a7a,
+        text: #e8e8e8,
+        text-secondary: #c4c4c4,
+        text-tertiary: #adadad,
+        text-faint: #959595,
+        accent: #6ea8fe,
+        on-accent: #0b0d10,
+        link: #8ab4f8,
+        selection: #2d4f7c,
+        selection-text: #ffffff,
+        claude: #d97757,
+        success: #6bc46d,
+        warning: #e5b443,
+        warning-text: #e5b443,
+        danger: #f0645c,
+        danger-text: #f47b74,
+        info: #5bb8d6,
+        added: #6bc46d,
+    };
+    property <Colours> plain-light: {
+        surface: #ffffff,
+        surface-raised: #f3f3f3,
+        card: #fafafa,
+        shadow: #0005,
+        dim: #0002,
+        bubble: #ececec,
+        code: #f5f5f5,
+        field: #ffffff,
+        divider: #e2e2e2,
+        control-border: #858585,
+        text: #1c1c1c,
+        text-secondary: #3d3d3d,
+        text-tertiary: #555555,
+        text-faint: #6b6b6b,
+        accent: #1f5fd1,
+        on-accent: #ffffff,
+        link: #1a56c4,
+        selection: #c8dbff,
+        selection-text: #111111,
+        claude: #b8532f,
+        success: #1e7b34,
+        warning: #b26a00,
+        warning-text: #8a5300,
+        danger: #c0281e,
+        danger-text: #b3261e,
+        info: #0b6e78,
+        added: #1e7b34,
+    };
+    property <Colours> colours: self.look == Look.plain
+        ? (self.dark ? self.plain-dark : self.plain-light)
+        : (self.dark ? self.gruvbox-dark : self.gruvbox-light);
 
     // Surfaces, from back to front. The sidebar and side panel sit lower (darker in the dark
     // theme) than the conversation, which sets them apart without lines.
-    // bg0: the conversation.
-    out property <color> surface: self.dark ? #282828 : #fbf1c7;
-    // bg0_h / bg0_s: the sidebar, the side panel, popups.
-    out property <color> surface-raised: self.dark ? #1d2021 : #f2e5bc;
-    // bg0_s / bg0_h: tool calls, the bar asking for an answer.
-    out property <color> card: self.dark ? #32302f : #f9f5d7;
+    // The conversation.
+    out property <color> surface: self.colours.surface;
+    // The sidebar, the side panel, popups.
+    out property <color> surface-raised: self.colours.surface-raised;
+    // Tool calls, the bar asking for an answer.
+    out property <color> card: self.colours.card;
     // Under what lies over the conversation (the composer made taller, popovers): darker on the
     // dark theme, where a light shadow wouldn't show.
-    out property <color> shadow: self.dark ? #0009 : #0005;
+    out property <color> shadow: self.colours.shadow;
     // Over the conversation around a popover: enough to set the popover apart, little enough to
     // keep the conversation readable.
-    out property <color> dim: self.dark ? #0004 : #0002;
-    // bg1: the user's messages.
-    out property <color> bubble: self.dark ? #3c3836 : #ebdbb2;
-    // bg0_h / bg1: code, tool input and output.
-    out property <color> code: self.dark ? #1d2021 : #f2e5bc;
-    out property <color> field: self.dark ? #32302f : #f9f5d7;
-    // bg1 / bg2: lines between areas (decorative, so no contrast floor).
-    out property <color> divider: self.dark ? #3c3836 : #d5c4a1;
-    // The edge of a text field or menu: lifted to 3:1.
-    out property <color> control-border: self.dark ? #837769 : #968977;
+    out property <color> dim: self.colours.dim;
+    // The user's messages.
+    out property <color> bubble: self.colours.bubble;
+    // Code, tool input and output.
+    out property <color> code: self.colours.code;
+    out property <color> field: self.colours.field;
+    // Lines between areas (decorative, so no contrast floor).
+    out property <color> divider: self.colours.divider;
+    // The edge of a text field or menu: 3:1.
+    out property <color> control-border: self.colours.control-border;
 
-    // Text, by how much it matters: fg1, fg3, fg4; gray only for placeholders and disabled
-    // text (4:1).
-    out property <color> text: self.dark ? #ebdbb2 : #3c3836;
-    out property <color> text-secondary: self.dark ? #bdae93 : #504945;
-    out property <color> text-tertiary: self.dark ? #a89984 : #665c54;
-    out property <color> text-faint: self.dark ? #928374 : #7c6f64;
+    // Text, by how much it matters; the faintest only for placeholders and disabled text (4:1).
+    out property <color> text: self.colours.text;
+    out property <color> text-secondary: self.colours.text-secondary;
+    out property <color> text-tertiary: self.colours.text-tertiary;
+    out property <color> text-faint: self.colours.text-faint;
 
     // Fills laid over a surface.
     out property <color> hover: self.text.with-alpha(0.07);
@@ -51,33 +210,30 @@ export global Theme {
     out property <color> subtle: self.text.with-alpha(0.04);
     out property <color> selected: self.accent.with-alpha(0.16);
 
-    // The accent, Gruvbox orange: what to press, what has focus, what is chosen. Dark text on
-    // it (6.5:1 dark, 5.4:1 light).
-    out property <color> accent: self.dark ? #fe8019 : #af3a03;
-    out property <color> on-accent: self.dark ? #1d2021 : #fbf1c7;
-    // Gruvbox blue.
-    out property <color> link: self.dark ? #83a598 : #076678;
-    // bg2 / light bg2, as Gruvbox selects text.
-    out property <color> selection: self.dark ? #504945 : #d5c4a1;
-    out property <color> selection-text: self.dark ? #fbf1c7 : #282828;
+    // The accent: what to press, what has focus, what is chosen; `on-accent` is text on it.
+    out property <color> accent: self.colours.accent;
+    out property <color> on-accent: self.colours.on-accent;
+    out property <color> link: self.colours.link;
+    // Selected text.
+    out property <color> selection: self.colours.selection;
+    out property <color> selection-text: self.colours.selection-text;
 
     // Claude's mark, and the dot that shows it working.
-    out property <color> claude: self.dark ? #fe8019 : #d65d0e;
+    out property <color> claude: self.colours.claude;
 
-    // How things went. The light theme's yellow and green fall short as text and are lifted
-    // for it; as dots and edges they keep 3:1.
-    out property <color> success: self.dark ? #b8bb26 : #736f10;
-    out property <color> warning: self.dark ? #fabd2f : #b57614;
-    out property <color> warning-text: self.dark ? #fabd2f : #926219;
-    out property <color> danger: self.dark ? #fb4934 : #9d0006;
-    // Dark red lifted to 4.6:1.
-    out property <color> danger-text: self.dark ? #fb5841 : #9d0006;
+    // How things went. Where a colour falls short as text, its `-text` twin is lifted for it;
+    // as dots and edges they keep 3:1.
+    out property <color> success: self.colours.success;
+    out property <color> warning: self.colours.warning;
+    out property <color> warning-text: self.colours.warning-text;
+    out property <color> danger: self.colours.danger;
+    out property <color> danger-text: self.colours.danger-text;
     out property <color> danger-fill: self.danger.with-alpha(0.12);
-    // Gruvbox aqua (light: lifted to 4.6:1), for what is neither good nor bad news.
-    out property <color> info: self.dark ? #8ec07c : #417756;
+    // For what is neither good nor bad news.
+    out property <color> info: self.colours.info;
 
     // Diffs: the line's colour behind it, faint, and in its sign.
-    out property <color> added: (self.dark ? #b8bb26 : #79740e).with-alpha(0.16);
+    out property <color> added: self.colours.added.with-alpha(0.16);
     out property <color> added-text: self.success;
     out property <color> removed: self.danger.with-alpha(0.16);
     out property <color> removed-text: self.danger-text;

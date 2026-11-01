@@ -98,7 +98,9 @@ other way around.
 ## Look
 
 Gruvbox, dark or light as the desktop asks, with a few colours lifted to WCAG AA contrast where
-Gruvbox's fall short (`ui/theme.slint` says which and why). Text is Fira Sans, code Fira Code
+Gruvbox's fall short (`ui/theme.slint` says which and why). The sidebar's palette button switches to
+a plain look instead: greys with a blue accent, also dark or light, at AA on every surface. The choice
+is kept. Text is Fira Sans, code Fira Code
 (fontconfig's sans and monospace where Fira isn't installed), at the size the desktop configures
 (GNOME's interface font and text scaling, or KDE's), scaled for the screen. Ctrl+= and Ctrl+- zoom in
 10% steps, Ctrl+0 resets; the zoom is kept in `~/.config/edualc/settings.json`. Controls

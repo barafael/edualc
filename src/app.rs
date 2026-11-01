@@ -224,6 +224,8 @@ pub(crate) enum Action {
     /// Opens the session's worktree with the opener at this place in the menu (0: here).
     OpenWorktree(usize),
     Zoom(Zoom),
+    /// The other look (Gruvbox or plain).
+    SwitchLook,
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
@@ -557,6 +559,7 @@ impl App {
         });
         view.set_text_size(desktop_text_size * settings.scale());
         view.set_composer_height(settings.composer_height_px);
+        view.set_look(settings.look);
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -802,6 +805,13 @@ impl App {
                     .set_text_size(self.desktop_text_size * self.settings.scale());
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the zoom");
+                }
+            }
+            Action::SwitchLook => {
+                self.settings.look = self.settings.look.other();
+                self.view.set_look(self.settings.look);
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the look");
                 }
             }
             Action::ComposerHeight(height_px) => {

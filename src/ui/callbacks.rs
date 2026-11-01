@@ -124,6 +124,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     usage.on_close(actions.on(|| Action::HideUsage));
     usage.on_refresh(actions.on(|| Action::ShowUsage));
     session.on_open_worktree(actions.on_index(Action::OpenWorktree));
+    session.on_switch_look(actions.on(|| Action::SwitchLook));
     session.on_zoom({
         let actions = actions.clone();
         move |direction| {

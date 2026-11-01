@@ -28,6 +28,28 @@ pub(crate) struct Settings {
     /// The composer's height as dragged, in logical pixels; fitted to its text if none.
     #[serde(default)]
     pub(crate) composer_height_px: Option<u16>,
+    /// The window's colours (dark or light as the desktop asks).
+    #[serde(default)]
+    pub(crate) look: Look,
+}
+
+/// The looks to choose from: Gruvbox, or plain greys with a blue accent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Look {
+    #[default]
+    Gruvbox,
+    Plain,
+}
+
+impl Look {
+    /// The look the palette button switches to.
+    pub(crate) fn other(self) -> Self {
+        match self {
+            Self::Gruvbox => Self::Plain,
+            Self::Plain => Self::Gruvbox,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -40,6 +62,7 @@ impl Default for Settings {
             sandbox_read: Vec::new(),
             sandbox_write: Vec::new(),
             composer_height_px: None,
+            look: Look::default(),
         }
     }
 }

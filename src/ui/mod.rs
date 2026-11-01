@@ -21,7 +21,7 @@ use crate::external::wire::{
 };
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, MdBlock, MenuItem,
+    EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock, MenuItem,
     PermissionKind, PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption,
     Session, SessionItem, Sessions, ShownImage, Side, SideExchange, SideState, StatRow,
     StatSection, TableRow, Theme, ToolState, Transcript, Usage,
@@ -30,6 +30,7 @@ use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
 use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
+use crate::settings;
 use crate::tools;
 
 mod callbacks;
@@ -146,6 +147,14 @@ impl View {
     /// The base text size, in logical pixels; everything else is sized from it.
     pub(crate) fn set_text_size(&self, pixels: f32) {
         self.window.global::<Theme>().set_base_size(pixels);
+    }
+
+    pub(crate) fn set_look(&self, look: settings::Look) {
+        let theme = self.window.global::<Theme>();
+        theme.set_look(match look {
+            settings::Look::Gruvbox => Look::Gruvbox,
+            settings::Look::Plain => Look::Plain,
+        });
     }
 
     /// The images going with the next message, as chips in the composer: their thumbnails are
