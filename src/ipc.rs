@@ -24,6 +24,7 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::buses::Buses;
 use crate::claude::Launch;
 use crate::desktop::{Opener, Program, Running};
 use crate::sandbox::Enforcement;
@@ -76,6 +77,10 @@ pub(crate) struct Folder {
 }
 
 impl Folder {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// `$XDG_RUNTIME_DIR/edualc`, made if it isn't there, and checked to be the user's alone.
     pub(crate) fn open() -> Result<Self, Error> {
         let runtime =
@@ -510,8 +515,10 @@ pub(crate) enum ToDaemon {
 /// What the daemon tells the window.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum FromDaemon {
+    /// With the D-Bus the window is to use (see `buses`).
     Hello {
         protocol: u32,
+        buses: Buses,
     },
     Started {
         key: u64,

@@ -93,6 +93,7 @@ Qt or GTK dependency.
 |---|---|
 | `src/claude.rs` | a session's process as the window sees it: what it is started with, what its lines mean, the handle that writes to it |
 | `src/daemon.rs`, `src/spawn.rs` | the daemon (`edualc --daemon`): runs `claude` (sandboxed) for the windows, and does what the desktop is asked; actors with sans-io cores |
+| `src/confine.rs`, `src/buses.rs` | the window's own confinement (Landlock, a seccomp socket filter), and the filtering D-Bus proxies it gets in place of the session bus |
 | `src/ipc.rs`, `src/link.rs` | the daemon's private socket, its checks and bounded messages (postcard), and the window's line to it |
 | `src/wire.rs` | the stream-json messages and transcript lines as types, parsed where they enter |
 | `src/app.rs` | `App`, the one owner of all state; UI callbacks, process output, timers and background work reach it as `Event`s on one channel |
@@ -121,6 +122,15 @@ messages of bounded length, refused before they are read if longer. The daemon's
 actors in the manner of "More Actors with Tokio" (each its data, run by an event loop it is
 given its channels for, channels without cycles, shutting down as they close), with sans-io
 logic tested without sockets or processes.
+
+The window confines itself before it makes any thread: it reads the system and the user's
+files but their secrets (keys, keyrings, browser profiles, credentials), writes only its
+settings and caches, reaches no socket but Wayland's and the daemon's folder, opens no network
+socket at all (seccomp), and gains no privileges. Its D-Bus is two `xdg-dbus-proxy` filters the
+daemon runs, as Flatpak does: on the session bus only accessibility's address and the desktop's
+light or dark setting are reachable (not systemd, which starts programs, nor the keyring); on
+the accessibility bus a screen reader can read the window, but the window can't read or drive
+other programs.
 
 Nothing runs while nothing happens: there is no animation loop and no polling (files other
 processes write are watched with inotify; a check once a minute catches sessions that crashed).

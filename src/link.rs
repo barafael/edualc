@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use async_channel::Sender;
 
 use crate::app::{Event, Generation};
+use crate::buses::Buses;
 use crate::claude::Output;
 use crate::ipc::{
     self, Assembler, Channel, Deframer, Folder, FromDaemon, PROTOCOL, Stream, ToDaemon,
@@ -73,6 +74,8 @@ pub(crate) fn send_input(link: &Link, key: u64, line: &str) -> Result<(), Lost> 
 pub(crate) struct Connected {
     channel: Channel,
     deframer: Deframer,
+    /// The D-Bus the window is to use.
+    pub(crate) buses: Buses,
 }
 
 /// Connects to the daemon, starting it if none runs: before the window is confined, which the
@@ -89,8 +92,8 @@ pub(crate) fn connect() -> Result<Connected, Error> {
     };
     let mut deframer = Deframer::default();
     channel.send(&ToDaemon::Hello { protocol: PROTOCOL })?;
-    match channel.recv(&mut deframer)? {
-        FromDaemon::Hello { protocol } if protocol == PROTOCOL => {}
+    let buses = match channel.recv(&mut deframer)? {
+        FromDaemon::Hello { protocol, buses } if protocol == PROTOCOL => buses,
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
         | FromDaemon::Failed { .. }
@@ -98,8 +101,12 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. } => return Err(Error::Version),
-    }
-    Ok(Connected { channel, deframer })
+    };
+    Ok(Connected {
+        channel,
+        deframer,
+        buses,
+    })
 }
 
 /// Starts the threads that carry the line; what the daemon says comes to the app as `events`.
@@ -107,6 +114,7 @@ pub(crate) fn run(connected: Connected, events: Sender<Event>) -> Result<Link, E
     let Connected {
         mut channel,
         deframer,
+        ..
     } = connected;
     let reading = channel.try_clone()?;
     let (link, queue) = std::sync::mpsc::sync_channel(QUEUE);

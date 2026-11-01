@@ -26,6 +26,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
+use crate::buses::{self, Buses};
 use crate::claude::Launch;
 use crate::desktop;
 use crate::ipc::{
@@ -44,6 +45,8 @@ const QUEUE: usize = 1024;
 
 /// Runs the daemon; it returns as it ends.
 pub(crate) fn run() -> std::process::ExitCode {
+    // What the daemon and its children make (its socket, the proxies') is the user's alone.
+    rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
     let folder = match ipc::Folder::open() {
         Ok(folder) => folder,
         Err(error) => {
@@ -72,7 +75,7 @@ pub(crate) fn run() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(listener)) {
+    match runtime.block_on(serve(listener, folder.path())) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(%error, "the daemon failed");
@@ -82,8 +85,10 @@ pub(crate) fn run() -> std::process::ExitCode {
 }
 
 /// Takes windows as they connect, until none is left for [`IDLE`].
-async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
+async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), ipc::Error> {
     let (listener, _lock) = listener.into_tokio()?;
+    // Ended with the daemon.
+    let (buses, _proxies) = buses::start(folder).await;
     let mut windows = JoinSet::new();
     let mut quiet_since = Some(Instant::now());
     loop {
@@ -96,7 +101,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
         tokio::select! {
             accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
                 Ok(channel) => {
-                    windows.spawn(window(channel));
+                    windows.spawn(window(channel, buses.clone()));
                     quiet_since = None;
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
@@ -119,7 +124,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
 
 /// A window's connection: hello, then its requests to its [`Connection`], and what its sessions
 /// and the desktop say back, until it hangs up and its sessions have ended.
-async fn window(channel: ipc::AsyncChannel) {
+async fn window(channel: ipc::AsyncChannel, buses: Buses) {
     let (mut reading, mut writing) = channel.split();
     let mut deframer = Deframer::default();
     let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
@@ -127,6 +132,7 @@ async fn window(channel: ipc::AsyncChannel) {
         Ok(Ok(ToDaemon::Hello { protocol })) => {
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
+                buses,
             };
             if let Err(error) = ipc::send(&mut writing, &answer).await {
                 tracing::warn!(%error, "a window left as it came");

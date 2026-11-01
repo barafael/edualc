@@ -1,7 +1,8 @@
 //! The window, confined. It parses what Claude and other sessions write and draws it; for that
 //! it reads the system, fonts and the user's files but their secrets, writes only its settings
 //! and caches, reaches no socket but Wayland's (its daemon's it reached before), signals nothing
-//! outside, and gains no privileges (Landlock); it opens no network socket at all, nor io_uring,
+//! outside, and gains no privileges (Landlock); its D-Bus is the daemon's filtering proxies (see
+//! `buses`); it opens no network socket at all, nor io_uring,
 //! which could open one past the filter (seccomp). What it can't do, it asks its daemon, which
 //! does a few things, checked.
 //!
@@ -81,10 +82,14 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
         .iter()
         .map(PathBuf::from)
         .collect();
-    let sockets: Vec<PathBuf> = std::env::var_os("XDG_RUNTIME_DIR")
-        .zip(std::env::var_os("WAYLAND_DISPLAY"))
-        .map(|(runtime, display)| PathBuf::from(runtime).join(display))
-        .into_iter()
+    // Wayland's, and those in the daemon's folder: its own and its D-Bus proxies'.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let sockets: Vec<PathBuf> = runtime
+        .iter()
+        .flat_map(|runtime| {
+            let display = std::env::var_os("WAYLAND_DISPLAY").map(|display| runtime.join(display));
+            display.into_iter().chain([runtime.join("edualc")])
+        })
         .collect();
 
     let all = AccessFs::from_all(ABI_KNOWN);

@@ -8,6 +8,7 @@ use slint::ComponentHandle;
 
 mod app;
 mod appearance;
+mod buses;
 mod chat;
 mod claude;
 mod confine;
@@ -119,6 +120,36 @@ impl Args {
     }
 }
 
+/// Set once the window was started again with its D-Bus proxies.
+const PROXIED: &str = "EDUALC_PROXIED";
+
+/// Starts this program again in this process, its bus the daemon's filtering proxies (none
+/// without them); returns only if that failed.
+fn proxied(buses: &buses::Buses) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(error) => return error,
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(std::env::args_os().skip(1)).env(PROXIED, "1");
+    match &buses.session {
+        Some(socket) => command.env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", socket.display()),
+        ),
+        None => command.env_remove("DBUS_SESSION_BUS_ADDRESS"),
+    };
+    match &buses.accessibility {
+        Some(socket) => command.env(
+            "AT_SPI_BUS_ADDRESS",
+            format!("unix:path={}", socket.display()),
+        ),
+        None => command.env_remove("AT_SPI_BUS_ADDRESS"),
+    };
+    command.exec()
+}
+
 fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -155,6 +186,13 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
             return Ok(std::process::ExitCode::FAILURE);
         }
     };
+    // Once: started again with the D-Bus proxies for its bus, which can't be changed later in a
+    // running process without `unsafe`.
+    if std::env::var_os(PROXIED).is_none() {
+        let error = proxied(&connected.buses);
+        eprintln!("edualc: couldn't start again with the D-Bus proxies: {error}");
+        return Ok(std::process::ExitCode::FAILURE);
+    }
     let desktop = app::Desktop::find();
     match confine::confine() {
         Ok(confinement) => tracing::info!(?confinement, "the window is confined"),
