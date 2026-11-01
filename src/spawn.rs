@@ -56,15 +56,15 @@ pub(crate) enum Error {
     SignInPipeShared(Vec<u32>),
 }
 
-/// The name other Claude Code sessions message a session's process by (`--name`): "edualc-",
-/// then an adjective and a noun picked by the session's id, so the same each time it runs. The
+/// The name other Claude Code sessions message a session's process by (`--name`): an adjective
+/// and a noun picked by the session's id, so the same each time it runs, then its project. The
 /// CLI's own name comes from the process id, and changes as the session is started again.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
 struct MessagingName(String);
 
 impl MessagingName {
-    /// The name of session `id` in the folder `cwd`: "edualc-", the folder's name, an
-    /// adjective, a noun and two digits, all but the folder picked by the id.
+    /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
+    /// and two digits, all but the folder picked by the id.
     fn of(id: &SessionId, cwd: &Path) -> Self {
         let digits: String = id
             .as_str()
@@ -85,10 +85,10 @@ impl MessagingName {
                 .unwrap_or("session")
         };
         Self(format!(
-            "edualc-{}-{}-{}-{:02}",
-            project_part(cwd),
+            "{}-{}-{}-{:02}",
             word(&words.adjectives, number(0)),
             word(&words.nouns, number(8)),
+            project_part(cwd),
             number(16) % 100
         ))
     }
@@ -408,8 +408,8 @@ mod tests {
         assert!(model_name("").is_err());
     }
 
-    /// A session keeps its name however often it is started: "edualc-", its project, then two
-    /// lowercase words and two digits from its id; other ids get other names, but for rare
+    /// A session keeps its name however often it is started: an adjective and a noun from its
+    /// id, its project, then two digits from its id; other ids get other names, but for rare
     /// collisions.
     #[test]
     fn a_session_is_named_by_its_project_and_id() {
@@ -422,22 +422,17 @@ mod tests {
             MessagingName::of(&id(session), project),
             "started again"
         );
-        let rest = name
-            .0
-            .strip_prefix("edualc-claude-but-sane-")
-            .expect("named after its project");
-        let parts: Vec<&str> = rest.split('-').collect();
-        let (Some(adjective), Some(noun), Some(number), None) =
-            (parts.first(), parts.get(1), parts.get(2), parts.get(3))
+        let mut parts = name.0.splitn(3, '-');
+        let (Some(adjective), Some(noun), Some(rest)) = (parts.next(), parts.next(), parts.next())
         else {
-            panic!("two words and a number in {name}");
+            panic!("two words first in {name}");
         };
-        for word in [adjective, noun] {
-            assert!(
-                !word.is_empty() && word.chars().all(|letter| letter.is_ascii_lowercase()),
-                "{name}"
-            );
-        }
+        let words = petname::Petnames::small();
+        assert!(words.adjectives.contains(&adjective), "{name}");
+        assert!(words.nouns.contains(&noun), "{name}");
+        let number = rest
+            .strip_prefix("claude-but-sane-")
+            .expect("named after its project");
         assert!(
             number.len() == 2 && number.chars().all(|digit| digit.is_ascii_digit()),
             "{name}"

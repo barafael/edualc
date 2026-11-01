@@ -66,10 +66,10 @@ other way around.
   transcript continues it anyway. One left alone and quiet for an hour ends.
 - **A name to message a session by.** Other Claude Code sessions message a session by its name,
   which Claude Code takes from the process id, so it changes whenever the session is started again.
-  edualc names each session after its project and its id instead, for example
-  `edualc-claude-but-sane-proud-moth-27`: the folder's name, then an adjective and a noun from the
-  `petname` word lists and two digits, picked by the id, so the same however often the session is
-  started. It picks a new session's id itself (`--session-id`), so the name holds from the first
+  edualc names each session after its id and its project instead, for example
+  `proud-moth-claude-but-sane-27`: an adjective and a noun from the `petname` word lists, the
+  folder's name and two digits, all but the folder picked by the id, so the same however often
+  the session is started. It picks a new session's id itself (`--session-id`), so the name holds from the first
   start.
 - **Running sessions, everywhere.** Every Claude Code session running on the machine, in any
   terminal or folder, is listed with what it's doing. You get a desktop notification when one starts
