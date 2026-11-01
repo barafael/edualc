@@ -24,7 +24,21 @@ export struct MdBlock {
     column-stretch: [float],
 }
 
-export enum EntryKind { user, assistant, thinking, tool, info, error }
+export enum EntryKind { user, assistant, thinking, tool, image, info, error }
+
+// How far an image in the conversation is: decoded and shown, still being decoded, or not to
+// be shown.
+export enum ImageState { pending, shown, failed }
+
+export struct ShownImage {
+    state: ImageState,
+    image: image,
+    // Its pixels, for its shape.
+    width-px: int,
+    height-px: int,
+    // Why it isn't shown.
+    note: string,
+}
 
 export enum ToolState { streaming, running, awaiting, done, failed, denied, cancelled }
 
@@ -57,6 +71,8 @@ export struct Entry {
     // What was left out of a long output.
     output-note: string,
     diff: [DiffLine],
+    // An image the user sent; those a tool returned.
+    images: [ShownImage],
     expanded: bool,
     // Made by a subagent: indented under the call that started it.
     nested: bool,

@@ -1,7 +1,7 @@
 //! The window's side: its models, kept in line with the app's state (`render_*`), and its
 //! callbacks, which become the app's actions (`wire`).
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use slint::{
@@ -13,18 +13,18 @@ use crate::app::{
     Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Sandboxing, SideChat, SideView,
     Status, UsagePanel, Watch,
 };
-use crate::chat::{self, Body, Change, Chat};
-use crate::decode::Picture;
+use crate::chat::{self, Body, Change, Chat, ImageKey};
+use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::wire::{
     self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
 };
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, ImageChip, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind,
-    PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem,
-    Sessions, Side, SideExchange, SideState, StatRow, StatSection, TableRow, Theme, ToolState,
-    Transcript, Usage,
+    EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, MdBlock, MenuItem,
+    PermissionKind, PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption,
+    Session, SessionItem, Sessions, ShownImage, Side, SideExchange, SideState, StatRow,
+    StatSection, TableRow, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
@@ -59,6 +59,8 @@ pub(crate) struct View {
     /// What the menus hold, set again only when it changes (setting closes an open menu).
     models: Vec<(String, String)>,
     modes: Vec<(String, String)>,
+    /// The conversation's images, as far as they are decoded; one not here is still decoded.
+    images: HashMap<ImageKey, ShownImage>,
 }
 
 struct Blocks {
@@ -108,7 +110,37 @@ impl View {
             prompt: None,
             models: Vec::new(),
             modes: Vec::new(),
+            images: HashMap::new(),
         }
+    }
+
+    /// Image `key`'s pixels, or why it can't be shown.
+    pub(crate) fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>) {
+        let shown = match shown.map(|pixels| (slint_image(pixels), pixels)) {
+            Ok((Some(image), pixels)) => ShownImage {
+                state: ImageState::Shown,
+                image,
+                width_px: i32::try_from(pixels.width_px).unwrap_or(i32::MAX),
+                height_px: i32::try_from(pixels.height_px).unwrap_or(i32::MAX),
+                note: SharedString::new(),
+            },
+            Ok((None, _)) => failed_image("its pixels don't add up".to_owned()),
+            Err(why) => failed_image(why),
+        };
+        self.images.insert(key, shown);
+    }
+
+    /// Keeps only the images `shown` holds: the conversation was replaced.
+    pub(crate) fn keep_images(&mut self, shown: &HashSet<ImageKey>) {
+        self.images.retain(|key, _| shown.contains(key));
+    }
+
+    fn shown_images(&self, keys: &[ImageKey]) -> ModelRc<ShownImage> {
+        let shown: Vec<ShownImage> = keys
+            .iter()
+            .map(|key| self.images.get(key).cloned().unwrap_or_default())
+            .collect();
+        ModelRc::new(VecModel::from(shown))
     }
 
     /// The base text size, in logical pixels; everything else is sized from it.
@@ -122,17 +154,8 @@ impl View {
         let chips: Vec<ImageChip> = attached
             .iter()
             .filter_map(|picture| {
-                let thumbnail = &picture.thumbnail;
-                let mut pixels =
-                    SharedPixelBuffer::<Rgba8Pixel>::new(thumbnail.width_px, thumbnail.height_px);
-                let bytes = pixels.make_mut_bytes();
-                // Checked by the daemon; a mismatch here would panic in the copy.
-                if bytes.len() != thumbnail.rgba.len() {
-                    return None;
-                }
-                bytes.copy_from_slice(&thumbnail.rgba);
                 Some(ImageChip {
-                    thumbnail: slint::Image::from_rgba8(pixels),
+                    thumbnail: slint_image(&picture.thumbnail)?,
                     caption: format!("{}×{}", picture.width_px, picture.height_px).into(),
                 })
             })
@@ -322,6 +345,7 @@ impl View {
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
                 | Body::Shell { .. }
+                | Body::Image(_)
                 | Body::Info(_)
                 | Body::Error(_) => {
                     let row = self.row(index, entry, cwd);
@@ -384,6 +408,13 @@ impl View {
                 let view = tools::describe(&tool.name, &tool.input, cwd, depth);
                 let state = tool_state(tool.state);
                 self.card(&mut row, index, view, state, &tool.output, *expanded);
+                if depth == tools::Depth::Full {
+                    row.images = self.shown_images(&tool.images);
+                }
+            }
+            Body::Image(key) => {
+                row.kind = EntryKind::Image;
+                row.images = self.shown_images(std::slice::from_ref(key));
             }
             // A card as Claude's own commands get, titled as the user's.
             Body::Shell { shell, expanded } => {
@@ -1368,6 +1399,26 @@ fn strings(items: &[String]) -> ModelRc<SharedString> {
 /// Slint counts in `i32`; no list here comes near its end.
 fn index_for_slint(index: usize) -> i32 {
     i32::try_from(index).unwrap_or(i32::MAX)
+}
+
+/// Pixels as Slint shows them; none if their bytes don't make their size (the decoder's
+/// answer is checked, so this would be a fault here).
+fn slint_image(pixels: &Pixels) -> Option<slint::Image> {
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(pixels.width_px, pixels.height_px);
+    let bytes = buffer.make_mut_bytes();
+    if bytes.len() != pixels.rgba.len() {
+        return None;
+    }
+    bytes.copy_from_slice(&pixels.rgba);
+    Some(slint::Image::from_rgba8(buffer))
+}
+
+fn failed_image(why: String) -> ShownImage {
+    ShownImage {
+        state: ImageState::Failed,
+        note: why.into(),
+        ..ShownImage::default()
+    }
 }
 
 /// What only an open card shows is made only for one.

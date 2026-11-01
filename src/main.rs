@@ -164,9 +164,13 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     if std::env::args().nth(1).as_deref() == Some("--daemon") {
         return Ok(daemon::run());
     }
-    // The image decoder the daemon starts, confined before it reads (see `decode`).
-    if std::env::args().nth(1).as_deref() == Some("--decode-image") {
-        return Ok(decode::run());
+    // The image decoder the daemon and the window start, confined before it reads (see
+    // `decode`).
+    if let Some(job) = std::env::args()
+        .nth(1)
+        .and_then(|argument| argument.parse::<decode::Job>().ok())
+    {
+        return Ok(decode::run(job));
     }
 
     let args = match Args::parse(std::env::args().skip(1)) {

@@ -299,8 +299,9 @@ pub(crate) fn result_text(content: Option<&UserContent>) -> String {
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::Text { text } if !text.is_empty() => Some(text.as_str()),
-                ContentBlock::Image => Some("[image]"),
-                ContentBlock::Text { .. }
+                // Shown in the card as images.
+                ContentBlock::Image { .. }
+                | ContentBlock::Text { .. }
                 | ContentBlock::Thinking { .. }
                 | ContentBlock::ToolUse { .. }
                 | ContentBlock::ServerToolUse { .. }

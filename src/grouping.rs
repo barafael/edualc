@@ -69,6 +69,7 @@ fn foldable(entry: &Entry) -> Option<&Tool> {
         Body::Tool { tool, .. } if tool.state != ToolState::Awaiting => Some(tool),
         Body::Tool { .. }
         | Body::Shell { .. }
+        | Body::Image(_)
         | Body::User(_)
         | Body::Assistant(_)
         | Body::Thinking { .. }

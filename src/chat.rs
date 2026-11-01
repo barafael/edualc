@@ -6,9 +6,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
+use crate::decode::Picture;
 use crate::external::wire::{
-    ApiMessage, ContentBlock, Delta, MessageId, StreamEvent, System, ToolName, ToolUseId,
-    TranscriptLine, UserContent, UserMessage,
+    ApiMessage, ContentBlock, Delta, MessageId, ReceivedImage, StreamEvent, System, ToolName,
+    ToolUseId, TranscriptLine, UserContent, UserMessage,
 };
 use crate::tools;
 
@@ -32,7 +33,31 @@ pub(crate) struct Tool {
     pub(crate) input: Value,
     partial_input: String,
     pub(crate) output: String,
+    /// The images it returned (a file read, a screenshot).
+    pub(crate) images: Vec<ImageKey>,
     pub(crate) state: ToolState,
+}
+
+/// An image in the conversation, known by its content: the same image twice is one image, and
+/// one's pixels, decoded late, can't come to another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ImageKey(u64);
+
+impl ImageKey {
+    fn of(bytes: &[u8]) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        Self(hasher.finish())
+    }
+}
+
+/// An image's bytes, to be decoded for showing: as a message holds them, or as the composer
+/// sent them (already decoded and encoded again once).
+#[derive(Debug, Clone)]
+pub(crate) enum ImageBytes {
+    Base64(String),
+    Sent(Vec<u8>),
 }
 
 /// A command the user ran with `!`, as Claude Code ran it, and what it printed.
@@ -72,6 +97,8 @@ pub(crate) enum Body {
         shell: Shell,
         expanded: bool,
     },
+    /// An image the user sent.
+    Image(ImageKey),
     Info(String),
     Error(String),
 }
@@ -94,6 +121,7 @@ impl Entry {
             | Body::Thinking { text, .. } => text,
             Body::Tool { tool, .. } => &tool.output,
             Body::Shell { shell, .. } => &shell.output,
+            Body::Image(_) => "",
         }
     }
 }
@@ -118,6 +146,8 @@ pub(crate) struct Chat {
     streamed: HashSet<MessageId>,
     /// The message being streamed, by subagent (`None` for the main conversation).
     current: HashMap<Option<ToolUseId>, MessageId>,
+    /// Images come since the window last took them, to be decoded for showing.
+    new_images: Vec<(ImageKey, ImageBytes)>,
 }
 
 /// Where messages come from: the process as it runs, or a saved transcript, where the user's
@@ -232,6 +262,7 @@ impl Chat {
             input,
             partial_input: String::new(),
             output: String::new(),
+            images: Vec::new(),
             state,
         };
         let index = self.push(Body::Tool { tool, expanded }, nested);
@@ -264,9 +295,62 @@ impl Chat {
             | Body::Assistant(_)
             | Body::Thinking { .. }
             | Body::Shell { .. }
+            | Body::Image(_)
             | Body::Info(_)
             | Body::Error(_) => None,
         }
+    }
+
+    /// Images the user sent from the composer, each a row of its own.
+    pub(crate) fn user_images(&mut self, pictures: &[Picture]) {
+        for picture in pictures {
+            let key = ImageKey::of(&picture.bytes);
+            self.new_images
+                .push((key, ImageBytes::Sent(picture.bytes.clone())));
+            self.push(Body::Image(key), false);
+        }
+    }
+
+    /// The images come since the last call, to be decoded for showing.
+    pub(crate) fn take_images(&mut self) -> Vec<(ImageKey, ImageBytes)> {
+        std::mem::take(&mut self.new_images)
+    }
+
+    /// Image `key`'s pixels came (or it can't be shown): the rows showing it show it anew.
+    pub(crate) fn image_shown(&mut self, key: ImageKey) {
+        for (index, entry) in self.entries.iter().enumerate() {
+            let shows = match &entry.body {
+                Body::Image(shown) => *shown == key,
+                Body::Tool { tool, .. } => tool.images.contains(&key),
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Shell { .. }
+                | Body::Info(_)
+                | Body::Error(_) => false,
+            };
+            if shows {
+                self.changes.push(Change::Updated(index));
+            }
+        }
+    }
+
+    /// The images the conversation shows.
+    pub(crate) fn image_keys(&self) -> HashSet<ImageKey> {
+        self.entries
+            .iter()
+            .flat_map(|entry| match &entry.body {
+                Body::Image(key) => std::slice::from_ref(key),
+                Body::Tool { tool, .. } => tool.images.as_slice(),
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Shell { .. }
+                | Body::Info(_)
+                | Body::Error(_) => &[],
+            })
+            .copied()
+            .collect()
     }
 
     /// A `!` command, as Claude Code echoed it: it runs until its output comes.
@@ -317,6 +401,7 @@ impl Chat {
                 | Body::Assistant(_)
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
+                | Body::Image(_)
                 | Body::Info(_)
                 | Body::Error(_) => None,
             });
@@ -384,7 +469,11 @@ impl Chat {
             Body::Thinking { expanded, .. }
             | Body::Tool { expanded, .. }
             | Body::Shell { expanded, .. } => *expanded = !*expanded,
-            Body::User(_) | Body::Assistant(_) | Body::Info(_) | Body::Error(_) => return,
+            Body::User(_)
+            | Body::Assistant(_)
+            | Body::Image(_)
+            | Body::Info(_)
+            | Body::Error(_) => return,
         }
         self.changes.push(Change::Updated(index));
     }
@@ -434,7 +523,7 @@ impl Chat {
                     // Thinking gets an entry once it has text: often it arrives redacted.
                     ContentBlock::Thinking { .. }
                     | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Image
+                    | ContentBlock::Image { .. }
                     | ContentBlock::Other => None,
                 };
                 if let Some(entry) = entry {
@@ -544,7 +633,7 @@ impl Chat {
                 ContentBlock::Text { .. }
                 | ContentBlock::Thinking { .. }
                 | ContentBlock::ToolResult { .. }
-                | ContentBlock::Image
+                | ContentBlock::Image { .. }
                 | ContentBlock::Other => {}
             }
         }
@@ -563,9 +652,14 @@ impl Chat {
                             is_error,
                         } => self.tool_result(tool_use_id, content.as_ref(), *is_error),
                         ContentBlock::Text { text } => self.user_text(text, origin),
-                        ContentBlock::Image if origin == Origin::Transcript => self.user("[image]"),
-                        ContentBlock::Image
-                        | ContentBlock::Thinking { .. }
+                        ContentBlock::Image { source } => match received(source.as_ref()) {
+                            Some((key, bytes)) => {
+                                self.new_images.push((key, bytes));
+                                self.push(Body::Image(key), false);
+                            }
+                            None => self.user("[image]"),
+                        },
+                        ContentBlock::Thinking { .. }
                         | ContentBlock::ToolUse { .. }
                         | ContentBlock::ServerToolUse { .. }
                         | ContentBlock::Other => {}
@@ -575,16 +669,45 @@ impl Chat {
         }
     }
 
+    /// A tool's result; a card with images in it opens, to show them.
     fn tool_result(&mut self, id: &ToolUseId, content: Option<&UserContent>, failed: bool) {
-        if let Some((index, tool)) = self.tool_mut(id) {
-            tool.output = tools::result_text(content);
-            tool.state = match (failed, tool.state) {
-                (true, ToolState::Denied) => ToolState::Denied,
-                (true, _) => ToolState::Failed,
-                (false, _) => ToolState::Done,
-            };
-            self.changes.push(Change::Updated(index));
+        let images: Vec<(ImageKey, ImageBytes)> = match content {
+            Some(UserContent::Blocks(blocks)) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Image { source } => received(source.as_ref()),
+                    ContentBlock::Text { .. }
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Other => None,
+                })
+                .collect(),
+            Some(UserContent::Text(_)) | None => Vec::new(),
+        };
+        let Some(index) = self.tools.get(id).copied() else {
+            return;
+        };
+        let Some(Entry {
+            body: Body::Tool { tool, expanded },
+            ..
+        }) = self.entries.get_mut(index)
+        else {
+            return;
+        };
+        tool.output = tools::result_text(content);
+        tool.state = match (failed, tool.state) {
+            (true, ToolState::Denied) => ToolState::Denied,
+            (true, _) => ToolState::Failed,
+            (false, _) => ToolState::Done,
+        };
+        if !images.is_empty() {
+            tool.images = images.iter().map(|(key, _)| *key).collect();
+            *expanded = true;
+            self.new_images.extend(images);
         }
+        self.changes.push(Change::Updated(index));
     }
 
     fn user_text(&mut self, text: &str, origin: Origin) {
@@ -643,6 +766,17 @@ impl Chat {
                 | TranscriptLine::Other => {}
             }
         }
+    }
+}
+
+/// An image a message holds, if it holds its bytes (and not, say, a link).
+fn received(source: Option<&ReceivedImage>) -> Option<(ImageKey, ImageBytes)> {
+    match source? {
+        ReceivedImage::Base64 { data } => Some((
+            ImageKey::of(data.as_bytes()),
+            ImageBytes::Base64(data.clone()),
+        )),
+        ReceivedImage::Other => None,
     }
 }
 
@@ -819,6 +953,7 @@ mod tests {
                 | Body::Assistant(_)
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
+                | Body::Image(_)
                 | Body::Info(_)
                 | Body::Error(_) => None,
             })
@@ -948,6 +1083,84 @@ mod tests {
             texts(&chat),
             ["stream.write_all(&response);", "a", "Why a?", ""]
         );
+    }
+
+    fn image_block(data: &str) -> Value {
+        json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": data } })
+    }
+
+    /// Images the user sent are rows of their own, before the text they came with; those a
+    /// tool returned go into its card, which opens. Each is to be decoded once taken, known by
+    /// its content; one without its bytes says so.
+    #[test]
+    fn images_go_where_they_were_sent_and_are_decoded_by_content() {
+        let lines: Vec<TranscriptLine> = [
+            json!({ "type": "user", "message": { "content": [
+                image_block("QUJD"),
+                { "type": "text", "text": "What is this?" },
+            ] } }),
+            json!({ "type": "assistant", "message": { "id": "m1", "content": [
+                { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "/a.png" } },
+            ] } }),
+            json!({ "type": "user", "message": { "content": [
+                { "type": "tool_result", "tool_use_id": "t1",
+                  "content": [image_block("REVG"), { "type": "text", "text": "a.png" }] },
+            ] } }),
+            json!({ "type": "user", "message": { "content": [
+                image_block("QUJD"),
+                { "type": "image", "source": { "type": "url", "url": "https://example.com/a.png" } },
+            ] } }),
+        ]
+        .into_iter()
+        .map(|line| serde_json::from_value(line).expect("a transcript line"))
+        .collect();
+        let mut chat = Chat::from_transcript(&lines);
+        let sent = ImageKey::of(b"QUJD");
+        let read = ImageKey::of(b"REVG");
+        let bodies: Vec<String> = chat
+            .entries
+            .iter()
+            .map(|entry| match &entry.body {
+                Body::Image(key) if *key == sent => "sent image".to_owned(),
+                Body::Tool { tool, expanded } => {
+                    format!(
+                        "tool {:?} {expanded} {}",
+                        tool.images == [read],
+                        tool.output
+                    )
+                }
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Shell { .. }
+                | Body::Image(_)
+                | Body::Info(_)
+                | Body::Error(_) => format!("{:?}", entry.copy_text()),
+            })
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                "sent image",
+                "\"What is this?\"",
+                "tool true true a.png",
+                "sent image",
+                "\"[image]\"",
+            ]
+        );
+        let taken: Vec<ImageKey> = chat.take_images().into_iter().map(|(key, _)| key).collect();
+        assert_eq!(taken, [sent, read, sent]);
+        assert!(chat.take_images().is_empty(), "taken once");
+        assert_eq!(chat.image_keys(), HashSet::from([sent, read]));
+        chat.take_changes();
+        chat.image_shown(sent);
+        assert_eq!(
+            chat.take_changes(),
+            [Change::Updated(0), Change::Updated(3)],
+            "the rows showing it"
+        );
+        chat.image_shown(read);
+        assert_eq!(chat.take_changes(), [Change::Updated(2)]);
     }
 
     /// Escapes undone once: what a command printed as `&lt;` stays `&lt;`.

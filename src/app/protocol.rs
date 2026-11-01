@@ -74,7 +74,7 @@ impl App {
                     | ContentBlock::Thinking { .. }
                     | ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Image
+                    | ContentBlock::Image { .. }
                     | ContentBlock::Other => None,
                 });
                 if let Some(name) = running {
@@ -135,7 +135,7 @@ impl App {
                 }
                 ContentBlock::Thinking { .. }
                 | ContentBlock::ToolResult { .. }
-                | ContentBlock::Image
+                | ContentBlock::Image { .. }
                 | ContentBlock::Other => return,
             },
             StreamEvent::ContentBlockDelta { .. }

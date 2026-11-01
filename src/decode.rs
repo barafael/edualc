@@ -1,13 +1,14 @@
-//! Images from outside (the clipboard; later, transcripts) made safe to show and send. They are
-//! decoded in a process of their own, `edualc --decode-image`, which confines itself before it
-//! reads a byte: it reaches no file, socket or other process, runs no new code, and has bounded
-//! memory and time. It answers with the image encoded again (its metadata dropped, scaled to
-//! what Claude takes) and a thumbnail. A crafted image can take over that process, which can do
-//! no more than answer.
+//! Images from outside (the clipboard, the conversation) made safe to show and send. They are
+//! decoded in a process of their own, `edualc --decode-image` or `--show-image`, which confines
+//! itself before it reads a byte: it reaches no file, socket or other process, runs no new code,
+//! and has bounded memory and time. Asked to decode, it answers with the image encoded again
+//! (its metadata dropped, scaled to what Claude takes) and a thumbnail; asked to show, with
+//! pixels to show. A crafted image can take over that process, which can do no more than answer.
 //!
-//! The daemon starts it, hands it the bytes on its standard input and takes one postcard answer
-//! from its standard output, read to its end (no framing: the answer is all there is). The
-//! answer is untrusted like the image: bounded, parsed as its type, and checked.
+//! The daemon starts it for a paste, the window for an image in the conversation. It is handed
+//! the bytes on its standard input and gives one postcard answer on its standard output, read
+//! to its end (no framing: the answer is all there is). The answer is untrusted like the image:
+//! bounded, parsed as its type, and checked.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
@@ -53,6 +54,11 @@ const VISUAL_TOKEN_PX: u32 = 28;
 const MAX_SENT_BYTES: usize = 5 * 1000 * 1000 / 4 * 3;
 /// The longest side of the thumbnail shown in the composer.
 pub(crate) const THUMBNAIL_SIDE_PX: u32 = 192;
+/// The longest side of an image shown in the conversation: twice the 480 px it takes there at
+/// most, for a display scaled 2×.
+pub(crate) const SHOWN_SIDE_PX: u32 = 960;
+/// The most the helper may answer when asked to show.
+const MAX_SHOWN_ANSWER_BYTES: usize = 4 * (SHOWN_SIDE_PX as usize).pow(2) + 1024;
 /// The most the helper may answer, and so the most a pasted image comes to in the window.
 pub(crate) const MAX_ANSWER_BYTES: usize = MAX_SENT_BYTES + 1024 * 1024;
 /// How long a decode may take, and the helper's own processor time.
@@ -60,11 +66,30 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// The helper's address space: decoding's allocations and the program around them.
 const MAX_ADDRESS_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// What the helper answers.
+/// What the helper is asked to make of an image, by the argument it is started with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::AsRefStr)]
+pub(crate) enum Job {
+    /// To send: encoded again for Claude, with a thumbnail for the composer ([`Decoded`]).
+    #[strum(serialize = "--decode-image")]
+    Send,
+    /// To show in the conversation: pixels, at most [`SHOWN_SIDE_PX`] on a side ([`Shown`]).
+    #[strum(serialize = "--show-image")]
+    Show,
+}
+
+/// What the helper answers when asked to send.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum Decoded {
     Image(Picture),
+    Refused(Refusal),
+}
+
+/// What the helper answers when asked to show.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum Shown {
+    Image(Pixels),
     Refused(Refusal),
 }
 
@@ -76,16 +101,24 @@ pub(crate) struct Picture {
     pub(crate) bytes: Vec<u8>,
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
-    pub(crate) thumbnail: Thumbnail,
+    pub(crate) thumbnail: Pixels,
 }
 
 /// Pixels, four bytes each (red, green, blue, alpha), row by row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Thumbnail {
+pub(crate) struct Pixels {
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
     pub(crate) rgba: Vec<u8>,
+}
+
+impl Pixels {
+    /// Whether there are as many bytes as pixels, four each.
+    fn whole(&self) -> bool {
+        let pixels = u64::from(self.width_px) * u64::from(self.height_px);
+        u64::try_from(self.rgba.len()).ok() == Some(pixels * 4)
+    }
 }
 
 /// Why the helper wouldn't make an image of what it was given.
@@ -120,7 +153,7 @@ pub(crate) enum Error {
     Slow,
     #[error("the image decoder failed ({0})")]
     Failed(std::process::ExitStatus),
-    #[error("the image decoder answered more than {MAX_ANSWER_BYTES} bytes")]
+    #[error("the image decoder answered more than an answer comes to")]
     TooMuch,
     #[error("the image decoder's answer doesn't parse: {0}")]
     Unreadable(#[source] postcard::Error),
@@ -130,17 +163,32 @@ pub(crate) enum Error {
     Refused(#[from] Refusal),
 }
 
-/// Has the helper (this program, as it runs) decode `bytes`.
+/// The helper: this program, as it runs.
+const HELPER: &str = "/proc/self/exe";
+
+/// Has the helper decode `bytes`, to send.
 pub(crate) async fn decode(bytes: &[u8]) -> Result<Picture, Error> {
-    decode_with(std::path::Path::new("/proc/self/exe"), bytes).await
+    let answer = exchange(std::path::Path::new(HELPER), Job::Send, bytes).await?;
+    checked(&answer)
 }
 
-async fn decode_with(program: &std::path::Path, bytes: &[u8]) -> Result<Picture, Error> {
+/// Has the helper decode `bytes`, to show.
+pub(crate) async fn show(bytes: &[u8]) -> Result<Pixels, Error> {
+    let answer = exchange(std::path::Path::new(HELPER), Job::Show, bytes).await?;
+    checked_shown(&answer)
+}
+
+/// The helper's whole answer to `job` for `bytes`.
+async fn exchange(program: &std::path::Path, job: Job, bytes: &[u8]) -> Result<Vec<u8>, Error> {
     if bytes.len() > MAX_INPUT_BYTES {
         return Err(Refusal::TooManyBytes.into());
     }
+    let max_answer_bytes = match job {
+        Job::Send => MAX_ANSWER_BYTES,
+        Job::Show => MAX_SHOWN_ANSWER_BYTES,
+    };
     let mut child = tokio::process::Command::new(program)
-        .arg("--decode-image")
+        .arg(job.as_ref())
         .env_clear()
         .current_dir("/")
         .stdin(Stdio::piped())
@@ -152,7 +200,7 @@ async fn decode_with(program: &std::path::Path, bytes: &[u8]) -> Result<Picture,
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(Error::NoPipes);
     };
-    let exchange = async {
+    let talking = async {
         let handing = async {
             stdin.write_all(bytes).await?;
             // Its end of input: the helper reads to it.
@@ -161,7 +209,7 @@ async fn decode_with(program: &std::path::Path, bytes: &[u8]) -> Result<Picture,
         };
         let reading = async {
             let mut answer = Vec::new();
-            let limit = u64::try_from(MAX_ANSWER_BYTES + 1).unwrap_or(u64::MAX);
+            let limit = u64::try_from(max_answer_bytes + 1).unwrap_or(u64::MAX);
             stdout.take(limit).read_to_end(&mut answer).await?;
             Ok(answer)
         };
@@ -175,10 +223,13 @@ async fn decode_with(program: &std::path::Path, bytes: &[u8]) -> Result<Picture,
         answer.map_err(Error::Read)
     };
     // Late, it is dropped, and with it the helper, killed.
-    let answer = tokio::time::timeout(PATIENCE, exchange)
+    let answer = tokio::time::timeout(PATIENCE, talking)
         .await
         .map_err(|_elapsed| Error::Slow)??;
-    checked(&answer)
+    if answer.len() > max_answer_bytes {
+        return Err(Error::TooMuch);
+    }
+    Ok(answer)
 }
 
 /// The helper's answer, taken only if it is one whole answer that holds together.
@@ -196,28 +247,48 @@ fn checked(answer: &[u8]) -> Result<Picture, Error> {
         Decoded::Refused(refusal) => return Err(refusal.into()),
     };
     let thumbnail = &picture.thumbnail;
-    let pixels = u64::from(thumbnail.width_px) * u64::from(thumbnail.height_px);
-    let whole = u64::try_from(thumbnail.rgba.len()).ok() == Some(pixels * 4);
     let fits = picture.width_px <= SENT_LONG_EDGE_PX
         && picture.height_px <= SENT_LONG_EDGE_PX
         && thumbnail.width_px <= THUMBNAIL_SIDE_PX
         && thumbnail.height_px <= THUMBNAIL_SIDE_PX
         && !picture.bytes.is_empty()
         && picture.bytes.len() <= MAX_SENT_BYTES;
-    if whole && fits {
+    if thumbnail.whole() && fits {
         Ok(picture)
     } else {
         Err(Error::Malformed)
     }
 }
 
-/// The helper: confined, then the bytes on its standard input decoded, and one answer on its
-/// standard output.
-pub(crate) fn run() -> ExitCode {
+/// The helper's answer to show, taken as [`checked`] takes one to send.
+fn checked_shown(answer: &[u8]) -> Result<Pixels, Error> {
+    if answer.len() > MAX_SHOWN_ANSWER_BYTES {
+        return Err(Error::TooMuch);
+    }
+    let (shown, rest) = postcard::take_from_bytes::<Shown>(answer).map_err(Error::Unreadable)?;
+    if !rest.is_empty() {
+        return Err(Error::Malformed);
+    }
+    let pixels = match shown {
+        Shown::Image(pixels) => pixels,
+        Shown::Refused(refusal) => return Err(refusal.into()),
+    };
+    let fits = (1..=SHOWN_SIDE_PX).contains(&pixels.width_px)
+        && (1..=SHOWN_SIDE_PX).contains(&pixels.height_px);
+    if pixels.whole() && fits {
+        Ok(pixels)
+    } else {
+        Err(Error::Malformed)
+    }
+}
+
+/// The helper: confined, then the bytes on its standard input made into what `job` asks, and
+/// one answer on its standard output.
+pub(crate) fn run(job: Job) -> ExitCode {
     if let Err(error) = confine() {
         // Nothing is read unconfined; the daemon sees the failure (stderr is for a person
         // running it by hand).
-        eprintln!("edualc --decode-image: couldn't confine itself: {error}");
+        eprintln!("edualc {}: couldn't confine itself: {error}", job.as_ref());
         return ExitCode::FAILURE;
     }
     let mut bytes = Vec::new();
@@ -230,15 +301,20 @@ pub(crate) fn run() -> ExitCode {
     {
         return ExitCode::FAILURE;
     }
-    let answer = if bytes.len() > MAX_INPUT_BYTES {
-        Decoded::Refused(Refusal::TooManyBytes)
-    } else {
-        match decoded(&bytes, MAX_SIDE_PX) {
+    let refused = (bytes.len() > MAX_INPUT_BYTES).then_some(Refusal::TooManyBytes);
+    let encoded = match job {
+        Job::Send => postcard::to_stdvec(&match refused
+            .map_or_else(|| decoded(&bytes, MAX_SIDE_PX), Err)
+        {
             Ok(picture) => Decoded::Image(picture),
             Err(refusal) => Decoded::Refused(refusal),
-        }
+        }),
+        Job::Show => postcard::to_stdvec(&match refused.map_or_else(|| shown(&bytes), Err) {
+            Ok(pixels) => Shown::Image(pixels),
+            Err(refusal) => Shown::Refused(refusal),
+        }),
     };
-    let Ok(encoded) = postcard::to_stdvec(&answer) else {
+    let Ok(encoded) = encoded else {
         return ExitCode::FAILURE;
     };
     let mut stdout = std::io::stdout().lock();
@@ -254,6 +330,49 @@ pub(crate) fn run() -> ExitCode {
 
 /// What the helper makes of an image's bytes (sans-io: it runs in the helper, and in tests).
 fn decoded(bytes: &[u8], max_side_px: u32) -> Result<Picture, Refusal> {
+    let (image, came_as) = read(bytes, max_side_px)?;
+    let (width_px, height_px) = sent_size(image.width(), image.height());
+    let sent = if (width_px, height_px) == (image.width(), image.height()) {
+        image
+    } else {
+        image.resize_exact(width_px, height_px, FilterType::Lanczos3)
+    };
+    let thumbnail = sent
+        .thumbnail(THUMBNAIL_SIDE_PX, THUMBNAIL_SIDE_PX)
+        .to_rgba8();
+    let (media_type, bytes) = encoded(&sent, came_as)?;
+    Ok(Picture {
+        media_type,
+        bytes,
+        width_px,
+        height_px,
+        thumbnail: Pixels {
+            width_px: thumbnail.width(),
+            height_px: thumbnail.height(),
+            rgba: thumbnail.into_raw(),
+        },
+    })
+}
+
+/// What the helper makes of an image's bytes to show: its pixels, scaled down to fit
+/// [`SHOWN_SIDE_PX`] (sans-io, as [`decoded`]).
+fn shown(bytes: &[u8]) -> Result<Pixels, Refusal> {
+    let (image, _came_as) = read(bytes, MAX_SIDE_PX)?;
+    let image = if image.width().max(image.height()) > SHOWN_SIDE_PX {
+        image.resize(SHOWN_SIDE_PX, SHOWN_SIDE_PX, FilterType::Triangle)
+    } else {
+        image
+    };
+    let rgba = image.to_rgba8();
+    Ok(Pixels {
+        width_px: rgba.width(),
+        height_px: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
+/// An image read from its bytes, within the limits on its size and on what decoding it takes.
+fn read(bytes: &[u8], max_side_px: u32) -> Result<(DynamicImage, MediaType), Refusal> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Refusal::Undecodable(error.to_string()))?;
@@ -275,27 +394,7 @@ fn decoded(bytes: &[u8], max_side_px: u32) -> Result<Picture, Refusal> {
         | image::ImageError::Unsupported(_)
         | image::ImageError::IoError(_)) => Refusal::Undecodable(other.to_string()),
     })?;
-    let (width_px, height_px) = sent_size(image.width(), image.height());
-    let sent = if (width_px, height_px) == (image.width(), image.height()) {
-        image
-    } else {
-        image.resize_exact(width_px, height_px, FilterType::Lanczos3)
-    };
-    let thumbnail = sent
-        .thumbnail(THUMBNAIL_SIDE_PX, THUMBNAIL_SIDE_PX)
-        .to_rgba8();
-    let (media_type, bytes) = encoded(&sent, came_as)?;
-    Ok(Picture {
-        media_type,
-        bytes,
-        width_px,
-        height_px,
-        thumbnail: Thumbnail {
-            width_px: thumbnail.width(),
-            height_px: thumbnail.height(),
-            rgba: thumbnail.into_raw(),
-        },
-    })
+    Ok((image, came_as))
 }
 
 /// The image encoded as it came (a PNG stays exact); one too heavy that way goes as a JPEG.
@@ -512,6 +611,49 @@ mod tests {
                 .expect("fits")
         );
         assert!(checked(&postcard::to_stdvec(&Decoded::Image(picture)).expect("encodes")).is_ok());
+    }
+
+    /// An image to show is scaled down to fit, never up; its answer is taken only whole and
+    /// within that size.
+    #[test]
+    fn an_image_to_show_fits_its_room_and_its_answer_is_checked() {
+        let large = shown(&png(3000, 1000)).expect("decodes");
+        assert_eq!((large.width_px, large.height_px), (SHOWN_SIDE_PX, 320));
+        assert!(large.whole());
+        let small = shown(&png(40, 20)).expect("decodes");
+        assert_eq!((small.width_px, small.height_px), (40, 20));
+        assert_eq!(small.rgba.get(..4), Some([0, 0, 128, 255].as_slice()));
+        let answer = |shown: &Shown| postcard::to_stdvec(shown).expect("encodes");
+        assert_eq!(
+            checked_shown(&answer(&Shown::Image(small.clone()))).expect("taken"),
+            small
+        );
+        assert!(matches!(
+            checked_shown(&answer(&Shown::Refused(Refusal::NotPngOrJpeg))),
+            Err(Error::Refused(Refusal::NotPngOrJpeg))
+        ));
+        let mut short = small;
+        short.rgba.pop();
+        let wide = Pixels {
+            width_px: SHOWN_SIDE_PX + 1,
+            height_px: 1,
+            rgba: vec![0; 4 * (SHOWN_SIDE_PX as usize + 1)],
+        };
+        let empty = Pixels {
+            width_px: 0,
+            height_px: 0,
+            rgba: Vec::new(),
+        };
+        for broken in [short, wide, empty] {
+            assert!(matches!(
+                checked_shown(&answer(&Shown::Image(broken))),
+                Err(Error::Malformed)
+            ));
+        }
+        assert!(matches!(
+            checked_shown(&vec![0; MAX_SHOWN_ANSWER_BYTES + 1]),
+            Err(Error::TooMuch)
+        ));
     }
 
     #[test]

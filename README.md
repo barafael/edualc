@@ -54,6 +54,11 @@ other way around.
   memory and time, seccomp killing it on anything else) and answers with the image encoded again
   (its metadata gone), scaled to what the current models take (2,576 px on the long edge, 4,784
   visual tokens), and a thumbnail. A crafted image can take over only that process.
+- **Images in the conversation.** The images you sent show where your messages are. The images a
+  tool returned to Claude, such as a file it read or a screenshot, show in the tool's card, which
+  opens for them. That way you see what Claude saw. They are decoded the same way, confined, by
+  `edualc --show-image`, which the window starts itself, one image at a time. An image that can't
+  be shown says why.
 - **Sessions outlive their window.** Closing the window while a session works, or waits for you,
   leaves it running; opening it again (from the list, or with `--resume`) shows it where it is: its
   transcript, then what it asked meanwhile, asked again. An idle session ends with its window, as its
@@ -172,7 +177,8 @@ sources) and `cargo test` are clean.
 - Side questions need a session running here; for one watched from another window, continue it here
   as a copy first.
 - `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in,
-  and only PNG and JPEG for now; images in saved transcripts show as a count, not as pictures.
+  and only PNG and JPEG for now (GIF and WebP show as not shown). An image shows at most 480 px
+  wide; there is no larger view yet.
 - Finding another session's window needs niri.
 - A window that attaches to a session in the middle of a turn shows what it asked, but not that the
   turn runs, until the process says something new.

@@ -274,7 +274,23 @@ pub(crate) enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
-    Image,
+    /// An image the user sent, or a tool returned (a file read, a screenshot).
+    Image {
+        #[serde(default)]
+        source: Option<ReceivedImage>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// Where an image in a message has its bytes. Its media type isn't taken: the decoder tells
+/// from the bytes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ReceivedImage {
+    Base64 {
+        data: String,
+    },
     #[serde(other)]
     Other,
 }

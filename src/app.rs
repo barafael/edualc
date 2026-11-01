@@ -11,9 +11,9 @@ use async_channel::{Receiver, Sender};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::chat::{Chat, ToolState};
+use crate::chat::{Change, Chat, ImageKey, ToolState};
 use crate::claude::{self, Claude, Launch, Output, Resume, SandboxWish};
-use crate::decode::Picture;
+use crate::decode::{Picture, Pixels};
 use crate::desktop;
 use crate::external::wire::{
     self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
@@ -30,6 +30,7 @@ use crate::trust;
 use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
 
+mod images;
 mod protocol;
 mod side;
 mod usage;
@@ -130,6 +131,11 @@ pub(crate) enum Event {
     Pasted {
         request: ActId,
         pasted: Pasted,
+    },
+    /// An image of the conversation, decoded in the confined helper to show, or why it isn't.
+    ImageShown {
+        key: ImageKey,
+        shown: Result<Pixels, images::ShowError>,
     },
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
@@ -499,6 +505,8 @@ pub(crate) struct App {
     /// echoes and output): it runs them beside the conversation, so they go to Claude ahead of
     /// the next prompt, as the terminal gives them.
     shell_rows: Vec<String>,
+    /// The conversation's images, decoded for showing.
+    images: images::Images,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, std::time::Instant>,
@@ -551,6 +559,7 @@ impl App {
         view.set_composer_height(settings.composer_height_px);
         Self {
             view,
+            images: images::Images::start(events.clone()),
             events,
             chat: Chat::default(),
             status: Status {
@@ -678,6 +687,13 @@ impl App {
                 self.acting.remove(&request);
                 if let Some(folder) = folder {
                     self.open_project(&folder.to_string_lossy());
+                }
+            }
+            Event::ImageShown { key, shown } => {
+                if self.images.wanted(key) {
+                    self.view
+                        .show_image(key, shown.as_ref().map_err(ToString::to_string));
+                    self.chat.image_shown(key);
                 }
             }
             Event::Pasted { request, pasted } => {
@@ -812,6 +828,17 @@ impl App {
     fn render(&mut self) {
         let redraw = std::mem::take(&mut self.redraw);
         let changes = self.chat.take_changes();
+        if changes.contains(&Change::Reset) {
+            let shown = self.chat.image_keys();
+            self.images.keep(&shown);
+            self.view.keep_images(&shown);
+        }
+        for (key, bytes) in self.chat.take_images() {
+            if !self.images.ask(key, bytes) {
+                self.view
+                    .show_image(key, Err("the window's image decoder is gone".to_owned()));
+            }
+        }
         self.view
             .render_transcript(&self.chat, changes, &self.cwd, &self.open_runs, redraw.runs);
         self.view.render_activity(
@@ -1445,7 +1472,10 @@ impl App {
         }
         let images = std::mem::take(&mut self.attached);
         self.view.render_attached(&self.attached);
-        self.chat.user(with_images(text, images.len()));
+        self.chat.user_images(&images);
+        if !text.is_empty() {
+            self.chat.user(text);
+        }
         if self.ensure_process() {
             self.status.turns += 1;
             self.status.doing = Doing::Starting;
@@ -1837,20 +1867,6 @@ impl App {
     }
 }
 
-/// The user's message as the conversation shows it: the images it took counted under its text.
-fn with_images(text: &str, images: usize) -> String {
-    let count = match images {
-        0 => return text.to_owned(),
-        1 => "with 1 image".to_owned(),
-        many => format!("with {many} images"),
-    };
-    if text.is_empty() {
-        count
-    } else {
-        format!("{text}\n\n{count}")
-    }
-}
-
 /// Claude's questions with the user's answers (the labels picked, or what was typed), the notes
 /// written, and the preview of the option picked, by question.
 fn answered(
@@ -1997,13 +2013,6 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_message_counts_the_images_it_took() {
-        assert_eq!(with_images("Look", 0), "Look");
-        assert_eq!(with_images("Look", 1), "Look\n\nwith 1 image");
-        assert_eq!(with_images("", 2), "with 2 images");
-    }
 
     /// Notes go with any answer; a preview only with a single option picked, the way
     /// AskUserQuestion takes them; nothing is added where nothing was written or previewed.

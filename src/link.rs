@@ -314,7 +314,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::decode::{Picture, Refusal, Thumbnail};
+    use crate::decode::{Picture, Pixels, Refusal};
     use crate::external::wire::MediaType;
 
     /// What the daemon may tell of a paste: an image, or why there is none. The kind is picked
@@ -333,7 +333,7 @@ mod tests {
                     bytes,
                     width_px,
                     height_px,
-                    thumbnail: Thumbnail {
+                    thumbnail: Pixels {
                         width_px: width_px % decode::THUMBNAIL_SIDE_PX,
                         height_px: height_px % decode::THUMBNAIL_SIDE_PX,
                         rgba,

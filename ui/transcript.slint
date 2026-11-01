@@ -4,7 +4,7 @@
 // `e3:text`.
 
 import { Theme } from "theme.slint";
-import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, MdBlock, ToolState } from "types.slint";
+import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, ImageState, MdBlock, ShownImage, ToolState } from "types.slint";
 import { Clipboard, Transcript } from "state.slint";
 import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, TableCell } from "widgets.slint";
 
@@ -159,6 +159,45 @@ component DiffView inherits Rectangle {
 // Before a tool call's name: how far it got, by shape as well as colour (Gruvbox's green and
 // yellow are close): a dot while it runs, a hand while it waits for the user, a check,
 // a cross, a slashed circle.
+// An image in the conversation: its pixels at the screen's scale, at most 480px wide and the
+// room there is, its shape kept; a frame while it is decoded; why, if it isn't shown.
+component ImageView inherits HorizontalLayout {
+    in property <ShownImage> shown;
+    in property <length> room;
+    property <length> shown-width: min(root.room, 480px, root.shown.width-px * 1phx);
+    alignment: start;
+    if root.shown.state == ImageState.shown: Rectangle {
+        width: root.shown-width;
+        height: root.shown-width * root.shown.height-px / max(1, root.shown.width-px);
+        border-radius: Theme.radius-m;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.shown.image;
+            accessible-role: image;
+            accessible-label: "Image";
+        }
+    }
+    if root.shown.state == ImageState.pending: Rectangle {
+        width: min(root.room, 160px);
+        height: 90px;
+        border-radius: Theme.radius-m;
+        background: Theme.surface;
+        Caption {
+            text: "Image";
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    if root.shown.state == ImageState.failed: Small {
+        text: "Image not shown: \{root.shown.note}";
+        color: Theme.text-tertiary;
+        wrap: word-wrap;
+        max-width: root.room;
+    }
+}
+
 component StateMark inherits Rectangle {
     in property <ToolState> state;
     property <bool> working: root.state == ToolState.running || root.state == ToolState.streaming;
@@ -219,6 +258,8 @@ component RunLine inherits Pressable {
 component ToolCard inherits Rectangle {
     in property <Entry> entry;
     in property <int> index;
+    // How wide its images may be: from the row, as the card sizes itself from what it holds.
+    in property <length> image-room;
     property <string> state-label: root.entry.tool-state == ToolState.awaiting ? "Waiting for you"
         : root.entry.tool-state == ToolState.failed ? "Failed"
         : root.entry.tool-state == ToolState.denied ? "Denied"
@@ -298,6 +339,10 @@ component ToolCard inherits Rectangle {
                 note: root.entry.output-note;
                 copyable: true;
                 copy => { Transcript.copy-entry(root.index); }
+            }
+            for shown in root.entry.images: ImageView {
+                shown: shown;
+                room: root.image-room;
             }
         }
     }
@@ -400,6 +445,14 @@ export component EntryView inherits VerticalLayout {
         entry: root.entry;
         index: root.index;
     }
+    // An image the user sent, where their messages are.
+    if root.entry.kind == EntryKind.image: HorizontalLayout {
+        alignment: end;
+        for shown in root.entry.images: ImageView {
+            shown: shown;
+            room: root.width * 0.85;
+        }
+    }
     if root.entry.kind == EntryKind.assistant: AssistantText {
         entry: root.entry;
         index: root.index;
@@ -419,6 +472,7 @@ export component EntryView inherits VerticalLayout {
         ToolCard {
             entry: root.entry;
             index: root.index;
+            image-room: root.width - Theme.space-xl - 2 * Theme.space-s;
         }
     }
     if root.entry.kind == EntryKind.info: Selectable {

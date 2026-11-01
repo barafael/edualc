@@ -424,7 +424,7 @@ fn prompt_text(content: &UserContent) -> Option<String> {
         | wire::ContentBlock::ToolUse { .. }
         | wire::ContentBlock::ServerToolUse { .. }
         | wire::ContentBlock::ToolResult { .. }
-        | wire::ContentBlock::Image
+        | wire::ContentBlock::Image { .. }
         | wire::ContentBlock::Other => None,
     });
     whole
