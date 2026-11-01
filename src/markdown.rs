@@ -322,8 +322,10 @@ impl TableParse {
         };
         let column = row.len();
         if column < TABLE_COLUMNS {
-            // The source starts at the space after the cell's `|`.
-            row.push(source.trim().to_owned());
+            // The source starts at the space after the cell's `|`. A `\|` only keeps a pipe from
+            // ending the cell: GFM takes the backslash away before parsing the cell, so that
+            // inline code shows the pipe alone too, and the cell is parsed without the table.
+            row.push(source.trim().replace("\\|", "|"));
             self.cell = Some(ShownCell { column, chars: 0 });
         } else if column == TABLE_COLUMNS {
             row.push("…".to_owned());
@@ -549,7 +551,7 @@ mod tests {
             table.rows,
             [
                 ["Name", "What"],
-                ["`main_window.rs`", "**bold** and \\| pipe"],
+                ["`main_window.rs`", "**bold** and | pipe"],
                 ["a.rs", "[link](https://example.org/a/long/path)"],
             ]
         );
@@ -557,6 +559,17 @@ mod tests {
         assert_eq!(table.longest_cell_chars, [14, 15]);
         assert!(table.source.starts_with("| Name |"), "{}", table.source);
         assert!(table.source.ends_with("long/path) |"), "{}", table.source);
+    }
+
+    /// GFM: a `\|` in a cell is a pipe, in inline code too.
+    #[test]
+    fn an_escaped_pipe_in_a_cell_is_a_pipe() {
+        let table = only_table("| Shell |\n|---|\n| `ls \\| wc -l`, a \\| b |\n");
+        let cell = table.rows.get(1).and_then(|row| row.first());
+        assert_eq!(
+            cell.map(|cell| drawn_lines(cell)),
+            Some(vec!["ls | wc -l, a | b".to_owned()])
+        );
     }
 
     /// Every cell is an element of the window.

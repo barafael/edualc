@@ -3,41 +3,56 @@
 // the first Markdown block of entry 3, `e3:b0:r1c2` for a cell of it, `e3:detail`, `e3:output`,
 // `e3:text`.
 
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, ImageState, MdBlock, ShownImage, ToolState } from "types.slint";
 import { Clipboard, Transcript } from "state.slint";
 import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, TableCell } from "widgets.slint";
 
 // A table as wide as its cells need, up to the column. Narrower, its cells wrap, each column
-// giving up width by its share of `column-stretch`. Copying takes its Markdown.
+// giving up width by its share of `column-stretch`, down to its longest word; past that the
+// table scrolls sideways. Copying takes its Markdown.
 component TableView inherits HorizontalLayout {
     in property <MdBlock> block;
     in property <string> key;
+    // Fluent's horizontal scroll bar lies over the bottom of what it scrolls.
+    property <length> scroll-bar: 14px;
+    property <bool> overflowing: grid.min-width > scroll.visible-width;
     alignment: start;
     spacing: Theme.space-xs;
     Rectangle {
-        // Words too long for the column would widen the table past it: cut off, rather than
-        // widen the transcript.
+        // Not the grid's: the scroll view takes what the grid can't fit.
         min-width: 0px;
+        preferred-width: grid.preferred-width;
+        height: scroll.height;
         clip: true;
         border-radius: Theme.radius-m;
         border-width: 1px;
         border-color: Theme.divider;
-        GridLayout {
-            // Inside the border.
-            padding: 1px;
-            for row[row-index] in root.block.rows: Row {
-                for cell[column-index] in row.cells: Rectangle {
-                    horizontal-stretch: root.block.column-stretch[column-index];
-                    background: row-index == 0 ? Theme.code : Math.mod(row-index, 2) == 0 ? Theme.subtle : transparent;
-                    HorizontalLayout {
-                        padding-left: Theme.space-s;
-                        padding-right: Theme.space-s;
-                        padding-top: Theme.space-xs;
-                        padding-bottom: Theme.space-xs;
-                        TableCell {
-                            text: cell;
-                            key: "\{root.key}:r\{row-index}c\{column-index}";
+        scroll := ScrollView {
+            width: parent.width;
+            height: grid.preferred-height + (root.overflowing ? root.scroll-bar : 0px);
+            vertical-scrollbar-policy: always-off;
+            content-width: max(self.visible-width, grid.min-width);
+            content-height: grid.preferred-height;
+            grid := GridLayout {
+                width: scroll.content-width;
+                height: scroll.content-height;
+                // Inside the border.
+                padding: 1px;
+                for row[row-index] in root.block.rows: Row {
+                    for cell[column-index] in row.cells: Rectangle {
+                        horizontal-stretch: root.block.column-stretch[column-index];
+                        background: row-index == 0 ? Theme.code : Math.mod(row-index, 2) == 0 ? Theme.subtle : transparent;
+                        HorizontalLayout {
+                            padding-left: Theme.space-s;
+                            padding-right: Theme.space-s;
+                            padding-top: Theme.space-xs;
+                            padding-bottom: Theme.space-xs;
+                            TableCell {
+                                text: cell;
+                                key: "\{root.key}:r\{row-index}c\{column-index}";
+                            }
                         }
                     }
                 }
