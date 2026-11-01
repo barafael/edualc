@@ -127,6 +127,11 @@ pub(crate) enum Event {
         request: ActId,
         folder: Option<PathBuf>,
     },
+    /// Whether the terminal's trust dialog was accepted for the folder asked about.
+    Trusted {
+        request: ActId,
+        accepted: bool,
+    },
     /// The clipboard's image, decoded in the confined helper, or why there is none.
     Pasted {
         request: ActId,
@@ -151,6 +156,22 @@ pub(crate) enum Event {
     Changed(Watched),
     /// Now and then: sessions whose process ended without saying so are let go.
     Tick,
+}
+
+/// Where a start stands on its folder's trust.
+#[derive(Debug, Default)]
+enum TrustGate {
+    /// Nothing is held back.
+    #[default]
+    Open,
+    /// The daemon reads whether the terminal's dialog trusted the folder (the window can't,
+    /// see `trust`); the start, with what it was to resume, waits for its answer.
+    Checking {
+        request: ActId,
+        resume: Option<Resume>,
+    },
+    /// The user is asked to trust the folder; the start waits for them.
+    Asking(Option<Resume>),
 }
 
 /// What a request to the daemon was for.
@@ -529,8 +550,10 @@ pub(crate) struct App {
     /// The runs of tool calls opened, by their first call; the others are folded.
     open_runs: HashSet<usize>,
     usage: UsagePanel,
-    /// A start held back until the folder is trusted, with what it was to resume.
-    awaiting_trust: Option<Option<Resume>>,
+    /// A start held back until the folder is trusted.
+    trust_gate: TrustGate,
+    /// Folders the daemon found trusted in the terminal: starting there again asks nothing.
+    accepted_in_terminal: HashSet<PathBuf>,
     /// The line to the daemon, which runs Claude Code and does what the desktop is asked.
     link: Link,
     /// What the daemon was asked to do, by request, for what its answer means.
@@ -599,7 +622,8 @@ impl App {
             session_filter: String::new(),
             open_runs: HashSet::new(),
             usage: UsagePanel::default(),
-            awaiting_trust: None,
+            trust_gate: TrustGate::Open,
+            accepted_in_terminal: HashSet::new(),
             link,
             acting: HashMap::new(),
             last_act: ActId::default(),
@@ -694,6 +718,7 @@ impl App {
                     self.open_project(&folder.to_string_lossy());
                 }
             }
+            Event::Trusted { request, accepted } => self.trust_read(request, accepted),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view
@@ -861,7 +886,7 @@ impl App {
         );
         self.view.render_status(
             &self.status,
-            self.awaiting_trust.is_some(),
+            matches!(self.trust_gate, TrustGate::Asking(_)),
             &self.cwd,
             self.watch.as_ref(),
             self.current_worktree(),
@@ -913,14 +938,59 @@ impl App {
         });
     }
 
-    /// Starts a process in the working directory.
+    /// Starts a process in the working directory once it is trusted: here, or in the terminal,
+    /// which the daemon is asked about.
     fn start(&mut self, resume: Option<Resume>) {
-        if !trust::trusted(&self.cwd, &self.settings) {
-            self.awaiting_trust = Some(resume);
-            self.status.sandboxing = Sandboxing::Pending;
+        if trust::trusted_in_edualc(&self.cwd, &self.settings)
+            || self.accepted_in_terminal.contains(&self.cwd)
+        {
+            self.launch(resume);
             return;
         }
-        self.awaiting_trust = None;
+        self.status.sandboxing = if self.settings.sandbox {
+            Sandboxing::Pending
+        } else {
+            Sandboxing::Off
+        };
+        self.last_act = self.last_act.next();
+        let request = self.last_act;
+        let check = ToDaemon::Act {
+            request,
+            act: Act::CheckTrust {
+                folder: self.cwd.clone(),
+            },
+        };
+        self.trust_gate = if link::send(&self.link, check).is_ok() {
+            TrustGate::Checking { request, resume }
+        } else {
+            TrustGate::Asking(resume)
+        };
+    }
+
+    /// The daemon's answer on the folder's trust: the start held back goes ahead, or the user is
+    /// asked. An answer for a start since dropped or replaced is no longer waited for.
+    fn trust_read(&mut self, request: ActId, accepted: bool) {
+        let resume = match std::mem::take(&mut self.trust_gate) {
+            TrustGate::Checking {
+                request: asked,
+                resume,
+            } if asked == request => resume,
+            kept @ (TrustGate::Open | TrustGate::Checking { .. } | TrustGate::Asking(_)) => {
+                self.trust_gate = kept;
+                return;
+            }
+        };
+        if accepted {
+            self.accepted_in_terminal.insert(self.cwd.clone());
+            self.launch(resume);
+        } else {
+            self.trust_gate = TrustGate::Asking(resume);
+        }
+    }
+
+    /// Starts a process in the working directory, trusted.
+    fn launch(&mut self, resume: Option<Resume>) {
+        self.trust_gate = TrustGate::Open;
         self.generation = self.generation.next();
         self.log.clear();
         if self.status.worktree.is_none() {
@@ -987,14 +1057,18 @@ impl App {
 
     /// Trusts the folder shown and starts what waited for it.
     fn trust_folder(&mut self) {
-        let Some(resume) = self.awaiting_trust.take() else {
-            return;
+        let resume = match std::mem::take(&mut self.trust_gate) {
+            TrustGate::Asking(resume) => resume,
+            kept @ (TrustGate::Open | TrustGate::Checking { .. }) => {
+                self.trust_gate = kept;
+                return;
+            }
         };
         self.settings.trusted_folders.push(self.cwd.clone());
         if let Err(error) = settings::save(&self.settings) {
             tracing::warn!(%error, "couldn't keep the trusted folder");
         }
-        self.start(resume);
+        self.launch(resume);
         self.view.focus_composer();
     }
 
@@ -1022,9 +1096,11 @@ impl App {
         self.redraw.menus = true;
     }
 
-    /// Ends the process, if any.
+    /// Ends the process, if any, and drops a start held back for trust: it was the session's
+    /// being left, perhaps in another folder.
     fn stop(&mut self) {
         self.process = None;
+        self.trust_gate = TrustGate::Open;
         self.forget_process();
     }
 
@@ -1043,10 +1119,13 @@ impl App {
         self.redraw.usage = true;
     }
 
-    /// Starts a process for the session shown, unless one runs or the session runs
-    /// elsewhere. Whether one runs now.
+    /// Starts a process for the session shown, unless one runs, the session runs elsewhere or
+    /// a start waits for the folder's trust. Whether one runs now.
     fn ensure_process(&mut self) -> bool {
-        if self.process.is_none() && self.watch.is_none() && self.awaiting_trust.is_none() {
+        if self.process.is_none()
+            && self.watch.is_none()
+            && matches!(self.trust_gate, TrustGate::Open)
+        {
             let resume = self.status.session_id.clone().map(Resume::Continue);
             self.start(resume);
         }
@@ -1458,7 +1537,7 @@ impl App {
             return;
         }
         // Nothing runs before the folder is trusted: the prompt waits in the composer.
-        if self.awaiting_trust.is_some() {
+        if !matches!(self.trust_gate, TrustGate::Open) {
             self.put_draft(text);
             return;
         }
@@ -1482,6 +1561,12 @@ impl App {
             self.run_shell(text, command.trim());
             return;
         }
+        // A process starts if none runs; while one can't yet (its folder's trust is still read,
+        // or asked about), the prompt waits in the composer.
+        if !self.ensure_process() {
+            self.put_draft(text);
+            return;
+        }
         let images = std::mem::take(&mut self.attached);
         self.view.render_attached(&self.attached);
         self.chat.user_images(&images);
@@ -1494,12 +1579,10 @@ impl App {
         {
             self.status.title = Some(title.to_owned());
         }
-        if self.ensure_process() {
-            self.status.turns += 1;
-            self.status.doing = Doing::Starting;
-            let shell_rows = std::mem::take(&mut self.shell_rows);
-            self.write(|process| process.prompt(&shell_rows, &images, text));
-        }
+        self.status.turns += 1;
+        self.status.doing = Doing::Starting;
+        let shell_rows = std::mem::take(&mut self.shell_rows);
+        self.write(|process| process.prompt(&shell_rows, &images, text));
         self.view.scroll_to_end();
     }
 
@@ -1518,9 +1601,11 @@ impl App {
             self.view.scroll_to_end();
             return;
         }
-        if self.ensure_process() {
-            self.write(|process| process.run_shell(command));
+        if !self.ensure_process() {
+            self.put_draft(written);
+            return;
         }
+        self.write(|process| process.run_shell(command));
         self.view.scroll_to_end();
     }
 

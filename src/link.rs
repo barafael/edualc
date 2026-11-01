@@ -117,6 +117,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
+        | FromDaemon::Trusted { .. }
         | FromDaemon::Hosted(_)
         | FromDaemon::Pasted { .. } => return Err(Error::Version),
     };
@@ -129,6 +130,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
+        | FromDaemon::Trusted { .. }
         | FromDaemon::Pasted { .. } => return Err(Error::OutOfTurn),
     };
     Ok(Connected {
@@ -252,6 +254,7 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
             }
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
+            FromDaemon::Trusted { request, accepted } => Some(Event::Trusted { request, accepted }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
             FromDaemon::Pasted {
                 request,

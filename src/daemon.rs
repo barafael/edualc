@@ -39,7 +39,7 @@ use crate::ipc::{
     PasteFailure, StartFailure, Stream, ToDaemon,
 };
 use crate::mirror::Mirror;
-use crate::spawn;
+use crate::{spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -410,6 +410,15 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         tell_pasted(&outbox, request, &pasted).await;
         return;
     }
+    if let Act::CheckTrust { folder } = act {
+        let read = tokio::task::spawn_blocking(move || trust::accepted_in_terminal(&folder)).await;
+        let accepted = read.unwrap_or_else(|error| {
+            tracing::error!(%error, "reading the terminal's trust failed");
+            false
+        });
+        tell(&outbox, FromDaemon::Trusted { request, accepted }).await;
+        return;
+    }
     let done = tokio::task::spawn_blocking(move || perform(act)).await;
     let result = done.unwrap_or_else(|error| {
         tracing::error!(%error, "doing what the desktop was asked failed");
@@ -545,8 +554,8 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         }
         Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
         Act::StopSession(running) => desktop::stop_session(&running)?,
-        // Answered as `Picked` and `Pasted`, in `act_for`.
-        Act::PickFolder | Act::PasteImage => {}
+        // Answered as `Picked`, `Pasted` and `Trusted`, in `act_for`.
+        Act::PickFolder | Act::PasteImage | Act::CheckTrust { .. } => {}
     }
     Ok(())
 }

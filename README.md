@@ -164,7 +164,8 @@ given its channels for, channels without cycles, shutting down as they close), w
 logic tested without sockets or processes.
 
 The window confines itself before it makes any thread: it reads the system and the user's
-files but their secrets (keys, keyrings, browser profiles, credentials), writes only its
+files but their secrets (keys, keyrings, browser profiles, credentials, `~/.claude.json` with
+its MCP servers' environments: the daemon reads the trust kept there), writes only its
 settings and caches, reaches no socket but Wayland's and the daemon's folder, opens no network
 socket at all (seccomp), and gains no privileges. Its D-Bus is two `xdg-dbus-proxy` filters the
 daemon runs, as Flatpak does: on the session bus only accessibility's address and the desktop's

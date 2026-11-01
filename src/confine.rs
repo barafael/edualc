@@ -44,6 +44,9 @@ const SECRETS: &[&str] = &[
     ".cargo/credentials.toml",
     ".cargo/credentials",
     ".claude/.credentials.json",
+    // MCP servers' environments, tokens among them; the daemon reads the trust kept there.
+    ".claude.json",
+    ".claude/backups",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -74,10 +77,15 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
         .map(PathBuf::from)
         .collect();
     read.extend(all_but(&home, &secrets));
-    let write: Vec<PathBuf> = [".config/edualc", ".cache"]
-        .iter()
-        .map(|place| home.join(place))
-        .collect();
+    // Its settings and caches, where `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` put them, as
+    // `settings` finds them.
+    let write: Vec<PathBuf> = [
+        dirs::config_dir().map(|config| config.join("edualc")),
+        dirs::cache_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let devices: Vec<PathBuf> = ["/dev/dri", "/dev/null", "/dev/urandom"]
         .iter()
         .map(PathBuf::from)

@@ -541,7 +541,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 7;
+pub(crate) const PROTOCOL: u32 = 8;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -645,6 +645,8 @@ pub(crate) enum FromDaemon {
         request: ActId,
         folder: Option<PathBuf>,
     },
+    /// Whether the terminal's trust dialog was accepted for the folder asked about.
+    Trusted { request: ActId, accepted: bool },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
     /// The clipboard's image, or why there is none: a [`Pasted`], postcard-encoded, in pieces
@@ -800,6 +802,11 @@ pub(crate) enum Act {
     PickFolder,
     /// The clipboard's image, if it holds one; answered by `Pasted`.
     PasteImage,
+    /// Whether the terminal's trust dialog was accepted for the folder, or one it is in, which
+    /// the window can't read (see `trust`); answered by `Trusted`.
+    CheckTrust {
+        folder: PathBuf,
+    },
     Notify {
         summary: String,
         body: String,
