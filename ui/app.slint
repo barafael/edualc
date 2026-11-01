@@ -883,36 +883,43 @@ component EditArea inherits Rectangle {
         mouse-cursor: text;
         clicked => { root.focus-end(); }
     }
+    // The edge shows focus, except while it glows (the caret shows it then).
     Rectangle {
         x: 0;
         y: 0;
         width: parent.width;
-        height: input.has-focus ? 2px : 1px;
-        background: input.has-focus ? Theme.accent : Theme.divider;
+        height: input.has-focus && !root.glowing ? 2px : 1px;
+        background: input.has-focus && !root.glowing ? Theme.accent : Theme.divider;
         animate background { duration: Motion.fast; easing: ease-out; }
     }
-    // While a turn runs: the top edge as dashes, the lit one (tinted by what is at work, the
-    // model or a tool) a place further every 120 ms. Stepped by design, from a timer that runs
-    // only then: about 8 frames a second, where `animation-tick()` would draw at the display's
-    // rate, and none once the turn is over.
-    property <int> dashes: 12;
-    property <int> lit: 0;
+    // While a turn runs: the top edge glows (tinted by what is at work, the model or a tool),
+    // breathing slowly in and out. Stepped, from a timer that runs only then: 10 frames a
+    // second, where `animation-tick()` or `animate` would draw at the display's rate, and none
+    // once the turn is over. The swing is small and slow, so the steps don't show.
+    property <bool> glowing: Session.busy && Prompt.kind == PromptKind.none;
+    property <int> breaths: 24;
+    property <int> breath: 0;
+    // 0 to 1 and back over a breath (2.4 s).
+    property <float> swell: (1 - cos(root.breath * 360deg / root.breaths)) / 2;
+    property <color> glow: Session.activity == Activity.tool ? Theme.info : Theme.claude;
     Timer {
-        interval: 120ms;
-        running: Session.busy && Prompt.kind == PromptKind.none;
-        triggered => { root.lit = mod(root.lit + 1, root.dashes); }
+        interval: 100ms;
+        running: root.glowing;
+        triggered => { root.breath = mod(root.breath + 1, root.breaths); }
     }
-    if Session.busy && Prompt.kind == PromptKind.none: HorizontalLayout {
+    if root.glowing: Rectangle {
         x: 0;
         y: 0;
         width: parent.width;
-        height: 3px;
-        spacing: 3px;
-        for dash in root.dashes: Rectangle {
-            background: dash == root.lit
-                ? (Session.activity == Activity.tool ? Theme.info : Theme.claude)
-                : Theme.divider;
-        }
+        height: 2px;
+        background: root.glow.with-alpha(0.3 + 0.45 * root.swell);
+    }
+    if root.glowing: Rectangle {
+        x: 0;
+        y: 2px;
+        width: parent.width;
+        height: 10px;
+        background: @linear-gradient(180deg, root.glow.with-alpha(0.16 * root.swell) 0%, root.glow.with-alpha(0) 100%);
     }
     // Waiting for an answer: the edge stays lit, nothing moves.
     if Prompt.kind != PromptKind.none: Rectangle {
@@ -932,7 +939,10 @@ component EditArea inherits Rectangle {
         text: Composer.draft + " ";
         wrap: word-wrap;
     }
-    VerticalLayout {
+    // As tall as its layout: what it holds outside the layout (the draft measured, the text
+    // scrolled in its box) would make its implicit height that of all of a long draft.
+    out property <length> fit-height: body.preferred-height;
+    body := VerticalLayout {
         padding-left: Theme.space-xl;
         padding-right: Theme.space-l;
         padding-top: Theme.space-m;
@@ -1650,7 +1660,7 @@ export component AppWindow inherits Window {
                 // nothing is sent before the folder is trusted.
                 composer := EditArea {
                     visible: !Session.watching && !Session.needs-trust && (Composer.size == ComposerSize.fit || Composer.size == ComposerSize.chosen);
-                    height: self.visible ? self.preferred-height : 0;
+                    height: self.visible ? self.fit-height : 0;
                     tallest-dragged: column.height * 80%;
                     // Back from being made taller: the writing goes on here.
                     changed visible => {
