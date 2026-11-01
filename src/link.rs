@@ -311,7 +311,138 @@ fn joined(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::decode::{Picture, Refusal, Thumbnail};
+    use crate::external::wire::MediaType;
+
+    /// What the daemon may tell of a paste: an image, or why there is none. The kind is picked
+    /// by number: `prop_oneof!` holds its choices in `Arc`s.
+    fn any_pasted() -> impl Strategy<Value = Pasted> {
+        (
+            0u8..=10,
+            ".{0,200}",
+            proptest::collection::vec(any::<u8>(), 0..2048),
+            any::<(u32, u32)>(),
+            proptest::collection::vec(any::<u8>(), 0..512),
+        )
+            .prop_map(|(kind, text, bytes, (width_px, height_px), rgba)| {
+                let picture = |media_type| Picture {
+                    media_type,
+                    bytes,
+                    width_px,
+                    height_px,
+                    thumbnail: Thumbnail {
+                        width_px: width_px % decode::THUMBNAIL_SIDE_PX,
+                        height_px: height_px % decode::THUMBNAIL_SIDE_PX,
+                        rgba,
+                    },
+                };
+                match kind {
+                    0 => Ok(picture(MediaType::Png)),
+                    1 => Ok(picture(MediaType::Jpeg)),
+                    2 => Err(PasteFailure::NoImage),
+                    3 => Err(PasteFailure::Clipboard(text)),
+                    4 => Err(PasteFailure::Decoder(text)),
+                    5 => Err(PasteFailure::Refused(Refusal::TooManyBytes)),
+                    6 => Err(PasteFailure::Refused(Refusal::NotPngOrJpeg)),
+                    7 => Err(PasteFailure::Refused(Refusal::TooLarge)),
+                    8 => Err(PasteFailure::Refused(Refusal::Undecodable(text))),
+                    9 => Err(PasteFailure::Refused(Refusal::Unencodable(text))),
+                    _ => Err(PasteFailure::Refused(Refusal::TooHeavy)),
+                }
+            })
+    }
+
+    /// Cuts `bytes` into pieces at `cuts` (offsets, in any order); one empty piece for none.
+    fn pieces<'bytes>(bytes: &'bytes [u8], cuts: &[usize]) -> Vec<&'bytes [u8]> {
+        let mut offsets: Vec<usize> = cuts.iter().map(|cut| cut % (bytes.len() + 1)).collect();
+        offsets.extend([0, bytes.len()]);
+        offsets.sort_unstable();
+        offsets.dedup();
+        let cut: Vec<&[u8]> = offsets
+            .windows(2)
+            .filter_map(|pair| bytes.get(pair.first().copied()?..pair.last().copied()?))
+            .collect();
+        if cut.is_empty() { vec![&[]] } else { cut }
+    }
+
+    proptest! {
+        /// Two pastes' pieces, however cut and interleaved, each come together into what the
+        /// daemon sent, told once, as its last piece comes.
+        #[test]
+        fn interleaved_pastes_join_into_what_was_sent(
+            first_sent in any_pasted(),
+            second_sent in any_pasted(),
+            first_cuts in proptest::collection::vec(any::<usize>(), 0..12),
+            second_cuts in proptest::collection::vec(any::<usize>(), 0..12),
+            order in proptest::collection::vec(any::<bool>(), 0..30),
+        ) {
+            let first_request = ActId::default().next();
+            let second_request = first_request.next();
+            let first_bytes = postcard::to_stdvec(&first_sent).expect("encodes");
+            let second_bytes = postcard::to_stdvec(&second_sent).expect("encodes");
+            let mut first = pieces(&first_bytes, &first_cuts).into_iter().peekable();
+            let mut second = pieces(&second_bytes, &second_cuts).into_iter().peekable();
+            let mut pasting = BTreeMap::new();
+            let mut told = Vec::new();
+            let mut turns = order.into_iter().chain(std::iter::repeat(true));
+            while first.peek().is_some() || second.peek().is_some() {
+                let take_first = second.peek().is_none()
+                    || (first.peek().is_some() && turns.next().unwrap_or(true));
+                let (request, piece, rest) = if take_first {
+                    (first_request, first.next(), &mut first)
+                } else {
+                    (second_request, second.next(), &mut second)
+                };
+                let piece = piece.expect("a piece left");
+                let last = rest.peek().is_none();
+                let answer = joined(&mut pasting, request, piece, last);
+                prop_assert!(last || answer.is_none(), "told before the last piece");
+                told.extend(answer.map(|pasted| (request, pasted)));
+            }
+            prop_assert!(pasting.is_empty());
+            let mut expected = vec![(first_request, first_sent), (second_request, second_sent)];
+            expected.sort_by_key(|(request, _)| *request);
+            told.sort_by_key(|(request, _)| *request);
+            prop_assert_eq!(told, expected);
+        }
+
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// Whatever pieces come, a paste is told of exactly once: when its pieces first come to
+        /// more than an image may, or else at its last piece. Never a panic, nothing kept after.
+        #[test]
+        fn any_pieces_are_told_of_once(
+            sizes in proptest::collection::vec(0..=decode::MAX_ANSWER_BYTES / 3, 1..8),
+            filler in any::<u8>(),
+        ) {
+            let request = ActId::default().next();
+            let mut pasting = BTreeMap::new();
+            let mut told = 0;
+            let mut so_far = 0;
+            let count = sizes.len();
+            for (position, size) in sizes.into_iter().enumerate() {
+                let was_over = so_far > decode::MAX_ANSWER_BYTES;
+                so_far += size;
+                let last = position + 1 == count;
+                let answer = joined(&mut pasting, request, &vec![filler; size], last);
+                if answer.is_some() {
+                    told += 1;
+                    prop_assert!(
+                        last || (so_far > decode::MAX_ANSWER_BYTES && !was_over),
+                        "told at piece {position} of {count}, {so_far} bytes in"
+                    );
+                }
+            }
+            prop_assert_eq!(told, 1);
+            prop_assert!(pasting.is_empty());
+        }
+    }
 
     /// A pasted image's pieces come together in order; too many are told of once and the
     /// rest dropped; bytes that don't parse are an error, not a panic.

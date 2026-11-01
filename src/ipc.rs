@@ -851,6 +851,88 @@ mod tests {
         std::fs::remove_dir_all(&folder.path).expect("the scratch folder goes");
     }
 
+    /// Bytes cut where `cuts` say (offsets into them, in any order), as reads might bring them.
+    fn reads<'bytes>(bytes: &'bytes [u8], cuts: &[usize]) -> Vec<&'bytes [u8]> {
+        let mut offsets: Vec<usize> = cuts.iter().map(|cut| cut % (bytes.len() + 1)).collect();
+        offsets.extend([0, bytes.len()]);
+        offsets.sort_unstable();
+        offsets.dedup();
+        offsets
+            .windows(2)
+            .filter_map(|pair| bytes.get(pair.first().copied()?..pair.last().copied()?))
+            .collect()
+    }
+
+    /// Feeds `bytes`, as cut, to a deframer of `Message`: the messages taken, and the error that
+    /// ended it, if one did.
+    fn fed<Message: DeserializeOwned>(
+        bytes: &[u8],
+        cuts: &[usize],
+    ) -> (Vec<Message>, Option<Error>) {
+        let mut deframer = Deframer::<Message>::default();
+        let mut taken = Vec::new();
+        for read in reads(bytes, cuts) {
+            let pushed = deframer.push(read);
+            taken.extend(std::iter::from_fn(|| deframer.next()));
+            if let Err(error) = pushed {
+                return (taken, Some(error));
+            }
+        }
+        (taken, None)
+    }
+
+    proptest::proptest! {
+        /// Whatever the reads, the messages sent come out whole, in order, and nothing else.
+        #[test]
+        fn frames_come_out_as_sent_however_reads_cut_them(
+            sent in proptest::collection::vec((".{0,300}", proptest::num::u32::ANY), 0..8),
+            cuts in proptest::collection::vec(proptest::num::usize::ANY, 0..40),
+        ) {
+            let mut bytes = Vec::new();
+            for message in &sent {
+                bytes.extend(frame(message).expect("framed"));
+            }
+            let (taken, error) = fed::<(String, u32)>(&bytes, &cuts);
+            proptest::prop_assert!(error.is_none(), "{error:?}");
+            proptest::prop_assert_eq!(taken, sent);
+        }
+
+        /// Whatever a peer sends, as either side's messages, it is taken or refused: never a
+        /// panic, never more messages than frames.
+        #[test]
+        fn any_bytes_are_taken_or_refused(
+            bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..4096),
+            cuts in proptest::collection::vec(proptest::num::usize::ANY, 0..40),
+        ) {
+            let frames = bytes.iter().filter(|&&byte| byte == 0).count();
+            let (to_daemon, error) = fed::<ToDaemon>(&bytes, &cuts);
+            proptest::prop_assert!(to_daemon.len() <= frames);
+            proptest::prop_assert!(matches!(error, None | Some(Error::Oversized | Error::Unreadable)));
+            let (from_daemon, error) = fed::<FromDaemon>(&bytes, &cuts);
+            proptest::prop_assert!(from_daemon.len() <= frames);
+            proptest::prop_assert!(matches!(error, None | Some(Error::Oversized | Error::Unreadable)));
+        }
+
+        /// A frame longer than any message is refused however it comes, unended or not, and
+        /// whatever came before it.
+        #[test]
+        fn a_frame_longer_than_any_message_is_refused(
+            filler in 1u8..=u8::MAX,
+            extra in 1..MAX_FRAME,
+            ended in proptest::bool::ANY,
+            cuts in proptest::collection::vec(proptest::num::usize::ANY, 0..40),
+        ) {
+            let mut bytes = frame(&("before", 1u32)).expect("framed");
+            bytes.extend(std::iter::repeat_n(filler, MAX_FRAME + extra));
+            if ended {
+                bytes.push(0);
+            }
+            let (taken, error) = fed::<(String, u32)>(&bytes, &cuts);
+            proptest::prop_assert_eq!(taken, [("before".to_owned(), 1)]);
+            proptest::prop_assert!(matches!(error, Some(Error::Oversized)), "{error:?}");
+        }
+    }
+
     /// Frames come together however reads split them; one that doesn't parse is refused.
     #[test]
     fn frames_are_taken_byte_by_byte_and_junk_refused() {
