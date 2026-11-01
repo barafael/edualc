@@ -541,7 +541,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 5;
+pub(crate) const PROTOCOL: u32 = 6;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -614,10 +614,14 @@ pub(crate) enum FromDaemon {
     /// With the D-Bus the window is to use (see `buses`). `Hosted` follows, before anything
     /// else.
     Hello { protocol: u32, buses: Buses },
+    /// The process runs: started for the window, or running already as it attaches.
     Started {
         key: Generation,
         pid: u32,
         enforcement: Option<Enforcement>,
+        /// Turns under way: prompts written and not yet ended by a result (none for a process
+        /// just started).
+        turns: usize,
     },
     Failed {
         key: Generation,

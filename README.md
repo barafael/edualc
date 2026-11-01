@@ -180,8 +180,6 @@ sources) and `cargo test` are clean.
 - `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in.
   An image shows at most 480 px wide; there is no larger view yet.
 - Finding another session's window needs niri.
-- A window that attaches to a session in the middle of a turn shows what it asked, but not that the
-  turn runs, until the process says something new.
 
 ## License
 

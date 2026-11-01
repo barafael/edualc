@@ -19,10 +19,12 @@ use crate::sandbox::Enforcement;
 /// What the process says, or the daemon about it.
 #[derive(Debug)]
 pub(crate) enum Output {
-    /// The daemon started it.
+    /// The daemon started it, or it runs already as the window attaches.
     Started {
         pid: u32,
         enforcement: Option<Enforcement>,
+        /// Turns under way, as the daemon counted them.
+        turns: usize,
     },
     /// The daemon couldn't start it, or refused its input.
     Failed(StartFailure),

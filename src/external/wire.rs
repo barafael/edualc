@@ -913,6 +913,10 @@ pub(crate) enum PeekedKind {
     ControlRequest,
     ControlCancelRequest,
     ControlResponse,
+    /// From the window, a prompt: a turn starts.
+    User,
+    /// From the process, a turn's end.
+    Result,
     #[serde(other)]
     Other,
 }

@@ -28,12 +28,22 @@ impl App {
                     self.log.pop_front();
                 }
             }
-            Output::Started { pid, enforcement } => {
+            Output::Started {
+                pid,
+                enforcement,
+                turns,
+            } => {
                 if let Some(process) = self.process.as_mut() {
                     process.started(pid);
                 }
                 if let Some(enforcement) = enforcement {
                     self.status.sandboxing = Sandboxing::Landlock(enforcement);
+                }
+                // Attached in the middle of a turn: it runs, doing what isn't told yet. A
+                // process just started counts none; the window's own prompt may be on its way.
+                if turns > self.status.turns {
+                    self.status.turns = turns;
+                    self.status.doing = Doing::Working;
                 }
             }
             Output::Failed(failure) => {

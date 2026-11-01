@@ -953,6 +953,7 @@ impl Session {
                     key: *key,
                     pid,
                     enforcement,
+                    turns: 0,
                 },
             )
             .await;
@@ -997,7 +998,8 @@ impl Session {
                     }
                     Some(Command::Attach { key, outbox }) => {
                         self.alone_since = None;
-                        tell(&outbox, FromDaemon::Started { key, pid, enforcement }).await;
+                        let turns = self.pending.turns;
+                        tell(&outbox, FromDaemon::Started { key, pid, enforcement, turns }).await;
                         // What it asked meanwhile, asked again.
                         for line in self.pending.lines() {
                             send_line(&outbox, key, Stream::Out, line).await;
@@ -1059,13 +1061,17 @@ impl Session {
     }
 }
 
-/// What a window attaching is told again (sans-io): the process's latest `init` (its session,
-/// model and mode), then the permission requests it asked and nothing answered yet. Only the
-/// messages' kind and request id are read, the rest is passed on as it is.
+/// What a window attaching is told again (sans-io): how many turns are under way, the
+/// process's latest `init` (its session, model and mode), then the permission requests it asked
+/// and nothing answered yet. Only the messages' kind and request id are read, the rest is
+/// passed on as it is.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Pending {
     init: Option<String>,
     asked: BTreeMap<String, String>,
+    /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
+    /// counts them, for one that attaches meanwhile.
+    turns: usize,
 }
 
 impl Pending {
@@ -1084,6 +1090,9 @@ impl Pending {
             (PeekedKind::ControlCancelRequest, _, Some(id)) => {
                 self.asked.remove(&id);
             }
+            (PeekedKind::Result, _, _) => {
+                self.turns = self.turns.saturating_sub(1);
+            }
             _ => {}
         }
     }
@@ -1093,10 +1102,18 @@ impl Pending {
         let Ok(peek) = serde_json::from_str::<ControlPeek>(line) else {
             return;
         };
-        if peek.kind == PeekedKind::ControlResponse
-            && let Some(id) = peek.response.and_then(|response| response.request_id)
-        {
-            self.asked.remove(&id);
+        match peek.kind {
+            PeekedKind::ControlResponse => {
+                if let Some(id) = peek.response.and_then(|response| response.request_id) {
+                    self.asked.remove(&id);
+                }
+            }
+            PeekedKind::User => self.turns = self.turns.saturating_add(1),
+            PeekedKind::System
+            | PeekedKind::ControlRequest
+            | PeekedKind::ControlCancelRequest
+            | PeekedKind::Result
+            | PeekedKind::Other => {}
         }
     }
 
@@ -1324,6 +1341,28 @@ mod tests {
         pending.said(later);
         pending.said(r#"{"type":"system","subtype":"status","status":"requesting"}"#);
         assert_eq!(pending.lines().collect::<Vec<_>>(), [later, asked]);
+    }
+
+    /// Turns are counted as the window counts them: one for each prompt written, one fewer for
+    /// each result; a `!` command, a control request or a replayed row starts none.
+    #[test]
+    fn turns_under_way_are_counted_for_a_window_attaching() {
+        let mut pending = Pending::default();
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Hi"},"parent_tool_use_id":null,"session_id":"default"}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false}"#;
+        pending.answered(prompt);
+        pending.answered(prompt);
+        pending.answered(r#"{"type":"bash_command","command":"ls","uuid":"x"}"#);
+        pending.answered(
+            r#"{"type":"control_request","request_id":"gui_1","request":{"subtype":"interrupt"}}"#,
+        );
+        pending.said(r#"{"type":"user","message":{"role":"user","content":"<bash-input>ls</bash-input>"},"isReplay":true}"#);
+        assert_eq!(pending.turns, 2);
+        pending.said(result);
+        assert_eq!(pending.turns, 1);
+        pending.said(result);
+        pending.said(result);
+        assert_eq!(pending.turns, 0, "never below none");
     }
 
     #[test]

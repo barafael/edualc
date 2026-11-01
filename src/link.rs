@@ -216,7 +216,15 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
                 key,
                 pid,
                 enforcement,
-            } => Some(claude(key, Output::Started { pid, enforcement })),
+                turns,
+            } => Some(claude(
+                key,
+                Output::Started {
+                    pid,
+                    enforcement,
+                    turns,
+                },
+            )),
             FromDaemon::Failed { key, failure } => Some(claude(key, Output::Failed(failure))),
             FromDaemon::Output {
                 key,
