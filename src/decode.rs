@@ -66,6 +66,20 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// The helper's address space: decoding's allocations and the program around them.
 const MAX_ADDRESS_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// The image formats read, as a clipboard offers them: Anthropic's vision docs, "Claude
+/// supports JPEG, PNG, GIF, and WebP".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::AsRefStr)]
+pub(crate) enum Format {
+    #[strum(serialize = "image/png")]
+    Png,
+    #[strum(serialize = "image/jpeg")]
+    Jpeg,
+    #[strum(serialize = "image/gif")]
+    Gif,
+    #[strum(serialize = "image/webp")]
+    WebP,
+}
+
 /// What the helper is asked to make of an image, by the argument it is started with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::AsRefStr)]
 pub(crate) enum Job {
@@ -126,8 +140,8 @@ impl Pixels {
 pub(crate) enum Refusal {
     #[error("more than {MAX_INPUT_BYTES} bytes")]
     TooManyBytes,
-    #[error("not a PNG or JPEG image")]
-    NotPngOrJpeg,
+    #[error("not a PNG, JPEG, GIF or WebP image")]
+    UnknownFormat,
     #[error("larger than {MAX_SIDE_PX}×{MAX_SIDE_PX} pixels, or more than decoding may take")]
     TooLarge,
     #[error("the image doesn't decode: {0}")]
@@ -371,15 +385,17 @@ fn shown(bytes: &[u8]) -> Result<Pixels, Refusal> {
     })
 }
 
-/// An image read from its bytes, within the limits on its size and on what decoding it takes.
+/// An image read from its bytes, within the limits on its size and on what decoding it takes;
+/// and how it is to be sent. A GIF or WebP goes as a PNG, which keeps its pixels (an
+/// animation's first frame, as decoding gives it).
 fn read(bytes: &[u8], max_side_px: u32) -> Result<(DynamicImage, MediaType), Refusal> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Refusal::Undecodable(error.to_string()))?;
     let came_as = match reader.format() {
-        Some(ImageFormat::Png) => MediaType::Png,
+        Some(ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP) => MediaType::Png,
         Some(ImageFormat::Jpeg) => MediaType::Jpeg,
-        Some(_) | None => return Err(Refusal::NotPngOrJpeg),
+        Some(_) | None => return Err(Refusal::UnknownFormat),
     };
     let mut limits = Limits::default();
     limits.max_image_width = Some(max_side_px);
@@ -629,8 +645,8 @@ mod tests {
             small
         );
         assert!(matches!(
-            checked_shown(&answer(&Shown::Refused(Refusal::NotPngOrJpeg))),
-            Err(Error::Refused(Refusal::NotPngOrJpeg))
+            checked_shown(&answer(&Shown::Refused(Refusal::UnknownFormat))),
+            Err(Error::Refused(Refusal::UnknownFormat))
         ));
         let mut short = small;
         short.rgba.pop();
@@ -656,15 +672,47 @@ mod tests {
         ));
     }
 
+    /// A GIF and a WebP are read like a PNG, and go as one, their pixels kept.
     #[test]
-    fn what_isnt_a_png_or_jpeg_or_is_too_large_is_refused() {
+    fn a_gif_or_webp_is_read_and_goes_as_a_png() {
+        let source = image::RgbaImage::from_fn(30, 20, |x, y| {
+            image::Rgba([
+                u8::try_from(x * 8).unwrap_or(0),
+                u8::try_from(y * 12).unwrap_or(0),
+                64,
+                255,
+            ])
+        });
+        for format in [ImageFormat::Gif, ImageFormat::WebP] {
+            let mut bytes = Cursor::new(Vec::new());
+            DynamicImage::ImageRgba8(source.clone())
+                .write_to(&mut bytes, format)
+                .expect("encodes");
+            let bytes = bytes.into_inner();
+            let picture = decoded(&bytes, MAX_SIDE_PX).expect("decodes");
+            assert_eq!(picture.media_type, MediaType::Png, "{format:?}");
+            assert_eq!((picture.width_px, picture.height_px), (30, 20));
+            let shown = shown(&bytes).expect("decodes");
+            assert_eq!((shown.width_px, shown.height_px), (30, 20));
+        }
+        // The WebP is lossless: the pixels sent are the pixels it held.
+        let mut webp = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(source.clone())
+            .write_to(&mut webp, ImageFormat::WebP)
+            .expect("encodes");
+        let shown = shown(webp.get_ref()).expect("decodes");
+        assert_eq!(shown.rgba, source.into_raw());
+    }
+
+    #[test]
+    fn what_isnt_an_image_or_is_too_large_is_refused() {
         assert_eq!(
-            decoded(b"GIF89a....", MAX_SIDE_PX),
-            Err(Refusal::NotPngOrJpeg)
+            decoded(b"BM a bitmap's start", MAX_SIDE_PX),
+            Err(Refusal::UnknownFormat)
         );
         assert_eq!(
             decoded(b"plain text", MAX_SIDE_PX),
-            Err(Refusal::NotPngOrJpeg)
+            Err(Refusal::UnknownFormat)
         );
         assert_eq!(decoded(&png(300, 100), 200), Err(Refusal::TooLarge));
         let cut = png(10, 10);

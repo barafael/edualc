@@ -659,7 +659,7 @@ pub(crate) type Pasted = Result<Picture, PasteFailure>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub(crate) enum PasteFailure {
     /// The clipboard holds something else (text, say): nothing to tell.
-    #[error("the clipboard holds no PNG or JPEG image")]
+    #[error("the clipboard holds no PNG, JPEG, GIF or WebP image")]
     NoImage,
     #[error("couldn't read the clipboard: {0}")]
     Clipboard(String),

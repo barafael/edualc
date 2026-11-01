@@ -33,7 +33,7 @@ use crate::buses::{self, Buses};
 use crate::claude::Launch;
 use crate::decode::{self, Refusal};
 use crate::desktop;
-use crate::external::wire::{ControlPeek, MediaType, PeekedKind, PeekedSubtype, SessionId};
+use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId};
 use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
     PasteFailure, StartFailure, Stream, ToDaemon,
@@ -421,12 +421,12 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
 /// bytes) and decoded in the confined helper (see `decode`).
 async fn paste_image() -> ipc::Pasted {
     let listed = clipboard(&["--list-types"], MAX_CLIPBOARD_TYPES_BYTES).await?;
-    let media_type = String::from_utf8_lossy(&listed)
+    let format = String::from_utf8_lossy(&listed)
         .lines()
-        .find_map(|line| line.trim().parse::<MediaType>().ok())
+        .find_map(|line| line.trim().parse::<decode::Format>().ok())
         .ok_or(PasteFailure::NoImage)?;
     let limit = decode::MAX_INPUT_BYTES + 1;
-    let bytes = clipboard(&["--no-newline", "--type", media_type.as_ref()], limit).await?;
+    let bytes = clipboard(&["--no-newline", "--type", format.as_ref()], limit).await?;
     if bytes.len() > decode::MAX_INPUT_BYTES {
         return Err(PasteFailure::Refused(Refusal::TooManyBytes));
     }

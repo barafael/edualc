@@ -51,9 +51,9 @@ tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", 
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 # Newtypes' `Display` and `From`; already built for Slint.
 derive_more = { version = "2", features = ["display", "from"] }
-# Pasted images, decoded in a confined helper (see `decode`): pure-Rust PNG and JPEG, already
-# built for Slint with these features.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Images, decoded in a confined helper (see `decode`): pure-Rust PNG, JPEG, GIF and WebP, whose
+# decoders are already built for Slint (through resvg).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Images go to Claude Code base64-encoded; already built for Slint (through resvg).
 base64 = "0.23"
 # Each `!` command's id, which Claude Code skips repeats by; already built for Slint (through

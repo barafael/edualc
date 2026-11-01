@@ -346,7 +346,7 @@ mod tests {
                     3 => Err(PasteFailure::Clipboard(text)),
                     4 => Err(PasteFailure::Decoder(text)),
                     5 => Err(PasteFailure::Refused(Refusal::TooManyBytes)),
-                    6 => Err(PasteFailure::Refused(Refusal::NotPngOrJpeg)),
+                    6 => Err(PasteFailure::Refused(Refusal::UnknownFormat)),
                     7 => Err(PasteFailure::Refused(Refusal::TooLarge)),
                     8 => Err(PasteFailure::Refused(Refusal::Undecodable(text))),
                     9 => Err(PasteFailure::Refused(Refusal::Unencodable(text))),

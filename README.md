@@ -47,8 +47,9 @@ other way around.
 - **Sessions.** This folder's past sessions are listed with their titles and ages; opening one shows its
   transcript and continues it. Any folder Claude Code was used in is one click away. Links open only
   if they are web pages or mail.
-- **Pasted images.** Ctrl+V in the composer takes the clipboard's PNG or JPEG along with the
-  next message, shown as a thumbnail until it is sent. The image is never decoded in the window:
+- **Pasted images.** Ctrl+V in the composer takes the clipboard's PNG, JPEG, GIF or WebP along
+  with the next message, shown as a thumbnail until it is sent. A GIF or WebP goes as a PNG (an
+  animation as its first frame). The image is never decoded in the window:
   the daemon reads the clipboard and hands the bytes to `edualc --decode-image`, a process that
   first confines itself (no file, socket or other process to reach, no executable memory, bounded
   memory and time, seccomp killing it on anything else) and answers with the image encoded again
@@ -176,9 +177,8 @@ sources) and `cargo test` are clean.
   is merged but not yet released. Go back to crates.io once 1.19 is out.
 - Side questions need a session running here; for one watched from another window, continue it here
   as a copy first.
-- `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in,
-  and only PNG and JPEG for now (GIF and WebP show as not shown). An image shows at most 480 px
-  wide; there is no larger view yet.
+- `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in.
+  An image shows at most 480 px wide; there is no larger view yet.
 - Finding another session's window needs niri.
 - A window that attaches to a session in the middle of a turn shows what it asked, but not that the
   turn runs, until the process says something new.
