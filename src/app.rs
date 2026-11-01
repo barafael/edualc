@@ -1142,19 +1142,35 @@ impl App {
         self.process.is_some()
     }
 
+    /// Whether the session shown has something under way that ending its process would cut
+    /// short: a turn (from its prompt being written on), a `!` command, or a request waiting
+    /// for the user.
+    fn under_way(&self) -> bool {
+        self.status.turns > 0 || self.chat.shell_running() || !self.asks.is_empty()
+    }
+
+    /// Lets go of the process: one with something under way runs on in the daemon, for this
+    /// window or another to come back to (it is listed as running); an idle one ends, as its
+    /// transcript resumes it as it was.
+    fn let_go(&mut self) {
+        let under_way = self.under_way();
+        if let Some(process) = self.process.take()
+            && under_way
+        {
+            process.detach();
+        }
+    }
+
+    /// Leaves the session shown for another, letting go of its process.
+    fn leave(&mut self) {
+        self.let_go();
+        self.stop();
+    }
+
     fn quit(&mut self) {
         self.tick.stop();
         self.generation = self.generation.next();
-        // A session in the middle of a turn, or waiting on the user, runs on in the daemon for a
-        // window to come back to; an idle one ends, as its transcript resumes it as it was.
-        if let Some(process) = self.process.take() {
-            let working = !matches!(self.status.doing, Doing::Nothing | Doing::Starting);
-            if working || !self.asks.is_empty() {
-                process.detach();
-            } else {
-                drop(process);
-            }
-        }
+        self.let_go();
         if let Err(error) = slint::quit_event_loop() {
             tracing::warn!(%error, "couldn't quit the event loop");
         }
@@ -1189,7 +1205,7 @@ impl App {
     }
 
     fn new_session(&mut self) {
-        self.stop();
+        self.leave();
         self.watch = None;
         self.chat.clear();
         self.reset_session(None, None);
@@ -1230,7 +1246,7 @@ impl App {
             self.watch_live(&id);
             return;
         }
-        self.stop();
+        self.leave();
         self.watch = None;
         self.chat.clear();
         let known = self.sessions.iter().find(|session| session.id == id);
@@ -1247,7 +1263,7 @@ impl App {
     /// Shows a session the daemon runs, which no window shows: its transcript as saved, then
     /// what it asked meanwhile and what it says.
     fn attach(&mut self, id: SessionId, hosted: &Hosted) {
-        self.stop();
+        self.leave();
         self.watch = None;
         self.chat.clear();
         if self.cwd != hosted.cwd {
@@ -1353,7 +1369,7 @@ impl App {
         let Some(session) = self.live.iter().find(|session| &session.id == id).cloned() else {
             return;
         };
-        self.stop();
+        self.leave();
         self.chat.clear();
         if self.cwd != session.cwd {
             self.cwd.clone_from(&session.cwd);
