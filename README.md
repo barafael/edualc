@@ -20,7 +20,8 @@ other way around.
   away.
 - **Permissions in the window.** Allow, deny, deny with what to do instead, or "always allow" with the
   rule the CLI suggests, named in full with where it is kept ("… in this project"). Claude's
-  questions (AskUserQuestion) appear as choices. The buttons arm only 0.7 s after a request appears,
+  questions (AskUserQuestion) appear as choices, an option's preview (code, a mockup) beside them,
+  with notes to send along with the answer. The buttons arm only 0.7 s after a request appears,
   and every answer names the request it was given for: a click can't answer a request it wasn't
   meant for. The tool card shows the input that is approved.
 - **A sandbox for Claude Code.** The `claude` process, and everything it starts (commands, hooks, MCP

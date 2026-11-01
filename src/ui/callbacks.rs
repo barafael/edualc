@@ -176,6 +176,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     );
     prompt
         .on_set_other(actions.on_index_text(|question, text| Action::SetOther { question, text }));
+    prompt
+        .on_set_notes(actions.on_index_text(|question, text| Action::SetNotes { question, text }));
     prompt.on_set_comment(
         actions.on_index_text(|section, text| Action::SetComment { section, text }),
     );

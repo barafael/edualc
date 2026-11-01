@@ -142,6 +142,8 @@ export struct CommandItem {
 export struct QuestionOption {
     label: string,
     description: string,
+    // What the option would look like (code, a mockup); empty if none.
+    preview: string,
     selected: bool,
 }
 
@@ -149,6 +151,8 @@ export struct QuestionOption {
 export struct Question {
     question: string,
     multi: bool,
+    // Some option has a preview: they are shown beside the options.
+    previews: bool,
     options: [QuestionOption],
 }
 

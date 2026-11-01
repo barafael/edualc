@@ -35,6 +35,7 @@ export component Caption inherits Text {
 export component Pressable inherits Rectangle {
     in property <bool> selected;
     in property <bool> enabled: true;
+    out property <bool> hovered: touch.has-hover;
     callback clicked;
     accessible-role: button;
     accessible-action-default => { if root.enabled { root.clicked(); } }

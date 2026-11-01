@@ -762,8 +762,25 @@ pub(crate) struct Questions {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub(crate) answers: BTreeMap<String, String>,
+    /// The user's notes, and the preview of the option they picked, by question: theirs alone,
+    /// as the answers are.
+    #[serde(
+        default,
+        deserialize_with = "dropped",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub(crate) annotations: BTreeMap<String, Annotation>,
     #[serde(flatten)]
     pub(crate) rest: Map<String, Value>,
+}
+
+/// What the user adds to an answer, as AskUserQuestion takes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct Annotation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -785,6 +802,10 @@ pub(crate) struct QuestionOption {
     pub(crate) label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) description: String,
+    /// What the option would look like (code, a mockup), shown beside the options in a
+    /// monospace box.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) preview: String,
     #[serde(flatten)]
     pub(crate) rest: Map<String, Value>,
 }
@@ -1250,13 +1271,25 @@ mod tests {
             }],
             "metadata": { "source": "x" },
             "answers": { "Which?": "Claude's own pick" },
+            "annotations": { "Which?": { "notes": "Claude's own note" } },
         });
         let mut questions: Questions = serde_json::from_value(asked.clone()).expect("questions");
         questions.answers.insert("Which?".into(), "A".into());
-        // The answers are the user's: what Claude filled in is replaced.
+        questions.annotations.insert(
+            "Which?".into(),
+            Annotation {
+                notes: Some("but faster".into()),
+                preview: Some("a".into()),
+            },
+        );
+        // The answers and notes are the user's: what Claude filled in is replaced.
         let mut expected = asked;
         if let Some(fields) = expected.as_object_mut() {
             fields.insert("answers".into(), json!({ "Which?": "A" }));
+            fields.insert(
+                "annotations".into(),
+                json!({ "Which?": { "notes": "but faster", "preview": "a" } }),
+            );
         }
         assert_eq!(
             serde_json::to_value(ToolInput::Answered(questions)).expect("encodable"),

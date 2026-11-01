@@ -701,6 +701,7 @@ impl View {
                     .map(|(option, &selected)| QuestionOption {
                         label: option.label.as_str().into(),
                         description: option.description.as_str().into(),
+                        preview: option.preview.as_str().into(),
                         selected,
                     })
                     .collect();
@@ -709,6 +710,10 @@ impl View {
                 Question {
                     question: question.question.as_str().into(),
                     multi: question.multi_select,
+                    previews: question
+                        .options
+                        .iter()
+                        .any(|option| !option.preview.is_empty()),
                     options,
                 }
             })

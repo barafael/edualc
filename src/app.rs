@@ -182,6 +182,10 @@ pub(crate) enum Action {
         question: usize,
         text: String,
     },
+    SetNotes {
+        question: usize,
+        text: String,
+    },
     AnswerQuestions(RequestId),
     ApprovePlan {
         request: RequestId,
@@ -349,11 +353,13 @@ pub(crate) enum AskKind {
         suggestions: Vec<wire::Offered>,
         description: String,
     },
-    /// AskUserQuestion: what is picked, by question and option, and what was typed.
+    /// AskUserQuestion: what is picked, by question and option, what was typed instead, and
+    /// the notes that go with each answer.
     Questions {
         asked: wire::Questions,
         picked: Vec<Vec<bool>>,
         other: Vec<String>,
+        notes: Vec<String>,
     },
     /// ExitPlanMode: the plan's parts with the comment on each, and the part whose comment is
     /// being written.
@@ -695,6 +701,7 @@ impl App {
             Action::Deny { request, feedback } => self.deny(&request, &feedback),
             Action::ToggleOption { question, option } => self.toggle_option(question, option),
             Action::SetOther { question, text } => self.set_other(question, text),
+            Action::SetNotes { question, text } => self.set_notes(question, text),
             Action::AnswerQuestions(request) => self.answer_questions(&request),
             Action::ApprovePlan {
                 request,
@@ -1601,7 +1608,19 @@ impl App {
         }
     }
 
-    /// Sends the answers to Claude's questions: the labels picked, or what was typed.
+    fn set_notes(&mut self, question: usize, text: String) {
+        if let Some(Ask {
+            kind: AskKind::Questions { notes, .. },
+            ..
+        }) = self.asks.front_mut()
+            && let Some(slot) = notes.get_mut(question)
+        {
+            *slot = text;
+        }
+    }
+
+    /// Sends the answers to Claude's questions: the labels picked, or what was typed; with the
+    /// notes written, and the preview of the option picked.
     fn answer_questions(&mut self, request: &RequestId) {
         let Some(ask) = self.take_ask(request) else {
             return;
@@ -1611,28 +1630,8 @@ impl App {
                 asked,
                 picked,
                 other,
-            } => {
-                let mut answered = asked.clone();
-                for (index, question) in asked.questions.iter().enumerate() {
-                    let typed = other.get(index).map_or("", |text| text.trim());
-                    let answer = if typed.is_empty() {
-                        question
-                            .options
-                            .iter()
-                            .zip(picked.get(index).into_iter().flatten())
-                            .filter(|(_, picked)| **picked)
-                            .map(|(option, _)| option.label.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    } else {
-                        typed.to_owned()
-                    };
-                    if !answer.is_empty() {
-                        answered.answers.insert(question.question.clone(), answer);
-                    }
-                }
-                ToolInput::Answered(answered)
-            }
+                notes,
+            } => ToolInput::Answered(answered(asked, picked, other, notes)),
             AskKind::Tool { .. } | AskKind::Plan { .. } => ToolInput::AsAsked(ask.input.clone()),
         };
         let response = PermissionResult::Allow {
@@ -1754,6 +1753,54 @@ impl App {
     }
 }
 
+/// Claude's questions with the user's answers (the labels picked, or what was typed), the notes
+/// written, and the preview of the option picked, by question.
+fn answered(
+    asked: &wire::Questions,
+    picked: &[Vec<bool>],
+    other: &[String],
+    notes: &[String],
+) -> wire::Questions {
+    let mut answered = asked.clone();
+    for (index, question) in asked.questions.iter().enumerate() {
+        let typed = other.get(index).map_or("", |text| text.trim());
+        let chosen: Vec<&wire::QuestionOption> = question
+            .options
+            .iter()
+            .zip(picked.get(index).into_iter().flatten())
+            .filter(|(_, picked)| **picked)
+            .map(|(option, _)| option)
+            .collect();
+        let answer = if typed.is_empty() {
+            chosen
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            typed.to_owned()
+        };
+        if !answer.is_empty() {
+            answered.answers.insert(question.question.clone(), answer);
+        }
+        let written = notes.get(index).map_or("", |text| text.trim());
+        let annotation = wire::Annotation {
+            notes: (!written.is_empty()).then(|| written.to_owned()),
+            // A preview goes with a single option picked, not with typed text.
+            preview: match (typed.is_empty(), chosen.as_slice()) {
+                (true, [option]) if !option.preview.is_empty() => Some(option.preview.clone()),
+                _ => None,
+            },
+        };
+        if annotation != wire::Annotation::default() {
+            answered
+                .annotations
+                .insert(question.question.clone(), annotation);
+        }
+    }
+    answered
+}
+
 fn questions_asked(input: &Value) -> Option<AskKind> {
     match wire::Questions::deserialize(input) {
         Ok(asked) => Some(AskKind::Questions {
@@ -1763,6 +1810,7 @@ fn questions_asked(input: &Value) -> Option<AskKind> {
                 .map(|question| vec![false; question.options.len()])
                 .collect(),
             other: vec![String::new(); asked.questions.len()],
+            notes: vec![String::new(); asked.questions.len()],
             asked,
         }),
         Err(error) => {
@@ -1851,6 +1899,66 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Notes go with any answer; a preview only with a single option picked, the way
+    /// AskUserQuestion takes them; nothing is added where nothing was written or previewed.
+    #[test]
+    fn answers_carry_notes_and_the_picked_preview() {
+        let asked: wire::Questions = serde_json::from_value(serde_json::json!({
+            "questions": [
+                { "question": "Layout?", "options": [
+                    { "label": "Grid", "preview": "▦" }, { "label": "List", "preview": "☰" } ] },
+                { "question": "Name?", "options": [ { "label": "A", "preview": "a" } ] },
+                { "question": "Which?", "multiSelect": true, "options": [
+                    { "label": "X", "preview": "x" }, { "label": "Y", "preview": "y" } ] },
+                { "question": "Plain?", "options": [ { "label": "Yes" } ] },
+            ]
+        }))
+        .expect("questions");
+        let picked = [vec![false, true], vec![true], vec![true, true], vec![true]];
+        let other = [
+            String::new(),
+            "B instead".into(),
+            String::new(),
+            String::new(),
+        ];
+        let notes = [
+            "  denser  ".into(),
+            String::new(),
+            "both".into(),
+            String::new(),
+        ];
+        let given = answered(&asked, &picked, &other, &notes);
+        assert_eq!(
+            given.answers.get("Layout?").map(String::as_str),
+            Some("List")
+        );
+        assert_eq!(
+            given.answers.get("Name?").map(String::as_str),
+            Some("B instead")
+        );
+        assert_eq!(
+            given.answers.get("Which?").map(String::as_str),
+            Some("X, Y")
+        );
+        assert_eq!(
+            given.annotations.get("Layout?"),
+            Some(&wire::Annotation {
+                notes: Some("denser".into()),
+                preview: Some("☰".into()),
+            })
+        );
+        assert_eq!(given.annotations.get("Name?"), None, "typed: no preview");
+        assert_eq!(
+            given.annotations.get("Which?"),
+            Some(&wire::Annotation {
+                notes: Some("both".into()),
+                preview: None,
+            }),
+            "two picked: no preview"
+        );
+        assert_eq!(given.annotations.get("Plain?"), None);
+    }
 
     /// A change while a read is under way makes one more read once it is done, and the next
     /// change after that is read too: nothing stays stuck waiting for a read that never comes.

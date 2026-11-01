@@ -138,6 +138,8 @@ export global Prompt {
     callback deny(string, string);
     callback toggle-option(int, int);
     callback set-other(int, string);
+    // Notes that go with a question's answer.
+    callback set-notes(int, string);
     callback answer(string);
     // Claude's plan, part by part, with the user's comments; shown over the transcript
     // while `reviewing`.
