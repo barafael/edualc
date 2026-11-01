@@ -17,10 +17,10 @@ use crate::external::wire::{
     self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
 };
 use crate::generated::{
-    AppWindow, BlockKind, CommandItem, Composer, DiffKind, DiffLine, Entry, EntryKind, GroupRole,
-    LiveItem, LiveState, MdBlock, MenuItem, PermissionKind, PlanSection, ProjectItem, Prompt,
-    PromptKind, Question, QuestionOption, Session, SessionItem, Sessions, Side, SideExchange,
-    SideState, StatRow, StatSection, Theme, ToolState, Transcript, Usage,
+    AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
+    EntryKind, GroupRole, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind, PlanSection,
+    ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem, Sessions,
+    Side, SideExchange, SideState, StatRow, StatSection, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
@@ -110,6 +110,18 @@ impl View {
     /// The base text size, in logical pixels; everything else is sized from it.
     pub(crate) fn set_text_size(&self, pixels: f32) {
         self.window.global::<Theme>().set_base_size(pixels);
+    }
+
+    /// The composer's kept height, if it was dragged to one; fitted to its text if not.
+    pub(crate) fn set_composer_height(&self, height_px: Option<u16>) {
+        let composer = self.window.global::<Composer>();
+        match height_px {
+            Some(height_px) => {
+                composer.set_chosen_height(f32::from(height_px));
+                composer.set_size(ComposerSize::Chosen);
+            }
+            None => composer.set_size(ComposerSize::Fit),
+        }
     }
 
     pub(crate) fn copy(&self, text: &str) {

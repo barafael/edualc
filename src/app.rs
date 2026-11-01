@@ -206,6 +206,8 @@ pub(crate) enum Action {
     /// Opens the session's worktree with the opener at this place in the menu (0: here).
     OpenWorktree(usize),
     Zoom(Zoom),
+    /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
+    ComposerHeight(Option<u16>),
     FilterSessions(String),
     /// Opens or folds the run of tool calls whose first call is at this place.
     ToggleRun(usize),
@@ -520,6 +522,7 @@ impl App {
             Settings::default()
         });
         view.set_text_size(desktop_text_size * settings.scale());
+        view.set_composer_height(settings.composer_height_px);
         Self {
             view,
             events,
@@ -582,6 +585,13 @@ impl App {
         match resume {
             Some(id) => self.open_session(id),
             None => self.new_session(),
+        }
+        // Said in the window, not only the log: what is changed now isn't kept.
+        if let Err(error) = settings::load() {
+            self.chat.error(format!(
+                "{error}\nThe window runs with the default settings, and keeps no change until the \
+                 file is put right."
+            ));
         }
         if let Some(mode) = mode {
             self.set_mode(mode);
@@ -735,6 +745,12 @@ impl App {
                     .set_text_size(self.desktop_text_size * self.settings.scale());
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the zoom");
+                }
+            }
+            Action::ComposerHeight(height_px) => {
+                self.settings.composer_height_px = height_px;
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the composer's height");
                 }
             }
             Action::Quit => {

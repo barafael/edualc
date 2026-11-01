@@ -94,6 +94,16 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     composer.on_send(actions.on_text(Action::Send));
     composer.on_draft_edited(actions.on_text(Action::DraftEdited));
     composer.on_pick_command(actions.on_index(Action::PickCommand));
+    composer.on_height_chosen({
+        let actions = actions.clone();
+        // Zero (or what doesn't fit a `u16`) goes back to fitting the text.
+        move |height_px| {
+            let kept = u16::try_from(height_px)
+                .ok()
+                .filter(|height_px| *height_px > 0);
+            actions.send(Action::ComposerHeight(kept));
+        }
+    });
 
     let session = window.global::<Session>();
     session.on_interrupt(actions.on(|| Action::Interrupt));

@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { CommandItem, Entry, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
+import { CommandItem, ComposerSize, Entry, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -79,6 +79,11 @@ export global Composer {
     callback pick-command(int);
     // Bumped to focus the composer (a new session, a session opened).
     in property <int> focus-serial;
+    in-out property <ComposerSize> size: ComposerSize.fit;
+    // The height dragged to, kept between runs.
+    in-out property <length> chosen-height;
+    // A height dragged to, in logical pixels, to keep; zero goes back to fitting the text.
+    callback height-chosen(int);
 }
 
 // The sidebar: the sessions of this directory, and the directories to switch to.

@@ -25,6 +25,9 @@ pub(crate) struct Settings {
     pub(crate) sandbox_read: Vec<PathBuf>,
     #[serde(default)]
     pub(crate) sandbox_write: Vec<PathBuf>,
+    /// The composer's height as dragged, in logical pixels; fitted to its text if none.
+    #[serde(default)]
+    pub(crate) composer_height_px: Option<u16>,
 }
 
 impl Default for Settings {
@@ -36,6 +39,7 @@ impl Default for Settings {
             sandbox_desktop: false,
             sandbox_read: Vec::new(),
             sandbox_write: Vec::new(),
+            composer_height_px: None,
         }
     }
 }
@@ -120,8 +124,22 @@ pub(crate) fn load() -> Result<Settings, Error> {
     serde_json::from_str(&text).map_err(|source| Error::Parse { path, source })
 }
 
+/// Writes the settings, unless the file there doesn't parse: what it holds (a hand edit with a
+/// typo, a later version's keys) would be lost, and it stays until it is put right.
 pub(crate) fn save(settings: &Settings) -> Result<(), Error> {
-    let path = path()?;
+    save_to(path()?, settings)
+}
+
+fn save_to(path: PathBuf, settings: &Settings) -> Result<(), Error> {
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            if let Err(source) = serde_json::from_str::<Settings>(&text) {
+                return Err(Error::Parse { path, source });
+            }
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(Error::Read { path, source }),
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|source| Error::Write {
             path: dir.to_owned(),
@@ -156,6 +174,26 @@ mod tests {
     fn older_files_without_a_zoom_read_as_full_size() {
         let settings: Settings = serde_json::from_str("{}").expect("parses");
         assert_eq!(settings, Settings::default());
+    }
+
+    /// A file that doesn't parse stays as it is; one that does is written over, as is a missing
+    /// one.
+    #[test]
+    fn a_file_that_doesnt_parse_isnt_written_over() {
+        let dir = std::env::temp_dir().join(format!("edualc-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("settings.json");
+        let typo = r#"{"trusted_folders": ["/kept"], "sandbox_wirte": []}"#;
+        std::fs::write(&path, typo).expect("written");
+        assert!(matches!(
+            save_to(path.clone(), &Settings::default()),
+            Err(Error::Parse { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some(typo));
+        std::fs::remove_file(&path).expect("removed");
+        save_to(path.clone(), &Settings::default()).expect("a missing file is written");
+        save_to(path, &Settings::default()).expect("a file that parses is written over");
+        std::fs::remove_dir_all(&dir).expect("cleaned up");
     }
 
     /// A key written by hand with a typo would otherwise be dropped, and its setting quietly

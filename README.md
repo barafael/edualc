@@ -69,8 +69,10 @@ other way around.
   takes the accent while writing. Under the text: the permission mode (coloured by how much it lets
   through) and the model, each with a menu that says what its choices mean; what Claude is doing,
   while it works; how full the context is; and one button that sends, or stops while Claude works.
-  Slash commands complete with Tab; Esc interrupts. The account, cost and plan limits sit at the foot
-  of the sidebar, which Ctrl+B hides.
+  Slash commands complete with Tab; Esc interrupts. The box grows with its text; dragging its top
+  edge gives it a height of your own (kept; a double click fits it to the text again), one button
+  makes it taller over the conversation and another gives it the whole column, to see all of a long
+  paste. The account, cost and plan limits sit at the foot of the sidebar, which Ctrl+B hides.
 
 ## Look
 

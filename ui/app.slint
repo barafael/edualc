@@ -3,7 +3,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
-import { LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
+import { ComposerSize, LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
 import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
@@ -12,7 +12,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Motion, Theme } from "theme.slint";
-export { BlockKind, CommandItem, DiffKind, DiffLine, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
+export { BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
 export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -697,7 +697,29 @@ component SendButton inherits Rectangle {
 // b33p). Under the text: the mode and model, what Claude is doing, the context, send.
 component EditArea inherits Rectangle {
     in property <length> tallest: 320px;
+    // Given its height from outside (made taller, over the conversation), the text fills it;
+    // in the column, it is as tall as its text or as dragged.
+    in property <bool> stretched;
+    // The most a drag makes it.
+    in property <length> tallest-dragged: 600px;
     property <length> line: one-line.preferred-height;
+    // How it was before it was made taller.
+    function back() {
+        Composer.size = Composer.chosen-height > 0 ? ComposerSize.chosen : ComposerSize.fit;
+    }
+    function toggle(size: ComposerSize) {
+        if Composer.size == size {
+            root.back();
+        } else {
+            Composer.size = size;
+        }
+    }
+    // Sent: a box made taller for writing goes back.
+    function sent() {
+        if Composer.size == ComposerSize.tall || Composer.size == ComposerSize.full {
+            root.back();
+        }
+    }
     // The permission modes in `PermissionMode`'s order (src/app.rs): ask, edits, plan, auto,
     // bypass. Each its own colour, by how much is let through.
     property <PermissionKind> mode: Session.mode;
@@ -736,7 +758,12 @@ component EditArea inherits Rectangle {
         padding-bottom: Theme.space-s;
         spacing: Theme.space-s;
         scroll := Flickable {
-            height: clamp(measure.preferred-height, 2 * root.line, root.tallest);
+            property <length> fixed: Composer.size == ComposerSize.chosen
+                ? max(Composer.chosen-height, 2 * root.line)
+                : clamp(measure.preferred-height, 2 * root.line, root.tallest);
+            min-height: root.stretched ? 2 * root.line : self.fixed;
+            max-height: root.stretched ? 100000px : self.fixed;
+            vertical-stretch: root.stretched ? 1 : 0;
             interactive: false;
             content-height: input.height;
             // Shorter text leaves no gap below it.
@@ -781,6 +808,7 @@ component EditArea inherits Rectangle {
                     }
                     if event.text == Key.Return && !event.modifiers.shift {
                         Composer.send(Composer.draft);
+                        root.sent();
                         return accept;
                     }
                     return reject;
@@ -836,9 +864,49 @@ component EditArea inherits Rectangle {
                 horizontal-stretch: 1;
             }
             if Session.context != "": ContextMeter { }
-            SendButton {
-                sent => { root.focus-end(); }
+            IconButton {
+                icon: Composer.size == ComposerSize.tall ? @image-url("@lucide/minimize-2.svg") : @image-url("@lucide/maximize-2.svg");
+                label: Composer.size == ComposerSize.tall ? "Make the message box small again" : "Make the message box taller";
+                tint: Theme.text-faint;
+                clicked => { root.toggle(ComposerSize.tall); }
             }
+            IconButton {
+                icon: Composer.size == ComposerSize.full ? @image-url("@lucide/shrink.svg") : @image-url("@lucide/expand.svg");
+                label: Composer.size == ComposerSize.full ? "Show the conversation again" : "Give the message the whole column, to see all of a long paste";
+                tint: Theme.text-faint;
+                clicked => { root.toggle(ComposerSize.full); }
+            }
+            SendButton {
+                sent => {
+                    root.sent();
+                    root.focus-end();
+                }
+            }
+        }
+    }
+    // The top edge: dragged, the box takes that height and keeps it; a double click fits it to
+    // its text again.
+    if !root.stretched: grip := TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 6px;
+        mouse-cursor: ns-resize;
+        moved => {
+            if self.pressed {
+                Composer.chosen-height = clamp(scroll.height + self.pressed-y - self.mouse-y, 2 * root.line, root.tallest-dragged);
+                Composer.size = ComposerSize.chosen;
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && Composer.size == ComposerSize.chosen {
+                Composer.height-chosen(round(Composer.chosen-height / 1px));
+            }
+        }
+        double-clicked => {
+            Composer.chosen-height = 0;
+            Composer.size = ComposerSize.fit;
+            Composer.height-chosen(0);
         }
     }
 }
@@ -1236,10 +1304,10 @@ export component AppWindow inherits Window {
                 width: 1px;
                 background: Theme.divider;
             }
-            VerticalLayout {
+            column := VerticalLayout {
                 horizontal-stretch: 1;
                 min-width: 360px;
-                Header {
+                header := Header {
                     sidebar-shown: root.sidebar-shown;
                     toggle-sidebar => { root.sidebar-shown = !root.sidebar-shown; }
                 }
@@ -1393,8 +1461,15 @@ export component AppWindow inherits Window {
                 // The text box, edge to edge (see `EditArea`); a watched session is only read, and
                 // nothing is sent before the folder is trusted.
                 composer := EditArea {
-                    visible: !Session.watching && !Session.needs-trust;
+                    visible: !Session.watching && !Session.needs-trust && (Composer.size == ComposerSize.fit || Composer.size == ComposerSize.chosen);
                     height: self.visible ? self.preferred-height : 0;
+                    tallest-dragged: column.height * 80%;
+                    // Back from being made taller: the writing goes on here.
+                    changed visible => {
+                        if self.visible {
+                            self.focus-end();
+                        }
+                    }
                 }
             }
             if Side.view == SideView.shown: Rectangle {
@@ -1406,6 +1481,25 @@ export component AppWindow inherits Window {
                 preferred-width: Theme.side-panel;
                 max-width: Theme.side-panel;
                 horizontal-stretch: 0;
+            }
+        }
+        // The text box made taller: over the conversation's column, outside its layout (the
+        // column's height can't size what sizes the column), with the same draft. Two thirds of
+        // the column, or all of it below the header.
+        if (Composer.size == ComposerSize.tall || Composer.size == ComposerSize.full) && !Session.watching && !Session.needs-trust: Rectangle {
+            property <length> top: Composer.size == ComposerSize.full ? header.y + header.height : column.y + column.height / 3;
+            x: column.x;
+            y: self.top;
+            width: column.width;
+            height: column.y + column.height - self.top;
+            background: Theme.card;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.shadow;
+            tall := EditArea {
+                width: parent.width;
+                height: parent.height;
+                stretched: true;
+                init => { self.focus-end(); }
             }
         }
     }

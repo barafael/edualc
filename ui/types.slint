@@ -159,3 +159,7 @@ export enum PermissionKind { default, accept-edits, plan, auto, bypass, unknown 
 // What the bar above the composer asks: nothing, whether a tool may run, Claude's questions,
 // or whether its plan is approved.
 export enum PromptKind { none, tool, question, plan }
+
+// How tall the composer is: fitted to its text (up to a limit), as dragged, about two thirds
+// of the conversation's column, or all of it.
+export enum ComposerSize { fit, chosen, tall, full }
