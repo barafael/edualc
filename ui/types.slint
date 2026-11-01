@@ -55,6 +55,9 @@ export struct DiffLine {
 
 // One row of the transcript.
 export struct Entry {
+    // Its place in the conversation, which toggling and copying name and selections are keyed
+    // by; not its place in the list, which leaves out what is hidden.
+    index: int,
     kind: EntryKind,
     // The text of user messages, notes, errors and thinking.
     body: styled-text,
@@ -82,7 +85,7 @@ export struct Entry {
     group-summary: string,
     group-state: ToolState,
     group-open: bool,
-    // A later call of a folded run: not shown.
+    // A later call of a folded run: not in the list at all (see `View::new`).
     hidden: bool,
 }
 

@@ -5,7 +5,8 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use slint::{
-    ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+    ComponentHandle, Model, ModelExt, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString,
+    VecModel,
 };
 use strum::IntoEnumIterator;
 
@@ -90,7 +91,14 @@ impl View {
             window.global::<Theme>().set_mono(family.into());
         }
         let entries = ModelRc::new(VecModel::<Entry>::default());
-        window.global::<Transcript>().set_entries(entries.clone());
+        // The list gets only the rows it shows. Slint's list estimates the rows it hasn't built
+        // from those it has, so a row that takes no room misleads it: hidden rows past the end
+        // put the end further down than it is, and following the end never settles; a view of
+        // hidden rows alone measures nothing and is built again on every pass ("long
+        // callback/instantiation chain detected").
+        window
+            .global::<Transcript>()
+            .set_entries(ModelRc::new(entries.clone().filter(|entry| !entry.hidden)));
         let commands = ModelRc::new(VecModel::<CommandItem>::default());
         window.global::<Composer>().set_commands(commands.clone());
         window
@@ -375,6 +383,7 @@ impl View {
 
     fn row(&mut self, index: usize, entry: &chat::Entry, cwd: &Path) -> Entry {
         let mut row = Entry {
+            index: i32::try_from(index).unwrap_or(i32::MAX),
             nested: entry.nested,
             ..Entry::default()
         };

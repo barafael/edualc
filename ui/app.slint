@@ -1673,16 +1673,17 @@ export component AppWindow inherits Window {
                                 follow-timer.running = true;
                             }
                         }
-                        // A folded run's later calls take no room.
-                        for entry[index] in Transcript.entries: HorizontalLayout {
+                        // The rows shown, each taking room: a folded run's later calls aren't
+                        // in the list (see `View::new`).
+                        for entry[position] in Transcript.entries: HorizontalLayout {
                             alignment: start;
                             padding-left: Theme.space-xl;
-                            padding-top: entry.hidden ? 0 : index == 0 ? Theme.space-xl : Theme.space-s;
-                            padding-bottom: entry.hidden ? 0 : index == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
-                            if !entry.hidden: EntryView {
+                            padding-top: position == 0 ? Theme.space-xl : Theme.space-s;
+                            padding-bottom: position == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
+                            EntryView {
                                 width: min(transcript.visible-width - 2 * Theme.space-xl, Theme.column);
                                 entry: entry;
-                                index: index;
+                                index: entry.index;
                             }
                         }
                     }

@@ -132,6 +132,7 @@ export global Sessions {
 
 // The conversation.
 export global Transcript {
+    // The rows shown, in order; those hidden are left out.
     in property <[Entry]> entries;
     // Bumped to go to the end, whether or not it was being followed.
     in property <int> scroll-to-end-serial;
