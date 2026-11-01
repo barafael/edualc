@@ -1597,7 +1597,8 @@ export component AppWindow inherits Window {
                         }
                         // A folded run's later calls take no room.
                         for entry[index] in Transcript.entries: HorizontalLayout {
-                            alignment: center;
+                            alignment: start;
+                            padding-left: Theme.space-xl;
                             padding-top: entry.hidden ? 0 : index == 0 ? Theme.space-xl : Theme.space-s;
                             padding-bottom: entry.hidden ? 0 : index == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
                             if !entry.hidden: EntryView {

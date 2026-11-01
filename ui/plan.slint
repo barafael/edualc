@@ -179,7 +179,8 @@ export component PlanReview inherits Rectangle {
         }
         sections := ListView {
             for section[index] in Prompt.plan: HorizontalLayout {
-                alignment: center;
+                alignment: start;
+                padding-left: Theme.space-xl;
                 padding-top: index == 0 ? Theme.space-xl : Theme.space-xs;
                 padding-bottom: index == Prompt.plan.length - 1 ? Theme.space-xl : Theme.space-xs;
                 SectionRow {
