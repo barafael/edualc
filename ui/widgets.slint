@@ -142,11 +142,10 @@ export component TextButton inherits Rectangle {
 }
 
 // Text that can be selected and copied, in the transcript: one element's selection at a time
-// (`TextSelection`), each told apart by its `key`. Links open in the browser.
-export component Selectable inherits StyledText {
+// (`TextSelection`), each told apart by its `key`. Links open in the browser. No narrower than
+// its longest word.
+component SelectableText inherits StyledText {
     in property <string> key;
-    // A long unbreakable word (a URL, a path) must not widen the row past the column.
-    min-width: 0px;
     selectable: true;
     default-color: Theme.text;
     link-color: Theme.link;
@@ -174,6 +173,15 @@ export component Selectable inherits StyledText {
         }
     }
 }
+
+export component Selectable inherits SelectableText {
+    // A long unbreakable word (a URL, a path) must not widen the row past the column.
+    min-width: 0px;
+}
+
+// A table's cell keeps its longest word whole, so a short column keeps its width as the table
+// narrows; a table its words make too wide is cut off at its edge.
+export component TableCell inherits SelectableText { }
 
 // Monospace text on the code background: code, a tool's input or output.
 export component CodeBox inherits Rectangle {

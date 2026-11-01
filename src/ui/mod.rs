@@ -23,8 +23,8 @@ use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
     EntryKind, GroupRole, ImageChip, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind,
     PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem,
-    Sessions, Side, SideExchange, SideState, StatRow, StatSection, Theme, ToolState, Transcript,
-    Usage,
+    Sessions, Side, SideExchange, SideState, StatRow, StatSection, TableRow, Theme, ToolState,
+    Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
@@ -886,12 +886,39 @@ fn md_block(block: &Block) -> MdBlock {
             body: markdown::styled(source),
             ..MdBlock::default()
         },
-        Block::Table(text) => MdBlock {
-            kind: BlockKind::Table,
-            body: markdown::plain(text),
-            raw: text.as_str().into(),
-            ..MdBlock::default()
-        },
+        Block::Table(table) => {
+            let rows: Vec<TableRow> = table
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(position, row)| {
+                    let cells: Vec<slint::StyledText> = row
+                        .iter()
+                        .map(|cell| match position {
+                            0 if !cell.trim().is_empty() => {
+                                markdown::styled(&format!("**{cell}**"))
+                            }
+                            _ => markdown::styled(cell),
+                        })
+                        .collect();
+                    TableRow {
+                        cells: ModelRc::new(VecModel::from(cells)),
+                    }
+                })
+                .collect();
+            let column_stretch: Vec<f32> = table
+                .longest_cell_chars
+                .iter()
+                .map(|&chars| f32::from(u16::try_from(chars).unwrap_or(u16::MAX)))
+                .collect();
+            MdBlock {
+                kind: BlockKind::Table,
+                raw: table.source.as_str().into(),
+                rows: ModelRc::new(VecModel::from(rows)),
+                column_stretch: ModelRc::new(VecModel::from(column_stretch)),
+                ..MdBlock::default()
+            }
+        }
         Block::Rule => MdBlock {
             kind: BlockKind::Rule,
             ..MdBlock::default()

@@ -1,11 +1,62 @@
 // The rows of the transcript: the user's messages, Claude's Markdown, tool calls with their
 // input, output and diffs, and notes. Selectable text is keyed by entry and part: `e3:b0` for
-// the first Markdown block of entry 3, `e3:detail`, `e3:output`, `e3:text`.
+// the first Markdown block of entry 3, `e3:b0:r1c2` for a cell of it, `e3:detail`, `e3:output`,
+// `e3:text`.
 
 import { Theme } from "theme.slint";
 import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, MdBlock, ToolState } from "types.slint";
 import { Clipboard, Transcript } from "state.slint";
-import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small } from "widgets.slint";
+import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, TableCell } from "widgets.slint";
+
+// A table as wide as its cells need, up to the column. Narrower, its cells wrap, each column
+// giving up width by its share of `column-stretch`. Copying takes its Markdown.
+component TableView inherits HorizontalLayout {
+    in property <MdBlock> block;
+    in property <string> key;
+    alignment: start;
+    spacing: Theme.space-xs;
+    Rectangle {
+        // Words too long for the column would widen the table past it: cut off, rather than
+        // widen the transcript.
+        min-width: 0px;
+        clip: true;
+        border-radius: Theme.radius-m;
+        border-width: 1px;
+        border-color: Theme.divider;
+        GridLayout {
+            // Inside the border.
+            padding: 1px;
+            for row[row-index] in root.block.rows: Row {
+                for cell[column-index] in row.cells: Rectangle {
+                    horizontal-stretch: root.block.column-stretch[column-index];
+                    background: row-index == 0 ? Theme.code : Math.mod(row-index, 2) == 0 ? Theme.subtle : transparent;
+                    HorizontalLayout {
+                        padding-left: Theme.space-s;
+                        padding-right: Theme.space-s;
+                        padding-top: Theme.space-xs;
+                        padding-bottom: Theme.space-xs;
+                        TableCell {
+                            text: cell;
+                            key: "\{root.key}:r\{row-index}c\{column-index}";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        alignment: start;
+        IconButton {
+            icon: @image-url("@lucide/copy.svg");
+            label: "Copy table";
+            width: 24px;
+            height: 24px;
+            icon-size: Theme.icon-small;
+            tint: Theme.text-faint;
+            clicked => { Clipboard.copy(root.block.raw); }
+        }
+    }
+}
 
 // One block of Markdown; `key` tells its selection apart (see `TextSelection`).
 export component BlockView inherits VerticalLayout {
@@ -25,12 +76,16 @@ export component BlockView inherits VerticalLayout {
             default-font-size: 1rem * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
         }
     }
-    if root.block.kind == BlockKind.code || root.block.kind == BlockKind.table: CodeBox {
+    if root.block.kind == BlockKind.code: CodeBox {
         body: root.block.body;
         key: root.key;
         label: root.block.lang;
         copyable: true;
         copy => { Clipboard.copy(root.block.raw); }
+    }
+    if root.block.kind == BlockKind.table: TableView {
+        block: root.block;
+        key: root.key;
     }
     if root.block.kind == BlockKind.quote: HorizontalLayout {
         spacing: Theme.space-m;

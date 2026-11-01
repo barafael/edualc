@@ -4,6 +4,10 @@
 // links, lists) is inside `body`, parsed by Slint.
 export enum BlockKind { text, heading, code, quote, table, rule }
 
+export struct TableRow {
+    cells: [styled-text],
+}
+
 export struct MdBlock {
     kind: BlockKind,
     body: styled-text,
@@ -11,8 +15,13 @@ export struct MdBlock {
     lang: string,
     // A heading's level, 1 to 6.
     level: int,
-    // Code and tables as they are, for copying.
+    // Code as it is, a table as its Markdown, for copying.
     raw: string,
+    // A table's rows, the header first.
+    rows: [TableRow],
+    // A table's columns' stretch: a table too wide for the window narrows each column by its
+    // share, so a short column keeps its width.
+    column-stretch: [float],
 }
 
 export enum EntryKind { user, assistant, thinking, tool, info, error }

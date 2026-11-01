@@ -18,17 +18,25 @@ pub(crate) enum Block {
     },
     /// The quote's Markdown source, without the `>` markers.
     Quote(String),
-    /// Laid out as aligned plain text, to be shown in a monospace font.
-    Table(String),
+    Table(Table),
     Rule,
 }
 
-/// Tables are cut to this many rows and columns, and their cells to this many characters: a
-/// table is padded to its widest cell, so a few long cells in many rows would grow it without
-/// bound.
+/// A table, shown as a grid whose cells wrap.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Table {
+    /// The header row first; each cell as its inline Markdown source.
+    pub(crate) rows: Vec<Vec<String>>,
+    /// Per column, the characters its longest cell shows. A table too wide for the window
+    /// narrows each column by its share of these, so a short column keeps its width.
+    pub(crate) longest_cell_chars: Vec<usize>,
+    /// The table's Markdown source, for copying.
+    pub(crate) source: String,
+}
+
+/// Tables are cut to this many rows and columns: every cell is an element of the window.
 const TABLE_ROWS: usize = 500;
 const TABLE_COLUMNS: usize = 24;
-const TABLE_CELL: usize = 120;
 
 pub(crate) fn blocks(src: &str) -> Vec<Block> {
     split(src, false)
@@ -84,12 +92,7 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
     let mut open = 0..0;
     let mut in_list = false;
     let mut code: Option<(String, String)> = None;
-    let mut table: Option<Vec<Vec<String>>> = None;
-    // The table has all the rows shown of it; the rest are counted, and said to be cut.
-    let mut table_full = false;
-    let mut rows_cut = 0usize;
-    // Whether text goes to the table's last cell, or to a column past those shown.
-    let mut cell_shown = false;
+    let mut table: Option<TableParse> = None;
     for (event, range) in Parser::new_ext(src, options).into_offset_iter() {
         let range = trimmed(src, &range);
         // Copied only for the blocks pushed, not for every event of the parse.
@@ -108,11 +111,7 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                             };
                             code = Some((lang, String::new()));
                         }
-                        Tag::Table(_) => {
-                            table = Some(Vec::new());
-                            table_full = false;
-                            rows_cut = 0;
-                        }
+                        Tag::Table(_) => table = Some(TableParse::default()),
                         Tag::Heading { level, .. } => out.push((
                             Block::Heading(*level as u8, heading_text(&source())),
                             range.clone(),
@@ -154,27 +153,10 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                 } else if depth == 1 && in_list && matches!(tag, Tag::Item) {
                     out.push((Block::Text(source()), range.clone()));
                 }
-                if let Some(rows) = table.as_mut() {
+                if let Some(table) = table.as_mut() {
                     match tag {
-                        Tag::TableHead | Tag::TableRow => {
-                            table_full = rows.len() >= TABLE_ROWS;
-                            if table_full {
-                                rows_cut += 1;
-                            } else {
-                                rows.push(Vec::new());
-                            }
-                        }
-                        Tag::TableCell => {
-                            cell_shown = false;
-                            if let Some(row) = rows.last_mut().filter(|_| !table_full) {
-                                if row.len() < TABLE_COLUMNS {
-                                    row.push(String::new());
-                                    cell_shown = true;
-                                } else if row.len() == TABLE_COLUMNS {
-                                    row.push("…".to_owned());
-                                }
-                            }
-                        }
+                        Tag::TableHead | Tag::TableRow => table.start_row(),
+                        Tag::TableCell => table.start_cell(src.get(range.clone()).unwrap_or("")),
                         Tag::Paragraph
                         | Tag::Heading { .. }
                         | Tag::BlockQuote(_)
@@ -201,6 +183,11 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
             }
             Event::End(end) => {
                 depth = depth.saturating_sub(1);
+                if matches!(end, TagEnd::TableCell)
+                    && let Some(table) = table.as_mut()
+                {
+                    table.end_cell();
+                }
                 if depth == 0 {
                     in_list = false;
                     let whole = trimmed(src, &open);
@@ -209,29 +196,30 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
                         out.push((Block::Code { lang, code }, whole.clone()));
                     }
                     if matches!(end, TagEnd::Table)
-                        && let Some(mut rows) = table.take()
+                        && let Some(table) = table.take()
                     {
-                        if rows_cut > 0 {
-                            rows.push(vec![format!("… {rows_cut} more rows")]);
-                        }
-                        out.push((Block::Table(lay_out_table(&rows)), whole));
+                        let source = src.get(whole.clone()).unwrap_or("").to_owned();
+                        out.push((Block::Table(table.finish(source)), whole));
                     }
                 }
             }
             Event::Text(text) => {
                 if let Some((_, code)) = code.as_mut() {
                     code.push_str(&text);
-                } else if cell_shown {
-                    add_to_cell(&mut table, &text);
+                } else if let Some(table) = table.as_mut() {
+                    table.count(&text);
                 }
             }
-            Event::Code(text) if cell_shown => add_to_cell(&mut table, &text),
+            Event::Code(text) => {
+                if let Some(table) = table.as_mut() {
+                    table.count(&text);
+                }
+            }
             Event::Rule if depth == 0 => out.push((Block::Rule, range)),
             Event::Html(_) | Event::InlineHtml(_) if depth == 0 => {
                 out.push((Block::Text(source()), range));
             }
-            Event::Code(_)
-            | Event::Rule
+            Event::Rule
             | Event::Html(_)
             | Event::InlineHtml(_)
             | Event::InlineMath(_)
@@ -245,25 +233,82 @@ fn split(src: &str, items: bool) -> Vec<(Block, Range<usize>)> {
     out
 }
 
-/// Adds text to the table's last cell, as far as the table is shown.
-fn add_to_cell(table: &mut Option<Vec<Vec<String>>>, text: &str) {
-    let Some(cell) = table
-        .as_mut()
-        .and_then(|rows| rows.last_mut())
-        .and_then(|row| row.last_mut())
-    else {
-        return;
-    };
-    let held = cell.chars().count();
-    if held >= TABLE_CELL {
-        return;
+/// A table as far as it is parsed.
+#[derive(Default)]
+struct TableParse {
+    rows: Vec<Vec<String>>,
+    longest_cell_chars: Vec<usize>,
+    /// Rows past [`TABLE_ROWS`]: counted, to say they are cut.
+    rows_cut: usize,
+    /// The cell being parsed, if it is shown.
+    cell: Option<ShownCell>,
+}
+
+struct ShownCell {
+    column: usize,
+    /// The characters it shows so far.
+    chars: usize,
+}
+
+impl TableParse {
+    fn start_row(&mut self) {
+        if self.rows.len() < TABLE_ROWS {
+            self.rows.push(Vec::new());
+        } else {
+            self.rows_cut += 1;
+        }
     }
-    let mut chars = text.chars();
-    cell.extend(chars.by_ref().take(TABLE_CELL - held));
-    // Cut: said so, in the cell's last place.
-    if chars.next().is_some() {
-        cell.pop();
-        cell.push('…');
+
+    /// A cell past the columns shown is left out; the first of them is shown as `…`.
+    fn start_cell(&mut self, source: &str) {
+        self.cell = None;
+        // Once a row is cut, so are all after it.
+        if self.rows_cut > 0 {
+            return;
+        }
+        let Some(row) = self.rows.last_mut() else {
+            return;
+        };
+        let column = row.len();
+        if column < TABLE_COLUMNS {
+            // The source starts at the space after the cell's `|`.
+            row.push(source.trim().to_owned());
+            self.cell = Some(ShownCell { column, chars: 0 });
+        } else if column == TABLE_COLUMNS {
+            row.push("…".to_owned());
+        } else {
+            return;
+        }
+        if self.longest_cell_chars.len() <= column {
+            self.longest_cell_chars.resize(column + 1, 1);
+        }
+    }
+
+    /// Text the cell being parsed shows.
+    fn count(&mut self, text: &str) {
+        if let Some(cell) = self.cell.as_mut() {
+            cell.chars += text.chars().count();
+        }
+    }
+
+    fn end_cell(&mut self) {
+        if let Some(cell) = self.cell.take()
+            && let Some(longest) = self.longest_cell_chars.get_mut(cell.column)
+        {
+            *longest = (*longest).max(cell.chars);
+        }
+    }
+
+    fn finish(mut self, source: String) -> Table {
+        if self.rows_cut > 0 {
+            self.rows
+                .push(vec![format!("… {} more rows", self.rows_cut)]);
+        }
+        Table {
+            rows: self.rows,
+            longest_cell_chars: self.longest_cell_chars,
+            source,
+        }
     }
 }
 
@@ -289,36 +334,6 @@ fn unquote(source: &str) -> String {
         .join("\n")
         .trim_end()
         .to_owned()
-}
-
-/// Columns padded to their widest cell, the header ruled off: readable in a monospace font.
-fn lay_out_table(rows: &[Vec<String>]) -> String {
-    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let width = |c: usize| {
-        rows.iter()
-            .filter_map(|row| row.get(c))
-            .map(|cell| cell.chars().count())
-            .max()
-            .unwrap_or(0)
-    };
-    let widths: Vec<usize> = (0..columns).map(width).collect();
-    let mut lines = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
-        let cells: Vec<String> = widths
-            .iter()
-            .enumerate()
-            .map(|(c, &w)| {
-                let cell = row.get(c).map_or("", String::as_str);
-                format!("{cell}{}", " ".repeat(w - cell.chars().count()))
-            })
-            .collect();
-        lines.push(cells.join(" │ ").trim_end().to_owned());
-        if i == 0 {
-            let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
-            lines.push(rule.join("─┼─"));
-        }
-    }
-    lines.join("\n")
 }
 
 /// Inline Markdown as Slint styled text; as plain text if Slint's parser refuses it (an HTML
@@ -395,31 +410,68 @@ mod tests {
         );
     }
 
-    /// One very wide cell over many rows would otherwise be padded into every row.
-    #[test]
-    fn tables_stay_bounded() {
-        let mut src = format!("| a |\n|---|\n| {} |\n", "x".repeat(30_000));
-        for _ in 0..30_000 {
-            src.push_str("| y |\n");
-        }
-        let Some(Block::Table(text)) = blocks(&src).into_iter().next() else {
-            panic!("a table");
+    fn only_table(src: &str) -> Table {
+        let blocks = blocks(src);
+        let [Block::Table(table)] = blocks.as_slice() else {
+            panic!("one table, not {blocks:?}")
         };
-        assert!(text.len() < 1_000_000, "{} bytes", text.len());
-        assert!(text.contains('…'), "the cut cell says so");
-        assert!(text.ends_with("more rows"), "so does the cut table");
+        table.clone()
     }
 
     #[test]
-    fn tables_are_aligned() {
-        let src = "| Name | Size |\n|---|---|\n| `a.rs` | 10 |\n| longer.rs | 2 |\n";
+    fn tables_keep_their_cells_as_markdown() {
+        let src = "Before.\n\n| Name | What |\n|---|:-:|\n| `main_window.rs` | **bold** and \\| pipe |\n| a.rs | [link](https://example.org/a/long/path) |\n\nAfter.";
         let blocks = blocks(src);
-        let [Block::Table(t)] = blocks.as_slice() else {
-            panic!("one table")
+        let [Block::Text(_), Block::Table(table), Block::Text(_)] = blocks.as_slice() else {
+            panic!("text, a table, text: not {blocks:?}")
         };
         assert_eq!(
-            t,
-            "Name      │ Size\n──────────┼─────\na.rs      │ 10\nlonger.rs │ 2"
+            table.rows,
+            [
+                ["Name", "What"],
+                ["`main_window.rs`", "**bold** and \\| pipe"],
+                ["a.rs", "[link](https://example.org/a/long/path)"],
+            ]
         );
+        // What the cells show: the code's backticks, the emphasis and the link's target are not.
+        assert_eq!(table.longest_cell_chars, [14, 15]);
+        assert!(table.source.starts_with("| Name |"), "{}", table.source);
+        assert!(table.source.ends_with("long/path) |"), "{}", table.source);
+    }
+
+    /// Every cell is an element of the window.
+    #[test]
+    fn tables_are_cut_to_rows_and_columns_and_say_so() {
+        let header = "| h ".repeat(TABLE_COLUMNS + 6) + "|\n";
+        let rule = "|---".repeat(TABLE_COLUMNS + 6) + "|\n";
+        let mut src = header + &rule;
+        for _ in 0..TABLE_ROWS + 41 {
+            src.push_str("| y |\n");
+        }
+        let table = only_table(&src);
+        assert_eq!(table.rows.len(), TABLE_ROWS + 1);
+        let header = table.rows.first().expect("a header");
+        assert_eq!(header.len(), TABLE_COLUMNS + 1);
+        assert_eq!(header.last().map(String::as_str), Some("…"));
+        assert_eq!(table.longest_cell_chars.len(), TABLE_COLUMNS + 1);
+        assert_eq!(
+            table.rows.last().map(Vec::as_slice),
+            Some(["… 42 more rows".to_owned()].as_slice())
+        );
+    }
+
+    /// A very wide cell is wrapped in the window, so it is kept whole.
+    #[test]
+    fn long_cells_are_kept_whole() {
+        let long = "word ".repeat(2_000);
+        let long = long.trim();
+        let table = only_table(&format!("| a | b |\n|---|---|\n| {long} | c |\n"));
+        let kept = table.rows.get(1).and_then(|row| row.first());
+        assert!(
+            kept.is_some_and(|cell| cell == long),
+            "kept {} characters",
+            kept.map_or(0, String::len)
+        );
+        assert_eq!(table.longest_cell_chars, [long.len(), 1]);
     }
 }
