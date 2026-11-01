@@ -6,10 +6,60 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::external::wire::SessionId;
 use crate::sessions::{LiveKind, LiveStatus};
+
+/// A running session's record, `sessions/<pid>.json` in Claude Code's home, in the fields
+/// other sessions read to find it and message it: mirrored from a sandboxed session's own
+/// home into the user's (see `mirror`). Others are dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionRecord {
+    pub(crate) pid: u32,
+    pub(crate) session_id: SessionId,
+    pub(crate) cwd: PathBuf,
+    pub(crate) proc_start: String,
+    pub(crate) messaging_socket_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peer_protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) peer_features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pid_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name_since: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) updated_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status_updated_at: Option<u64>,
+}
+
+/// The key beside a session's record, `sessions/<pid>.<hash>.key`, that other sessions
+/// authenticate to its socket with. Not `Debug`: it holds the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionKey {
+    pub(crate) peer_token: String,
+    pub(crate) proc_start: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pid_domain: Option<String>,
+}
 
 /// `~/.claude/.credentials.json`.
 #[derive(Deserialize)]

@@ -13,8 +13,8 @@ use tokio::process::{Child, Command};
 use crate::claude::{Conversation, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, Home, Scratch};
-use crate::process;
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
+use crate::{mirror, process};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
 /// child would take them as its own and think itself nested.
@@ -128,12 +128,15 @@ pub(crate) struct Spawned {
     pub(crate) enforcement: Option<Enforcement>,
     /// A sandboxed session's own temporary folder, kept while it runs.
     pub(crate) scratch: Option<Scratch>,
+    /// A sandboxed session's record to mirror for other sessions to message it by.
+    pub(crate) record: Option<mirror::Source>,
 }
 
-/// What a sandboxed start takes: its sandbox, its own temporary folder, and the sign-in on its
-/// way to it, if the user is signed in.
+/// What a sandboxed start takes: its sandbox, its own home and temporary folder, and the
+/// sign-in on its way to it, if the user is signed in.
 struct Sandboxed {
     policy: Policy,
+    home: Home,
     scratch: Scratch,
     sign_in: Option<SignIn>,
 }
@@ -270,6 +273,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
     match sandboxed {
         Some(Sandboxed {
             policy,
+            home,
             scratch,
             sign_in,
         }) => {
@@ -294,6 +298,11 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                 child,
                 enforcement: Some(enforcement),
                 scratch: Some(scratch),
+                record: Some(mirror::Source {
+                    home,
+                    id: launch.conversation.id().clone(),
+                    cwd,
+                }),
             })
         }
         None => {
@@ -302,6 +311,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                 child: command.spawn().map_err(Error::Start)?,
                 enforcement: None,
                 scratch: None,
+                record: None,
             })
         }
     }
@@ -342,6 +352,7 @@ fn sandboxed(
     let sign_in = SignIn::prepare(command)?;
     Ok(Sandboxed {
         policy,
+        home,
         scratch,
         sign_in,
     })

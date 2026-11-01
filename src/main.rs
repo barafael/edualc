@@ -21,6 +21,7 @@ mod home;
 mod ipc;
 mod link;
 mod markdown;
+mod mirror;
 mod plan;
 mod process;
 mod sandbox;

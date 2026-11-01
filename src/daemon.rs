@@ -38,6 +38,7 @@ use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
     PasteFailure, StartFailure, Stream, ToDaemon,
 };
+use crate::mirror::Mirror;
 use crate::spawn;
 
 /// How long the daemon waits, with no window and no session, before it ends.
@@ -942,10 +943,19 @@ impl Session {
             mut child,
             enforcement,
             scratch: _kept_while_running,
+            record,
         } = spawned;
         let Some(pid) = child.id() else {
             return self;
         };
+        // A sandboxed session's record, mirrored for others to message it by, until this ends.
+        let mut mirror = record.and_then(|record| match Mirror::start(record, pid) {
+            Ok(mirror) => Some(mirror),
+            Err(error) => {
+                tracing::warn!(%error, id = ?self.id, "other sessions can't message this one");
+                None
+            }
+        });
         let mut shown = shown;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
@@ -1032,6 +1042,7 @@ impl Session {
                     }
                     None => output_open = false,
                 },
+                () = follow(mirror.as_mut()) => {}
                 ended = child.wait() => break ended.ok().and_then(|status| status.code()),
                 () = deadline => {
                     if self.phase == Phase::Running {
@@ -1130,6 +1141,14 @@ async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
     stdin.write_all(line.as_bytes()).await?;
     stdin.write_all(b"\n").await?;
     stdin.flush().await
+}
+
+/// Follows a sandboxed session's record, if there is one to follow; else waits forever.
+async fn follow(mirror: Option<&mut Mirror>) {
+    match mirror {
+        Some(mirror) => mirror.follow().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A process's output, line by line (split sans-io), to its session.
@@ -1446,6 +1465,7 @@ mod tests {
             child: command.spawn().expect("cat runs"),
             enforcement: None,
             scratch: None,
+            record: None,
         }
     }
 
