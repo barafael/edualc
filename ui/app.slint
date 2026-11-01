@@ -518,8 +518,9 @@ component Sidebar inherits Rectangle {
             HorizontalLayout {
                 padding-top: Theme.space-xs;
                 spacing: Theme.space-s;
+                // The plan is in the usage details.
                 Text {
-                    text: Session.plan != "" ? Session.plan : "Claude Code";
+                    text: "Claude Code";
                     color: Theme.text;
                     font-weight: 600;
                     font-size: 1rem * Theme.small;
@@ -583,7 +584,6 @@ component Sidebar inherits Rectangle {
                     text: "Signed in";
                 }
                 for line in [
-                    { label: "Plan", value: Session.plan },
                     { label: "Email", value: Session.email },
                     { label: "Organization", value: Session.organization },
                     { label: "Provider", value: Session.provider },

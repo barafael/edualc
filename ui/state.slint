@@ -23,9 +23,9 @@ export global Session {
     // The context used ("25k / 1M") and how full it is, 0 to 1.
     in property <string> context;
     in property <float> context-fraction;
-    // The sidebar's foot: the plan, and its limits used (0 to 1; less than 0 when unknown) and
-    // when they start over. Who is signed in waits behind an info button.
-    in property <string> plan;
+    // The sidebar's foot: the plan's limits used (0 to 1; less than 0 when unknown) and when
+    // they start over (the plan itself is in the usage details). Who is signed in waits behind
+    // an info button.
     in property <float> limit-five-hour: -1;
     in property <string> limit-five-hour-resets;
     in property <float> limit-seven-day: -1;

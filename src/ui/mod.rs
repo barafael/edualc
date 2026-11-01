@@ -610,7 +610,6 @@ impl View {
         session.set_limit_five_hour_resets(resets(status.limits.five_hour).into());
         session.set_limit_seven_day(used(status.limits.seven_day));
         let account = &status.account;
-        session.set_plan(account.subscription_type.as_str().into());
         session.set_email(account.email.as_str().into());
         session.set_organization(account.organization.as_str().into());
         session.set_provider(account.api_provider.as_str().into());
@@ -1298,12 +1297,12 @@ fn limits_section(report: Option<&wire::UsageReport>, status: &Status) -> StatSe
         .filter_map(|(label, limit)| Some(limit_row(label, limit?)))
         .collect(),
     };
+    // The plan as Claude Code names it ("max"), its first letter raised: "Max plan".
     let plan = &status.account.subscription_type;
-    let note = if plan.is_empty() {
-        String::new()
-    } else {
-        format!("{plan} plan")
-    };
+    let note = plan.chars().next().map_or_else(String::new, |first| {
+        let rest = plan.get(first.len_utf8()..).unwrap_or_default();
+        format!("{}{rest} plan", first.to_uppercase())
+    });
     section("Plan limits", note, rows)
 }
 

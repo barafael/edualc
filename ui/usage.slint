@@ -1,11 +1,10 @@
-// The usage panel, over the conversation: the plan's limits and when they start over, this
-// session's cost and time, what fills the context, and the last day and week as the CLI's
-// `/usage` sees them, with its advice. Esc or the cross closes it.
+// The usage panel, over the conversation: the plan and its limits and when they start over,
+// this session's cost and time, what fills the context, and the last day and week as the CLI's
+// `/usage` sees them, with its advice; a tab for each. Esc or the cross closes it.
 
-import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Usage } from "state.slint";
-import { Caption, Icon, IconButton, Meter, Small, Title } from "widgets.slint";
+import { Caption, Icon, IconButton, Meter, Pressable, Small, Title } from "widgets.slint";
 
 component StatLine inherits VerticalLayout {
     in property <string> label;
@@ -39,6 +38,9 @@ component StatLine inherits VerticalLayout {
 }
 
 export component UsagePanel inherits Rectangle {
+    // The section shown: the one picked, or the last there is.
+    property <int> tab: 0;
+    property <int> shown: max(0, min(root.tab, Usage.sections.length - 1));
     background: Theme.surface;
     VerticalLayout {
         HorizontalLayout {
@@ -89,38 +91,48 @@ export component UsagePanel inherits Rectangle {
                 wrap: word-wrap;
             }
         }
-        sections := ListView {
-            for section[index] in Usage.sections: HorizontalLayout {
-                alignment: center;
-                padding-top: index == 0 ? Theme.space-xl : Theme.space-m;
-                padding-bottom: index == Usage.sections.length - 1 ? Theme.space-xl : Theme.space-m;
-                VerticalLayout {
-                    width: min(sections.visible-width - 2 * Theme.space-xl, 720px);
-                    spacing: Theme.space-m;
-                    HorizontalLayout {
-                        spacing: Theme.space-s;
-                        Text {
-                            text: section.title;
-                            font-weight: 600;
-                            font-size: 1rem * Theme.title;
-                            color: Theme.text;
-                        }
-                        Small {
-                            text: section.note;
-                            vertical-alignment: center;
-                            horizontal-alignment: right;
-                            horizontal-stretch: 1;
-                        }
+        // A tab for each section, one shown at a time, instead of one long list.
+        HorizontalLayout {
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-xl;
+            padding-top: Theme.space-m;
+            spacing: Theme.space-xs;
+            alignment: start;
+            for section[index] in Usage.sections: Pressable {
+                selected: index == root.shown;
+                accessible-label: section.title;
+                clicked => { root.tab = index; }
+                HorizontalLayout {
+                    padding-left: Theme.space-m;
+                    padding-right: Theme.space-m;
+                    padding-top: Theme.space-s;
+                    padding-bottom: Theme.space-s;
+                    Text {
+                        text: section.title;
+                        color: index == root.shown ? Theme.text : Theme.text-secondary;
+                        vertical-alignment: center;
                     }
-                    for row in section.rows: StatLine {
+                }
+            }
+        }
+        if Usage.sections.length > 0: Flickable {
+            vertical-stretch: 1;
+            content-height: shown-section.preferred-height;
+            shown-section := HorizontalLayout {
+                alignment: center;
+                padding-top: Theme.space-l;
+                padding-bottom: Theme.space-xl;
+                VerticalLayout {
+                    width: min(root.width - 2 * Theme.space-xl, 720px);
+                    spacing: Theme.space-m;
+                    if Usage.sections[root.shown].note != "": Small {
+                        text: Usage.sections[root.shown].note;
+                    }
+                    for row in Usage.sections[root.shown].rows: StatLine {
                         label: row.label;
                         value: row.value;
                         detail: row.detail;
                         fraction: row.fraction;
-                    }
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
                     }
                 }
             }
