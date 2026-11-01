@@ -378,8 +378,32 @@ pub(crate) enum System {
     BackgroundTasksChanged {
         tasks: Vec<BackgroundTask>,
     },
+    /// A request to the API failed; Claude Code tries it again after a while.
+    ApiRetry {
+        attempt: u32,
+        max_retries: u32,
+        #[serde(default)]
+        error_status: Option<u16>,
+        #[serde(default)]
+        error: RetryCause,
+    },
     #[serde(other)]
     Other,
+}
+
+/// Why Claude Code tries a request to the API again, as it sorts the failure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RetryCause {
+    Overloaded,
+    RateLimit,
+    AuthenticationFailed,
+    ServerError,
+    CloudCredentialError,
+    /// No HTTP status: the connection failed, or something Claude Code doesn't sort.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// A task Claude Code runs in the background, as its list names it.
@@ -1256,6 +1280,41 @@ mod tests {
             serde_json::from_value(line),
             Ok(Message::System(System::Other))
         ));
+
+        // As Claude Code 2.1.316's code writes it: a failed connection has no status, and a
+        // cause it may name later is taken as unknown.
+        let retry = |error_status: Value, error: &str| {
+            let line = json!({
+                "type": "system",
+                "subtype": "api_retry",
+                "attempt": 2,
+                "max_retries": 10,
+                "retry_delay_ms": 1200,
+                "error_status": error_status,
+                "error": error,
+                "no_response": { "waited_ms": 30000, "retry_wait_ms": 1200 },
+                "uuid": "u",
+                "session_id": "s",
+            });
+            match serde_json::from_value(line) {
+                Ok(Message::System(System::ApiRetry {
+                    attempt: 2,
+                    max_retries: 10,
+                    error_status,
+                    error,
+                })) => (error_status, error),
+                other => panic!("a retry, not {other:?}"),
+            }
+        };
+        assert_eq!(retry(Value::Null, "unknown"), (None, RetryCause::Unknown));
+        assert_eq!(
+            retry(json!(529), "overloaded"),
+            (Some(529), RetryCause::Overloaded)
+        );
+        assert_eq!(
+            retry(json!(500), "a_cause_to_come"),
+            (Some(500), RetryCause::Unknown)
+        );
 
         // As Claude Code 2.1.316 wrote it, with a background agent and a command running.
         let line = json!({

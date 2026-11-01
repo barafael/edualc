@@ -20,7 +20,13 @@ impl App {
             return;
         }
         match output {
-            Output::Message(message) => self.message(message),
+            Output::Message(message) => {
+                self.heard = std::time::Instant::now();
+                if matches!(self.status.doing, Doing::Silent(_)) {
+                    self.status.doing = Doing::Working;
+                }
+                self.message(message);
+            }
             Output::Log(line) => {
                 tracing::debug!(target: "claude", "{line}");
                 self.log.push_back(line);
@@ -44,6 +50,7 @@ impl App {
                 if turns > self.status.turns {
                     self.status.turns = turns;
                     self.status.doing = Doing::Working;
+                    self.start_listening();
                 }
             }
             Output::Failed(failure) => {
@@ -187,6 +194,19 @@ impl App {
             },
             System::ThinkingTokens { estimated_tokens } => {
                 self.status.doing = Doing::ThinkingTokens(estimated_tokens);
+            }
+            System::ApiRetry {
+                attempt,
+                max_retries,
+                error_status,
+                error,
+            } => {
+                self.status.doing = Doing::Retrying(super::Retry {
+                    attempt,
+                    most: max_retries,
+                    status: error_status,
+                    cause: error,
+                });
             }
             System::CompactBoundary => self.chat.info("Conversation compacted"),
             System::BackgroundTasksChanged { mut tasks } => {

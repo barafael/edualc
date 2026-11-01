@@ -156,6 +156,8 @@ pub(crate) enum Event {
     Changed(Watched),
     /// Now and then: sessions whose process ended without saying so are let go.
     Tick,
+    /// Every little while during a turn: whether Claude Code has gone quiet.
+    Listen,
 }
 
 /// Where a start stands on its folder's trust.
@@ -349,6 +351,41 @@ pub(crate) enum Doing {
     Working,
     #[display("Compacting the conversation")]
     Compacting,
+    /// A request to the API failed, and is tried again.
+    #[display("{_0}")]
+    Retrying(Retry),
+    /// Waiting on the API, and nothing heard from Claude Code for this long.
+    #[display("No answer for {}", crate::ui::short_duration(*_0))]
+    Silent(Duration),
+}
+
+/// Claude Code tries a request to the API again: which time, of how many, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Retry {
+    pub(crate) attempt: u32,
+    pub(crate) most: u32,
+    pub(crate) status: Option<u16>,
+    pub(crate) cause: wire::RetryCause,
+}
+
+impl std::fmt::Display for Retry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Retrying {}/{} · ", self.attempt, self.most)?;
+        match (self.cause, self.status) {
+            (wire::RetryCause::Overloaded, _) => formatter.write_str("the API is overloaded"),
+            (wire::RetryCause::RateLimit, _) => formatter.write_str("rate limited"),
+            (wire::RetryCause::AuthenticationFailed, _) => formatter.write_str("sign-in refused"),
+            (wire::RetryCause::CloudCredentialError, _) => {
+                formatter.write_str("the cloud's credentials failed")
+            }
+            (wire::RetryCause::ServerError | wire::RetryCause::Unknown, Some(status)) => {
+                write!(formatter, "the API answered {status}")
+            }
+            (wire::RetryCause::ServerError | wire::RetryCause::Unknown, None) => {
+                formatter.write_str("no connection to the API")
+            }
+        }
+    }
 }
 
 /// How much of the plan's usage limits is used, as far as the CLI said.
@@ -513,6 +550,10 @@ const LOG_LINES: usize = 20;
 const TICK: Duration = Duration::from_secs(60);
 /// The least time between two notifications about the same session.
 const NOTIFY_AGAIN: Duration = Duration::from_secs(60);
+/// How often a turn waiting on the API is looked at (`Event::Listen`), and how long Claude Code
+/// may say nothing before the window says so.
+const LISTEN: Duration = Duration::from_secs(10);
+const QUIET: Duration = Duration::from_secs(30);
 
 pub(crate) struct App {
     view: View,
@@ -567,6 +608,10 @@ pub(crate) struct App {
     acting: HashMap<ActId, Acting>,
     last_act: ActId,
     tick: slint::Timer,
+    /// Runs while a turn is under way (see `Event::Listen`).
+    listen: slint::Timer,
+    /// When the process last said something.
+    heard: std::time::Instant,
     redraw: Redraw,
 }
 
@@ -635,6 +680,8 @@ impl App {
             acting: HashMap::new(),
             last_act: ActId::default(),
             tick: slint::Timer::default(),
+            listen: slint::Timer::default(),
+            heard: std::time::Instant::now(),
             redraw: Redraw::default(),
         }
     }
@@ -758,6 +805,7 @@ impl App {
             }
             Event::Changed(watched) => self.changed(watched),
             Event::Tick => self.tick(),
+            Event::Listen => self.listen(),
         }
         ControlFlow::Continue(())
     }
@@ -1418,6 +1466,39 @@ impl App {
         self.read_on();
     }
 
+    /// Looks every little while whether Claude Code has gone quiet (see `listen`), from a turn's
+    /// start on; what it said last counts from now.
+    fn start_listening(&mut self) {
+        self.heard = std::time::Instant::now();
+        if self.listen.running() {
+            return;
+        }
+        let events = self.events.clone();
+        self.listen
+            .start(slint::TimerMode::Repeated, LISTEN, move || {
+                if events.try_send(Event::Listen).is_err() {
+                    tracing::debug!("listening after the window closed");
+                }
+            });
+    }
+
+    /// While a turn waits on the API (not on a tool, the user, compacting or a retry), says how
+    /// long Claude Code has been quiet once that is a while: a blocked network, say, would
+    /// otherwise look like "Starting" for ever. Stops once no turn is under way.
+    fn listen(&mut self) {
+        if self.status.turns == 0 {
+            self.listen.stop();
+            return;
+        }
+        if let Some(quiet) = gone_quiet(
+            &self.status.doing,
+            !self.asks.is_empty(),
+            self.heard.elapsed(),
+        ) {
+            self.status.doing = Doing::Silent(quiet);
+        }
+    }
+
     fn changed(&mut self, watched: Watched) {
         if self.records == Some(watched) {
             self.list_live();
@@ -1611,6 +1692,7 @@ impl App {
         }
         self.status.turns += 1;
         self.status.doing = Doing::Starting;
+        self.start_listening();
         let shell_rows = std::mem::take(&mut self.shell_rows);
         self.write(|process| process.prompt(&shell_rows, &images, text));
         self.view.scroll_to_end();
@@ -2064,6 +2146,23 @@ fn shell_command(draft: &str) -> Option<&str> {
         .filter(|command| !command.starts_with('['))
 }
 
+/// How long Claude Code has been `quiet`, in whole seconds, if that is worth saying: while it
+/// works on an answer (not on a tool, compacting or a retry, which say what they do), with
+/// nothing `asking` the user, for [`QUIET`] or longer.
+fn gone_quiet(doing: &Doing, asking: bool, quiet: Duration) -> Option<Duration> {
+    let on_an_answer = matches!(
+        doing,
+        Doing::Starting
+            | Doing::Thinking
+            | Doing::ThinkingTokens(_)
+            | Doing::Writing
+            | Doing::Preparing(_)
+            | Doing::Working
+            | Doing::Silent(_)
+    );
+    (on_an_answer && !asking && quiet >= QUIET).then(|| Duration::from_secs(quiet.as_secs()))
+}
+
 /// What the command in a (normalized) draft takes, to hint after it: only while the draft is
 /// the command and a space, before anything follows; empty otherwise.
 fn argument_hint<'a>(draft: &str, commands: &'a [wire::CommandInfo]) -> &'a str {
@@ -2250,6 +2349,69 @@ mod tests {
             normalized("plain"),
             std::borrow::Cow::Borrowed("plain")
         ));
+    }
+
+    /// Silence is told only while Claude Code works on an answer and nothing waits for the user,
+    /// after half a minute, in whole seconds; a tool, compacting or a retry say what they do.
+    #[test]
+    fn silence_is_told_while_an_answer_is_awaited() {
+        let half_a_minute_on = Duration::from_millis(31_400);
+        assert_eq!(
+            gone_quiet(&Doing::Starting, false, half_a_minute_on),
+            Some(Duration::from_secs(31))
+        );
+        assert_eq!(
+            gone_quiet(
+                &Doing::Silent(Duration::from_secs(31)),
+                false,
+                Duration::from_secs(45)
+            ),
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            gone_quiet(&Doing::Starting, false, Duration::from_secs(29)),
+            None
+        );
+        assert_eq!(gone_quiet(&Doing::Starting, true, half_a_minute_on), None);
+        assert_eq!(
+            gone_quiet(&Doing::Compacting, false, half_a_minute_on),
+            None
+        );
+        assert_eq!(gone_quiet(&Doing::Nothing, false, half_a_minute_on), None);
+        let retry = Retry {
+            attempt: 2,
+            most: 10,
+            status: None,
+            cause: wire::RetryCause::Unknown,
+        };
+        assert_eq!(
+            gone_quiet(&Doing::Retrying(retry), false, half_a_minute_on),
+            None
+        );
+    }
+
+    /// A retry says which it is, of how many, and why, in words; a failed connection has no
+    /// status to give.
+    #[test]
+    fn a_retry_says_why() {
+        let retry = |status, cause| Retry {
+            attempt: 3,
+            most: 10,
+            status,
+            cause,
+        };
+        assert_eq!(
+            retry(None, wire::RetryCause::Unknown).to_string(),
+            "Retrying 3/10 · no connection to the API"
+        );
+        assert_eq!(
+            retry(Some(529), wire::RetryCause::Overloaded).to_string(),
+            "Retrying 3/10 · the API is overloaded"
+        );
+        assert_eq!(
+            retry(Some(502), wire::RetryCause::ServerError).to_string(),
+            "Retrying 3/10 · the API answered 502"
+        );
     }
 
     /// A command's hint shows while the draft is the command and a space, and goes once anything

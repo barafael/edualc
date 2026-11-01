@@ -97,7 +97,9 @@ other way around.
 - **The composer.** The bottom edge of the conversation is the text box, set apart by a line that
   takes the accent while writing. Under the text: the permission mode (coloured by how much it lets
   through) and the model, each with a menu that says what its choices mean; what Claude is doing,
-  while it works; how full the context is; and one button that sends, or stops while Claude works.
+  while it works (a request Claude Code tries again, "Retrying 3/10 · the API is overloaded", or
+  "No answer for 41s" once it has said nothing for half a minute while an answer is due); how
+  full the context is; and one button that sends, or stops while Claude works.
   Slash commands matching what is typed are listed: Up and Down choose one, Enter runs it, and →
   or Tab put it in the draft, with what it takes hinted after it (`[instructions]`) until
   something follows or Esc dismisses the hint. Down on the last line goes to the end of the

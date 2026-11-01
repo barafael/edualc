@@ -543,7 +543,9 @@ impl View {
             | Doing::ThinkingTokens(_)
             | Doing::Writing
             | Doing::Working
-            | Doing::Compacting => Activity::Model,
+            | Doing::Compacting
+            | Doing::Retrying(_)
+            | Doing::Silent(_) => Activity::Model,
             Doing::Preparing(_) | Doing::Running(_) => Activity::Tool,
         });
         let doing = if waiting {
@@ -1432,6 +1434,11 @@ fn reset_text(at: jiff::Timestamp, with_time_left: bool) -> String {
         _ => format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3_600),
     };
     format!("resets in {left} ({clock})")
+}
+
+/// A time span as [`duration_text`] writes it.
+pub(crate) fn short_duration(duration: std::time::Duration) -> String {
+    duration_text(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// "45s", "3m 12s", "1h 4m".
