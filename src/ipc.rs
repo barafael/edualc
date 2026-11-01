@@ -8,7 +8,9 @@
 //! - Who is the daemon is decided by a lock held as long as it runs: only its holder removes a
 //!   stale socket and binds anew, so two starting at once can't both bind, nor one unbind the
 //!   other's.
-//! - Each peer is checked as it connects: the same user, running this same program.
+//! - Each peer is checked as it connects: a window, to be the same user running this same
+//!   program; the daemon, which makes itself non-dumpable (its `/proc` entries closed to the
+//!   user's other processes), to be the same user, in the place only the daemon binds.
 //! - Messages are postcard (compact serde), each COBS-framed by postcard: a frame longer than
 //!   one of [`MAX_MESSAGE`] ends the connection once the reader's fixed buffer is full, as does
 //!   a message that doesn't parse. Nothing in a message makes the reader hold more than that.
@@ -208,11 +210,22 @@ impl Listener {
     }
 }
 
-/// The peer is this user, running this same program.
-pub(crate) fn check_peer(fd: impl AsFd) -> Result<(), Error> {
-    let peer = rustix::net::sockopt::socket_peercred(fd).map_err(Error::Socket)?;
-    let uid = peer.uid.as_raw();
-    let pid = peer.pid.as_raw_nonzero().get();
+/// The daemon a window reached is this user's. Its program isn't compared: the daemon makes
+/// itself non-dumpable, which closes its `/proc` entries to the window; that it is the daemon
+/// the socket's place says, a folder of the user's alone that only the lock's holder binds in.
+fn check_daemon(fd: impl AsFd) -> Result<(), Error> {
+    let (uid, pid) = peer(fd)?;
+    if uid == rustix::process::getuid().as_raw() {
+        Ok(())
+    } else {
+        Err(Error::Stranger { uid, pid })
+    }
+}
+
+/// A window is this user's, running this program: a build that replaced the daemon's own on
+/// disk counts too, and the hello's protocol says whether the two agree.
+fn check_window(fd: impl AsFd) -> Result<(), Error> {
+    let (uid, pid) = peer(fd)?;
     let stranger = Error::Stranger { uid, pid };
     if uid != rustix::process::getuid().as_raw() {
         return Err(stranger);
@@ -220,9 +233,25 @@ pub(crate) fn check_peer(fd: impl AsFd) -> Result<(), Error> {
     let theirs = std::fs::read_link(format!("/proc/{pid}/exe"));
     let ours = std::fs::read_link("/proc/self/exe");
     match (theirs, ours) {
-        (Ok(theirs), Ok(ours)) if theirs == ours => Ok(()),
+        (Ok(theirs), Ok(ours)) if same_program(&theirs, &ours) => Ok(()),
         _ => Err(stranger),
     }
+}
+
+fn peer(fd: impl AsFd) -> Result<(u32, i32), Error> {
+    let peer = rustix::net::sockopt::socket_peercred(fd).map_err(Error::Socket)?;
+    Ok((peer.uid.as_raw(), peer.pid.as_raw_nonzero().get()))
+}
+
+/// Two programs' paths name the same program, the kernel's " (deleted)" aside: it names a
+/// program so once a new build replaced it on disk.
+fn same_program(theirs: &Path, ours: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let path = |program: &Path| {
+        let bytes = program.as_os_str().as_bytes();
+        bytes.strip_suffix(b" (deleted)").unwrap_or(bytes).to_vec()
+    };
+    path(theirs) == path(ours)
 }
 
 /// One end of a connection, sending and taking whole messages (the window's: it waits).
@@ -242,8 +271,7 @@ impl Channel {
         )
         .map_err(Error::Socket)?;
         rustix::net::connect(&fd, &folder.address(SOCKET)?).map_err(Error::Socket)?;
-        // The daemon is checked as it checks us: this user, this program.
-        check_peer(&fd)?;
+        check_daemon(&fd)?;
         Ok(Self {
             stream: UnixStream::from(fd),
         })
@@ -291,7 +319,7 @@ impl AsyncChannel {
     /// The next peer of `listener`, once it is checked to be this user's edualc.
     pub(crate) async fn accept(listener: &tokio::net::UnixListener) -> Result<Self, Error> {
         let (stream, _) = listener.accept().await.map_err(Error::Io)?;
-        check_peer(&stream)?;
+        check_window(&stream)?;
         Ok(Self { stream })
     }
 
@@ -787,6 +815,22 @@ mod tests {
         std::fs::create_dir_all(&path).expect("a scratch folder");
         let fd = open_folder(rustix::fs::CWD, &path, &path).expect("our own folder");
         Folder { fd, path }
+    }
+
+    /// A new build replacing the daemon's program on disk is still this program; another
+    /// program, or another place, isn't.
+    #[test]
+    fn a_rebuilt_program_is_the_same_program() {
+        let ours = Path::new("/home/someone/edualc/target/release/edualc");
+        let replaced = Path::new("/home/someone/edualc/target/release/edualc (deleted)");
+        assert!(same_program(ours, ours));
+        assert!(same_program(ours, replaced));
+        assert!(same_program(replaced, ours));
+        assert!(!same_program(Path::new("/usr/bin/python3"), ours));
+        assert!(!same_program(
+            Path::new("/home/someone/edualc/target/debug/edualc"),
+            ours
+        ));
     }
 
     #[test]

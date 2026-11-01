@@ -61,6 +61,13 @@ const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
 pub(crate) fn run() -> std::process::ExitCode {
     // What the daemon and its children make (its socket, the proxies') is the user's alone.
     rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
+    // Closed to the user's other processes: its memory, and the descriptors it holds (the
+    // claude processes' and the image decoder's pipes). Windows check it by user, not program.
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        tracing::warn!(%error, "the daemon stays open to the user's other processes");
+    }
     let folder = match ipc::Folder::open() {
         Ok(folder) => folder,
         Err(error) => {
