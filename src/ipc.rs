@@ -557,7 +557,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 8;
+pub(crate) const PROTOCOL: u32 = 9;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -661,8 +661,13 @@ pub(crate) enum FromDaemon {
         request: ActId,
         folder: Option<PathBuf>,
     },
-    /// Whether the terminal's trust dialog was accepted for the folder asked about.
-    Trusted { request: ActId, accepted: bool },
+    /// Whether the terminal's trust dialog was accepted for the folder asked about; if not, what
+    /// the folder's own configuration would have Claude Code run there.
+    Trusted {
+        request: ActId,
+        accepted: bool,
+        runs: Vec<Runs>,
+    },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
     /// The clipboard's image, or why there is none: a [`Pasted`], postcard-encoded, in pieces
@@ -676,6 +681,33 @@ pub(crate) enum FromDaemon {
 
 /// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.
 pub(crate) type Pasted = Result<Picture, PasteFailure>;
+
+/// Something a folder's own configuration (`.claude/settings.json`, `settings.local.json`,
+/// `.mcp.json`) would have Claude Code run or set there, read before the folder is trusted, for
+/// the user to decide on. Plain text, cut short, without control characters (see `trust`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum Runs {
+    /// A command run on one of Claude Code's events, for the tools `matcher` names (all, if
+    /// empty).
+    Hook {
+        event: String,
+        matcher: String,
+        command: String,
+    },
+    /// An MCP server: the command line started, or the URL reached.
+    McpServer { name: String, runs: String },
+    /// A command whose output is used as the API key.
+    ApiKeyHelper(String),
+    /// A command run to draw the status line.
+    StatusLine(String),
+    /// A plugin turned on, which brings hooks and MCP servers of its own.
+    Plugin(String),
+    /// Environment variables set, by name; their values aren't shown.
+    Environment(Vec<String>),
+    /// A file that couldn't be read, and why: what it would run is unknown.
+    Unreadable { file: String, reason: String },
+}
 
 /// Why the clipboard gave no image, as the window is told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]

@@ -1729,6 +1729,33 @@ component TrustBar inherits Rectangle {
                 horizontal-stretch: 1;
             }
         }
+        // What it would run, as read from its settings and .mcp.json (plain text, as written
+        // there); a long list scrolls.
+        Small {
+            text: Session.trust-runs.length == 0
+                ? "Its .claude/settings.json, settings.local.json and .mcp.json run nothing and set no environment."
+                : "Its .claude/settings.json, settings.local.json and .mcp.json would have Claude Code run or set:";
+            wrap: word-wrap;
+        }
+        if Session.trust-runs.length > 0: Rectangle {
+            background: Theme.code;
+            border-radius: Theme.radius-m;
+            height: min(listed.preferred-height, 12rem);
+            Flickable {
+                content-height: listed.preferred-height;
+                listed := VerticalLayout {
+                    padding: Theme.space-s;
+                    spacing: 2px;
+                    for line in Session.trust-runs: Text {
+                        text: line;
+                        color: Theme.text;
+                        font-family: Theme.mono;
+                        font-size: 1rem * Theme.code-size;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
         HorizontalLayout {
             spacing: Theme.space-s;
             alignment: end;

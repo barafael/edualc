@@ -28,6 +28,7 @@ use crate::generated::{
     StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
+use crate::ipc::Runs;
 use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
 use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
@@ -558,10 +559,11 @@ impl View {
         session.set_status(doing.into());
     }
 
+    /// `asking`: the user is asked to trust the folder, which would run this.
     pub(crate) fn render_status(
         &self,
         status: &Status,
-        untrusted: bool,
+        asking: Option<&[Runs]>,
         cwd: &Path,
         watch: Option<&Watch>,
         worktree: Option<&Worktree>,
@@ -571,7 +573,9 @@ impl View {
         let project = sessions::folder_name(cwd);
         session.set_project(project.into());
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
-        session.set_needs_trust(untrusted);
+        session.set_needs_trust(asking.is_some());
+        let runs: Vec<String> = asking.unwrap_or_default().iter().map(run_line).collect();
+        session.set_trust_runs(strings(&runs));
         let (label, detail) = sandbox_text(status.sandboxing);
         session.set_sandbox_label(label.into());
         session.set_sandbox_detail(detail.into());
@@ -1455,6 +1459,28 @@ fn duration_text(milliseconds: u64) -> String {
 fn fraction_of(used: u64, total: u64) -> f32 {
     let percent = used.saturating_mul(100) / total.max(1);
     f32::from(u16::try_from(percent.min(100)).unwrap_or(100)) / 100.0
+}
+
+/// A line of what a folder would run, as the trust question lists it.
+fn run_line(runs: &Runs) -> String {
+    match runs {
+        Runs::Hook {
+            event,
+            matcher,
+            command,
+        } if matcher.is_empty() => format!("Hook on {event}: {command}"),
+        Runs::Hook {
+            event,
+            matcher,
+            command,
+        } => format!("Hook on {event} ({matcher}): {command}"),
+        Runs::McpServer { name, runs } => format!("MCP server {name}: {runs}"),
+        Runs::ApiKeyHelper(command) => format!("API key helper: {command}"),
+        Runs::StatusLine(command) => format!("Status line: {command}"),
+        Runs::Plugin(name) => format!("Plugin {name}"),
+        Runs::Environment(names) => format!("Environment variables: {}", names.join(", ")),
+        Runs::Unreadable { file, reason } => format!("Couldn't read {file}: {reason}"),
+    }
 }
 
 fn strings(items: &[String]) -> ModelRc<SharedString> {

@@ -254,7 +254,15 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
             }
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
-            FromDaemon::Trusted { request, accepted } => Some(Event::Trusted { request, accepted }),
+            FromDaemon::Trusted {
+                request,
+                accepted,
+                runs,
+            } => Some(Event::Trusted {
+                request,
+                accepted,
+                runs,
+            }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
             FromDaemon::Pasted {
                 request,

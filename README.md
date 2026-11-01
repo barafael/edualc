@@ -38,7 +38,11 @@ other way around.
   sandbox (bubblewrap, for its commands), that one is kept and this one stays off: the two don't
   stack.
 - **Trust before running.** `claude -p` skips the terminal's trust dialog, and a folder's hooks and
-  settings run as it starts; a folder neither the terminal nor this window trusted asks first.
+  settings run as it starts; a folder neither the terminal nor this window trusted asks first,
+  listing what its `.claude/settings.json`, `settings.local.json` and `.mcp.json` would run or
+  set: hooks with their commands, MCP servers with their command lines, helpers, plugins, and
+  environment variables by name. The daemon reads them without following links, and says when a
+  file can't be read rather than leaving it out.
 - **Plan review with comments.** When Claude presents a plan, it opens part by part. Comment on any
   heading, paragraph or single list item, then:
   - **Keep planning**: Claude gets each comment quoted with the part it's about, and revises.

@@ -411,12 +411,30 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         return;
     }
     if let Act::CheckTrust { folder } = act {
-        let read = tokio::task::spawn_blocking(move || trust::accepted_in_terminal(&folder)).await;
-        let accepted = read.unwrap_or_else(|error| {
-            tracing::error!(%error, "reading the terminal's trust failed");
-            false
+        // What the folder would run is read only for one that isn't trusted: it is asked about.
+        let read = tokio::task::spawn_blocking(move || {
+            let accepted = trust::accepted_in_terminal(&folder);
+            let runs = if accepted {
+                Vec::new()
+            } else {
+                trust::what_runs(&folder)
+            };
+            (accepted, runs)
+        })
+        .await;
+        let (accepted, runs) = read.unwrap_or_else(|error| {
+            tracing::error!(%error, "reading the folder's trust failed");
+            (false, Vec::new())
         });
-        tell(&outbox, FromDaemon::Trusted { request, accepted }).await;
+        tell(
+            &outbox,
+            FromDaemon::Trusted {
+                request,
+                accepted,
+                runs,
+            },
+        )
+        .await;
         return;
     }
     let done = tokio::task::spawn_blocking(move || perform(act)).await;

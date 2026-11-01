@@ -45,6 +45,8 @@ export global Session {
     callback interrupt;
     // The folder isn't trusted yet: Claude Code waits to start in it.
     in property <bool> needs-trust;
+    // What the folder's own configuration would run or set there, a line each, plain text.
+    in property <[string]> trust-runs;
     callback trust-folder;
     // What keeps Claude Code in: a word for the header, and what it means.
     in property <string> sandbox-label;

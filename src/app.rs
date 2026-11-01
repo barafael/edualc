@@ -20,7 +20,9 @@ use crate::external::wire::{
     ToolInput, ToolName, ToolUseId, TranscriptLine,
 };
 use crate::generated::AppWindow;
-use crate::ipc::{Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, ToDaemon};
+use crate::ipc::{
+    Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, Runs, ToDaemon,
+};
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
@@ -131,6 +133,8 @@ pub(crate) enum Event {
     Trusted {
         request: ActId,
         accepted: bool,
+        /// What the folder would run, if it isn't trusted.
+        runs: Vec<Runs>,
     },
     /// The clipboard's image, decoded in the confined helper, or why there is none.
     Pasted {
@@ -172,8 +176,12 @@ enum TrustGate {
         request: ActId,
         resume: Option<Resume>,
     },
-    /// The user is asked to trust the folder; the start waits for them.
-    Asking(Option<Resume>),
+    /// The user is asked to trust the folder, shown what its configuration would run; the
+    /// start waits for them.
+    Asking {
+        resume: Option<Resume>,
+        runs: Vec<Runs>,
+    },
 }
 
 /// What a request to the daemon was for.
@@ -772,7 +780,11 @@ impl App {
                     self.open_project(&folder.to_string_lossy());
                 }
             }
-            Event::Trusted { request, accepted } => self.trust_read(request, accepted),
+            Event::Trusted {
+                request,
+                accepted,
+                runs,
+            } => self.trust_read(request, accepted, runs),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view
@@ -940,9 +952,13 @@ impl App {
             !self.asks.is_empty(),
             self.chat.shell_running(),
         );
+        let asking = match &self.trust_gate {
+            TrustGate::Asking { runs, .. } => Some(runs.as_slice()),
+            TrustGate::Open | TrustGate::Checking { .. } => None,
+        };
         self.view.render_status(
             &self.status,
-            matches!(self.trust_gate, TrustGate::Asking(_)),
+            asking,
             &self.cwd,
             self.watch.as_ref(),
             self.current_worktree(),
@@ -1022,19 +1038,26 @@ impl App {
         self.trust_gate = if link::send(&self.link, check).is_ok() {
             TrustGate::Checking { request, resume }
         } else {
-            TrustGate::Asking(resume)
+            TrustGate::Asking {
+                resume,
+                runs: vec![Runs::Unreadable {
+                    file: "its settings".to_owned(),
+                    reason: "the edualc daemon couldn't be asked".to_owned(),
+                }],
+            }
         };
     }
 
     /// The daemon's answer on the folder's trust: the start held back goes ahead, or the user is
-    /// asked. An answer for a start since dropped or replaced is no longer waited for.
-    fn trust_read(&mut self, request: ActId, accepted: bool) {
+    /// asked, shown what the folder would run. An answer for a start since dropped or replaced
+    /// is no longer waited for.
+    fn trust_read(&mut self, request: ActId, accepted: bool, runs: Vec<Runs>) {
         let resume = match std::mem::take(&mut self.trust_gate) {
             TrustGate::Checking {
                 request: asked,
                 resume,
             } if asked == request => resume,
-            kept @ (TrustGate::Open | TrustGate::Checking { .. } | TrustGate::Asking(_)) => {
+            kept @ (TrustGate::Open | TrustGate::Checking { .. } | TrustGate::Asking { .. }) => {
                 self.trust_gate = kept;
                 return;
             }
@@ -1043,7 +1066,7 @@ impl App {
             self.accepted_in_terminal.insert(self.cwd.clone());
             self.launch(resume);
         } else {
-            self.trust_gate = TrustGate::Asking(resume);
+            self.trust_gate = TrustGate::Asking { resume, runs };
         }
     }
 
@@ -1117,7 +1140,7 @@ impl App {
     /// Trusts the folder shown and starts what waited for it.
     fn trust_folder(&mut self) {
         let resume = match std::mem::take(&mut self.trust_gate) {
-            TrustGate::Asking(resume) => resume,
+            TrustGate::Asking { resume, .. } => resume,
             kept @ (TrustGate::Open | TrustGate::Checking { .. }) => {
                 self.trust_gate = kept;
                 return;

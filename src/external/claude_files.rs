@@ -1,5 +1,6 @@
 //! The files Claude Code keeps that edualc reads, in the fields read: `~/.claude.json` (the
-//! folders whose trust dialog was accepted), its user settings (whether its own sandbox is on),
+//! folders whose trust dialog was accepted), its user settings (whether its own sandbox is on), a
+//! folder's own settings and `.mcp.json` (what they would run, asked about before trusting it),
 //! the records of running sessions (`~/.claude/sessions/<pid>.json`), and the sign-in
 //! (`~/.claude/.credentials.json`).
 
@@ -104,6 +105,66 @@ pub(crate) struct UserSettings {
 pub(crate) struct OwnSandbox {
     #[serde(default)]
     pub(crate) enabled: bool,
+}
+
+/// A folder's `.claude/settings.json` or `settings.local.json`, in what it has Claude Code run
+/// or set as it starts and works there.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ProjectSettings {
+    /// Commands run on Claude Code's events, by event ("PreToolUse").
+    #[serde(default)]
+    pub(crate) hooks: HashMap<String, Vec<HookMatcher>>,
+    /// Environment variables set for the session and what it runs; only the names are read.
+    #[serde(default)]
+    pub(crate) env: HashMap<String, serde::de::IgnoredAny>,
+    /// A command whose output is used as the API key.
+    #[serde(default, rename = "apiKeyHelper")]
+    pub(crate) api_key_helper: Option<String>,
+    #[serde(default, rename = "statusLine")]
+    pub(crate) status_line: Option<StatusLine>,
+    /// Plugins, which bring hooks and MCP servers of their own, by name and whether on.
+    #[serde(default, rename = "enabledPlugins")]
+    pub(crate) enabled_plugins: HashMap<String, bool>,
+}
+
+/// Hooks for an event, for the tools `matcher` names (all, if empty).
+#[derive(Debug, Deserialize)]
+pub(crate) struct HookMatcher {
+    #[serde(default)]
+    pub(crate) matcher: String,
+    #[serde(default)]
+    pub(crate) hooks: Vec<Hook>,
+}
+
+/// A hook: a command, or a prompt or an agent (which run no command of their own).
+#[derive(Debug, Deserialize)]
+pub(crate) struct Hook {
+    #[serde(default)]
+    pub(crate) command: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct StatusLine {
+    #[serde(default)]
+    pub(crate) command: Option<String>,
+}
+
+/// A folder's `.mcp.json`: the MCP servers it has Claude Code start.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct McpJson {
+    #[serde(default, rename = "mcpServers")]
+    pub(crate) servers: HashMap<String, McpServer>,
+}
+
+/// An MCP server: a command started (with its arguments), or one reached at a URL.
+#[derive(Debug, Deserialize)]
+pub(crate) struct McpServer {
+    #[serde(default)]
+    pub(crate) command: Option<String>,
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    #[serde(default)]
+    pub(crate) url: Option<String>,
 }
 
 /// A running session's record.
