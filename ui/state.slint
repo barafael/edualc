@@ -80,6 +80,8 @@ export global Session {
 export global Composer {
     in-out property <string> draft;
     in property <[CommandItem]> commands;
+    // The command the arrow keys are on; Tab takes it. Back to the first at each edit.
+    in-out property <int> command-index;
     callback send(string);
     callback draft-edited(string);
     // Puts the command at `index` in the draft.

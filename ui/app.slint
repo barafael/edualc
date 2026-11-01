@@ -760,7 +760,7 @@ component PromptBar inherits Rectangle {
     }
 }
 
-// Slash commands matching the draft; Tab takes the first.
+// Slash commands matching the draft; Up and Down choose one, Tab takes it.
 component CommandList inherits Rectangle {
     border-radius: Theme.radius-l;
     border-width: 1px;
@@ -769,6 +769,7 @@ component CommandList inherits Rectangle {
     VerticalLayout {
         padding: Theme.space-xs;
         for command[i] in Composer.commands: Pressable {
+            highlighted: i == min(Composer.command-index, Composer.commands.length - 1);
             clicked => { Composer.pick-command(i); }
             HorizontalLayout {
                 padding: Theme.space-s;
@@ -788,6 +789,11 @@ component CommandList inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     min-width: 0px;
+                }
+                if i == min(Composer.command-index, Composer.commands.length - 1): Small {
+                    text: "Tab";
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
                 }
             }
         }
@@ -837,7 +843,10 @@ component SendButton inherits Rectangle {
             if root.stop {
                 Session.interrupt();
             } else {
+                // Emptied at once (the app puts back what must wait), so an Esc right after
+                // finds the draft empty and stops the turn.
                 Composer.send(Composer.draft);
+                Composer.draft = "";
                 root.sent();
             }
         }
@@ -1043,7 +1052,10 @@ component EditArea inherits Rectangle {
                 selection-background-color: Theme.selection;
                 selection-foreground-color: Theme.selection-text;
                 accessible-placeholder-text: "Message Claude, or start with ! for a shell command";
-                edited => { Composer.draft-edited(self.text); }
+                edited => {
+                    Composer.command-index = 0;
+                    Composer.draft-edited(self.text);
+                }
                 // The caret stays in view; writing here drops what is selected in the
                 // transcript, so Ctrl+C copies the draft's own selection.
                 cursor-position-changed(at) => {
@@ -1056,8 +1068,8 @@ component EditArea inherits Rectangle {
                 }
                 // Enter sends; Shift+Enter and Ctrl+Enter start a new line (Ctrl+Enter as in
                 // WeChat; the box ignores it, so the line break is put in here). Tab takes the
-                // first command. Ctrl+V asks for the clipboard's image too, and pastes its
-                // text as ever.
+                // command chosen in the list. Ctrl+V asks for the clipboard's image too, and
+                // pastes its text as ever.
                 key-pressed(event) => {
                     if event.text == Key.Return && event.modifiers.control {
                         let broken = Composer.break-line(Composer.draft, min(self.cursor-position-byte-offset, self.anchor-position-byte-offset), max(self.cursor-position-byte-offset, self.anchor-position-byte-offset));
@@ -1069,13 +1081,23 @@ component EditArea inherits Rectangle {
                         Composer.paste-image();
                         return reject;
                     }
+                    // While commands match, Up and Down choose among them.
+                    if event.text == Key.UpArrow && Composer.commands.length > 0 {
+                        Composer.command-index = max(0, Composer.command-index - 1);
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow && Composer.commands.length > 0 {
+                        Composer.command-index = min(Composer.commands.length - 1, Composer.command-index + 1);
+                        return accept;
+                    }
                     if event.text == Key.Tab && Composer.commands.length > 0 {
-                        Composer.pick-command(0);
+                        Composer.pick-command(min(Composer.command-index, Composer.commands.length - 1));
                         self.set-selection-offsets(2147483647, 2147483647);
                         return accept;
                     }
                     if event.text == Key.Return && !event.modifiers.shift {
                         Composer.send(Composer.draft);
+                        Composer.draft = "";
                         root.sent();
                         return accept;
                     }

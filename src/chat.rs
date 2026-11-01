@@ -353,7 +353,8 @@ impl Chat {
             .collect()
     }
 
-    /// A `!` command, as Claude Code echoed it: it runs until its output comes.
+    /// A `!` command, as Claude Code echoed it: it runs until its output comes. Its card is
+    /// open, as the command was run to see what it prints.
     fn shell(&mut self, input: &str) {
         let shell = Shell {
             command: unescaped(input),
@@ -363,7 +364,7 @@ impl Chat {
         self.push(
             Body::Shell {
                 shell,
-                expanded: false,
+                expanded: true,
             },
             false,
         );

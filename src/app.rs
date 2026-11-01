@@ -1488,6 +1488,12 @@ impl App {
         if !text.is_empty() {
             self.chat.user(text);
         }
+        // Until Claude Code names the session, its first prompt does.
+        if self.status.title.is_none()
+            && let Some(title) = provisional_title(text)
+        {
+            self.status.title = Some(title.to_owned());
+        }
         if self.ensure_process() {
             self.status.turns += 1;
             self.status.doing = Doing::Starting;
@@ -1819,6 +1825,11 @@ impl App {
         self.status.doing = Doing::Working;
         self.redraw.prompt = true;
         self.redraw.menus = true;
+        // The prompt (and the field in it that had the focus) is gone: the writing goes on in
+        // the composer, unless another request waits.
+        if self.asks.is_empty() {
+            self.view.focus_composer();
+        }
     }
 
     /// A permission request from the CLI, waiting for the user.
@@ -1915,6 +1926,16 @@ fn shell_command(draft: &str) -> Option<&str> {
     draft
         .strip_prefix('!')
         .filter(|command| !command.starts_with('['))
+}
+
+/// What names a session until Claude Code does: the prompt's first line with text. A slash
+/// command names nothing.
+fn provisional_title(prompt: &str) -> Option<&str> {
+    prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .filter(|line| !normalized(line).starts_with('/'))
 }
 
 /// Claude's questions with the user's answers (the labels picked, or what was typed), the notes
@@ -2048,7 +2069,10 @@ fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
 pub(crate) enum AnswerError {
     #[error("{0}")]
     Refused(String),
-    #[error("an answer that doesn't parse: {0}")]
+    #[error(
+        "Claude Code answered in a form this edualc doesn't know, so its version and edualc's may \
+         not fit together ({0})"
+    )]
     Unreadable(#[source] serde_json::Error),
 }
 
@@ -2079,6 +2103,23 @@ mod tests {
             normalized("plain"),
             std::borrow::Cow::Borrowed("plain")
         ));
+    }
+
+    /// A session is named by its prompt's first line with text, trimmed; a slash command, in
+    /// either width, names nothing.
+    #[test]
+    fn the_first_prompt_names_a_session() {
+        assert_eq!(
+            provisional_title("\n  Fix the flaky test \nin CI"),
+            Some("Fix the flaky test")
+        );
+        assert_eq!(
+            provisional_title("このテストを直して"),
+            Some("このテストを直して")
+        );
+        assert_eq!(provisional_title("/compact keep the plan"), None);
+        assert_eq!(provisional_title("／clear"), None);
+        assert_eq!(provisional_title(" \n "), None);
     }
 
     /// Notes go with any answer; a preview only with a single option picked, the way

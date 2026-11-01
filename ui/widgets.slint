@@ -34,6 +34,8 @@ export component Caption inherits Text {
 // tinted while selected (with a bar of the accent, so selection isn't told by tint alone).
 export component Pressable inherits Rectangle {
     in property <bool> selected;
+    // Where the arrow keys are in a list, shown as the pointer's hover is.
+    in property <bool> highlighted;
     in property <bool> enabled: true;
     out property <bool> hovered: touch.has-hover;
     callback clicked;
@@ -42,7 +44,7 @@ export component Pressable inherits Rectangle {
     border-radius: Theme.radius-s;
     background: root.selected ? Theme.selected
         : touch.pressed ? Theme.pressed
-        : touch.has-hover && root.enabled ? Theme.hover : transparent;
+        : (touch.has-hover || root.highlighted) && root.enabled ? Theme.hover : transparent;
     animate background { duration: Motion.fast; easing: ease-out; }
     touch := TouchArea {
         enabled: root.enabled;
@@ -295,6 +297,8 @@ export component MenuButton inherits Rectangle {
     callback selected(int);
     property <string> current: root.current-index >= 0 && root.current-index < root.model.length
         ? root.model[root.current-index].title : "";
+    // The choice the arrow keys are on while the menu is open.
+    property <int> highlighted;
     accessible-role: combobox;
     accessible-label: root.heading;
     accessible-value: root.current;
@@ -330,13 +334,37 @@ export component MenuButton inherits Rectangle {
     }
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { menu.show(); }
+        clicked => {
+            root.highlighted = max(0, root.current-index);
+            menu.show();
+        }
     }
     menu := PopupWindow {
         x: 0;
         y: -self.height - Theme.space-xs;
         width: max(root.width, 320px);
         height: items.preferred-height;
+        // Up and Down move through the choices, Enter or Space takes one; Esc closes the menu.
+        menu-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    root.highlighted = max(0, root.highlighted - 1);
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    root.highlighted = min(root.model.length - 1, root.highlighted + 1);
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == " " {
+                    root.current-index = root.highlighted;
+                    root.selected(root.highlighted);
+                    menu.close();
+                    return accept;
+                }
+                return reject;
+            }
+        }
         Rectangle {
             background: Theme.surface-raised;
             border-radius: Theme.radius-m;
@@ -353,6 +381,7 @@ export component MenuButton inherits Rectangle {
                 }
                 for item[index] in root.model: Pressable {
                     selected: index == root.current-index;
+                    highlighted: index == root.highlighted;
                     clicked => {
                         root.current-index = index;
                         root.selected(index);
