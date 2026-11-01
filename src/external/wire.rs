@@ -932,20 +932,41 @@ pub(crate) enum Input<'a> {
     },
     /// The answer to one of the CLI's control requests.
     ControlResponse { response: Reply<'a> },
+    /// A `!` command, which the CLI runs in a shell beside the conversation without the model
+    /// seeing it, answering with replayed user rows: its echo (`<bash-input>`), then its output.
+    /// One runs at a time; an interrupt stops it. Undocumented: the SDK's schema marks it
+    /// internal (Claude Code 2.1.316).
+    BashCommand {
+        command: &'a str,
+        /// A repeat of an id is skipped.
+        uuid: uuid::Uuid,
+    },
 }
 
 impl<'a> Input<'a> {
-    pub(crate) fn prompt(text: &'a str) -> Self {
-        Self::user(Content::Text(text))
-    }
-
-    /// A prompt with images: as the Messages API takes them, images first, then the text.
-    pub(crate) fn prompt_with_images(text: &'a str, images: Vec<ImageBlock>) -> Self {
-        let mut blocks: Vec<Block<'a>> = images.into_iter().map(Block::Image).collect();
+    /// A prompt as the user sent it. First what they ran with `!` since the last: those rows,
+    /// as the terminal gives them to the model, ahead of the prompt. Then the images, as the
+    /// Messages API takes them, then the text. A prompt of text alone stays a plain string.
+    pub(crate) fn prompt_with(shell: &'a [String], images: Vec<ImageBlock>, text: &'a str) -> Self {
+        if shell.is_empty() && images.is_empty() {
+            return Self::user(Content::Text(text));
+        }
+        let mut blocks: Vec<Block<'a>> = shell
+            .iter()
+            .map(|row| Block::Text { text: row.as_str() })
+            .collect();
+        blocks.extend(images.into_iter().map(Block::Image));
         if !text.is_empty() {
             blocks.push(Block::Text { text });
         }
         Self::user(Content::Blocks(blocks))
+    }
+
+    pub(crate) fn bash_command(command: &'a str) -> Self {
+        Self::BashCommand {
+            command,
+            uuid: uuid::Uuid::new_v4(),
+        }
     }
 
     fn user(content: Content<'a>) -> Self {
@@ -1245,7 +1266,7 @@ mod tests {
     fn input_is_written_as_the_cli_reads_it() {
         let encoded = |input: &Input<'_>| serde_json::to_value(input).expect("encodable");
         assert_eq!(
-            encoded(&Input::prompt("Hi")),
+            encoded(&Input::prompt_with(&[], Vec::new(), "Hi")),
             json!({
                 "type": "user",
                 "message": { "role": "user", "content": "Hi" },
@@ -1350,11 +1371,8 @@ mod tests {
     fn a_prompt_with_images_is_written_as_the_vision_docs_show() {
         let image = ImageBlock::base64(MediaType::Jpeg, "QUJD".into());
         assert_eq!(
-            serde_json::to_value(Input::prompt_with_images(
-                "Describe this image.",
-                vec![image]
-            ))
-            .expect("encodable"),
+            serde_json::to_value(Input::prompt_with(&[], vec![image], "Describe this image."))
+                .expect("encodable"),
             json!({
                 "type": "user",
                 "message": { "role": "user", "content": [
@@ -1366,8 +1384,46 @@ mod tests {
                 "session_id": "default",
             })
         );
-        let plain = serde_json::to_value(Input::prompt("Hi")).expect("encodable");
+        let plain =
+            serde_json::to_value(Input::prompt_with(&[], Vec::new(), "Hi")).expect("encodable");
         assert_eq!(plain.pointer("/message/content"), Some(&json!("Hi")));
+    }
+
+    /// A `!` command goes as the CLI reads one, each with an id of its own; what it printed
+    /// goes ahead of the next prompt, as the rows the CLI replayed, then images, then the text.
+    #[test]
+    fn a_shell_command_and_its_rows_are_written_as_the_cli_reads_them() {
+        let command = serde_json::to_value(Input::bash_command("ls -a")).expect("encodable");
+        assert_eq!(command.pointer("/type"), Some(&json!("bash_command")));
+        assert_eq!(command.pointer("/command"), Some(&json!("ls -a")));
+        let uuid = |input: &Value| {
+            input
+                .pointer("/uuid")
+                .and_then(Value::as_str)
+                .and_then(|text| uuid::Uuid::parse_str(text).ok())
+        };
+        let again = serde_json::to_value(Input::bash_command("ls -a")).expect("encodable");
+        assert!(uuid(&command).is_some());
+        assert_ne!(uuid(&command), uuid(&again), "a repeat is run again");
+
+        let shell = [
+            "<bash-input>ls -a</bash-input>".to_owned(),
+            "<bash-stdout>.\n..</bash-stdout><bash-stderr></bash-stderr>".to_owned(),
+        ];
+        let image = ImageBlock::base64(MediaType::Png, "QUJD".into());
+        assert_eq!(
+            serde_json::to_value(Input::prompt_with(&shell, vec![image], "Why two?"))
+                .expect("encodable")
+                .pointer("/message/content"),
+            Some(&json!([
+                { "type": "text", "text": "<bash-input>ls -a</bash-input>" },
+                { "type": "text",
+                  "text": "<bash-stdout>.\n..</bash-stdout><bash-stderr></bash-stderr>" },
+                { "type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "QUJD" } },
+                { "type": "text", "text": "Why two?" },
+            ]))
+        );
     }
 
     /// A plan and questions go back as Claude sent them, with the user's part in them.

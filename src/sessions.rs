@@ -411,29 +411,36 @@ fn recorded_cwd(path: &Path) -> Option<PathBuf> {
         .map(|record| record.cwd)
 }
 
+/// The prompt a user message holds, if it holds one: a prompt sent after `!` commands comes
+/// after their rows.
 fn prompt_text(content: &UserContent) -> Option<String> {
-    let text = match content {
-        UserContent::Text(text) => text.as_str(),
-        UserContent::Blocks(blocks) => blocks.iter().find_map(|block| match block {
-            wire::ContentBlock::Text { text } => Some(text.as_str()),
-            wire::ContentBlock::Thinking { .. }
-            | wire::ContentBlock::ToolUse { .. }
-            | wire::ContentBlock::ServerToolUse { .. }
-            | wire::ContentBlock::ToolResult { .. }
-            | wire::ContentBlock::Image
-            | wire::ContentBlock::Other => None,
-        })?,
+    let (whole, blocks) = match content {
+        UserContent::Text(text) => (Some(text.as_str()), [].as_slice()),
+        UserContent::Blocks(blocks) => (None, blocks.as_slice()),
     };
-    match UserText::of(text) {
-        UserText::Prompt(text) => Some(text.to_owned()),
-        UserText::Command { .. }
-        | UserText::Shell(_)
-        | UserText::Stdout(_)
-        | UserText::Stderr(_)
-        | UserText::Interrupted
-        | UserText::ForModel
-        | UserText::Empty => None,
-    }
+    let block_texts = blocks.iter().filter_map(|block| match block {
+        wire::ContentBlock::Text { text } => Some(text.as_str()),
+        wire::ContentBlock::Thinking { .. }
+        | wire::ContentBlock::ToolUse { .. }
+        | wire::ContentBlock::ServerToolUse { .. }
+        | wire::ContentBlock::ToolResult { .. }
+        | wire::ContentBlock::Image
+        | wire::ContentBlock::Other => None,
+    });
+    whole
+        .into_iter()
+        .chain(block_texts)
+        .find_map(|text| match UserText::of(text) {
+            UserText::Prompt(text) => Some(text.to_owned()),
+            UserText::Command { .. }
+            | UserText::Shell(_)
+            | UserText::ShellOutput { .. }
+            | UserText::Stdout(_)
+            | UserText::Stderr(_)
+            | UserText::Interrupted
+            | UserText::ForModel
+            | UserText::Empty => None,
+        })
 }
 
 /// The lines at the start of a transcript, read only as far as they are wanted.

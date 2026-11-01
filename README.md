@@ -69,6 +69,11 @@ other way around.
   Ask follow-ups, copy an answer, put the questions and answers into the draft, or branch them into a new
   session (`btw: <question>`). Fold the panel away while something else needs you; the header's
   button brings it back and shows when an answer came meanwhile.
+- **Shell commands (`!`), as in the terminal.** `! command` is run by Claude Code itself, through its
+  undocumented `bash_command` input, so in the same sandbox as its own commands. It runs beside the
+  conversation, as a card that shows its output; prompts can be sent meanwhile. The command and what it
+  printed go to Claude with your next prompt, as the terminal gives them. One runs at a time, and Stop
+  (Esc) stops it. Stop interrupts, so it stops Claude's turn too if one is running.
 - **Worktrees.** When a session works in a git worktree (`claude --worktree`, the EnterWorktree
   tool), the header shows its name and branch, and the session lists mark it. **Open in** offers this
   window, Zed, VS Code, a terminal or the file manager, whichever are installed. Worktrees come from

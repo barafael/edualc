@@ -981,7 +981,7 @@ component EditArea inherits Rectangle {
                 x: 0;
                 y: 0;
                 width: scroll.width;
-                text: Session.busy ? "Write the next message; it waits until Claude is done" : "Message Claude  ·  / for commands  ·  Shift+Enter for a new line";
+                text: Session.turn ? "Write the next message; it waits until Claude is done" : "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
                 overflow: elide;
                 color: Theme.text-faint;
             }

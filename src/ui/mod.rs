@@ -321,6 +321,7 @@ impl View {
                 Body::User(_)
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
+                | Body::Shell { .. }
                 | Body::Info(_)
                 | Body::Error(_) => {
                     let row = self.row(index, entry, cwd);
@@ -379,41 +380,59 @@ impl View {
                 row.body = markdown::plain(text);
             }
             Body::Tool { tool, expanded } => {
-                // What only an open card shows is made only for one.
-                let depth = if *expanded && !row.hidden {
-                    tools::Depth::Full
-                } else {
-                    tools::Depth::Headline
-                };
+                let depth = card_depth(*expanded, row.hidden);
                 let view = tools::describe(&tool.name, &tool.input, cwd, depth);
-                row.kind = EntryKind::Tool;
-                row.expanded = *expanded;
-                row.tool_title = view.title.into();
-                row.tool_summary = view.summary.into();
-                row.tool_state = tool_state(tool.state);
-                row.has_detail = !view.detail.is_empty();
-                row.detail = markdown::plain(&view.detail);
-                if !view.markdown.is_empty() {
-                    row.blocks = self.sync_blocks(index, &view.markdown);
-                }
-                if depth == tools::Depth::Full {
-                    let (output, note) = clip(&tool.output);
-                    row.has_output = !output.is_empty();
-                    row.output = markdown::plain(&output);
-                    row.output_note = note.into();
-                }
-                let diff: Vec<DiffLine> = view
-                    .diff
-                    .into_iter()
-                    .map(|(kind, text)| DiffLine {
-                        kind: diff_kind(kind),
-                        text: text.into(),
-                    })
-                    .collect();
-                row.diff = ModelRc::new(VecModel::from(diff));
+                let state = tool_state(tool.state);
+                self.card(&mut row, index, view, state, &tool.output, *expanded);
+            }
+            // A card as Claude's own commands get, titled as the user's.
+            Body::Shell { shell, expanded } => {
+                let depth = card_depth(*expanded, row.hidden);
+                let input = serde_json::json!({ "command": shell.command });
+                let mut view = tools::describe(&ToolName::Bash, &input, cwd, depth);
+                view.title = "You ran".to_owned();
+                let state = shell_state(shell.state);
+                self.card(&mut row, index, view, state, &shell.output, *expanded);
             }
         }
         row
+    }
+
+    /// A tool card's row, as `view` describes it; `output` only for an open card.
+    fn card(
+        &mut self,
+        row: &mut Entry,
+        index: usize,
+        view: tools::ToolView,
+        state: ToolState,
+        output: &str,
+        expanded: bool,
+    ) {
+        row.kind = EntryKind::Tool;
+        row.expanded = expanded;
+        row.tool_title = view.title.into();
+        row.tool_summary = view.summary.into();
+        row.tool_state = state;
+        row.has_detail = !view.detail.is_empty();
+        row.detail = markdown::plain(&view.detail);
+        if !view.markdown.is_empty() {
+            row.blocks = self.sync_blocks(index, &view.markdown);
+        }
+        if card_depth(expanded, row.hidden) == tools::Depth::Full {
+            let (output, note) = clip(output);
+            row.has_output = !output.is_empty();
+            row.output = markdown::plain(&output);
+            row.output_note = note.into();
+        }
+        let diff: Vec<DiffLine> = view
+            .diff
+            .into_iter()
+            .map(|(kind, text)| DiffLine {
+                kind: diff_kind(kind),
+                text: text.into(),
+            })
+            .collect();
+        row.diff = ModelRc::new(VecModel::from(diff));
     }
 
     /// Makes entry `index`'s blocks those of `text`, setting only the rows that differ.
@@ -444,10 +463,37 @@ impl View {
         slot.model.clone()
     }
 
+    /// What the session is doing: whether something runs that Stop stops (Claude's turn, or a
+    /// `!` command, which an interrupt stops too), what the progress line shows of it, and the
+    /// status bar's word for it.
+    pub(crate) fn render_activity(&self, status: &Status, waiting: bool, shell_running: bool) {
+        let session = self.window.global::<Session>();
+        session.set_busy(status.turns > 0 || shell_running);
+        session.set_turn(status.turns > 0);
+        session.set_activity(match status.doing {
+            Doing::Nothing if shell_running => Activity::Tool,
+            Doing::Nothing => Activity::Idle,
+            Doing::Starting
+            | Doing::Thinking
+            | Doing::ThinkingTokens(_)
+            | Doing::Writing
+            | Doing::Working
+            | Doing::Compacting => Activity::Model,
+            Doing::Preparing(_) | Doing::Running(_) => Activity::Tool,
+        });
+        let doing = if waiting {
+            "Waiting for you".to_owned()
+        } else if matches!(status.doing, Doing::Nothing) && shell_running {
+            "Running your command".to_owned()
+        } else {
+            status.doing.to_string()
+        };
+        session.set_status(doing.into());
+    }
+
     pub(crate) fn render_status(
         &self,
         status: &Status,
-        waiting: bool,
         untrusted: bool,
         cwd: &Path,
         watch: Option<&Watch>,
@@ -458,7 +504,6 @@ impl View {
         let project = sessions::folder_name(cwd);
         session.set_project(project.into());
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
-        session.set_busy(status.turns > 0);
         session.set_needs_trust(untrusted);
         let (label, detail) = sandbox_text(status.sandboxing);
         session.set_sandbox_label(label.into());
@@ -472,22 +517,6 @@ impl View {
                 | Sandboxing::ClaudeCodes
                 | Sandboxing::Pending
         ));
-        let doing = if waiting {
-            "Waiting for you".to_owned()
-        } else {
-            status.doing.to_string()
-        };
-        session.set_status(doing.into());
-        session.set_activity(match status.doing {
-            Doing::Nothing => Activity::Idle,
-            Doing::Starting
-            | Doing::Thinking
-            | Doing::ThinkingTokens(_)
-            | Doing::Writing
-            | Doing::Working
-            | Doing::Compacting => Activity::Model,
-            Doing::Preparing(_) | Doing::Running(_) => Activity::Tool,
-        });
         let (context, fraction) = match (status.context_tokens, status.context_window) {
             (0, _) => (String::new(), 0.0),
             (used, 0) => (short_count(used), 0.0),
@@ -1339,6 +1368,24 @@ fn strings(items: &[String]) -> ModelRc<SharedString> {
 /// Slint counts in `i32`; no list here comes near its end.
 fn index_for_slint(index: usize) -> i32 {
     i32::try_from(index).unwrap_or(i32::MAX)
+}
+
+/// What only an open card shows is made only for one.
+fn card_depth(expanded: bool, hidden: bool) -> tools::Depth {
+    if expanded && !hidden {
+        tools::Depth::Full
+    } else {
+        tools::Depth::Headline
+    }
+}
+
+fn shell_state(state: chat::ShellState) -> ToolState {
+    match state {
+        chat::ShellState::Running => ToolState::Running,
+        chat::ShellState::Done => ToolState::Done,
+        chat::ShellState::Failed => ToolState::Failed,
+        chat::ShellState::Stopped => ToolState::Cancelled,
+    }
 }
 
 fn tool_state(state: chat::ToolState) -> ToolState {

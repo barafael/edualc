@@ -154,17 +154,24 @@ impl Claude {
         link::send_input(&self.link, self.key, &line).map_err(|_lost| Error::Lost)
     }
 
-    pub(crate) fn prompt(&self, text: &str) -> Result<(), Error> {
-        self.send(&Input::prompt(text))
-    }
-
-    /// A prompt with images, as the confined helper encoded them (see `decode`).
-    pub(crate) fn prompt_with_images(&self, text: &str, images: &[Picture]) -> Result<(), Error> {
+    /// A prompt, after the rows of the `!` commands run since the last (see
+    /// [`Input::prompt_with`]), with images as the confined helper encoded them (see `decode`).
+    pub(crate) fn prompt(
+        &self,
+        shell: &[String],
+        images: &[Picture],
+        text: &str,
+    ) -> Result<(), Error> {
         let blocks = images
             .iter()
             .map(|picture| ImageBlock::base64(picture.media_type, BASE64.encode(&picture.bytes)))
             .collect();
-        self.send(&Input::prompt_with_images(text, blocks))
+        self.send(&Input::prompt_with(shell, blocks, text))
+    }
+
+    /// A `!` command, for the CLI to run (see [`Input::BashCommand`]).
+    pub(crate) fn run_shell(&self, command: &str) -> Result<(), Error> {
+        self.send(&Input::bash_command(command))
     }
 
     /// Sends a control request; its answer comes back with the returned id.

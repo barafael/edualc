@@ -495,6 +495,10 @@ pub(crate) struct App {
     hosted: Vec<Hosted>,
     /// Images pasted into the composer, to go with the next message.
     attached: Vec<Picture>,
+    /// The rows Claude Code replayed for the `!` commands run since the last prompt (their
+    /// echoes and output): it runs them beside the conversation, so they go to Claude ahead of
+    /// the next prompt, as the terminal gives them.
+    shell_rows: Vec<String>,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, std::time::Instant>,
@@ -568,6 +572,7 @@ impl App {
             live: Vec::new(),
             hosted: Vec::new(),
             attached: Vec::new(),
+            shell_rows: Vec::new(),
             listing_live: Refresh::Idle,
             notified: HashMap::new(),
             watch: None,
@@ -809,9 +814,13 @@ impl App {
         let changes = self.chat.take_changes();
         self.view
             .render_transcript(&self.chat, changes, &self.cwd, &self.open_runs, redraw.runs);
-        self.view.render_status(
+        self.view.render_activity(
             &self.status,
             !self.asks.is_empty(),
+            self.chat.shell_running(),
+        );
+        self.view.render_status(
+            &self.status,
             self.awaiting_trust.is_some(),
             &self.cwd,
             self.watch.as_ref(),
@@ -987,6 +996,7 @@ impl App {
         self.requests.clear();
         self.status.turns = 0;
         self.status.doing = Doing::Nothing;
+        self.chat.stop_shells();
         self.usage.waiting = 0;
         self.side_lost();
         self.redraw.prompt = true;
@@ -1067,6 +1077,7 @@ impl App {
         self.status.cost_usd = 0.0;
         self.status.worktree = None;
         self.open_runs.clear();
+        self.shell_rows.clear();
         // Side questions belong to the session they were asked in.
         self.side = SideChat::default();
         self.redraw.side = true;
@@ -1428,23 +1439,46 @@ impl App {
         if self.watch.is_some() {
             return;
         }
+        if let Some(command) = text.strip_prefix('!') {
+            self.run_shell(text, command.trim());
+            return;
+        }
         let images = std::mem::take(&mut self.attached);
         self.view.render_attached(&self.attached);
         self.chat.user(with_images(text, images.len()));
         if self.ensure_process() {
             self.status.turns += 1;
             self.status.doing = Doing::Starting;
-            if images.is_empty() {
-                self.write(|process| process.prompt(text));
-            } else {
-                self.write(|process| process.prompt_with_images(text, &images));
-            }
+            let shell_rows = std::mem::take(&mut self.shell_rows);
+            self.write(|process| process.prompt(&shell_rows, &images, text));
         }
         self.view.scroll_to_end();
     }
 
+    /// The terminal's `!`: Claude Code runs the command beside the conversation, and replays
+    /// its echo and then its output, which the conversation shows when they come. Images
+    /// attached stay for the next prompt.
+    fn run_shell(&mut self, written: &str, command: &str) {
+        if command.is_empty() {
+            return;
+        }
+        // Claude Code runs one at a time and would refuse this; it waits in the composer.
+        if self.chat.shell_running() {
+            self.view.set_draft(written);
+            self.chat
+                .info("A `!` command still runs: wait for it, or stop it (Esc), then send this.");
+            self.view.scroll_to_end();
+            return;
+        }
+        if self.ensure_process() {
+            self.write(|process| process.run_shell(command));
+        }
+        self.view.scroll_to_end();
+    }
+
+    /// Stops Claude's turn, and the `!` command running: an interrupt stops both.
     fn interrupt(&mut self) {
-        if self.status.turns > 0 {
+        if self.status.turns > 0 || self.chat.shell_running() {
             self.request(&ControlRequest::Interrupt, Request::Interrupt);
         }
     }

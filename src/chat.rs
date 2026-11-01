@@ -35,12 +35,43 @@ pub(crate) struct Tool {
     pub(crate) state: ToolState,
 }
 
+/// A command the user ran with `!`, as Claude Code ran it, and what it printed.
+#[derive(Debug, Clone)]
+pub(crate) struct Shell {
+    pub(crate) command: String,
+    pub(crate) output: String,
+    pub(crate) state: ShellState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellState {
+    Running,
+    /// It exited with 0 (or, as the terminal saves it, without telling how).
+    Done,
+    /// It exited otherwise, or wasn't run.
+    Failed,
+    /// An interrupt stopped it; or its process ended, or its session was saved, first.
+    Stopped,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Body {
     User(String),
     Assistant(String),
-    Thinking { text: String, expanded: bool },
-    Tool { tool: Tool, expanded: bool },
+    Thinking {
+        text: String,
+        expanded: bool,
+    },
+    Tool {
+        tool: Tool,
+        expanded: bool,
+    },
+    /// Beside Claude's tool calls, never folded into their runs, and not ended with a turn:
+    /// it runs beside the turns.
+    Shell {
+        shell: Shell,
+        expanded: bool,
+    },
     Info(String),
     Error(String),
 }
@@ -62,6 +93,7 @@ impl Entry {
             | Body::Error(text)
             | Body::Thinking { text, .. } => text,
             Body::Tool { tool, .. } => &tool.output,
+            Body::Shell { shell, .. } => &shell.output,
         }
     }
 }
@@ -107,6 +139,14 @@ pub(crate) enum UserText<'a> {
     },
     /// A shell command the user ran with `!`.
     Shell(&'a str),
+    /// How a `!` command ended. No `stdout` is a command Claude Code didn't run, its `stderr`
+    /// saying why; the terminal saves no exit code.
+    ShellOutput {
+        stdout: Option<&'a str>,
+        stderr: &'a str,
+        exit_code: Option<&'a str>,
+    },
+    /// A slash command's output.
     Stdout(&'a str),
     Stderr(&'a str),
     Interrupted,
@@ -122,9 +162,14 @@ impl<'a> UserText<'a> {
             Self::Empty
         } else if text.starts_with("[Request interrupted") {
             Self::Interrupted
+        } else if text.starts_with("<bash-stdout>") || text.starts_with("<bash-stderr>") {
+            Self::ShellOutput {
+                stdout: between(text, "<bash-stdout>", "</bash-stdout>"),
+                stderr: between(text, "<bash-stderr>", "</bash-stderr>").unwrap_or(""),
+                exit_code: between(text, "<bash-exit-code>", "</bash-exit-code>"),
+            }
         } else if let Some(output) =
             between(text, "<local-command-stdout>", "</local-command-stdout>")
-                .or_else(|| between(text, "<bash-stdout>", "</bash-stdout>"))
         {
             Self::Stdout(output.trim())
         } else if let Some(output) =
@@ -218,8 +263,92 @@ impl Chat {
             Body::User(_)
             | Body::Assistant(_)
             | Body::Thinking { .. }
+            | Body::Shell { .. }
             | Body::Info(_)
             | Body::Error(_) => None,
+        }
+    }
+
+    /// A `!` command, as Claude Code echoed it: it runs until its output comes.
+    fn shell(&mut self, input: &str) {
+        let shell = Shell {
+            command: unescaped(input),
+            output: String::new(),
+            state: ShellState::Running,
+        };
+        self.push(
+            Body::Shell {
+                shell,
+                expanded: false,
+            },
+            false,
+        );
+    }
+
+    /// A `!` command's end, for the latest one running: one runs at a time, and one refused
+    /// meanwhile is told of at once, before the one running ends. `stdout` is none for one
+    /// that wasn't run, its `stderr` saying why.
+    fn shell_ended(&mut self, stdout: Option<&str>, stderr: &str, exit_code: Option<&str>) {
+        let state = match (stdout, exit_code.map(str::trim)) {
+            (Some(_), None | Some("0")) => ShellState::Done,
+            (Some(_), Some("130")) if stderr.trim() == "[interrupted]" => ShellState::Stopped,
+            (None, _) | (Some(_), Some(_)) => ShellState::Failed,
+        };
+        let mut output: Vec<String> = [stdout.unwrap_or(""), stderr]
+            .into_iter()
+            .map(|text| strip_ansi(&unescaped(text.trim_end())))
+            .filter(|text| !text.is_empty())
+            .collect();
+        if let (ShellState::Failed, Some(code)) = (state, exit_code) {
+            output.push(format!("Exit code {}", code.trim()));
+        }
+        let output = output.join("\n");
+        let running = self
+            .entries
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find_map(|(index, entry)| match &mut entry.body {
+                Body::Shell { shell, .. } if shell.state == ShellState::Running => {
+                    Some((index, shell))
+                }
+                Body::Shell { .. }
+                | Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Tool { .. }
+                | Body::Info(_)
+                | Body::Error(_) => None,
+            });
+        match running {
+            Some((index, shell)) => {
+                shell.output = output;
+                shell.state = state;
+                self.changes.push(Change::Updated(index));
+            }
+            None if output.is_empty() => {}
+            None if state == ShellState::Failed => self.error(output),
+            None => self.info(output),
+        }
+    }
+
+    /// Whether a `!` command runs.
+    pub(crate) fn shell_running(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(&entry.body, Body::Shell { shell, .. } if shell.state == ShellState::Running)
+        })
+    }
+
+    /// The `!` commands still running run no more: their process ended, or their session was
+    /// saved without their end.
+    pub(crate) fn stop_shells(&mut self) {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if let Body::Shell { shell, .. } = &mut entry.body
+                && shell.state == ShellState::Running
+            {
+                shell.state = ShellState::Stopped;
+                self.changes.push(Change::Updated(index));
+            }
         }
     }
 
@@ -252,7 +381,9 @@ impl Chat {
             return;
         };
         match &mut entry.body {
-            Body::Thinking { expanded, .. } | Body::Tool { expanded, .. } => *expanded = !*expanded,
+            Body::Thinking { expanded, .. }
+            | Body::Tool { expanded, .. }
+            | Body::Shell { expanded, .. } => *expanded = !*expanded,
             Body::User(_) | Body::Assistant(_) | Body::Info(_) | Body::Error(_) => return,
         }
         self.changes.push(Change::Updated(index));
@@ -462,7 +593,12 @@ impl Chat {
             UserText::Stdout(output) if !output.is_empty() => self.info(strip_ansi(output)),
             UserText::Stderr(output) if !output.is_empty() => self.error(strip_ansi(output)),
             UserText::Command { name, args } => self.user(format!("{name} {args}").trim()),
-            UserText::Shell(input) => self.user(format!("! {input}")),
+            UserText::Shell(input) => self.shell(input),
+            UserText::ShellOutput {
+                stdout,
+                stderr,
+                exit_code,
+            } => self.shell_ended(stdout, stderr, exit_code),
             UserText::Prompt(text) => match origin {
                 Origin::Transcript => self.user(text),
                 Origin::Live => self.info(text),
@@ -475,6 +611,7 @@ impl Chat {
     pub(crate) fn from_transcript(lines: &[TranscriptLine]) -> Self {
         let mut chat = Self::default();
         chat.replay(lines);
+        chat.stop_shells();
         // Loading built every row: the window rebuilds once instead.
         chat.changes = vec![Change::Reset];
         chat
@@ -517,6 +654,24 @@ fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
             .and_then(|end| rest.get(..end))
             .unwrap_or(rest),
     )
+}
+
+/// Text of a `!` row as Claude Code writes it, with `&`, `<` and `>` escaped (so that what a
+/// command printed can't close the row's tags), as it was.
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once('&') {
+        out.push_str(before);
+        let (character, after) = [("lt;", '<'), ("gt;", '>'), ("amp;", '&')]
+            .into_iter()
+            .find_map(|(entity, character)| Some((character, after.strip_prefix(entity)?)))
+            .unwrap_or(('&', after));
+        out.push(character);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Slash command output is meant for a terminal.
@@ -644,6 +799,164 @@ mod tests {
         chat.user_message(&result, Origin::Live);
         assert_eq!(first_tool(&chat).output, "a.txt");
         assert_eq!(first_tool(&chat).state, ToolState::Done);
+    }
+
+    fn said(chat: &mut Chat, content: Value, origin: Origin) {
+        let message = Map::from_iter([("content".to_owned(), content)]);
+        let message: UserMessage =
+            serde_json::from_value(Value::Object(message)).expect("a user message");
+        chat.user_message(&message, origin);
+    }
+
+    fn shells(chat: &Chat) -> Vec<(&str, &str, ShellState)> {
+        chat.entries
+            .iter()
+            .filter_map(|entry| match &entry.body {
+                Body::Shell { shell, .. } => {
+                    Some((shell.command.as_str(), shell.output.as_str(), shell.state))
+                }
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Tool { .. }
+                | Body::Info(_)
+                | Body::Error(_) => None,
+            })
+            .collect()
+    }
+
+    /// `!` rows as Claude Code 2.1.316 replays them: each output ends the latest command still
+    /// running, so one refused while another runs is told of in its own card.
+    #[test]
+    fn shell_commands_run_until_their_output_comes() {
+        let mut chat = Chat::default();
+        said(
+            &mut chat,
+            json!("<bash-input>sleep 4; echo first</bash-input>"),
+            Origin::Live,
+        );
+        assert!(chat.shell_running());
+        said(
+            &mut chat,
+            json!("<bash-input>printf '&lt;b&gt;&amp;amp;&lt;/b&gt;\\n'; true</bash-input>"),
+            Origin::Live,
+        );
+        said(
+            &mut chat,
+            json!("<bash-stderr>Not run: another '!' command is still running.</bash-stderr>"),
+            Origin::Live,
+        );
+        assert!(chat.shell_running(), "the first still runs");
+        chat.end_turn();
+        assert!(chat.shell_running(), "a turn's end doesn't end it");
+        said(
+            &mut chat,
+            json!(
+                "<bash-stdout>first</bash-stdout><bash-stderr></bash-stderr><bash-exit-code>0</bash-exit-code>"
+            ),
+            Origin::Live,
+        );
+        assert!(!chat.shell_running());
+        assert_eq!(
+            shells(&chat),
+            [
+                ("sleep 4; echo first", "first", ShellState::Done),
+                (
+                    "printf '<b>&amp;</b>\\n'; true",
+                    "Not run: another '!' command is still running.",
+                    ShellState::Failed
+                ),
+            ]
+        );
+    }
+
+    /// A command that failed shows its output, its errors and its exit code; one an interrupt
+    /// stopped is stopped; one whose process ended runs no more.
+    #[test]
+    fn shell_commands_end_as_they_ended() {
+        let mut chat = Chat::default();
+        for (command, output) in [
+            (
+                "false",
+                "<bash-stdout>out\nno newline</bash-stdout><bash-stderr>err &amp; more</bash-stderr><bash-exit-code>3</bash-exit-code>",
+            ),
+            (
+                "sleep 20",
+                "<bash-stdout></bash-stdout><bash-stderr>[interrupted]</bash-stderr><bash-exit-code>130</bash-exit-code>",
+            ),
+        ] {
+            said(
+                &mut chat,
+                json!(format!("<bash-input>{command}</bash-input>")),
+                Origin::Live,
+            );
+            said(&mut chat, json!(output), Origin::Live);
+        }
+        said(
+            &mut chat,
+            json!("<bash-input>swayimg</bash-input>"),
+            Origin::Live,
+        );
+        chat.stop_shells();
+        assert_eq!(
+            shells(&chat),
+            [
+                (
+                    "false",
+                    "out\nno newline\nerr & more\nExit code 3",
+                    ShellState::Failed
+                ),
+                ("sleep 20", "[interrupted]", ShellState::Stopped),
+                ("swayimg", "", ShellState::Stopped),
+            ]
+        );
+    }
+
+    /// Saved `!` rows: the terminal's, with no exit code, are commands that ended; edualc's,
+    /// sent ahead of a prompt in one message, come before it; one never told of ending, as a
+    /// session was saved, runs no more.
+    #[test]
+    fn saved_shell_commands_show_as_they_ran() {
+        let lines: Vec<TranscriptLine> = [
+            json!({ "type": "user", "message": { "content": "<bash-input>rg \"let _\"</bash-input>" } }),
+            json!({ "type": "user", "message": {
+                "content": "<bash-stdout>stream.write_all(&amp;response);</bash-stdout><bash-stderr></bash-stderr>" } }),
+            json!({ "type": "user", "message": { "content": [
+                { "type": "text", "text": "<bash-input>ls</bash-input>" },
+                { "type": "text", "text": "<bash-stdout>a</bash-stdout><bash-stderr></bash-stderr><bash-exit-code>0</bash-exit-code>" },
+                { "type": "text", "text": "Why a?" },
+            ] } }),
+            json!({ "type": "user", "message": { "content": "<bash-input>swayimg</bash-input>" } }),
+        ]
+        .into_iter()
+        .map(|line| serde_json::from_value(line).expect("a transcript line"))
+        .collect();
+        let chat = Chat::from_transcript(&lines);
+        assert_eq!(
+            shells(&chat),
+            [
+                (
+                    "rg \"let _\"",
+                    "stream.write_all(&response);",
+                    ShellState::Done
+                ),
+                ("ls", "a", ShellState::Done),
+                ("swayimg", "", ShellState::Stopped),
+            ]
+        );
+        assert_eq!(
+            texts(&chat),
+            ["stream.write_all(&response);", "a", "Why a?", ""]
+        );
+    }
+
+    /// Escapes undone once: what a command printed as `&lt;` stays `&lt;`.
+    #[test]
+    fn rows_are_unescaped_once() {
+        assert_eq!(
+            unescaped("&amp;lt; &lt;b&gt; & &x; &amp"),
+            "&lt; <b> & &x; &amp"
+        );
     }
 
     #[test]

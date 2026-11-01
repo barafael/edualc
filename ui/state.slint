@@ -9,8 +9,10 @@ export global Session {
     in property <string> cwd;
     in property <string> project;
     in property <string> title: "New session";
-    // A turn is running.
+    // Something runs that Stop stops: a turn, or a `!` command.
     in property <bool> busy;
+    // A turn is running: a message written meanwhile waits for it.
+    in property <bool> turn;
     // What Claude is doing ("Thinking", "Running Bash"); empty when idle.
     in property <string> status;
     in property <Activity> activity;
