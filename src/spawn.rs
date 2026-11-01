@@ -50,7 +50,9 @@ pub(crate) enum Error {
 struct MessagingName(String);
 
 impl MessagingName {
-    fn of(id: &SessionId) -> Self {
+    /// The name of session `id` in the folder `cwd`: "edualc-", the folder's name, an
+    /// adjective, a noun and two digits, all but the folder picked by the id.
+    fn of(id: &SessionId, cwd: &Path) -> Self {
         let digits: String = id
             .as_str()
             .chars()
@@ -70,10 +72,38 @@ impl MessagingName {
                 .unwrap_or("session")
         };
         Self(format!(
-            "edualc-{}-{}",
+            "edualc-{}-{}-{}-{:02}",
+            project_part(cwd),
             word(&words.adjectives, number(0)),
-            word(&words.nouns, number(8))
+            word(&words.nouns, number(8)),
+            number(16) % 100
         ))
+    }
+}
+
+/// The most of the folder's name a session's name takes.
+const PROJECT_PART_CHARS: usize = 20;
+
+/// The folder's name as a session's name takes it, as Claude Code writes its own names
+/// (`claude_but_sane` as `claude-but-sane`): lowercase letters and digits, the rest a dash, at
+/// most [`PROJECT_PART_CHARS`]. "project" for a folder with no such letters.
+fn project_part(cwd: &Path) -> String {
+    let folder = cwd
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut part = String::new();
+    for character in folder.chars() {
+        if character.is_ascii_alphanumeric() {
+            part.push(character);
+        } else if !part.is_empty() && !part.ends_with('-') {
+            part.push('-');
+        }
+    }
+    let part: String = part.chars().take(PROJECT_PART_CHARS).collect();
+    match part.trim_end_matches('-') {
+        "" => "project".to_owned(),
+        trimmed => trimmed.to_owned(),
     }
 }
 
@@ -131,7 +161,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
     }
     command.arg(format!(
         "--name={}",
-        MessagingName::of(launch.conversation.id())
+        MessagingName::of(launch.conversation.id(), &cwd)
     ));
     if let Some(model) = &launch.model {
         command.arg(format!("--model={}", model_name(model)?));
@@ -237,27 +267,63 @@ mod tests {
         assert!(model_name("").is_err());
     }
 
-    /// A session keeps its name however often it is started: the name comes from its id alone,
-    /// "edualc-" and two lowercase words; other ids get other names, but for rare collisions.
+    /// A session keeps its name however often it is started: "edualc-", its project, then two
+    /// lowercase words and two digits from its id; other ids get other names, but for rare
+    /// collisions.
     #[test]
-    fn a_session_is_named_by_its_id() {
+    fn a_session_is_named_by_its_project_and_id() {
         let id = |text: &str| SessionId::try_from(text.to_owned()).expect("a session id");
+        let project = Path::new("/home/someone/code/claude_but_sane");
         let session = "d1ba2743-c47a-4446-aefc-d4594dbc045d";
-        let name = MessagingName::of(&id(session));
-        assert_eq!(name, MessagingName::of(&id(session)), "started again");
-        let words: Vec<&str> = name.0.split('-').collect();
-        assert_eq!(words.len(), 3, "{name}");
-        assert_eq!(words.first(), Some(&"edualc"));
+        let name = MessagingName::of(&id(session), project);
+        assert_eq!(
+            name,
+            MessagingName::of(&id(session), project),
+            "started again"
+        );
+        let rest = name
+            .0
+            .strip_prefix("edualc-claude-but-sane-")
+            .expect("named after its project");
+        let parts: Vec<&str> = rest.split('-').collect();
+        let (Some(adjective), Some(noun), Some(number), None) =
+            (parts.first(), parts.get(1), parts.get(2), parts.get(3))
+        else {
+            panic!("two words and a number in {name}");
+        };
+        for word in [adjective, noun] {
+            assert!(
+                !word.is_empty() && word.chars().all(|letter| letter.is_ascii_lowercase()),
+                "{name}"
+            );
+        }
         assert!(
-            words
-                .iter()
-                .all(|word| !word.is_empty()
-                    && word.chars().all(|letter| letter.is_ascii_lowercase())),
+            number.len() == 2 && number.chars().all(|digit| digit.is_ascii_digit()),
             "{name}"
         );
         let names: std::collections::HashSet<MessagingName> = (0..200)
-            .map(|_| MessagingName::of(&SessionId::new_random()))
+            .map(|_| MessagingName::of(&SessionId::new_random(), project))
             .collect();
-        assert!(names.len() > 190, "only {} names of 200", names.len());
+        assert!(names.len() > 195, "only {} names of 200", names.len());
+    }
+
+    /// A project's part of the name is its folder's, as Claude Code writes its own names, and
+    /// short; a folder with no Latin letters or digits is "project".
+    #[test]
+    fn a_project_is_named_after_its_folder() {
+        assert_eq!(
+            project_part(Path::new("/code/claude_but_sane")),
+            "claude-but-sane"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/My Project.v2")),
+            "my-project-v2"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/a-very-long-project-name-indeed")),
+            "a-very-long-project"
+        );
+        assert_eq!(project_part(Path::new("/home/someone/文档")), "project");
+        assert_eq!(project_part(Path::new("/")), "project");
     }
 }
