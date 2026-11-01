@@ -1,0 +1,50 @@
+# cargo-deny: `cargo deny check` fails on a dependency whose license can't go into a GPL-3.0
+# binary, on a known advisory, or on a source other than crates.io.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# edualc is Linux-only (Landlock, seccomp, xdg-dbus-proxy); other platforms' crates in the
+# resolved graph are never built.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+[advisories]
+# Unmaintained, with no maintained release to move to, all inside Slint at its pinned revision.
+# Each goes when Slint moves past it; until then a new advisory still fails the check.
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser, unmaintained: Slint's winit backend reads fonts with it" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+]
+
+[licenses]
+# Licenses that combine with GPL-3.0. An `OR` expression passes when one alternative is here;
+# anything else is refused.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+  # option-ext (through dirs): MPL-2.0 combines with the GPL (its section 3.3) unless a file
+  # says it is "Incompatible With Secondary Licenses", which none of its files does.
+  "MPL-2.0",
+  "GPL-3.0-or-later", # edualc, niri-ipc
+  "GPL-3.0-only",     # Slint, chosen among its three licenses
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Slint at a pinned commit until 1.19 is released (see Cargo.toml).
+allow-git = ["https://github.com/slint-ui/slint"]

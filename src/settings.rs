@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     /// The text size relative to the desktop's, in percent.
     #[serde(default = "Settings::full_size")]
@@ -155,5 +156,13 @@ mod tests {
     fn older_files_without_a_zoom_read_as_full_size() {
         let settings: Settings = serde_json::from_str("{}").expect("parses");
         assert_eq!(settings, Settings::default());
+    }
+
+    /// A key written by hand with a typo would otherwise be dropped, and its setting quietly
+    /// left at the default.
+    #[test]
+    fn a_misspelled_key_is_refused() {
+        assert!(serde_json::from_str::<Settings>(r#"{"sandbox_wirte": ["/tmp"]}"#).is_err());
+        assert!(serde_json::from_str::<Settings>(r#"{"sandbox_write": ["/tmp"]}"#).is_ok());
     }
 }

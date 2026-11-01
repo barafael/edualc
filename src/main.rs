@@ -14,6 +14,7 @@ mod claude;
 mod confine;
 mod daemon;
 mod desktop;
+mod external;
 mod grouping;
 mod ipc;
 mod link;
@@ -27,7 +28,6 @@ mod spawn;
 mod tools;
 mod trust;
 mod watcher;
-mod wire;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).
 // Slint's code, not ours: it shares state through `Rc` and cells, and discards what it likes.
@@ -57,7 +57,7 @@ mod generated {
 }
 mod ui;
 
-use wire::SessionId;
+use external::wire::SessionId;
 
 const USAGE: &str =
     "usage: edualc [--model MODEL] [--permission-mode MODE] [--resume SESSION] [DIR] [PROMPT]";
@@ -179,7 +179,7 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
 
     // In this order: the daemon is reached (and started) and the desktop asked while the window
     // is free; then it is confined, and all it makes after keeps that.
-    let connected = match link::connect() {
+    let mut connected = match link::connect() {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("edualc: {error}");
@@ -202,6 +202,7 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     }
     let (events, received) = async_channel::unbounded();
+    let hosted = std::mem::take(&mut connected.hosted);
     let link = match link::run(connected, events.clone()) {
         Ok(link) => link,
         Err(error) => {
@@ -219,7 +220,7 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         cwd,
         args.model,
     );
-    app.begin(args.resume, args.mode, args.prompt.as_deref());
+    app.begin(hosted, args.resume, args.mode, args.prompt.as_deref());
     slint::spawn_local(app.run(received)).expect("the event loop is set up");
     window.show()?;
     slint::run_event_loop_until_quit()?;

@@ -27,6 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::buses::Buses;
 use crate::claude::Launch;
 use crate::desktop::{Opener, Program, Running};
+use crate::external::wire::SessionId;
 use crate::sandbox::Enforcement;
 
 /// The largest message either side sends: more is a broken or hostile peer.
@@ -495,61 +496,120 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below: postcard isn't self-describing, so both ends
 /// must agree on every type.
-pub(crate) const PROTOCOL: u32 = 1;
+pub(crate) const PROTOCOL: u32 = 3;
+
+/// A window's key for a process it shows, new for each one: what an earlier one still says is
+/// dropped.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub(crate) struct Generation(u64);
+
+impl Generation {
+    pub(crate) fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+/// The daemon's id for a session it runs, which a window attaches to.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub(crate) struct HostedId(u64);
+
+impl HostedId {
+    pub(crate) fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+/// A window's id for an [`Act`] it asked for, which the daemon's answer carries.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub(crate) struct ActId(u64);
+
+impl ActId {
+    pub(crate) fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
 
 /// What the window asks of the daemon. Every field is checked where it is taken.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum ToDaemon {
     /// The first message, and only it.
     Hello { protocol: u32 },
-    /// Starts Claude Code for a session, known by `key` (this window's) from then on.
-    Start { key: u64, launch: Launch },
+    /// Starts Claude Code for a session, known by `key` from then on.
+    Start { key: Generation, launch: Launch },
     /// A piece of a line for the session's input; the last piece ends the line.
-    Input { key: u64, text: String, last: bool },
+    Input {
+        key: Generation,
+        text: String,
+        last: bool,
+    },
     /// Ends the session's process: its input closes, and what doesn't end is killed.
-    End { key: u64 },
+    End { key: Generation },
+    /// Shows a session the daemon runs in this window, known by `key` here from then on: what
+    /// it asks and wasn't answered comes again, then what it says.
+    Attach { key: Generation, hosted: HostedId },
+    /// Stops showing the session, which runs on (the window closes).
+    Detach { key: Generation },
+    /// Claude Code's id for the session, as its process told the window: for the list.
+    Identify { key: Generation, session: SessionId },
     /// Something for the desktop, answered by `Done` with the same `request`.
-    Act { request: u64, act: Act },
+    Act { request: ActId, act: Act },
 }
 
 /// What the daemon tells the window.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum FromDaemon {
-    /// With the D-Bus the window is to use (see `buses`).
-    Hello {
-        protocol: u32,
-        buses: Buses,
-    },
+    /// With the D-Bus the window is to use (see `buses`). `Hosted` follows, before anything
+    /// else.
+    Hello { protocol: u32, buses: Buses },
     Started {
-        key: u64,
+        key: Generation,
         pid: u32,
         enforcement: Option<Enforcement>,
     },
     Failed {
-        key: u64,
+        key: Generation,
         failure: StartFailure,
     },
     /// A piece of a line the process wrote; the last piece ends the line.
     Output {
-        key: u64,
+        key: Generation,
         stream: Stream,
         text: String,
         last: bool,
     },
     /// The process ended, with its exit code if it exited on its own.
-    Ended {
-        key: u64,
-        code: Option<i32>,
-    },
+    Ended { key: Generation, code: Option<i32> },
     Done {
-        request: u64,
+        request: ActId,
         result: Result<(), ActFailure>,
     },
     /// The folder picked, if one was.
     Picked {
-        request: u64,
+        request: ActId,
         folder: Option<PathBuf>,
     },
+    /// The sessions the daemon runs, anew whenever that changes.
+    Hosted(Vec<Hosted>),
+}
+
+/// A session the daemon runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Hosted {
+    pub(crate) id: HostedId,
+    /// Claude Code's, once known.
+    pub(crate) session: Option<SessionId>,
+    pub(crate) cwd: PathBuf,
+    /// Shown in a window now.
+    pub(crate) attached: bool,
 }
 
 /// Why a session's process didn't start, or its input was refused, as the window is told.
@@ -571,19 +631,22 @@ pub(crate) enum StartFailure {
     KeyInUse,
     #[error("a line too long for claude's input")]
     LineTooLong,
+    #[error("that session isn't run here, or is shown in another window")]
+    NotHosted,
     #[error("the daemon failed starting it")]
     Crashed,
 }
 
 /// Why the desktop didn't do what it was asked, as the window is told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum ActFailure {
     #[error("couldn't run {program}: {reason}")]
     Run { program: Program, reason: String },
     #[error("{program} failed: {stderr}")]
     Failed { program: Program, stderr: String },
-    #[error("niri's window list doesn't parse: {0}")]
-    Windows(String),
+    #[error("{0}")]
+    Niri(String),
     #[error(
         "no window holds process {0}; it may run in the background or in a terminal multiplexer"
     )]
@@ -607,15 +670,21 @@ pub(crate) enum ActFailure {
 impl From<crate::desktop::Error> for ActFailure {
     fn from(error: crate::desktop::Error) -> Self {
         use crate::desktop::Error;
+        use crate::external::niri;
         match error {
             Error::Run { program, source } => Self::Run {
                 program,
                 reason: source.to_string(),
             },
             Error::Failed { program, stderr } => Self::Failed { program, stderr },
-            Error::Windows(source) => Self::Windows(source.to_string()),
+            Error::Niri(niri::Error::NotRunning) => Self::NoNiri,
+            Error::Niri(
+                error @ (niri::Error::Socket(_)
+                | niri::Error::Request(_)
+                | niri::Error::Answer(_)
+                | niri::Error::Refused(_)),
+            ) => Self::Niri(error.to_string()),
             Error::NoWindow(pid) => Self::NoWindow(pid),
-            Error::NoNiri => Self::NoNiri,
             Error::StillRunning(pid) => Self::StillRunning(pid),
             Error::NotThatSession(pid) => Self::NotThatSession(pid),
         }
@@ -643,6 +712,7 @@ pub(crate) enum Stream {
 
 /// What the window can have the desktop do; it does nothing else outside its sandbox.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum Act {
     OpenIn {
         opener: Opener,

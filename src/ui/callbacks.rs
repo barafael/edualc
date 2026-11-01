@@ -5,11 +5,11 @@ use async_channel::Sender;
 use slint::ComponentHandle;
 
 use crate::app::{Action, Event, PermissionMode};
+use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
     AppWindow, Clipboard, Composer, Prompt, Session, Sessions, Side, Transcript, Usage,
 };
 use crate::settings::Zoom;
-use crate::wire::{RequestId, SessionId};
 
 /// A way to the app, for a callback to keep.
 #[derive(Clone)]

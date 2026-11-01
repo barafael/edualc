@@ -8,8 +8,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::chat::{Body, Entry, Tool, ToolState};
+use crate::external::wire::ToolKind;
 use crate::tools;
-use crate::wire::ToolKind;
 
 /// How an entry is shown with respect to runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +197,7 @@ mod tests {
 
     use super::*;
     use crate::chat::{Chat, Origin};
-    use crate::wire::{ApiMessage, UserMessage};
+    use crate::external::wire::{ApiMessage, UserMessage};
 
     /// A chat with one completed call per `(name, input)`, in order.
     fn calls(calls: &[(&str, Value)]) -> Chat {

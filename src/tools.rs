@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::wire::{ContentBlock, ToolName, UserContent};
+use crate::external::wire::{ContentBlock, ToolName, UserContent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiffKind {

@@ -13,6 +13,9 @@ use crate::app::{
 };
 use crate::chat::{self, Body, Change, Chat};
 use crate::desktop::Opener;
+use crate::external::wire::{
+    self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
+};
 use crate::generated::{
     AppWindow, BlockKind, CommandItem, Composer, DiffKind, DiffLine, Entry, EntryKind, GroupRole,
     LiveItem, LiveState, MdBlock, MenuItem, PermissionKind, PlanSection, ProjectItem, Prompt,
@@ -24,7 +27,6 @@ use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
 use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
 use crate::tools;
-use crate::wire::{self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName};
 
 mod callbacks;
 

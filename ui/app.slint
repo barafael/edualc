@@ -1265,16 +1265,19 @@ export component AppWindow inherits Window {
                             self.follow = self.at-end();
                             settle-timer.running = true;
                         }
+                        // Scrolling here would make the list build and measure other rows, and
+                        // change `content-height` again within the same pass, which Slint gives
+                        // up on after ten rounds; the move waits for the pass to end instead.
                         changed content-height => {
                             if self.follow {
-                                self.content-y = min(0px, self.visible-height - self.content-height);
+                                follow-timer.running = true;
                                 end-timer.running = true;
                             }
                         }
                         // E.g. the prompt bar opening below.
                         changed visible-height => {
                             if self.follow {
-                                self.content-y = min(0px, self.visible-height - self.content-height);
+                                follow-timer.running = true;
                             }
                         }
                         // A folded run's later calls take no room.
@@ -1297,6 +1300,17 @@ export component AppWindow inherits Window {
                         triggered => {
                             self.running = false;
                             transcript.follow = transcript.at-end();
+                        }
+                    }
+                    // Following the end as the content grows, once the pass that grew it is over.
+                    follow-timer := Timer {
+                        interval: 1ms;
+                        running: false;
+                        triggered => {
+                            self.running = false;
+                            if transcript.follow {
+                                transcript.content-y = min(0px, transcript.visible-height - transcript.content-height);
+                            }
                         }
                     }
                     // The list moves rows itself after measuring them, after `changed

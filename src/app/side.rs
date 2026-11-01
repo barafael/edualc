@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::{App, Request};
 use crate::claude::Resume;
-use crate::wire::{ControlRequest, SideAnswer, SideTurn};
+use crate::external::wire::{ControlRequest, SideAnswer, SideTurn};
 
 #[derive(Debug, Default)]
 pub(crate) struct SideChat {

@@ -1,0 +1,82 @@
+id: static-str-wants-enum
+snapshots:
+  "enum ConsoleError { NotUnix(&'static str) }\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 28
+      end: 40
+    - source: (&'static str)
+      style: secondary
+      start: 27
+      end: 41
+  "fn label(text: Option<&'static str>) {}\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 22
+      end: 34
+    - source: "text: Option<&'static str>"
+      style: secondary
+      start: 9
+      end: 35
+  "fn reauth_failed(what: &'static str) {}\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 23
+      end: 35
+    - source: "what: &'static str"
+      style: secondary
+      start: 17
+      end: 35
+  "let fail = |what: &'static str| what.len();\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 18
+      end: 30
+    - source: "what: &'static str"
+      style: secondary
+      start: 12
+      end: 30
+  "struct Label { text: &'static str }\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 21
+      end: 33
+    - source: "text: &'static str"
+      style: secondary
+      start: 15
+      end: 33
+  "struct Setting { label: Words, section: &'static str }\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 40
+      end: 52
+    - source: "section: &'static str"
+      style: secondary
+      start: 31
+      end: 52
+  "struct Table { names: HashMap<&'static str, u8> }\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 30
+      end: 42
+    - source: "names: HashMap<&'static str, u8>"
+      style: secondary
+      start: 15
+      end: 47
+  "struct Wording(&'static str);\n":
+    labels:
+    - source: "&'static str"
+      style: primary
+      start: 15
+      end: 27
+    - source: (&'static str)
+      style: secondary
+      start: 14
+      end: 28

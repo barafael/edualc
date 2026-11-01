@@ -1,0 +1,41 @@
+id: no-shared-state
+valid:
+  - |
+    struct Owner { counters: Metrics, queue: mpsc::UnboundedSender<Change> }
+  - |
+    fn handle(state: &mut State) {}
+  - |
+    static LABEL: &[u8] = b"EXPORTER-imbroke-auth-v1";
+  - |
+    let cell_count = grid.cells().count();
+  - |
+    struct Counters { delivered: AtomicU64 }
+  - |
+    use std::sync::atomic::AtomicBool;
+invalid:
+  - |
+    struct Shared { table: Arc<Mutex<HashMap<u64, Tx>>> }
+  - |
+    struct Shared { cap: tokio::sync::RwLock<Capability> }
+  - |
+    struct Hidden { inner: Inner, lock: parking_lot::Mutex<State> }
+  - |
+    let permits = Arc::new(Semaphore::new(16));
+  - |
+    let lock = std::sync::Mutex::new(0);
+  - |
+    struct Local { cell: Rc<RefCell<State>> }
+  - |
+    struct Flag { set: Cell<bool> }
+  - |
+    static CONFIG: OnceLock<Config> = OnceLock::new();
+  - |
+    thread_local! { static SEEN: Vec<u8> = const { Vec::new() }; }
+  - |
+    static mut COUNT: u64 = 0;
+  - |
+    struct State { snapshot: Arc<Topology> }
+  - |
+    let shared = std::sync::Arc::new(config);
+  - |
+    struct Back { owner: Weak<Node> }

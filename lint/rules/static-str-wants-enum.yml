@@ -1,0 +1,23 @@
+id: static-str-wants-enum
+language: Rust
+severity: error
+message: "A &'static str parameter, field or variant payload is a closed set of known strings; make it an enum (with as_str/Display where text is needed)"
+note: "Returning &'static str from an enum's as_str is the intended use and is not matched. Text people read is not a closed set: it travels as `Words`, whose one field is the only &'static str field the rule allows."
+files:
+  - "*/src/**"
+rule:
+  kind: reference_type
+  regex: "^&'static str$"
+  inside:
+    stopBy: end
+    any:
+      - kind: parameter
+      - kind: field_declaration
+      - kind: ordered_field_declaration_list
+  not:
+    inside:
+      stopBy: end
+      kind: struct_item
+      has:
+        field: name
+        regex: "^Words$"

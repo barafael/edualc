@@ -1,0 +1,39 @@
+id: serde-deny-unknown-fields
+language: Rust
+severity: error
+message: A Deserialize type with named fields must carry #[serde(deny_unknown_fields)], so a misspelled or stale key is refused instead of ignored
+note: "Without it serde skips keys it does not know: a misspelled key for an Option or defaulted field is dropped, and the field stays None or takes its default, without an error. Formats other programs write (Claude Code's, niri's) gain keys with each release, so their types live in src/external/ and take unknown keys by design."
+# edualc's change to the harness's rule: formats other programs write, kept apart in one module.
+ignores:
+  - src/external/**
+utils:
+  # Attributes and doc comments directly above an item.
+  above-item:
+    any:
+      - kind: attribute_item
+      - kind: line_comment
+rule:
+  all:
+    - any:
+        - all:
+            - kind: struct_item
+            - has:
+                kind: field_declaration_list
+        - all:
+            - kind: enum_item
+            - has:
+                kind: field_declaration_list
+                stopBy: end
+    - follows:
+        kind: attribute_item
+        regex: "Deserialize"
+        stopBy:
+          not:
+            matches: above-item
+    - not:
+        follows:
+          kind: attribute_item
+          regex: "deny_unknown_fields"
+          stopBy:
+            not:
+              matches: above-item

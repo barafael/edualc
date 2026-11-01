@@ -1,12 +1,11 @@
 //! The desktop around the window: notifications, the windows other programs run sessions in,
-//! and the editors, terminals and file manager a folder can be opened in. All go through the
-//! programs' own command lines, so nothing here links to them.
+//! and the editors, terminals and file manager a folder can be opened in. They go through the
+//! programs' own command lines, and niri through its socket.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
-
+use crate::external::niri;
 use crate::sessions::{LiveKind, LiveSession};
 
 #[derive(
@@ -22,7 +21,6 @@ use crate::sessions::{LiveKind, LiveSession};
 )]
 #[strum(serialize_all = "kebab-case")]
 pub(crate) enum Program {
-    Niri,
     NotifySend,
     XdgOpen,
     /// Zed, as Arch and others name it.
@@ -136,14 +134,12 @@ pub(crate) enum Error {
     },
     #[error("{program} failed: {stderr}")]
     Failed { program: Program, stderr: String },
-    #[error("niri's window list doesn't parse: {0}")]
-    Windows(#[source] serde_json::Error),
+    #[error(transparent)]
+    Niri(#[from] niri::Error),
     #[error(
         "no window holds process {0}; it may run in the background or in a terminal multiplexer"
     )]
     NoWindow(u32),
-    #[error("finding a session's window needs niri (NIRI_SOCKET is unset)")]
-    NoNiri,
     #[error("process {0} was asked to stop but is still running")]
     StillRunning(u32),
     #[error("process {0} isn't that Claude Code session (any more)")]
@@ -193,35 +189,23 @@ pub(crate) fn notify(summary: &str, body: &str) -> Result<(), Error> {
     .map(drop)
 }
 
-#[derive(Debug, Deserialize)]
-struct NiriWindow {
-    id: u64,
-    pid: Option<u32>,
-}
-
 /// Focuses the window that process `pid` runs in: the one whose process is `pid` or one of
-/// its ancestors (a terminal, an editor).
+/// its ancestors (a terminal, an editor). Only niri is asked.
 pub(crate) fn focus_window_of(pid: u32) -> Result<(), Error> {
-    if std::env::var_os("NIRI_SOCKET").is_none() {
-        return Err(Error::NoNiri);
-    }
-    let listed = run(Program::Niri, &["msg", "--json", "windows"])?;
-    let windows: Vec<NiriWindow> = serde_json::from_slice(&listed).map_err(Error::Windows)?;
+    let windows = match niri::ask(&niri::Request::Windows)? {
+        niri::Response::Windows(windows) => windows,
+        niri::Response::Handled => Vec::new(),
+    };
     let window = ancestors(pid)
         .into_iter()
-        .find_map(|ancestor| windows.iter().find(|window| window.pid == Some(ancestor)))
+        .find_map(|ancestor| {
+            windows
+                .iter()
+                .find(|window| window.pid.and_then(|pid| u32::try_from(pid).ok()) == Some(ancestor))
+        })
         .ok_or(Error::NoWindow(pid))?;
-    run(
-        Program::Niri,
-        &[
-            "msg",
-            "action",
-            "focus-window",
-            "--id",
-            &window.id.to_string(),
-        ],
-    )
-    .map(drop)
+    let focus = niri::Request::Action(niri::Action::FocusWindow { id: window.id });
+    niri::ask(&focus).map(drop).map_err(Error::Niri)
 }
 
 /// How long a stopped session gets to end (it writes its transcript and tidies up first).
@@ -230,11 +214,12 @@ const STOP_GRACE_STEPS: u32 = 100;
 /// A session running elsewhere, as far as stopping it takes: which process, started when (to
 /// tell it from a later one with the pid), and how it runs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Running {
     pub(crate) pid: u32,
     pub(crate) started: String,
     pub(crate) kind: LiveKind,
-    pub(crate) id: crate::wire::SessionId,
+    pub(crate) id: crate::external::wire::SessionId,
 }
 
 impl From<&LiveSession> for Running {

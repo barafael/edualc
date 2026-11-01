@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::external::claude_files::UserSettings;
 use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
@@ -68,21 +69,11 @@ pub(crate) enum Enforcement {
 /// settings don't count: a repository could otherwise turn this sandbox off by asking for the
 /// other, which may not even run here.
 pub(crate) fn claude_codes_own_is_on() -> bool {
-    #[derive(Debug, Default, serde::Deserialize)]
-    struct Settings {
-        #[serde(default)]
-        sandbox: Option<Own>,
-    }
-    #[derive(Debug, Default, serde::Deserialize)]
-    struct Own {
-        #[serde(default)]
-        enabled: bool,
-    }
     let dir = crate::sessions::config_dir();
     ["settings.json", "settings.local.json"].iter().any(|name| {
         std::fs::read_to_string(dir.join(name))
             .ok()
-            .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
+            .and_then(|text| serde_json::from_str::<UserSettings>(&text).ok())
             .and_then(|settings| settings.sandbox)
             .is_some_and(|own| own.enabled)
     })

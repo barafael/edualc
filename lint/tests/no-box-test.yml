@@ -1,0 +1,23 @@
+id: no-box
+valid:
+  - |
+    let state = ProxyState { routes, client };
+  - |
+    fn chain(error: &dyn std::error::Error) -> String { error.to_string() }
+  - |
+    let boxed_count = 3;
+  - |
+    struct MeteredStream<S> { upstream: S }
+invalid:
+  - |
+    struct Handler { inner: Box<dyn Fn()> }
+  - |
+    fn parse() -> Result<u8, Box<dyn std::error::Error>> { Ok(1) }
+  - |
+    let state = Box::new(state);
+  - |
+    let stream = Box::pin(upstream);
+  - |
+    let shared: &'static State = Box::leak(Box::new(state));
+  - |
+    struct Payload { bytes: std::boxed::Box<[u8]> }

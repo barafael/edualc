@@ -1,0 +1,13 @@
+id: no-discarded-result
+valid:
+  - |
+    fn f() { let _guard = lock(); }
+  - |
+    fn f() { if tx.send(1).is_err() { gone(); } }
+  - |
+    fn f(stream: Stream) { drop(stream); }
+invalid:
+  - |
+    fn f() { _ = tx.send(1); }
+  - |
+    async fn f() { _ = broker.run().await; }

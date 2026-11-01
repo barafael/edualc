@@ -6,11 +6,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
-use crate::tools;
-use crate::wire::{
+use crate::external::wire::{
     ApiMessage, ContentBlock, Delta, MessageId, StreamEvent, System, ToolName, ToolUseId,
     TranscriptLine, UserContent, UserMessage,
 };
+use crate::tools;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolState {

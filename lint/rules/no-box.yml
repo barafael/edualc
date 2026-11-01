@@ -1,0 +1,13 @@
+id: no-box
+language: Rust
+severity: error
+message: "A Box allocates and, as Box<dyn _>, erases the type: hold the value directly, borrow it, make it generic, or use an enum"
+note: "Box<dyn _> is refused here; Arc<dyn _> and Rc<dyn _> are refused by no-shared-state."
+files:
+  - "*/src/**"
+rule:
+  any:
+    - kind: generic_type
+      regex: '^((std::)?boxed::)?Box\s*<'
+    - kind: scoped_identifier
+      regex: '^((std::)?boxed::)?Box::'

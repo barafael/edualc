@@ -1,0 +1,62 @@
+id: serde-deny-unknown-fields
+valid:
+  - |
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Good {
+        pub id: String,
+    }
+  - |
+    /// A doc comment between the attributes does not hide them.
+    #[derive(Debug, Serialize, Deserialize)]
+    /// More documentation.
+    #[serde(default, deny_unknown_fields)]
+    pub struct GoodWithDefault {
+        pub id: String,
+    }
+  - |
+    #[derive(Debug, Serialize)]
+    pub struct SerializeOnly {
+        pub id: String,
+    }
+  - |
+    #[derive(Debug, Deserialize)]
+    #[serde(try_from = "String")]
+    pub struct Wrapper(String);
+  - |
+    #[derive(Debug, Deserialize)]
+    pub enum Unit {
+        A,
+        B,
+    }
+  - |
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub enum Tagged {
+        A { x: u8 },
+    }
+invalid:
+  - |
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Bad {
+        pub id: String,
+    }
+  - |
+    #[derive(Debug, Deserialize)]
+    #[serde(default)]
+    pub struct BadWithOtherSerde {
+        pub id: String,
+    }
+  - |
+    #[derive(Debug, Deserialize)]
+    pub enum BadEnum {
+        A { x: u8 },
+    }
+  - |
+    #[serde(deny_unknown_fields)]
+    struct Unrelated;
+
+    #[derive(Deserialize)]
+    pub struct BadAfterAnotherItem {
+        pub id: String,
+    }

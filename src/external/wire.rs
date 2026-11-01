@@ -849,6 +849,51 @@ pub(crate) struct WorktreeSession {
     pub(crate) branch: String,
 }
 
+/// The folder a transcript line says the session worked in, read from its first lines.
+#[derive(Debug, Deserialize)]
+pub(crate) struct TranscriptCwd {
+    pub(crate) cwd: PathBuf,
+}
+
+/// Just enough of a line the process writes, or is sent, to tell its `init` and its permission
+/// requests and their answers apart; the daemon passes the line itself on as it is.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ControlPeek {
+    #[serde(rename = "type")]
+    pub(crate) kind: PeekedKind,
+    #[serde(default)]
+    pub(crate) subtype: Option<PeekedSubtype>,
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
+    #[serde(default)]
+    pub(crate) response: Option<PeekedResponse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PeekedKind {
+    System,
+    ControlRequest,
+    ControlCancelRequest,
+    ControlResponse,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PeekedSubtype {
+    Init,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PeekedResponse {
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
+}
+
 /// A line to the CLI's input.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

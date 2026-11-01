@@ -56,7 +56,7 @@ impl App {
 
     pub(super) fn worktree_read(
         &mut self,
-        id: &crate::wire::SessionId,
+        id: &crate::external::wire::SessionId,
         worktree: Option<Worktree>,
     ) {
         if self.status.session_id.as_ref() == Some(id) && worktree.is_some() {

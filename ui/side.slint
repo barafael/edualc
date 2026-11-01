@@ -13,6 +13,14 @@ export component SidePanel inherits Rectangle {
     background: Theme.surface-raised;
     property <int> focus-serial: Side.focus-serial;
     changed focus-serial => { follow-up.focus(); }
+    follow-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            exchanges.content-y = min(0px, exchanges.visible-height - exchanges.content-height);
+        }
+    }
     // Opened to ask: a panel just made has missed the bump that asked for the focus. Opened
     // with a question already asked, it leaves the focus where it was.
     init => {
@@ -64,9 +72,8 @@ export component SidePanel inherits Rectangle {
         }
         exchanges := ListView {
             vertical-stretch: 1;
-            changed content-height => {
-                self.content-y = min(0px, self.visible-height - self.content-height);
-            }
+            // As the transcript does: the move waits for the pass that measured the rows.
+            changed content-height => { follow-timer.running = true; }
             for exchange[index] in Side.exchanges: VerticalLayout {
                 padding: Theme.space-m;
                 padding-bottom: Theme.space-xs;

@@ -1,0 +1,116 @@
+id: no-shared-state
+snapshots:
+  "let lock = std::sync::Mutex::new(0);\n":
+    labels:
+    - source: Mutex
+      style: primary
+      start: 22
+      end: 27
+    - source: std::sync::Mutex
+      style: secondary
+      start: 11
+      end: 27
+  "let permits = Arc::new(Semaphore::new(16));\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 14
+      end: 17
+    - source: Arc::new
+      style: secondary
+      start: 14
+      end: 22
+  "let shared = std::sync::Arc::new(config);\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 24
+      end: 27
+    - source: std::sync::Arc
+      style: secondary
+      start: 13
+      end: 27
+  "static CONFIG: OnceLock<Config> = OnceLock::new();\n":
+    labels:
+    - source: OnceLock
+      style: primary
+      start: 15
+      end: 23
+  "static mut COUNT: u64 = 0;\n":
+    labels:
+    - source: "static mut COUNT: u64 = 0;"
+      style: primary
+      start: 0
+      end: 26
+    - source: mut
+      style: secondary
+      start: 7
+      end: 10
+  "struct Back { owner: Weak<Node> }\n":
+    labels:
+    - source: Weak
+      style: primary
+      start: 21
+      end: 25
+  "struct Counters { delivered: AtomicU64 }\n":
+    labels:
+    - source: AtomicU64
+      style: primary
+      start: 29
+      end: 38
+  "struct Flag { set: Cell<bool> }\n":
+    labels:
+    - source: Cell
+      style: primary
+      start: 19
+      end: 23
+  "struct Hidden { inner: Inner, lock: parking_lot::Mutex<State> }\n":
+    labels:
+    - source: Mutex
+      style: primary
+      start: 49
+      end: 54
+  "struct Local { cell: Rc<RefCell<State>> }\n":
+    labels:
+    - source: Rc
+      style: primary
+      start: 21
+      end: 23
+  "struct Shared { cap: tokio::sync::RwLock<Capability> }\n":
+    labels:
+    - source: RwLock
+      style: primary
+      start: 34
+      end: 40
+  "struct Shared { table: Arc<Mutex<HashMap<u64, Tx>>> }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 23
+      end: 26
+  "struct State { snapshot: Arc<Topology> }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 25
+      end: 28
+  "thread_local! { static SEEN: Vec<u8> = const { Vec::new() }; }\n":
+    labels:
+    - source: "thread_local! { static SEEN: Vec<u8> = const { Vec::new() }; }"
+      style: primary
+      start: 0
+      end: 62
+    - source: thread_local
+      style: secondary
+      start: 0
+      end: 12
+  "use std::sync::atomic::AtomicBool;\n":
+    labels:
+    - source: AtomicBool
+      style: primary
+      start: 23
+      end: 33
+    - source: std::sync::atomic::AtomicBool
+      style: secondary
+      start: 4
+      end: 33

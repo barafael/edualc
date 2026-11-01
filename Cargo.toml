@@ -3,19 +3,21 @@ name = "edualc"
 description = "edualc: a native desktop window for Claude Code, built with Slint"
 version = "0.1.0"
 edition = "2024"
+# Slint is used under GPL-3.0-only, so a built binary goes out under GPL-3.0.
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "edualc"
 path = "src/main.rs"
 
 [dependencies]
-# Slint master (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
+# Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
 # `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
 # on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
 # the latest). These are the patches b33p's fork carries. Go back to crates.io once 1.19 is out.
 # Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
 # widgets, so Qt would only add a dependency (and, at this revision, garbled italics).
-slint = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
+slint = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,7 +53,7 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 derive_more = { version = "2", features = ["display", "from"] }
 
 [build-dependencies]
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d" }
+slint-build = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", version = "1.19.0" }
 # The icons (Lucide), written out for the UI as `@image-url("@lucide/<name>.svg")`.
 lucide-static-svg = "1.55"
 

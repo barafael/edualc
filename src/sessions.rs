@@ -11,8 +11,9 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use crate::chat::UserText;
+use crate::external::claude_files::LiveRecord;
+use crate::external::wire::{self, SessionId, TranscriptCwd, TranscriptLine, UserContent};
 use crate::process;
-use crate::wire::{SessionId, TranscriptLine, UserContent};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionInfo {
@@ -32,7 +33,7 @@ pub(crate) struct Worktree {
 }
 
 impl Worktree {
-    fn existing(session: crate::wire::WorktreeSession) -> Option<Self> {
+    fn existing(session: wire::WorktreeSession) -> Option<Self> {
         session.path.is_dir().then(|| Self {
             name: if session.name.is_empty() {
                 folder_name(&session.path)
@@ -117,23 +118,6 @@ pub(crate) enum LiveStatus {
     #[default]
     #[serde(other)]
     Other,
-}
-
-#[derive(Debug, Deserialize)]
-struct LiveRecord {
-    pid: u32,
-    #[serde(rename = "sessionId")]
-    session_id: SessionId,
-    cwd: PathBuf,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    kind: LiveKind,
-    #[serde(default)]
-    status: LiveStatus,
-    /// The process's start time, as `/proc/<pid>/stat` has it: tells a reused pid apart.
-    #[serde(rename = "procStart")]
-    proc_start: Option<String>,
 }
 
 pub(crate) fn config_dir() -> PathBuf {
@@ -421,13 +405,9 @@ pub(crate) fn worktree_of(transcript: &Path) -> Option<Worktree> {
 }
 
 fn recorded_cwd(path: &Path) -> Option<PathBuf> {
-    #[derive(Deserialize)]
-    struct WithCwd {
-        cwd: PathBuf,
-    }
     head_lines(File::open(path).ok()?)
         .filter(|line| line.contains("\"cwd\""))
-        .find_map(|line| serde_json::from_str::<WithCwd>(&line).ok())
+        .find_map(|line| serde_json::from_str::<TranscriptCwd>(&line).ok())
         .map(|record| record.cwd)
 }
 
@@ -435,13 +415,13 @@ fn prompt_text(content: &UserContent) -> Option<String> {
     let text = match content {
         UserContent::Text(text) => text.as_str(),
         UserContent::Blocks(blocks) => blocks.iter().find_map(|block| match block {
-            crate::wire::ContentBlock::Text { text } => Some(text.as_str()),
-            crate::wire::ContentBlock::Thinking { .. }
-            | crate::wire::ContentBlock::ToolUse { .. }
-            | crate::wire::ContentBlock::ServerToolUse { .. }
-            | crate::wire::ContentBlock::ToolResult { .. }
-            | crate::wire::ContentBlock::Image
-            | crate::wire::ContentBlock::Other => None,
+            wire::ContentBlock::Text { text } => Some(text.as_str()),
+            wire::ContentBlock::Thinking { .. }
+            | wire::ContentBlock::ToolUse { .. }
+            | wire::ContentBlock::ServerToolUse { .. }
+            | wire::ContentBlock::ToolResult { .. }
+            | wire::ContentBlock::Image
+            | wire::ContentBlock::Other => None,
         })?,
     };
     match UserText::of(text) {
@@ -492,8 +472,8 @@ mod tests {
 
     #[test]
     fn project_dirs_are_named_like_claude_code_names_them() {
-        let dir = project_dir(Path::new("/home/shen/code/github/claude_but_sane"));
-        assert!(dir.ends_with("-home-shen-code-github-claude-but-sane"));
+        let dir = project_dir(Path::new("/home/someone/code/my_project.v2"));
+        assert!(dir.ends_with("-home-someone-code-my-project-v2"));
     }
 
     #[test]

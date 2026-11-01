@@ -1,0 +1,25 @@
+id: no-shared-state-escape
+valid:
+  - |
+    // ast-grep-ignore: no-dyn-for-closed-set
+    let plugin: Box<dyn Plugin> = load();
+  - |
+    // The hub owns every count; see no-shared-state in RULES.md.
+    let metrics = Metrics::new();
+invalid:
+  - |
+    // ast-grep-ignore
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+  - |
+    // ast-grep-ignore: no-shared-state
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+  - |
+    // ast-grep-ignore: no-discarded-result, no-shared-state
+    let lock = Mutex::new(0);
+  - |
+    // ast-grep-ignore: no-shared-state-escape
+    // ast-grep-ignore: no-shared-state
+    let lock = Mutex::new(0);
+  - |
+    /* ast-grep-ignore */
+    let lock = Mutex::new(0);

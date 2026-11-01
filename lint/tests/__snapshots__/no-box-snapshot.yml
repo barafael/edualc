@@ -1,0 +1,38 @@
+id: no-box
+snapshots:
+  "fn parse() -> Result<u8, Box<dyn std::error::Error>> { Ok(1) }\n":
+    labels:
+    - source: Box<dyn std::error::Error>
+      style: primary
+      start: 25
+      end: 51
+  "let shared: &'static State = Box::leak(Box::new(state));\n":
+    labels:
+    - source: Box::leak
+      style: primary
+      start: 29
+      end: 38
+  "let state = Box::new(state);\n":
+    labels:
+    - source: Box::new
+      style: primary
+      start: 12
+      end: 20
+  "let stream = Box::pin(upstream);\n":
+    labels:
+    - source: Box::pin
+      style: primary
+      start: 13
+      end: 21
+  "struct Handler { inner: Box<dyn Fn()> }\n":
+    labels:
+    - source: Box<dyn Fn()>
+      style: primary
+      start: 24
+      end: 37
+  "struct Payload { bytes: std::boxed::Box<[u8]> }\n":
+    labels:
+    - source: std::boxed::Box<[u8]>
+      style: primary
+      start: 24
+      end: 45

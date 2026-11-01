@@ -1,0 +1,79 @@
+id: serde-deny-unknown-fields
+snapshots:
+  "#[derive(Debug, Deserialize)]\n#[serde(default)]\npub struct BadWithOtherSerde {\n    pub id: String,\n}\n":
+    labels:
+    - source: |-
+        pub struct BadWithOtherSerde {
+            pub id: String,
+        }
+      style: primary
+      start: 48
+      end: 100
+    - source: |-
+        {
+            pub id: String,
+        }
+      style: secondary
+      start: 77
+      end: 100
+    - source: "#[derive(Debug, Deserialize)]"
+      style: secondary
+      start: 0
+      end: 29
+  "#[derive(Debug, Deserialize)]\npub enum BadEnum {\n    A { x: u8 },\n}\n":
+    labels:
+    - source: |-
+        pub enum BadEnum {
+            A { x: u8 },
+        }
+      style: primary
+      start: 30
+      end: 67
+    - source: "{ x: u8 }"
+      style: secondary
+      start: 55
+      end: 64
+    - source: "#[derive(Debug, Deserialize)]"
+      style: secondary
+      start: 0
+      end: 29
+  "#[derive(Debug, Serialize, Deserialize)]\npub struct Bad {\n    pub id: String,\n}\n":
+    labels:
+    - source: |-
+        pub struct Bad {
+            pub id: String,
+        }
+      style: primary
+      start: 41
+      end: 79
+    - source: |-
+        {
+            pub id: String,
+        }
+      style: secondary
+      start: 56
+      end: 79
+    - source: "#[derive(Debug, Serialize, Deserialize)]"
+      style: secondary
+      start: 0
+      end: 40
+  "#[serde(deny_unknown_fields)]\nstruct Unrelated;\n\n#[derive(Deserialize)]\npub struct BadAfterAnotherItem {\n    pub id: String,\n}\n":
+    labels:
+    - source: |-
+        pub struct BadAfterAnotherItem {
+            pub id: String,
+        }
+      style: primary
+      start: 72
+      end: 126
+    - source: |-
+        {
+            pub id: String,
+        }
+      style: secondary
+      start: 103
+      end: 126
+    - source: "#[derive(Deserialize)]"
+      style: secondary
+      start: 49
+      end: 71

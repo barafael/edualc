@@ -14,8 +14,12 @@ use serde_json::Value;
 use crate::chat::{Chat, ToolState};
 use crate::claude::{self, Claude, Launch, Output, Resume, SandboxWish};
 use crate::desktop;
+use crate::external::wire::{
+    self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
+    ToolInput, ToolName, ToolUseId, TranscriptLine,
+};
 use crate::generated::AppWindow;
-use crate::ipc::{Act, ActFailure, ToDaemon};
+use crate::ipc::{Act, ActFailure, ActId, Generation, Hosted, ToDaemon};
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
@@ -24,10 +28,6 @@ use crate::settings::{self, Settings, Zoom};
 use crate::trust;
 use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
-use crate::wire::{
-    self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
-    ToolInput, ToolName, ToolUseId, TranscriptLine,
-};
 
 mod protocol;
 mod side;
@@ -90,16 +90,6 @@ pub(crate) enum Mode {
     Unknown(String),
 }
 
-/// Which process said something: what an earlier one still says is dropped.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Generation(pub(crate) u64);
-
-impl Generation {
-    fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum Event {
     Action(Action),
@@ -127,16 +117,18 @@ pub(crate) enum Event {
     LiveListed(Vec<LiveSession>),
     /// The daemon did what the desktop was asked, or says why not.
     Acted {
-        request: u64,
+        request: ActId,
         result: Result<(), ActFailure>,
     },
     /// The folder the daemon's picker came back with.
     Picked {
-        request: u64,
+        request: ActId,
         folder: Option<PathBuf>,
     },
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
+    /// The sessions the daemon runs, anew.
+    Hosted(Vec<Hosted>),
     /// The worktree a session's transcript says it works in.
     WorktreeRead {
         id: SessionId,
@@ -477,6 +469,8 @@ pub(crate) struct App {
     command_matches: Vec<usize>,
     log: VecDeque<String>,
     live: Vec<LiveSession>,
+    /// The sessions the daemon runs, which outlive their windows.
+    hosted: Vec<Hosted>,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, std::time::Instant>,
@@ -500,8 +494,8 @@ pub(crate) struct App {
     /// The line to the daemon, which runs Claude Code and does what the desktop is asked.
     link: Link,
     /// What the daemon was asked to do, by request, for what its answer means.
-    acting: HashMap<u64, Acting>,
-    next_act: u64,
+    acting: HashMap<ActId, Acting>,
+    last_act: ActId,
     tick: slint::Timer,
     redraw: Redraw,
 }
@@ -547,6 +541,7 @@ impl App {
             command_matches: Vec::new(),
             log: VecDeque::new(),
             live: Vec::new(),
+            hosted: Vec::new(),
             listing_live: Refresh::Idle,
             notified: HashMap::new(),
             watch: None,
@@ -562,7 +557,7 @@ impl App {
             awaiting_trust: None,
             link,
             acting: HashMap::new(),
-            next_act: 0,
+            last_act: ActId::default(),
             tick: slint::Timer::default(),
             redraw: Redraw::default(),
         }
@@ -572,13 +567,15 @@ impl App {
     /// looking at running sessions.
     pub(crate) fn begin(
         &mut self,
+        hosted: Vec<Hosted>,
         resume: Option<SessionId>,
         mode: Option<PermissionMode>,
         prompt: Option<&str>,
     ) {
         self.load_sessions();
-        // Known before resuming: a session running elsewhere is watched, not resumed by a
-        // second process writing the same transcript.
+        // Known before resuming: a session the daemon runs is attached to, one running
+        // elsewhere watched, neither resumed by a second process writing the same transcript.
+        self.hosted = hosted;
         if resume.is_some() {
             self.live = sessions::live();
         }
@@ -651,6 +648,10 @@ impl App {
                 self.chat.error(
                     "Lost the edualc daemon, which runs Claude Code. Open edualc again to go on.",
                 );
+            }
+            Event::Hosted(hosted) => {
+                self.hosted = hosted;
+                self.redraw.sessions = true;
             }
             Event::Changed(watched) => self.changed(watched),
             Event::Tick => self.tick(),
@@ -834,7 +835,7 @@ impl App {
         } else {
             Sandboxing::Off
         };
-        match Claude::start(&self.link, self.generation.0, launch) {
+        match Claude::start(&self.link, self.generation, launch) {
             Ok(process) => self.process = Some(process),
             Err(error) => {
                 self.chat.error(error.to_string());
@@ -852,8 +853,8 @@ impl App {
 
     /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`.
     fn ask_desktop(&mut self, act: Act, acting: Acting) {
-        self.next_act += 1;
-        let request = self.next_act;
+        self.last_act = self.last_act.next();
+        let request = self.last_act;
         if link::send(&self.link, ToDaemon::Act { request, act }).is_err() {
             self.chat.error("Lost the edualc daemon.");
             return;
@@ -861,7 +862,7 @@ impl App {
         self.acting.insert(request, acting);
     }
 
-    fn acted(&mut self, request: u64, result: Result<(), ActFailure>) {
+    fn acted(&mut self, request: ActId, result: Result<(), ActFailure>) {
         match (self.acting.remove(&request), result) {
             (Some(Acting::Bringing(session)), result) => self.brought(session, result),
             (Some(Acting::Desktop), Err(failure)) => {
@@ -938,9 +939,16 @@ impl App {
     fn quit(&mut self) {
         self.tick.stop();
         self.generation = self.generation.next();
-        // Its handle going ends it; the daemon ends whatever this window started anyway once it
-        // hangs up.
-        self.process = None;
+        // A session in the middle of a turn, or waiting on the user, runs on in the daemon for a
+        // window to come back to; an idle one ends, as its transcript resumes it as it was.
+        if let Some(process) = self.process.take() {
+            let working = !matches!(self.status.doing, Doing::Nothing | Doing::Starting);
+            if working || !self.asks.is_empty() {
+                process.detach();
+            } else {
+                drop(process);
+            }
+        }
         if let Err(error) = slint::quit_event_loop() {
             tracing::warn!(%error, "couldn't quit the event loop");
         }
@@ -1002,6 +1010,15 @@ impl App {
         if self.status.session_id.as_ref() == Some(&id) && self.watch.is_none() {
             return;
         }
+        if let Some(hosted) = self
+            .hosted
+            .iter()
+            .find(|hosted| hosted.session.as_ref() == Some(&id) && !hosted.attached)
+            .cloned()
+        {
+            self.attach(id, &hosted);
+            return;
+        }
         if self.live.iter().any(|session| session.id == id) {
             self.watch_live(&id);
             return;
@@ -1016,6 +1033,38 @@ impl App {
         self.status.worktree = worktree;
         self.load_session(id.clone(), self.cwd.clone());
         self.start(Some(Resume::Continue(id)));
+        self.redraw = Redraw::everything();
+        self.view.focus_composer();
+    }
+
+    /// Shows a session the daemon runs, which no window shows: its transcript as saved, then
+    /// what it asked meanwhile and what it says.
+    fn attach(&mut self, id: SessionId, hosted: &Hosted) {
+        self.stop();
+        self.watch = None;
+        self.chat.clear();
+        if self.cwd != hosted.cwd {
+            self.cwd.clone_from(&hosted.cwd);
+            self.sessions.clear();
+            self.load_sessions();
+        }
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| session.title.clone());
+        self.reset_session(Some(id.clone()), title);
+        self.load_session(id, self.cwd.clone());
+        self.generation = self.generation.next();
+        match Claude::attach(&self.link, self.generation, hosted.id) {
+            Ok(process) => self.process = Some(process),
+            Err(error) => {
+                self.chat.error(error.to_string());
+                return;
+            }
+        }
+        // What the process offers, again: the window that started it asked before.
+        self.request(&ControlRequest::Initialize, Request::Initialize);
         self.redraw = Redraw::everything();
         self.view.focus_composer();
     }

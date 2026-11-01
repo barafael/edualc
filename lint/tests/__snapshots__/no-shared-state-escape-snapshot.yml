@@ -1,0 +1,32 @@
+id: no-shared-state-escape
+snapshots:
+  "/* ast-grep-ignore */\nlet lock = Mutex::new(0);\n":
+    labels:
+    - source: /* ast-grep-ignore */
+      style: primary
+      start: 0
+      end: 21
+  "// ast-grep-ignore\nstatic COUNT: AtomicU64 = AtomicU64::new(0);\n":
+    labels:
+    - source: // ast-grep-ignore
+      style: primary
+      start: 0
+      end: 18
+  "// ast-grep-ignore: no-discarded-result, no-shared-state\nlet lock = Mutex::new(0);\n":
+    labels:
+    - source: "// ast-grep-ignore: no-discarded-result, no-shared-state"
+      style: primary
+      start: 0
+      end: 56
+  "// ast-grep-ignore: no-shared-state\nstatic COUNT: AtomicU64 = AtomicU64::new(0);\n":
+    labels:
+    - source: "// ast-grep-ignore: no-shared-state"
+      style: primary
+      start: 0
+      end: 35
+  "// ast-grep-ignore: no-shared-state-escape\n// ast-grep-ignore: no-shared-state\nlet lock = Mutex::new(0);\n":
+    labels:
+    - source: "// ast-grep-ignore: no-shared-state-escape"
+      style: primary
+      start: 0
+      end: 42

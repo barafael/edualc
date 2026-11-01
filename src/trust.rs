@@ -4,11 +4,9 @@
 //! the terminal's dialog accepted (as `~/.claude.json` keeps them) and those trusted here (kept
 //! in this window's settings).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
+use crate::external::claude_files::ClaudeJson;
 use crate::settings::Settings;
 
 /// `~/.claude.json` runs to hundreds of kilobytes; anything far larger isn't that file.
@@ -23,18 +21,6 @@ pub(crate) fn trusted(folder: &Path, settings: &Settings) -> bool {
                 .iter()
                 .any(|trusted| trusted == place)
     })
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ClaudeJson {
-    #[serde(default)]
-    projects: HashMap<PathBuf, Project>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Project {
-    #[serde(default, rename = "hasTrustDialogAccepted")]
-    accepted: bool,
 }
 
 /// The folders whose trust dialog was accepted in the terminal.

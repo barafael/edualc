@@ -3,13 +3,14 @@
 
 use serde::Deserialize;
 
-use super::{App, Doing, Generation, LimitUse, Mode, Request, Sandboxing};
+use super::{App, Doing, LimitUse, Mode, Request, Sandboxing};
 use crate::chat::Origin;
 use crate::claude::Output;
-use crate::wire::{
-    Activity, CommandInfo, ContentBlock, ControlRequest, ControlResponse, IncomingRequest,
+use crate::external::wire::{
+    self, Activity, CommandInfo, ContentBlock, ControlRequest, ControlResponse, IncomingRequest,
     Initialized, Message, Progress, RateLimits, ResultKind, StreamEvent, System, TurnResult,
 };
+use crate::ipc::Generation;
 
 impl App {
     /// Takes what process `generation` said; an earlier process's output is dropped.
@@ -28,7 +29,7 @@ impl App {
             }
             Output::Started { pid, enforcement } => {
                 if let Some(process) = self.process.as_mut() {
-                    process.started(pid, enforcement);
+                    process.started(pid);
                 }
                 if let Some(enforcement) = enforcement {
                     self.status.sandboxing = Sandboxing::Landlock(enforcement);
@@ -145,6 +146,12 @@ impl App {
                     self.status.worktree = Some(worktree);
                 }
                 if self.status.session_id.as_ref() != Some(&session_id) {
+                    // The daemon lists it under this id, for a window to come back to.
+                    if let Some(process) = &self.process
+                        && let Err(error) = process.identify(&session_id)
+                    {
+                        tracing::warn!(%error, "couldn't name the session to the daemon");
+                    }
                     self.status.session_id = Some(session_id);
                     self.redraw.sessions = true;
                 }
@@ -221,7 +228,7 @@ impl App {
 
     /// How much of the plan's usage limits is used, and when each starts over.
     fn take_limits(&mut self, limits: &RateLimits) {
-        let used = |window: &Option<crate::wire::LimitWindow>| {
+        let used = |window: &Option<wire::LimitWindow>| {
             let window = window.as_ref()?;
             Some(LimitUse {
                 used: window.utilization?.clamp(0.0, 1.0),

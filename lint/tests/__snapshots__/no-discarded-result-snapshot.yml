@@ -1,0 +1,14 @@
+id: no-discarded-result
+snapshots:
+  "async fn f() { _ = broker.run().await; }\n":
+    labels:
+    - source: _ = broker.run().await;
+      style: primary
+      start: 15
+      end: 38
+  "fn f() { _ = tx.send(1); }\n":
+    labels:
+    - source: _ = tx.send(1);
+      style: primary
+      start: 9
+      end: 24

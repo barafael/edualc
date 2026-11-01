@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use async_channel::Sender;
 
-use crate::app::{Event, Generation};
+use crate::app::Event;
 use crate::buses::Buses;
 use crate::claude::Output;
 use crate::ipc::{
-    self, Assembler, Channel, Deframer, Folder, FromDaemon, PROTOCOL, Stream, ToDaemon,
+    self, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL, Stream,
+    ToDaemon,
 };
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
@@ -38,6 +39,8 @@ pub(crate) enum Error {
         "the edualc daemon running is another version; it ends once its windows and sessions do"
     )]
     Version,
+    #[error("the edualc daemon said something out of turn as the window connected")]
+    OutOfTurn,
 }
 
 /// The line was lost: the daemon ended, or stopped taking messages.
@@ -53,7 +56,7 @@ pub(crate) fn send(link: &Link, message: ToDaemon) -> Result<(), Lost> {
 }
 
 /// A line for a session's input, in pieces that each fit a message.
-pub(crate) fn send_input(link: &Link, key: u64, line: &str) -> Result<(), Lost> {
+pub(crate) fn send_input(link: &Link, key: Generation, line: &str) -> Result<(), Lost> {
     let mut pieces = ipc::chunks(line).peekable();
     while let Some(text) = pieces.next() {
         let last = pieces.peek().is_none();
@@ -76,6 +79,9 @@ pub(crate) struct Connected {
     deframer: Deframer,
     /// The D-Bus the window is to use.
     pub(crate) buses: Buses,
+    /// The sessions the daemon runs as the window connected: known before the window opens
+    /// one, so that one it runs is attached to rather than started a second time.
+    pub(crate) hosted: Vec<Hosted>,
 }
 
 /// Connects to the daemon, starting it if none runs: before the window is confined, which the
@@ -100,12 +106,24 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Output { .. }
         | FromDaemon::Ended { .. }
         | FromDaemon::Done { .. }
-        | FromDaemon::Picked { .. } => return Err(Error::Version),
+        | FromDaemon::Picked { .. }
+        | FromDaemon::Hosted(_) => return Err(Error::Version),
+    };
+    let hosted = match channel.recv(&mut deframer)? {
+        FromDaemon::Hosted(hosted) => hosted,
+        FromDaemon::Hello { .. }
+        | FromDaemon::Started { .. }
+        | FromDaemon::Failed { .. }
+        | FromDaemon::Output { .. }
+        | FromDaemon::Ended { .. }
+        | FromDaemon::Done { .. }
+        | FromDaemon::Picked { .. } => return Err(Error::OutOfTurn),
     };
     Ok(Connected {
         channel,
         deframer,
         buses,
+        hosted,
     })
 }
 
@@ -168,7 +186,7 @@ fn wait_for_daemon(folder: &Folder) -> Result<Channel, Error> {
 
 /// What the daemon says, as the app's events, until the line is lost.
 fn read(mut channel: Channel, mut deframer: Deframer, events: &Sender<Event>) {
-    let mut lines: Assembler<(u64, Stream)> = Assembler::default();
+    let mut lines: Assembler<(Generation, Stream)> = Assembler::default();
     loop {
         let message = match channel.recv(&mut deframer) {
             Ok(message) => message,
@@ -213,6 +231,7 @@ fn read(mut channel: Channel, mut deframer: Deframer, events: &Sender<Event>) {
             }
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
+            FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
             FromDaemon::Hello { .. } => None,
         };
         if let Some(event) = event
@@ -223,9 +242,6 @@ fn read(mut channel: Channel, mut deframer: Deframer, events: &Sender<Event>) {
     }
 }
 
-fn claude(key: u64, output: Output) -> Event {
-    Event::Claude {
-        generation: Generation(key),
-        output,
-    }
+fn claude(generation: Generation, output: Output) -> Event {
+    Event::Claude { generation, output }
 }

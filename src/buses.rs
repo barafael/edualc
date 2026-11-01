@@ -16,6 +16,7 @@ const READY: Duration = Duration::from_secs(2);
 
 /// The proxies' sockets, for the windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Buses {
     /// The session bus, filtered.
     pub(crate) session: Option<PathBuf>,

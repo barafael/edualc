@@ -46,6 +46,10 @@ other way around.
 - **Sessions.** This folder's past sessions are listed with their titles and ages; opening one shows its
   transcript and continues it. Any folder Claude Code was used in is one click away. Links open only
   if they are web pages or mail.
+- **Sessions outlive their window.** Closing the window while a session works, or waits for you,
+  leaves it running; opening it again (from the list, or with `--resume`) shows it where it is: its
+  transcript, then what it asked meanwhile, asked again. An idle session ends with its window, as its
+  transcript continues it anyway. One left alone and quiet for an hour ends.
 - **Running sessions, everywhere.** Every Claude Code session running on the machine, in any
   terminal or folder, is listed with what it's doing. You get a desktop notification when one starts
   waiting for its user. Opening one follows it live without touching it. From there, **Go to its
@@ -95,7 +99,7 @@ Qt or GTK dependency.
 | `src/daemon.rs`, `src/spawn.rs` | the daemon (`edualc --daemon`): runs `claude` (sandboxed) for the windows, and does what the desktop is asked; actors with sans-io cores |
 | `src/confine.rs`, `src/buses.rs` | the window's own confinement (Landlock, a seccomp socket filter), and the filtering D-Bus proxies it gets in place of the session bus |
 | `src/ipc.rs`, `src/link.rs` | the daemon's private socket, its checks and bounded messages (postcard), and the window's line to it |
-| `src/wire.rs` | the stream-json messages and transcript lines as types, parsed where they enter |
+| `src/external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, and niri's IPC; they take keys they don't know, as each release adds some |
 | `src/app.rs` | `App`, the one owner of all state; UI callbacks, process output, timers and background work reach it as `Event`s on one channel |
 | `src/app/protocol.rs` | what the process says, taken into the state |
 | `src/app/side.rs` | side questions (`/btw`) |
@@ -107,7 +111,7 @@ Qt or GTK dependency.
 | `src/watcher.rs` | inotify: noticing the running sessions' records and a followed transcript change |
 | `src/sandbox.rs`, `src/trust.rs` | the Landlock sandbox for `claude`, and which folders are trusted |
 | `src/process.rs` | what `/proc` says about a process (to tell a session's process from a reused pid) |
-| `src/desktop.rs` | notifications, other programs' windows, and what folders open in |
+| `src/desktop.rs` | notifications, other programs' windows (through niri's socket), and what folders open in |
 | `src/appearance.rs`, `src/settings.rs` | fonts, the desktop's text size, the kept zoom |
 | `src/ui/` | the Slint models kept in line with the state, and the callbacks |
 | `ui/*.slint` | the window |
@@ -138,14 +142,23 @@ processes write are watched with inotify; a check once a minute catches sessions
 
 The code follows the conventions in `../edit-epistemology/benchmark/harness/CONVENTIONS.md`: no
 shared mutable state (`clippy.toml` refuses cells, `Rc` and locks), typed errors, nothing discarded,
-and that workspace's lint set (`Cargo.toml`). `cargo clippy --all-targets -- -D warnings` and
-`cargo test` are clean.
+and that workspace's lint set (`Cargo.toml`) and ast-grep rules (`lint/`; formats edualc owns
+refuse unknown keys, those in `src/external/` take them). `cargo clippy --all-targets -- -D
+warnings`, `ast-grep scan`, `cargo deny check` (licenses that combine with the GPL, advisories,
+sources) and `cargo test` are clean.
 
 ## Known limits
 
-- Slint is taken from its master branch (2026-10-31): selectable `StyledText` (slint-ui/slint#13985)
+- Slint is taken from an unreleased commit (2026-10-31): selectable `StyledText` (slint-ui/slint#13985)
   is merged but not yet released. Go back to crates.io once 1.19 is out.
 - Side questions need a session running here; for one watched from another window, continue it here
   as a copy first.
 - Pasting images, `@` file mentions and per-session effort aren't there yet.
 - Finding another session's window needs niri.
+- A window that attaches to a session in the middle of a turn shows what it asked, but not that the
+  turn runs, until the process says something new.
+
+## License
+
+GPL-3.0-or-later (`LICENSE`). Slint is used under its GPL-3.0-only option, so a built edualc is
+distributed under GPL-3.0.

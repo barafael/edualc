@@ -1,0 +1,25 @@
+id: static-str-wants-enum
+valid:
+  - |
+    impl Kind { fn as_str(&self) -> &'static str { "fanout" } }
+  - |
+    fn f(origin: &str) {}
+  - |
+    pub struct Words(pub &'static str);
+invalid:
+  - |
+    struct Wording(&'static str);
+  - |
+    struct Setting { label: Words, section: &'static str }
+  - |
+    enum ConsoleError { NotUnix(&'static str) }
+  - |
+    fn reauth_failed(what: &'static str) {}
+  - |
+    struct Label { text: &'static str }
+  - |
+    let fail = |what: &'static str| what.len();
+  - |
+    fn label(text: Option<&'static str>) {}
+  - |
+    struct Table { names: HashMap<&'static str, u8> }

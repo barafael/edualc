@@ -1,0 +1,7 @@
+id: no-discarded-result
+language: Rust
+severity: error
+message: "`_ = x;` discards a value, as `let _ = x` does: handle it, propagate it, or say beside it why it cannot matter"
+note: "clippy refuses `let _ = x` and `x.ok();` (let_underscore_must_use, let_underscore_untyped, unused_result_ok); this rule covers the assignment form no lint sees. `if x.is_err() { // why }` names a failure that cannot matter; `drop(x)` ends a value that holds something, not a Result."
+rule:
+  pattern: _ = $VALUE;

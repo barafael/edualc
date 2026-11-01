@@ -7,9 +7,9 @@ use serde_json::Value;
 use super::{Acting, App, LimitUse, Request};
 use crate::claude::Resume;
 use crate::desktop::Running;
+use crate::external::wire::{ContextReport, ControlRequest, LimitKind, UsageReport};
 use crate::ipc::{Act, ActFailure};
 use crate::sessions::LiveSession;
-use crate::wire::{ContextReport, ControlRequest, LimitKind, UsageReport};
 
 impl App {
     pub(super) fn show_usage(&mut self) {

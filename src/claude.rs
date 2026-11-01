@@ -5,10 +5,12 @@
 
 use std::path::PathBuf;
 
-use crate::ipc::{StartFailure, ToDaemon};
+use crate::external::wire::{
+    ControlRequest, Input, Message, PermissionResult, Reply, RequestId, SessionId,
+};
+use crate::ipc::{Generation, HostedId, StartFailure, ToDaemon};
 use crate::link::{self, Link};
 use crate::sandbox::Enforcement;
-use crate::wire::{ControlRequest, Input, Message, PermissionResult, Reply, RequestId, SessionId};
 
 /// What the process says, or the daemon about it.
 #[derive(Debug)]
@@ -50,6 +52,7 @@ pub(crate) enum Error {
 
 /// What a session's process is started with; the daemon starts it.
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Launch {
     pub(crate) cwd: PathBuf,
     pub(crate) resume: Option<Resume>,
@@ -61,6 +64,7 @@ pub(crate) struct Launch {
 
 /// The sandbox asked for; the daemon makes the policy from it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SandboxWish {
     pub(crate) desktop: bool,
     pub(crate) read: Vec<PathBuf>,
@@ -75,36 +79,69 @@ pub(crate) enum Resume {
     Fork(SessionId),
 }
 
-/// The window's handle on a session's process. Dropped, it ends the process: what runs is
-/// interrupted, and its input closed.
+/// The window's handle on a session's process, which the daemon runs. Dropped, it ends the
+/// process (what runs is interrupted, and its input closed), unless it was let go of
+/// ([`Claude::detach`]): then the process runs on, for a window to attach to later.
 #[derive(Debug)]
 pub(crate) struct Claude {
-    /// This window's name for the session, which everything the daemon says about it carries.
-    key: u64,
+    key: Generation,
     link: Link,
     next_request: u64,
     pid: Option<u32>,
-    enforcement: Option<Enforcement>,
+    leaving: Leaving,
+}
+
+/// What a handle going away does to its process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leaving {
+    /// Interrupts it and ends it.
+    End,
+    /// Lets it run on, shown nowhere.
+    LetGo,
 }
 
 impl Claude {
     /// Asks the daemon to start the process; [`Output::Started`] or [`Output::Failed`] says how
     /// that went.
-    pub(crate) fn start(link: &Link, key: u64, launch: Launch) -> Result<Self, Error> {
+    pub(crate) fn start(link: &Link, key: Generation, launch: Launch) -> Result<Self, Error> {
         link::send(link, ToDaemon::Start { key, launch }).map_err(|_lost| Error::Lost)?;
-        Ok(Self {
+        Ok(Self::new(link, key))
+    }
+
+    /// Shows a process the daemon runs under `key`; what it asked meanwhile comes again, then
+    /// what it says.
+    pub(crate) fn attach(link: &Link, key: Generation, hosted: HostedId) -> Result<Self, Error> {
+        link::send(link, ToDaemon::Attach { key, hosted }).map_err(|_lost| Error::Lost)?;
+        Ok(Self::new(link, key))
+    }
+
+    fn new(link: &Link, key: Generation) -> Self {
+        Self {
             key,
             link: link.clone(),
             next_request: 0,
             pid: None,
-            enforcement: None,
-        })
+            leaving: Leaving::End,
+        }
     }
 
-    /// The daemon started it.
-    pub(crate) fn started(&mut self, pid: u32, enforcement: Option<Enforcement>) {
+    /// The daemon started it (or showed it here).
+    pub(crate) fn started(&mut self, pid: u32) {
         self.pid = Some(pid);
-        self.enforcement = enforcement;
+    }
+
+    /// Tells the daemon Claude Code's id for the session, for its list.
+    pub(crate) fn identify(&self, session: &SessionId) -> Result<(), Error> {
+        let identify = ToDaemon::Identify {
+            key: self.key,
+            session: session.clone(),
+        };
+        link::send(&self.link, identify).map_err(|_lost| Error::Lost)
+    }
+
+    /// Lets go of the process, which runs on (the window closes).
+    pub(crate) fn detach(mut self) {
+        self.leaving = Leaving::LetGo;
     }
 
     /// Writes one line of JSON.
@@ -161,11 +198,17 @@ impl Claude {
 
 impl Drop for Claude {
     fn drop(&mut self) {
-        if let Err(error) = self.request(&ControlRequest::Interrupt) {
-            tracing::debug!(%error, "couldn't interrupt claude before ending it");
-        }
-        if link::send(&self.link, ToDaemon::End { key: self.key }).is_err() {
-            tracing::debug!("the daemon was gone as a session ended");
+        let leave = match self.leaving {
+            Leaving::End => {
+                if let Err(error) = self.request(&ControlRequest::Interrupt) {
+                    tracing::debug!(%error, "couldn't interrupt claude before ending it");
+                }
+                ToDaemon::End { key: self.key }
+            }
+            Leaving::LetGo => ToDaemon::Detach { key: self.key },
+        };
+        if link::send(&self.link, leave).is_err() {
+            tracing::debug!("the daemon was gone as a window let go of a session");
         }
     }
 }
