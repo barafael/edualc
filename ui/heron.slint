@@ -1,0 +1,117 @@
+// edualc's heron, over a new session's empty conversation. It stands there while the
+// conversation is empty, flies off when it begins, and flies in when a new one opens. It faces
+// left, so it leaves to the upper left and comes in from the upper right.
+
+import { Theme } from "theme.slint";
+
+enum Flight { standing, leaving, away, arriving }
+
+export component Heron inherits Rectangle {
+    // Whether it belongs here: the conversation is empty.
+    in property <bool> wanted;
+    // How far it flies from where it stands before it is out of sight.
+    in property <length> reach-x;
+    in property <length> reach-y;
+    // Not bound to `wanted`: the binding would go to `away` before the change below took off.
+    property <Flight> flight: Flight.standing;
+    // The wing beat's frame: up, level, down, level.
+    property <int> beat;
+    property <duration> flight-time: 1100ms;
+
+    init => {
+        if !root.wanted {
+            root.flight = Flight.away;
+        }
+    }
+    changed wanted => {
+        root.beat = 0;
+        if root.wanted {
+            // Out of sight first, unanimated, so that it flies in from there.
+            root.flight = Flight.away;
+            approach.running = true;
+        } else {
+            approach.running = false;
+            landing.running = false;
+            root.flight = Flight.leaving;
+            departure.running = true;
+        }
+    }
+
+    approach := Timer {
+        interval: 50ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.flight = Flight.arriving;
+            landing.running = true;
+        }
+    }
+    landing := Timer {
+        interval: root.flight-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.flight = Flight.standing;
+        }
+    }
+    departure := Timer {
+        interval: root.flight-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            if !root.wanted {
+                root.flight = Flight.away;
+            }
+        }
+    }
+    Timer {
+        interval: 110ms;
+        running: root.flight == Flight.leaving || root.flight == Flight.arriving;
+        triggered => {
+            root.beat = Math.mod(root.beat + 1, 4);
+        }
+    }
+
+    bird := Image {
+        width: root.width;
+        height: root.height;
+        image-fit: contain;
+        colorize: Theme.claude;
+        accessible-role: none;
+        visible: root.flight != Flight.away;
+        source: root.flight == Flight.standing ? @image-url("../assets/heron.svg")
+            : root.beat == 0 ? @image-url("../assets/heron-wings-up.svg")
+            : root.beat == 2 ? @image-url("../assets/heron-wings-down.svg")
+            : @image-url("../assets/heron-wings-level.svg");
+    }
+
+    states [
+        // Up first, then away: it climbs at once and gathers speed sideways.
+        leaving when root.flight == Flight.leaving: {
+            bird.x: -root.reach-x;
+            bird.y: -root.reach-y;
+            bird.opacity: 0;
+            in {
+                animate bird.x { duration: root.flight-time; easing: ease-in; }
+                animate bird.y { duration: root.flight-time; easing: ease-out; }
+                animate bird.opacity { duration: root.flight-time; easing: ease-in; }
+            }
+        }
+        away when root.flight == Flight.away: {
+            bird.x: root.reach-x;
+            bird.y: -root.reach-y;
+            bird.opacity: 0;
+        }
+        // Gliding in: it slows as it comes, and comes down last.
+        arriving when root.flight == Flight.arriving: {
+            bird.x: 0;
+            bird.y: 0;
+            bird.opacity: 1;
+            in {
+                animate bird.x { duration: root.flight-time; easing: ease-out; }
+                animate bird.y { duration: root.flight-time; easing: ease-in; }
+                animate bird.opacity { duration: root.flight-time / 2; easing: ease-out; }
+            }
+        }
+    ]
+}

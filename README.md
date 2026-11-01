@@ -125,7 +125,9 @@ is kept. Text is Fira Sans, code Fira Code
 and rows grow with the text, and the sidebar and side panel give way first in narrow windows.
 
 edualc is a heron (`assets/heron.svg`): it stands at the top of the sidebar and greets a new
-session, and it is the app's icon (`assets/edualc.svg`, on Gruvbox's light background).
+session, flies off when the conversation begins and flies in when a new session opens
+(`ui/heron.slint`, with the wing beats `assets/heron-wings-*.svg`). It is also the app's icon
+(`assets/edualc.svg`, on Gruvbox's light background).
 
 ## Running
 
@@ -172,7 +174,7 @@ Without them installed, notifications come without an icon.
 | `src/appearance.rs`, `src/settings.rs` | fonts, the desktop's text size, the kept zoom |
 | `src/ui/` | the Slint models kept in line with the state, and the callbacks |
 | `ui/*.slint` | the window |
-| `assets/` | the heron, the app's icon and its desktop entry |
+| `assets/` | the heron (standing, and three wing beats for its flight), the app's icon and its desktop entry |
 
 The window doesn't run Claude Code itself: the first window starts `edualc --daemon`, which runs
 the `claude` processes and does what the desktop is asked (opening editors, notifications,

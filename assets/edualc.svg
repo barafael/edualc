@@ -1,13 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 24 24">
   <!-- edualc's app icon: the heron of heron.svg, in Gruvbox orange on Gruvbox's light background. -->
   <rect width="24" height="24" rx="5" fill="#fbf1c7"/>
-  <g transform="translate(2.8 2.4) scale(0.8)" fill="none" stroke="#d65d0e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="9.5" cy="5" r="2"/>
-    <path d="M7.6 5.6 2 6.8"/>
-    <path d="M10.6 6.7c1.4 2-1.6 3.3-1.1 5.8.5 2.5 3 3.5 6 3l5-2c-2-1-4-3-7-3.5"/>
-    <path d="M14 15.7V21"/>
-    <path d="m14 17-2 2 2 .5"/>
-    <path d="M3 21h7"/>
-    <path d="M17 21h4"/>
+  <g transform="translate(2.6 2.2) scale(0.8)" fill="none" stroke="#d65d0e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="9.5" cy="4" r="1.75"/>
+    <path d="M7.9 4.7 2 6"/>
+    <path d="M11.1 4.6 14.2 6.2"/>
+    <path d="M10.5 5.6c1.2 1.8-1.4 2.9-1.1 5 .3 1.9 2.1 2.8 4.4 2.8L21.5 14.6c-2.6-2.6-5.9-4.5-9.3-4.4"/>
+    <path d="m14.4 13.4 1.2 8.1"/>
+    <path d="m13.2 13.4-2.4 8.1"/>
+    <path d="M2.5 21.5h5.5"/>
+    <path d="M18.5 21.5h3"/>
   </g>
 </svg>

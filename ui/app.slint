@@ -7,6 +7,7 @@ import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKin
 import { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
+import { Heron } from "heron.slint";
 import { PlanReview } from "plan.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
@@ -2063,15 +2064,20 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if Transcript.entries.length == 0: VerticalLayout {
+                    // A new session's greeting. Kept while the conversation runs, its words faded
+                    // out, so that the heron can fly off as the conversation begins.
+                    greeting := VerticalLayout {
+                        property <bool> empty: Transcript.entries.length == 0;
                         alignment: center;
                         spacing: Theme.space-m;
                         HorizontalLayout {
                             alignment: center;
-                            Icon {
-                                source: @image-url("../assets/heron.svg");
-                                tint: Theme.claude;
+                            Heron {
                                 width: 64px;
+                                height: 64px;
+                                wanted: greeting.empty;
+                                reach-x: transcript.width / 2 + 64px;
+                                reach-y: transcript.height / 2 + 64px;
                             }
                         }
                         Text {
@@ -2080,11 +2086,17 @@ export component AppWindow inherits Window {
                             font-weight: 600;
                             color: Theme.text;
                             horizontal-alignment: center;
+                            opacity: greeting.empty ? 1 : 0;
+                            animate opacity { duration: 250ms; easing: ease-out; }
+                            visible: self.opacity > 0;
                         }
                         Small {
                             text: "in " + Session.cwd;
                             horizontal-alignment: center;
                             overflow: elide;
+                            opacity: greeting.empty ? 1 : 0;
+                            animate opacity { duration: 250ms; easing: ease-out; }
+                            visible: self.opacity > 0;
                         }
                     }
                     if Prompt.kind == PromptKind.plan && Prompt.reviewing: PlanReview {
