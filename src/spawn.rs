@@ -2,14 +2,19 @@
 //! window asked for is checked here, as a request from another process: the command line is
 //! made from typed values alone.
 
+use std::io::{PipeReader, PipeWriter, Write as _};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use rustix::io::FdFlags;
 use tokio::process::{Child, Command};
 
 use crate::claude::{Conversation, Launch};
 use crate::external::wire::SessionId;
-use crate::sandbox::{self, Allowances, Enforcement, Policy};
+use crate::home::{self, AccessToken, Home, Scratch};
+use crate::process;
+use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
 /// child would take them as its own and think itself nested.
@@ -41,6 +46,14 @@ pub(crate) enum Error {
     Start(#[source] std::io::Error),
     #[error(transparent)]
     Sandbox(#[from] sandbox::Error),
+    #[error("couldn't make the session its own Claude Code home: {0}")]
+    Home(#[from] home::Error),
+    #[error("couldn't hand the session the sign-in: {0}")]
+    SignIn(#[source] std::io::Error),
+    #[error(
+        "processes {0:?} started with the pipe meant for the session's sign-in, so it wasn't handed over; start the session again"
+    )]
+    SignInPipeShared(Vec<u32>),
 }
 
 /// The name other Claude Code sessions message a session's process by (`--name`): "edualc-",
@@ -108,11 +121,86 @@ fn project_part(cwd: &Path) -> String {
 }
 
 /// A started process, its pipes still in it, and how far it is sandboxed. Dropped, it is
-/// killed.
+/// killed, and a sandboxed one's temporary folder removed.
 #[derive(Debug)]
 pub(crate) struct Spawned {
     pub(crate) child: Child,
     pub(crate) enforcement: Option<Enforcement>,
+    /// A sandboxed session's own temporary folder, kept while it runs.
+    pub(crate) scratch: Option<Scratch>,
+}
+
+/// What a sandboxed start takes: its sandbox, its own temporary folder, and the sign-in on its
+/// way to it, if the user is signed in.
+struct Sandboxed {
+    policy: Policy,
+    scratch: Scratch,
+    sign_in: Option<SignIn>,
+}
+
+/// The user's sign-in on its way to a sandboxed session, through a pipe the session inherits:
+/// read outside the sandbox, and never in a file or a variable the session's commands could
+/// read.
+struct SignIn {
+    token: AccessToken,
+    reader: PipeReader,
+    writer: PipeWriter,
+}
+
+impl SignIn {
+    /// The pipe, its reading end made inheritable and its number named to the child; none if
+    /// the user isn't signed in.
+    fn prepare(command: &mut Command) -> Result<Option<Self>, Error> {
+        let Some(token) = AccessToken::current() else {
+            return Ok(None);
+        };
+        let (reader, writer) = std::io::pipe().map_err(Error::SignIn)?;
+        // Inheritable from here on, the pipe goes to any process the daemon starts until it is
+        // closed again after this child's start; `hand_over` looks for such. If that is ever
+        // found, the `command-fds` crate maps a descriptor into the one child alone instead.
+        rustix::io::fcntl_setfd(&reader, FdFlags::empty())
+            .map_err(|errno| Error::SignIn(errno.into()))?;
+        command.env(
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+            reader.as_raw_fd().to_string(),
+        );
+        Ok(Some(Self {
+            token,
+            reader,
+            writer,
+        }))
+    }
+
+    /// Hands the sign-in to `child` once no other process has the pipe. The reading end is
+    /// closed here first, so no later process inherits it. A child that ended without reading
+    /// it (a stand-in for `claude` in a test, say) is no failure.
+    fn hand_over(self, child: u32) -> Result<(), Error> {
+        let Self {
+            token,
+            reader,
+            mut writer,
+        } = self;
+        rustix::io::fcntl_setfd(&reader, FdFlags::CLOEXEC)
+            .map_err(|errno| Error::SignIn(errno.into()))?;
+        let inode = rustix::fs::fstat(&reader)
+            .map_err(|errno| Error::SignIn(errno.into()))?
+            .st_ino;
+        drop(reader);
+        let daemon = std::process::id();
+        let others: Vec<u32> = process::holding_pipe(inode)
+            .into_iter()
+            .filter(|pid| *pid != daemon && !process::descends_from(*pid, child))
+            .collect();
+        if !others.is_empty() {
+            return Err(Error::SignInPipeShared(others));
+        }
+        match writer.write_all(token.as_bytes()) {
+            Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                Err(Error::SignIn(error))
+            }
+            Ok(()) | Err(_) => Ok(()),
+        }
+    }
 }
 
 /// The `claude` to run: `$CLAUDE_BIN` as the daemon was started with, or the one on `PATH`.
@@ -169,55 +257,94 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
     for name in INHERITED_SESSION {
         command.env_remove(name);
     }
-    let policy = match &launch.sandbox {
-        Some(wish) => {
-            let read = absolute(&wish.read)?;
-            let write = absolute(&wish.write)?;
-            let allowances = Allowances {
-                desktop: wish.desktop,
-                read: &read,
-                write: &write,
-            };
-            Some(Policy::for_project(&cwd, allowances))
-        }
+    let sandboxed = match &launch.sandbox {
+        Some(wish) => Some(sandboxed(launch, wish, &cwd, &mut command)?),
         None => None,
     };
-    if let Some(policy) = &policy {
-        for name in policy.hidden_variables() {
-            command.env_remove(name);
-        }
-    }
     command
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    match &policy {
-        // Restricted, the thread starts the child, which keeps the restriction, and ends.
-        Some(policy) => std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let enforcement = policy.restrict_this_thread()?;
-                    // The child's pipes are made with the daemon's runtime, from this thread.
-                    let _in_runtime = runtime.enter();
-                    let child = command.spawn().map_err(Error::Start)?;
-                    Ok(Spawned {
-                        child,
-                        enforcement: Some(enforcement),
+    match sandboxed {
+        Some(Sandboxed {
+            policy,
+            scratch,
+            sign_in,
+        }) => {
+            // Restricted, the thread starts the child, which keeps the restriction, and ends.
+            let (child, enforcement) = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let enforcement = policy.restrict_this_thread()?;
+                        // The child's pipes are made with the daemon's runtime, from this thread.
+                        let _in_runtime = runtime.enter();
+                        let child = command.spawn().map_err(Error::Start)?;
+                        Ok::<_, Error>((child, enforcement))
                     })
-                })
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-        }),
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })?;
+            if let (Some(sign_in), Some(pid)) = (sign_in, child.id()) {
+                // On failure the child, dropped, is killed: it never had the sign-in.
+                sign_in.hand_over(pid)?;
+            }
+            Ok(Spawned {
+                child,
+                enforcement: Some(enforcement),
+                scratch: Some(scratch),
+            })
+        }
         None => {
             let _in_runtime = runtime.enter();
             Ok(Spawned {
                 child: command.spawn().map_err(Error::Start)?,
                 enforcement: None,
+                scratch: None,
             })
         }
     }
+}
+
+/// A sandboxed start: the session's own home seeded and its temporary folder made (see
+/// `home`), its sandbox, and its environment pointing it at them.
+fn sandboxed(
+    launch: &Launch,
+    wish: &crate::claude::SandboxWish,
+    cwd: &Path,
+    command: &mut Command,
+) -> Result<Sandboxed, Error> {
+    let home = Home::of(cwd).ok_or(home::Error::NoStateFolder)?;
+    let scratch = Scratch::make(launch.conversation.id())?;
+    home::prepare(&home, cwd, &scratch, &launch.conversation)?;
+    let read = absolute(&wish.read)?;
+    let write = absolute(&wish.write)?;
+    let policy = Policy::for_project(
+        cwd,
+        Own {
+            home: home.path(),
+            scratch: scratch.path(),
+        },
+        Allowances {
+            desktop: wish.desktop,
+            read: &read,
+            write: &write,
+        },
+    );
+    for name in policy.hidden_variables() {
+        command.env_remove(name);
+    }
+    command
+        .env("CLAUDE_CONFIG_DIR", home.path())
+        .env("CLAUDE_CODE_TMPDIR", scratch.path())
+        .env("TMPDIR", scratch.path());
+    let sign_in = SignIn::prepare(command)?;
+    Ok(Sandboxed {
+        policy,
+        scratch,
+        sign_in,
+    })
 }
 
 /// A model's name or alias as the CLI takes them ("opus", "claude-sonnet-5-5[1m]"): nothing

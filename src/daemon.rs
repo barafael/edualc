@@ -937,9 +937,11 @@ impl Session {
         mut commands: mpsc::Receiver<Command>,
         shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
     ) -> Self {
+        // The session's temporary folder goes when this ends.
         let spawn::Spawned {
             mut child,
             enforcement,
+            scratch: _kept_while_running,
         } = spawned;
         let Some(pid) = child.id() else {
             return self;
@@ -1443,6 +1445,7 @@ mod tests {
         spawn::Spawned {
             child: command.spawn().expect("cat runs"),
             enforcement: None,
+            scratch: None,
         }
     }
 

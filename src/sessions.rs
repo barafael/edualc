@@ -13,6 +13,7 @@ use serde::Deserialize;
 use crate::chat::UserText;
 use crate::external::claude_files::LiveRecord;
 use crate::external::wire::{self, SessionId, TranscriptCwd, TranscriptLine, UserContent};
+use crate::home::Home;
 use crate::process;
 
 #[derive(Debug, Clone)]
@@ -127,13 +128,26 @@ pub(crate) fn config_dir() -> PathBuf {
     )
 }
 
+/// `~/.claude.json` runs to hundreds of kilobytes; anything far larger isn't that file.
+pub(crate) const GLOBAL_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where Claude Code keeps `.claude.json`: beside its configuration folder, or in it when that
+/// is moved.
+pub(crate) fn global_config_path() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map_or_else(
+        || dirs::home_dir().unwrap_or_default().join(".claude.json"),
+        |dir| PathBuf::from(dir).join(".claude.json"),
+    )
+}
+
 fn projects_dir() -> PathBuf {
     config_dir().join("projects")
 }
 
-fn project_dir(cwd: &Path) -> PathBuf {
-    let name: String = cwd
-        .to_string_lossy()
+/// A project's folder name as Claude Code writes it: its path, each character but a letter or
+/// a digit a dash.
+pub(crate) fn project_name(cwd: &Path) -> String {
+    cwd.to_string_lossy()
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() {
@@ -142,27 +156,73 @@ fn project_dir(cwd: &Path) -> PathBuf {
                 '-'
             }
         })
-        .collect();
-    projects_dir().join(name)
+        .collect()
 }
 
+fn project_dir(cwd: &Path) -> PathBuf {
+    projects_dir().join(project_name(cwd))
+}
+
+/// The folders a project's transcripts are in: the user's own home's, and the home of its
+/// sandboxed sessions (see `home`).
+fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let name = project_name(cwd);
+    std::iter::once(projects_dir())
+        .chain(Home::of(cwd).map(|home| home.projects()))
+        .map(|projects| projects.join(&name))
+        .collect()
+}
+
+/// Every folder of transcripts' folders: the user's own home's and every sandboxed home's.
+fn all_projects_dirs() -> Vec<PathBuf> {
+    std::iter::once(projects_dir())
+        .chain(Home::all().iter().map(Home::projects))
+        .collect()
+}
+
+/// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
 pub(crate) fn transcript_path(cwd: &Path, id: &SessionId) -> PathBuf {
     project_dir(cwd).join(format!("{}.jsonl", id.as_str()))
 }
 
 /// Where a session's transcript is: under its working directory, or under another project's
-/// when it moved there (a session entering a worktree is relocated to the worktree's).
+/// when it moved there (a session entering a worktree is relocated to the worktree's); in the
+/// user's own home or in the sandboxed sessions'. The newer one, if both have it: a session
+/// from the user's home goes on in the sandboxed one when resumed there.
 pub(crate) fn find_transcript(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
-    let expected = transcript_path(cwd, id);
-    if expected.is_file() {
-        return Some(expected);
-    }
     let name = format!("{}.jsonl", id.as_str());
-    std::fs::read_dir(projects_dir())
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join(&name))
-        .find(|path| path.is_file())
+    newest(project_dirs(cwd).into_iter().map(|dir| dir.join(&name))).or_else(|| {
+        newest(
+            all_projects_dirs()
+                .iter()
+                .flat_map(|projects| std::fs::read_dir(projects).into_iter().flatten())
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join(&name)),
+        )
+    })
+}
+
+/// A session's transcript in the user's own home, whatever its project.
+pub(crate) fn find_user_transcript(id: &SessionId) -> Option<PathBuf> {
+    let name = format!("{}.jsonl", id.as_str());
+    newest(
+        std::fs::read_dir(projects_dir())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join(&name)),
+    )
+}
+
+/// The most recently changed of the files there are.
+fn newest(paths: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths
+        .filter_map(|path| {
+            let metadata = path.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            Some((metadata.modified().ok()?, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
 }
 
 /// Where a session's transcript is, or would be if it is not written yet.
@@ -210,7 +270,15 @@ pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<Ses
         .into_iter()
         .map(|session| (session.id.clone(), session))
         .collect();
-    transcripts(&project_dir(cwd))
+    let mut files: Vec<(PathBuf, SystemTime)> = project_dirs(cwd)
+        .iter()
+        .flat_map(|dir| transcripts(dir))
+        .collect();
+    files.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    // A session in both homes is listed once, as its newer transcript has it.
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|(path, _)| seen.insert(path.file_name().map(std::ffi::OsStr::to_owned)));
+    files
         .into_iter()
         .filter_map(|(path, modified)| {
             let id = SessionId::try_from(path.file_stem()?.to_string_lossy().into_owned()).ok()?;
@@ -234,15 +302,15 @@ pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<Ses
 
 /// Every working directory Claude Code was used in that still exists, most recent first.
 pub(crate) fn projects() -> Vec<ProjectInfo> {
-    let entries = match std::fs::read_dir(projects_dir()) {
-        Ok(entries) => entries,
-        Err(error) => {
-            tracing::debug!(%error, "no projects");
-            return Vec::new();
-        }
-    };
-    let mut projects: Vec<_> = entries
-        .filter_map(Result::ok)
+    let mut projects: Vec<_> = all_projects_dirs()
+        .iter()
+        .flat_map(|projects| match std::fs::read_dir(projects) {
+            Ok(entries) => entries.filter_map(Result::ok).collect(),
+            Err(error) => {
+                tracing::debug!(%error, dir = %projects.display(), "no projects");
+                Vec::new()
+            }
+        })
         .filter_map(|entry| {
             let (newest, modified) = transcripts(&entry.path()).into_iter().next()?;
             let path = recorded_cwd(&newest)?;
@@ -250,6 +318,9 @@ pub(crate) fn projects() -> Vec<ProjectInfo> {
         })
         .collect();
     projects.sort_by_key(|project| std::cmp::Reverse(project.modified));
+    // A project with sessions in both homes is listed once.
+    let mut seen = std::collections::HashSet::new();
+    projects.retain(|project| seen.insert(project.path.clone()));
     projects
 }
 

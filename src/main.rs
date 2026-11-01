@@ -17,6 +17,7 @@ mod decode;
 mod desktop;
 mod external;
 mod grouping;
+mod home;
 mod ipc;
 mod link;
 mod markdown;

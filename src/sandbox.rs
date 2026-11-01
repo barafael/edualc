@@ -1,18 +1,23 @@
 //! Claude Code in a Landlock sandbox. The `claude` process and everything it starts (its tools'
 //! commands, hooks, MCP servers) see the system and the toolchains read-only, may write only the
-//! project, its git directory, caches and temporary files, may reach no socket file but the
-//! ssh agent's, may signal nothing outside, and gain no privileges (`sudo` and `pkexec` don't
-//! work). Other Claude Code sessions may message it, but it messages none of them: one that
-//! isn't sandboxed could do for it what the sandbox forbids. What Claude Code runs on its own
-//! (settings and their hooks, skills, plugins) stays read-only, so nothing can be planted there
-//! to run outside the sandbox later.
+//! project, its git directory, caches, and a Claude Code home and temporary folder of the
+//! session's own (see `home`), may reach no socket file but the ssh agent's, may signal nothing
+//! outside, and gain no privileges (`sudo` and `pkexec` don't work). Other Claude Code sessions
+//! may message it, but it messages none of them: one that isn't sandboxed could do for it what
+//! the sandbox forbids.
+//!
+//! Nothing it writes is read outside the sandbox as configuration: the user's own Claude Code
+//! home (`~/.claude`, `~/.claude.json`) and the other sessions' temporary files are out of its
+//! reach, but for what in `~/.claude` is configuration, which it may read. So nothing can be
+//! planted there for a session outside the sandbox to run, obey or source later, and the
+//! user's sign-in stays out of it: the session gets a token through a pipe.
 //!
 //! Only the child is restricted: a thread restricts itself and starts it, and this window,
 //! which opens editors, notifies and stops other sessions, stays free. Landlock can't be
 //! widened once applied; every start gets a fresh ruleset, so a change takes a restart.
 //!
 //! Not covered: the network (Landlock tells ports apart, not hosts, so 443 would reach any host
-//! anyway), and Claude Code's own credentials, which it must read to work.
+//! anyway).
 //!
 //! Claude Code has a sandbox of its own, for its shell commands: bubblewrap, which filters the
 //! network by host but leaves its file tools, hooks and MCP servers out. The two don't stack:
@@ -31,8 +36,9 @@ use landlock::{
 /// The newest Landlock this window knows: 9 controls connecting to socket files.
 const ABI_KNOWN: ABI = ABI::V9;
 
-/// What `~/.claude` holds that Claude Code runs or obeys: kept read-only.
-const CLAUDE_CODE_RUNS: &[&str] = &[
+/// What `~/.claude` holds that Claude Code runs or obeys: readable to the sandbox, and copied
+/// into a session's own home at each launch (see `home`).
+pub(crate) const CLAUDE_CODE_RUNS: &[&str] = &[
     "settings.json",
     "settings.local.json",
     "CLAUDE.md",
@@ -104,9 +110,17 @@ pub(crate) struct Allowances<'a> {
     pub(crate) write: &'a [PathBuf],
 }
 
+/// What a sandboxed session has of its own (see `home`): its Claude Code home and its
+/// temporary folder, which it may write as it likes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Own<'a> {
+    pub(crate) home: &'a Path,
+    pub(crate) scratch: &'a Path,
+}
+
 impl Policy {
     /// The policy for working in `project`.
-    pub(crate) fn for_project(project: &Path, allowances: Allowances<'_>) -> Self {
+    pub(crate) fn for_project(project: &Path, own: Own<'_>, allowances: Allowances<'_>) -> Self {
         let home = dirs::home_dir().unwrap_or_default();
         let at_home = |relative: &str| home.join(relative);
         let mut policy = Self::default();
@@ -159,17 +173,20 @@ impl Policy {
                 ".zshrc",
                 ".zshenv",
                 ".config/fish",
-                ".claude",
             ]
             .map(at_home),
         );
+        policy.read.extend(claude_config(&home.join(".claude")));
         policy.read.extend(public_keys(&home.join(".ssh")));
         policy.read.extend(git_includes(&home));
         policy.write.extend([project.to_owned()]);
         policy.write.extend(git_dirs(project));
+        // Not /tmp or /var/tmp: other sessions keep files there that they read back (their
+        // tasks' output, the Claude Code daemon's socket). `TMPDIR` names the session's own.
+        policy.write.push(PathBuf::from("/dev/shm"));
         policy
             .write
-            .extend(["/tmp", "/var/tmp", "/dev/shm"].map(PathBuf::from));
+            .extend([own.home.to_owned(), own.scratch.to_owned()]);
         policy.write.extend(
             [
                 ".cache",
@@ -179,13 +196,11 @@ impl Policy {
                 "go",
                 ".m2",
                 ".gradle",
-                ".claude.json",
             ]
             .map(at_home),
         );
         policy.read.extend(allowances.read.iter().cloned());
         policy.write.extend(allowances.write.iter().cloned());
-        policy.write.extend(claude_data(&home.join(".claude")));
         policy.devices.extend(
             [
                 "/dev/null",
@@ -336,21 +351,23 @@ fn public_keys(ssh: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What in `~/.claude` Claude Code writes as it works (transcripts, session records, todos,
-/// caches): all of it but what it runs or obeys, and scripts.
-fn claude_data(claude: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(claude)
+/// What in the user's `~/.claude` is configuration, for the sandbox to read: what Claude Code
+/// runs or obeys, and the scripts beside it (a status line's, say). Settings name these by
+/// their place there, as an installed plugin does its folder. Not the sign-in, the session
+/// records and their keys, nor the transcripts and memories of every project.
+fn claude_config(claude: &Path) -> Vec<PathBuf> {
+    let scripts = std::fs::read_dir(claude)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            !CLAUDE_CODE_RUNS.contains(&name.as_str()) && !name.ends_with(".sh")
-        })
+            path.extension().is_some_and(|extension| extension == "sh") && path.is_file()
+        });
+    CLAUDE_CODE_RUNS
+        .iter()
+        .map(|name| claude.join(name))
+        .chain(scripts)
         .collect()
 }
 
@@ -494,15 +511,18 @@ mod tests {
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 
+    /// Of the user's own home, the sandbox reads the configuration, and nothing else.
     #[test]
-    fn what_claude_code_runs_stays_read_only() {
+    fn only_the_users_configuration_is_readable() {
         let claude = std::env::temp_dir().join(format!("edualc-claude-{}", std::process::id()));
         for name in [
             "projects",
             "skills",
+            "sessions",
             "settings.json",
             "statusline.sh",
             "history.jsonl",
+            ".credentials.json",
         ] {
             let path = claude.join(name);
             if name.contains('.') {
@@ -512,12 +532,65 @@ mod tests {
                 std::fs::create_dir_all(&path).expect("a folder");
             }
         }
-        let mut writable: Vec<String> = claude_data(&claude)
+        let readable: Vec<PathBuf> = claude_config(&claude);
+        let present: Vec<String> = readable
             .iter()
+            .filter(|path| path.exists())
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
             .collect();
-        writable.sort();
-        assert_eq!(writable, ["history.jsonl", "projects"]);
+        assert_eq!(present, ["settings.json", "skills", "statusline.sh"]);
         std::fs::remove_dir_all(&claude).expect("the scratch folder goes");
+    }
+
+    /// The user's own home is out of reach: nothing in it, `~/.claude.json` included, is
+    /// writable, and what isn't configuration (the sign-in, say) isn't readable.
+    #[test]
+    fn the_users_own_home_is_out_of_reach() {
+        let scratch = std::env::temp_dir().join(format!("edualc-own-{}", std::process::id()));
+        let project = scratch.join("project");
+        let home = scratch.join("home");
+        let session_scratch = scratch.join("tmp");
+        for folder in [&project, &home, &session_scratch] {
+            std::fs::create_dir_all(folder).expect("a folder");
+        }
+        let policy = Policy::for_project(
+            &project,
+            Own {
+                home: &home,
+                scratch: &session_scratch,
+            },
+            Allowances {
+                desktop: false,
+                read: &[],
+                write: &[],
+            },
+        );
+        let users = dirs::home_dir().expect("a home");
+        let in_users = |path: &PathBuf| path.starts_with(users.join(".claude"));
+        assert!(
+            !policy
+                .write
+                .iter()
+                .any(|path| in_users(path) || path.ends_with(".claude.json")),
+            "{:?}",
+            policy.write
+        );
+        assert!(
+            !policy
+                .write
+                .iter()
+                .any(|path| path == Path::new("/tmp") || path == Path::new("/var/tmp")),
+            "{:?}",
+            policy.write
+        );
+        assert!(policy.write.contains(&home) && policy.write.contains(&session_scratch));
+        assert!(
+            !policy.read.iter().any(|path| *path == users.join(".claude")
+                || path.ends_with(".credentials.json")
+                || path.ends_with("projects")),
+            "{:?}",
+            policy.read
+        );
+        std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 }

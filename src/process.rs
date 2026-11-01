@@ -26,6 +26,44 @@ pub(crate) fn is_running(pid: u32, started: &str) -> bool {
     stat(pid).is_some_and(|stat| stat.started == started)
 }
 
+/// Whether process `pid` is `ancestor` or was started, at any remove, by it.
+pub(crate) fn descends_from(pid: u32, ancestor: u32) -> bool {
+    let mut current = pid;
+    // A chain of parents ends at 1; one far longer than any real one means a loop.
+    for _ in 0..256 {
+        if current == ancestor {
+            return true;
+        }
+        match stat(current) {
+            Some(stat) if stat.parent != 0 && stat.parent != current => current = stat.parent,
+            Some(_) | None => return false,
+        }
+    }
+    false
+}
+
+/// The processes of this user's that have the pipe `inode` open, at either end.
+pub(crate) fn holding_pipe(inode: u64) -> Vec<u32> {
+    let wanted = format!("pipe:[{inode}]");
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            // Another user's processes, and those that keep theirs hidden, can't be read.
+            std::fs::read_dir(format!("/proc/{pid}/fd"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .any(|fd| {
+                    std::fs::read_link(fd.path())
+                        .is_ok_and(|target| target.as_os_str() == wanted.as_str())
+                })
+        })
+        .collect()
+}
+
 /// Whether process `pid` runs Claude Code: the native `claude`, or Node running the npm
 /// package.
 pub(crate) fn runs_claude(pid: u32) -> bool {

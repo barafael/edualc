@@ -772,7 +772,10 @@ impl From<crate::spawn::Error> for StartFailure {
             Error::NoModel(model) => Self::NoModel(model),
             Error::NotAbsolute(path) => Self::NotAbsolute(path),
             Error::Start(source) => Self::Start(source.to_string()),
-            Error::Sandbox(source) => Self::Sandbox(source.to_string()),
+            error @ (Error::Sandbox(_)
+            | Error::Home(_)
+            | Error::SignIn(_)
+            | Error::SignInPipeShared(_)) => Self::Sandbox(error.to_string()),
         }
     }
 }

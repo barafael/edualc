@@ -7,10 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::external::claude_files::ClaudeJson;
+use crate::sessions;
 use crate::settings::Settings;
-
-/// `~/.claude.json` runs to hundreds of kilobytes; anything far larger isn't that file.
-const CLAUDE_JSON_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn trusted(folder: &Path, settings: &Settings) -> bool {
     let accepted = accepted_in_terminal();
@@ -25,13 +23,10 @@ pub(crate) fn trusted(folder: &Path, settings: &Settings) -> bool {
 
 /// The folders whose trust dialog was accepted in the terminal.
 fn accepted_in_terminal() -> Vec<PathBuf> {
-    // Claude Code keeps it beside its configuration folder, or in it when that is moved.
-    let path = std::env::var_os("CLAUDE_CONFIG_DIR").map_or_else(
-        || dirs::home_dir().unwrap_or_default().join(".claude.json"),
-        |dir| PathBuf::from(dir).join(".claude.json"),
-    );
-    let small = std::fs::metadata(&path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= CLAUDE_JSON_BYTES);
+    let path = sessions::global_config_path();
+    let small = std::fs::metadata(&path).is_ok_and(|metadata| {
+        metadata.is_file() && metadata.len() <= sessions::GLOBAL_CONFIG_BYTES
+    });
     let read = small
         .then(|| std::fs::read_to_string(&path).ok())
         .flatten()
