@@ -182,8 +182,10 @@ Without them installed, notifications come without an icon.
 The window doesn't run Claude Code itself: the first window starts `edualc --daemon`, which runs
 the `claude` processes and does what the desktop is asked (opening editors, notifications,
 stopping sessions elsewhere), and ends a few seconds after its last window and session. They
-speak over a Unix socket in `$XDG_RUNTIME_DIR/edualc`: a folder of the user's alone, checked
-through its descriptor and never through a link; a lock deciding which process is the daemon,
+speak over a Unix socket in `$XDG_RUNTIME_DIR/edualc/protocol-<n>`, a folder for each version
+of what they say, so a new build's windows start a daemon of their own while an earlier one
+finishes its sessions: a folder of the user's alone, checked through its descriptor and never
+through a link; a lock deciding which process is the daemon,
 so no two bind and none unbinds another's; peers checked to be this user running this program;
 messages framed by postcard's COBS, read into a fixed buffer that ends the connection when a
 frame doesn't fit. The daemon's parts are

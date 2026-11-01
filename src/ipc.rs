@@ -88,17 +88,18 @@ impl Folder {
         &self.path
     }
 
-    /// `$XDG_RUNTIME_DIR/edualc`, made if it isn't there, and checked to be the user's alone.
+    /// `$XDG_RUNTIME_DIR/edualc/protocol-<PROTOCOL>`, made if it isn't there, and checked to be
+    /// the user's alone. Each protocol has a folder of its own, so a daemon of an earlier build
+    /// runs on beside this build's until its sessions end, instead of keeping its windows out.
     pub(crate) fn open() -> Result<Self, Error> {
         let runtime =
             PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").ok_or(Error::NoRuntimeDir)?);
         let runtime_fd = open_folder(rustix::fs::CWD, &runtime, &runtime)?;
-        let path = runtime.join(FOLDER);
-        match rustix::fs::mkdirat(&runtime_fd, FOLDER, Mode::RWXU) {
-            Ok(()) | Err(Errno::EXIST) => {}
-            Err(source) => return Err(Error::Open { path, source }),
-        }
-        let fd = open_folder(&runtime_fd, Path::new(FOLDER), &path)?;
+        let edualc = runtime.join(FOLDER);
+        let edualc_fd = made_folder(&runtime_fd, FOLDER, &edualc)?;
+        let name = format!("protocol-{PROTOCOL}");
+        let path = edualc.join(&name);
+        let fd = made_folder(&edualc_fd, &name, &path)?;
         Ok(Self { fd, path })
     }
 
@@ -121,6 +122,21 @@ impl Folder {
         let through = format!("/proc/self/fd/{}/{name}", self.fd.as_raw_fd());
         SocketAddrUnix::new(through).map_err(Error::Socket)
     }
+}
+
+/// The folder `name` in `at` (found at `path`), made if it isn't there, then opened as
+/// [`open_folder`] opens one.
+fn made_folder(at: impl AsFd, name: &str, path: &Path) -> Result<OwnedFd, Error> {
+    match rustix::fs::mkdirat(&at, name, Mode::RWXU) {
+        Ok(()) | Err(Errno::EXIST) => {}
+        Err(source) => {
+            return Err(Error::Open {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    }
+    open_folder(at, Path::new(name), path)
 }
 
 /// Opens a folder without following a link to it, and checks it is the user's alone; one of
