@@ -197,6 +197,17 @@ export enum ComposerSize { fit, chosen, tall, full }
 // work (thinking, writing), or a tool.
 export enum Activity { idle, model, tool }
 
+// What runs in the background, for its icon.
+export enum TaskKind { agent, command, workflow, monitor, other }
+
+// A task running in the background: what it does, and what kind of agent runs it ("Explore"),
+// or what it is ("Shell command").
+export struct TaskItem {
+    kind: TaskKind,
+    title: string,
+    detail: string,
+}
+
 // An image pasted into the composer, to go with the next message.
 export struct ImageChip {
     thumbnail: image,

@@ -24,7 +24,7 @@ use crate::generated::{
     EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock, MenuItem,
     PermissionKind, PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption,
     Session, SessionItem, Sessions, ShownImage, Side, SideExchange, SideState, StatRow,
-    StatSection, TableRow, Theme, ToolState, Transcript, Usage,
+    StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::markdown::{self, Block};
@@ -653,6 +653,14 @@ impl View {
             );
         }
         usage.set_sections(ModelRc::new(VecModel::from(sections)));
+    }
+
+    /// What runs in the background: each task, and how much of each kind.
+    pub(crate) fn render_tasks(&self, tasks: &[wire::BackgroundTask]) {
+        let session = self.window.global::<Session>();
+        session.set_tasks_summary(tasks_summary(tasks).into());
+        let items: Vec<TaskItem> = tasks.iter().map(task_item).collect();
+        session.set_tasks(ModelRc::new(VecModel::from(items)));
     }
 
     /// The model and mode menus, and which of each is in use.
@@ -1466,6 +1474,76 @@ fn diff_kind(kind: tools::DiffKind) -> DiffKind {
 }
 
 /// 950, 4.2k, 45k, 1.2M.
+/// The kind of a background task as the window tells them apart.
+fn task_kind(kind: wire::TaskKind) -> TaskKind {
+    match kind {
+        wire::TaskKind::LocalAgent
+        | wire::TaskKind::RemoteAgent
+        | wire::TaskKind::InProcessTeammate => TaskKind::Agent,
+        wire::TaskKind::LocalBash => TaskKind::Command,
+        wire::TaskKind::LocalWorkflow => TaskKind::Workflow,
+        wire::TaskKind::MonitorMcp | wire::TaskKind::MonitorWs => TaskKind::Monitor,
+        wire::TaskKind::Other => TaskKind::Other,
+    }
+}
+
+fn task_item(task: &wire::BackgroundTask) -> TaskItem {
+    let what = match task.task_type {
+        wire::TaskKind::LocalAgent => "Agent",
+        wire::TaskKind::RemoteAgent => "Agent in the cloud",
+        wire::TaskKind::InProcessTeammate => "Teammate",
+        wire::TaskKind::LocalBash => "Shell command",
+        wire::TaskKind::LocalWorkflow => "Workflow",
+        wire::TaskKind::MonitorMcp | wire::TaskKind::MonitorWs => "Monitor",
+        wire::TaskKind::Other => "Task",
+    };
+    let detail = match &task.subagent_type {
+        Some(agent) => format!("{what} · {agent}"),
+        None => what.to_owned(),
+    };
+    TaskItem {
+        kind: task_kind(task.task_type),
+        title: if task.description.is_empty() {
+            what.into()
+        } else {
+            task.description.as_str().into()
+        },
+        detail: detail.into(),
+    }
+}
+
+/// How much runs of each kind, the most common kinds of work first: "2 agents, 1 command".
+fn tasks_summary(tasks: &[wire::BackgroundTask]) -> String {
+    [
+        TaskKind::Agent,
+        TaskKind::Command,
+        TaskKind::Workflow,
+        TaskKind::Monitor,
+        TaskKind::Other,
+    ]
+    .into_iter()
+    .filter_map(|kind| {
+        let count = tasks
+            .iter()
+            .filter(|task| task_kind(task.task_type) == kind)
+            .count();
+        let (one, many) = match kind {
+            TaskKind::Agent => ("agent", "agents"),
+            TaskKind::Command => ("command", "commands"),
+            TaskKind::Workflow => ("workflow", "workflows"),
+            TaskKind::Monitor => ("monitor", "monitors"),
+            TaskKind::Other => ("task", "tasks"),
+        };
+        match count {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            _ => Some(format!("{count} {many}")),
+        }
+    })
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 pub(crate) fn short_count(count: u64) -> String {
     let scaled = |divisor: u32, unit: &str| {
         let hundreds = f64::from(u32::try_from(count / 100).unwrap_or(u32::MAX));
@@ -1489,6 +1567,53 @@ mod tests {
         let cwd = Path::new("/home/u/code/edu_alc");
         assert_eq!(shown_project("edu-alc-3f", cwd), "");
         assert_eq!(shown_project("Framework 13 sensors", cwd), "edu_alc");
+    }
+
+    /// Counted by kind, agents first, each kind once however its tasks are interleaved.
+    #[test]
+    fn background_tasks_are_counted_by_kind() {
+        let task = |task_type| wire::BackgroundTask {
+            task_type,
+            subagent_type: None,
+            description: String::new(),
+            ambient: false,
+        };
+        assert_eq!(tasks_summary(&[]), "");
+        assert_eq!(
+            tasks_summary(&[task(wire::TaskKind::LocalBash)]),
+            "1 command"
+        );
+        assert_eq!(
+            tasks_summary(&[
+                task(wire::TaskKind::LocalBash),
+                task(wire::TaskKind::LocalAgent),
+                task(wire::TaskKind::Other),
+                task(wire::TaskKind::RemoteAgent),
+            ]),
+            "2 agents, 1 command, 1 task"
+        );
+    }
+
+    /// A task is named by what it does, and by its agent's kind where it has one.
+    #[test]
+    fn a_background_task_says_what_it_does() {
+        let agent = task_item(&wire::BackgroundTask {
+            task_type: wire::TaskKind::LocalAgent,
+            subagent_type: Some("Explore".to_owned()),
+            description: "Find the tests".to_owned(),
+            ambient: false,
+        });
+        assert_eq!(agent.kind, TaskKind::Agent);
+        assert_eq!(agent.title, "Find the tests");
+        assert_eq!(agent.detail, "Agent · Explore");
+        let unnamed = task_item(&wire::BackgroundTask {
+            task_type: wire::TaskKind::LocalBash,
+            subagent_type: None,
+            description: String::new(),
+            ambient: false,
+        });
+        assert_eq!(unnamed.title, "Shell command");
+        assert_eq!(unnamed.detail, "Shell command");
     }
 
     #[test]

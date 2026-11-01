@@ -3,7 +3,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
-import { Activity, ComposerSize, LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
+import { Activity, ComposerSize, LiveState, PermissionKind, PromptKind, SideView, TaskKind } from "types.slint";
 import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
@@ -12,7 +12,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
-export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
+export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, TaskItem, TaskKind, ToolState } from "types.slint";
 export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -113,6 +113,83 @@ component SandboxChip inherits Pressable {
                 Caption {
                     text: "Changing it starts Claude Code again; the conversation goes on.";
                     wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+// What runs in the background, and how much ("2 agents, 1 command"); a click lists it. A
+// background agent's or command's card shows it done as soon as it started, and it runs on
+// after the turn, so nothing else tells it runs.
+component TasksChip inherits Pressable {
+    height: Theme.chip;
+    min-width: 0px;
+    border-radius: Theme.radius-m;
+    accessible-label: "Running in the background: " + Session.tasks-summary;
+    clicked => { tasks-menu.show(); }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-xs;
+        Icon {
+            source: @image-url("@lucide/layers.svg");
+            tint: Theme.claude;
+            width: Theme.icon-small;
+            y: (parent.height - self.height) / 2;
+        }
+        Small {
+            text: Session.tasks-summary;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+            min-width: 0px;
+        }
+    }
+    tasks-menu := PopupWindow {
+        x: 0;
+        y: -self.height - Theme.space-xs;
+        width: 380px;
+        height: tasks-body.preferred-height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.divider;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.shadow;
+            tasks-body := VerticalLayout {
+                padding: Theme.space-m;
+                spacing: Theme.space-s;
+                Text {
+                    text: "Running in the background";
+                    color: Theme.text;
+                    font-weight: 600;
+                }
+                for task in Session.tasks: HorizontalLayout {
+                    spacing: Theme.space-s;
+                    Icon {
+                        source: task.kind == TaskKind.agent ? @image-url("@lucide/bot.svg")
+                            : task.kind == TaskKind.command ? @image-url("@lucide/square-terminal.svg")
+                            : task.kind == TaskKind.workflow ? @image-url("@lucide/workflow.svg")
+                            : task.kind == TaskKind.monitor ? @image-url("@lucide/radar.svg")
+                            : @image-url("@lucide/circle-dashed.svg");
+                        tint: Theme.text-secondary;
+                        width: Theme.icon-small;
+                        y: Theme.space-xs / 2;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text {
+                            text: task.title;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        Caption {
+                            text: task.detail;
+                        }
+                    }
                 }
             }
         }
@@ -1133,6 +1210,7 @@ component EditArea inherits Rectangle {
                 icon: @image-url("@lucide/sparkle.svg");
                 selected(index) => { Session.choose-model(index); }
             }
+            if Session.tasks.length > 0: TasksChip { }
             if Session.busy: Rectangle {
                 width: 8px;
                 height: 8px;

@@ -189,6 +189,13 @@ impl App {
                 self.status.doing = Doing::ThinkingTokens(estimated_tokens);
             }
             System::CompactBoundary => self.chat.info("Conversation compacted"),
+            System::BackgroundTasksChanged { mut tasks } => {
+                tasks.retain(|task| !task.ambient);
+                if tasks != self.status.tasks {
+                    self.status.tasks = tasks;
+                    self.redraw.tasks = true;
+                }
+            }
             System::ControlRequestProgress { request_id, status } => {
                 if status == Progress::ApiRetry
                     && let Some(Request::Side(index)) = self.requests.get(&request_id)

@@ -291,6 +291,8 @@ pub(crate) struct Status {
     /// Prompts sent and not answered yet.
     pub(crate) turns: usize,
     pub(crate) doing: Doing,
+    /// What runs in the background (subagents, commands), as the process last listed it.
+    pub(crate) tasks: Vec<wire::BackgroundTask>,
     pub(crate) context_tokens: u64,
     pub(crate) context_window: u64,
     pub(crate) cost_usd: f64,
@@ -483,6 +485,7 @@ struct Redraw {
     sessions: bool,
     side: bool,
     usage: bool,
+    tasks: bool,
 }
 
 impl Redraw {
@@ -495,6 +498,7 @@ impl Redraw {
             sessions: true,
             side: true,
             usage: true,
+            tasks: true,
         }
     }
 }
@@ -900,6 +904,9 @@ impl App {
         if redraw.usage {
             self.view.render_usage(&self.usage, &self.status);
         }
+        if redraw.tasks {
+            self.view.render_tasks(&self.status.tasks);
+        }
         if redraw.side {
             let can_ask = self.watch.is_none();
             let can_branch = self.status.turns == 0
@@ -1112,6 +1119,9 @@ impl App {
         self.requests.clear();
         self.status.turns = 0;
         self.status.doing = Doing::Nothing;
+        // They ran in the process.
+        self.status.tasks.clear();
+        self.redraw.tasks = true;
         self.chat.stop_shells();
         self.usage.waiting = 0;
         self.side_lost();

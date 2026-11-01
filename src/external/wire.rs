@@ -373,6 +373,40 @@ pub(crate) enum System {
     PermissionDenied {
         tool_use_id: ToolUseId,
     },
+    /// What runs in the background now (subagents, shell commands, monitors), all of it,
+    /// whenever that changes. Their tool calls are done by then, so nothing else shows them.
+    BackgroundTasksChanged {
+        tasks: Vec<BackgroundTask>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// A task Claude Code runs in the background, as its list names it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct BackgroundTask {
+    pub(crate) task_type: TaskKind,
+    /// An agent's kind ("general-purpose", "Explore").
+    #[serde(default)]
+    pub(crate) subagent_type: Option<String>,
+    #[serde(default)]
+    pub(crate) description: String,
+    /// Run for Claude Code itself, not for the conversation; its own list leaves these out.
+    #[serde(default)]
+    pub(crate) ambient: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TaskKind {
+    LocalAgent,
+    RemoteAgent,
+    /// An agent team's member.
+    InProcessTeammate,
+    LocalBash,
+    LocalWorkflow,
+    MonitorMcp,
+    MonitorWs,
     #[serde(other)]
     Other,
 }
@@ -931,6 +965,7 @@ pub(crate) enum PeekedKind {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PeekedSubtype {
     Init,
+    BackgroundTasksChanged,
     #[serde(other)]
     Other,
 }
@@ -1221,6 +1256,47 @@ mod tests {
             serde_json::from_value(line),
             Ok(Message::System(System::Other))
         ));
+
+        // As Claude Code 2.1.316 wrote it, with a background agent and a command running.
+        let line = json!({
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [
+                { "task_id": "abd53f17ea727bd1f", "run_id": "0mvy7o1km-7d6f4be0", "task_type": "local_agent", "subagent_type": "general-purpose", "description": "Count to three" },
+                { "task_id": "bd2gnyclv", "run_id": "0mvy7o1vc-5d0c7ae5", "task_type": "local_bash", "description": "Sleep three seconds" },
+                { "task_id": "x", "task_type": "a_kind_to_come", "description": "Something new", "ambient": true },
+            ],
+            "uuid": "u",
+            "session_id": "s",
+        });
+        let Ok(Message::System(System::BackgroundTasksChanged { tasks })) =
+            serde_json::from_value(line)
+        else {
+            panic!("the background tasks");
+        };
+        assert_eq!(
+            tasks,
+            [
+                BackgroundTask {
+                    task_type: TaskKind::LocalAgent,
+                    subagent_type: Some("general-purpose".to_owned()),
+                    description: "Count to three".to_owned(),
+                    ambient: false,
+                },
+                BackgroundTask {
+                    task_type: TaskKind::LocalBash,
+                    subagent_type: None,
+                    description: "Sleep three seconds".to_owned(),
+                    ambient: false,
+                },
+                BackgroundTask {
+                    task_type: TaskKind::Other,
+                    subagent_type: None,
+                    description: "Something new".to_owned(),
+                    ambient: true,
+                },
+            ]
+        );
         let line = json!({ "type": "keep_alive" });
         assert!(matches!(serde_json::from_value(line), Ok(Message::Other)));
     }

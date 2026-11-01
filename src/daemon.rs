@@ -1086,12 +1086,14 @@ impl Session {
 }
 
 /// What a window attaching is told again (sans-io): how many turns are under way, the
-/// process's latest `init` (its session, model and mode), then the permission requests it asked
-/// and nothing answered yet. Only the messages' kind and request id are read, the rest is
-/// passed on as it is.
+/// process's latest `init` (its session, model and mode), what runs in the background, then the
+/// permission requests it asked and nothing answered yet. Only the messages' kind and request
+/// id are read, the rest is passed on as it is.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Pending {
     init: Option<String>,
+    /// The latest list of background tasks: each one names them all.
+    tasks: Option<String>,
     asked: BTreeMap<String, String>,
     /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
     /// counts them, for one that attaches meanwhile.
@@ -1107,6 +1109,9 @@ impl Pending {
         match (peek.kind, peek.subtype, peek.request_id) {
             (PeekedKind::System, Some(PeekedSubtype::Init), _) => {
                 self.init = Some(line.to_owned());
+            }
+            (PeekedKind::System, Some(PeekedSubtype::BackgroundTasksChanged), _) => {
+                self.tasks = Some(line.to_owned());
             }
             (PeekedKind::ControlRequest, _, Some(id)) if self.asked.len() < MAX_PENDING => {
                 self.asked.insert(id, line.to_owned());
@@ -1142,7 +1147,10 @@ impl Pending {
     }
 
     fn lines(&self) -> impl Iterator<Item = &String> {
-        self.init.iter().chain(self.asked.values())
+        self.init
+            .iter()
+            .chain(self.tasks.iter())
+            .chain(self.asked.values())
     }
 }
 
@@ -1376,6 +1384,25 @@ mod tests {
         pending.said(later);
         pending.said(r#"{"type":"system","subtype":"status","status":"requesting"}"#);
         assert_eq!(pending.lines().collect::<Vec<_>>(), [later, asked]);
+    }
+
+    /// A window attaching meanwhile learns what runs in the background from the latest list,
+    /// which names all of it; an emptied list is told too, as nothing running.
+    #[test]
+    fn the_latest_background_tasks_are_told_after_the_init() {
+        let mut pending = Pending::default();
+        let init = r#"{"type":"system","subtype":"init","session_id":"a","model":"m"}"#;
+        let two = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_type":"local_agent","description":"a"},{"task_type":"local_bash","description":"b"}]}"#;
+        let one = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_type":"local_bash","description":"b"}]}"#;
+        let none = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        pending.said(two);
+        pending.said(init);
+        pending.said(asked);
+        pending.said(one);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, one, asked]);
+        pending.said(none);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, none, asked]);
     }
 
     /// Turns are counted as the window counts them: one for each prompt written, one fewer for
