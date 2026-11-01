@@ -10,8 +10,8 @@ use slint::{
 use strum::IntoEnumIterator;
 
 use crate::app::{
-    Answer, Ask, AskKind, LimitUse, Mode, PermissionMode, Sandboxing, SideChat, SideView, Status,
-    UsagePanel, Watch,
+    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Sandboxing, SideChat, SideView,
+    Status, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat};
 use crate::decode::Picture;
@@ -20,7 +20,7 @@ use crate::external::wire::{
     self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
 };
 use crate::generated::{
-    AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
+    Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
     EntryKind, GroupRole, ImageChip, LiveItem, LiveState, MdBlock, MenuItem, PermissionKind,
     PlanSection, ProjectItem, Prompt, PromptKind, Question, QuestionOption, Session, SessionItem,
     Sessions, Side, SideExchange, SideState, StatRow, StatSection, Theme, ToolState, Transcript,
@@ -478,6 +478,16 @@ impl View {
             status.doing.to_string()
         };
         session.set_status(doing.into());
+        session.set_activity(match status.doing {
+            Doing::Nothing => Activity::Idle,
+            Doing::Starting
+            | Doing::Thinking
+            | Doing::ThinkingTokens(_)
+            | Doing::Writing
+            | Doing::Working
+            | Doing::Compacting => Activity::Model,
+            Doing::Preparing(_) | Doing::Running(_) => Activity::Tool,
+        });
         let (context, fraction) = match (status.context_tokens, status.context_window) {
             (0, _) => (String::new(), 0.0),
             (used, 0) => (short_count(used), 0.0),

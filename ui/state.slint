@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { CommandItem, ComposerSize, Entry, ImageChip, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, ImageChip, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -13,6 +13,7 @@ export global Session {
     in property <bool> busy;
     // What Claude is doing ("Thinking", "Running Bash"); empty when idle.
     in property <string> status;
+    in property <Activity> activity;
     // The context used ("25k / 1M") and how full it is, 0 to 1.
     in property <string> context;
     in property <float> context-fraction;

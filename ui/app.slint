@@ -3,7 +3,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
-import { ComposerSize, LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
+import { Activity, ComposerSize, LiveState, PermissionKind, PromptKind, SideView } from "types.slint";
 import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
@@ -12,7 +12,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Motion, Theme } from "theme.slint";
-export { BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
+export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, ToolState } from "types.slint";
 export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -29,13 +29,99 @@ component LiveDot inherits Rectangle {
     border-color: Theme.text-faint;
 }
 
+// What keeps Claude Code in; its menu says what that means and changes it.
+component SandboxChip inherits Pressable {
+    // At the window's foot: the menu opens above it, from its left edge.
+    in property <bool> opens-upward;
+    // Under the label, why it matters when Claude Code isn't sandboxed.
+    in property <bool> explains;
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: Session.sandboxed ? Theme.divider : Theme.warning;
+    accessible-label: Session.sandbox-label;
+    clicked => { sandbox-menu.show(); }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        padding-top: root.explains ? Theme.space-xs : 0;
+        padding-bottom: root.explains ? Theme.space-xs : 0;
+        spacing: Theme.space-xs;
+        Icon {
+            source: Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
+            tint: Session.sandboxed ? Theme.info : Theme.warning-text;
+            width: Theme.icon-small;
+            y: root.explains ? Theme.space-xs : (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: Session.sandbox-label;
+                color: Session.sandboxed ? Theme.text-secondary : Theme.warning-text;
+                font-size: 1rem * Theme.small;
+                font-weight: Session.sandboxed ? 400 : 600;
+                vertical-alignment: center;
+            }
+            if root.explains && !Session.sandboxed: Caption {
+                text: Session.sandbox-detail;
+                wrap: word-wrap;
+            }
+        }
+    }
+    sandbox-menu := PopupWindow {
+        x: root.opens-upward ? 0 : parent.width - self.width;
+        y: root.opens-upward ? -self.height - Theme.space-xs : parent.height + Theme.space-xs;
+        width: 340px;
+        height: sandbox-body.preferred-height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.divider;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.shadow;
+            sandbox-body := VerticalLayout {
+                padding: Theme.space-m;
+                spacing: Theme.space-s;
+                Text {
+                    text: Session.sandbox-label;
+                    color: Theme.text;
+                    font-weight: 600;
+                }
+                Small {
+                    text: Session.sandbox-detail;
+                    wrap: word-wrap;
+                }
+                TextButton {
+                    text: Session.sandbox-on ? "Turn the sandbox off" : "Sandbox Claude Code";
+                    danger: Session.sandbox-on;
+                    clicked => {
+                        Session.toggle-sandbox();
+                        sandbox-menu.close();
+                    }
+                }
+                if Session.sandbox-on: TextButton {
+                    text: Session.sandbox-desktop ? "Close the display to Claude" : "Let Claude use the display (UI tests)";
+                    clicked => {
+                        Session.toggle-sandbox-desktop();
+                        sandbox-menu.close();
+                    }
+                }
+                Caption {
+                    text: "Changing it starts Claude Code again; the conversation goes on.";
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
 // Narrow windows give up the sidebar's width first, then the side panel's; the conversation
 // keeps the rest.
 component Sidebar inherits Rectangle {
     // 0: this folder's sessions; 1: those running anywhere.
     property <int> tab: 0;
-    // The warning that Claude Code isn't sandboxed was clicked: the header's menu says more.
-    callback sandbox-clicked;
     min-width: 200px;
     preferred-width: Theme.sidebar;
     max-width: Theme.sidebar;
@@ -304,34 +390,11 @@ component Sidebar inherits Rectangle {
                 height: 1px;
                 background: Theme.divider;
             }
-            // Where the eye goes for what the session may spend: what it may do, when nothing
-            // keeps it in.
-            if !Session.sandboxed: Pressable {
-                accessible-label: Session.sandbox-label + ": " + Session.sandbox-detail;
-                clicked => { root.sandbox-clicked(); }
-                HorizontalLayout {
-                    padding: Theme.space-xs;
-                    spacing: Theme.space-s;
-                    Icon {
-                        source: @image-url("@lucide/shield-off.svg");
-                        tint: Theme.warning-text;
-                        width: Theme.icon-small;
-                    }
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        Text {
-                            text: Session.sandbox-label;
-                            color: Theme.warning-text;
-                            font-weight: 600;
-                            font-size: 1rem * Theme.small;
-                            wrap: word-wrap;
-                        }
-                        Caption {
-                            text: Session.sandbox-detail;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
+            // Beside what the session may spend: what it may do.
+            SandboxChip {
+                min-height: Theme.chip;
+                opens-upward: true;
+                explains: true;
             }
             HorizontalLayout {
                 padding-top: Theme.space-xs;
@@ -816,6 +879,37 @@ component EditArea inherits Rectangle {
         background: input.has-focus ? Theme.accent : Theme.divider;
         animate background { duration: Motion.fast; easing: ease-out; }
     }
+    // While a turn runs: the top edge as dashes, the lit one (tinted by what is at work, the
+    // model or a tool) a place further every 120 ms. Stepped by design, from a timer that runs
+    // only then: about 8 frames a second, where `animation-tick()` would draw at the display's
+    // rate, and none once the turn is over.
+    property <int> dashes: 12;
+    property <int> lit: 0;
+    Timer {
+        interval: 120ms;
+        running: Session.busy && Prompt.kind == PromptKind.none;
+        triggered => { root.lit = mod(root.lit + 1, root.dashes); }
+    }
+    if Session.busy && Prompt.kind == PromptKind.none: HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 3px;
+        spacing: 3px;
+        for dash in root.dashes: Rectangle {
+            background: dash == root.lit
+                ? (Session.activity == Activity.tool ? Theme.info : Theme.claude)
+                : Theme.divider;
+        }
+    }
+    // Waiting for an answer: the edge stays lit, nothing moves.
+    if Prompt.kind != PromptKind.none: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 3px;
+        background: Theme.warning;
+    }
     one-line := Text {
         visible: false;
         text: " ";
@@ -1033,9 +1127,6 @@ component EditArea inherits Rectangle {
 component Header inherits Rectangle {
     in property <bool> sidebar-shown;
     callback toggle-sidebar;
-    public function open-sandbox-menu() {
-        sandbox-menu.show();
-    }
     height: Theme.header;
     HorizontalLayout {
         padding-left: Theme.space-s;
@@ -1120,77 +1211,10 @@ component Header inherits Rectangle {
                 }
             }
         }
-        // What keeps Claude Code in; its menu says what that means and changes it.
-        sandbox := Pressable {
-            border-radius: Theme.radius-m;
-            border-width: 1px;
-            border-color: Session.sandboxed ? Theme.divider : Theme.warning;
-            accessible-label: Session.sandbox-label;
-            clicked => { sandbox-menu.show(); }
-            HorizontalLayout {
-                padding-left: Theme.space-s;
-                padding-right: Theme.space-s;
-                spacing: Theme.space-xs;
-                Icon {
-                    source: Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
-                    tint: Session.sandboxed ? Theme.info : Theme.warning-text;
-                    width: Theme.icon-small;
-                    y: (parent.height - self.height) / 2;
-                }
-                Text {
-                    text: Session.sandbox-label;
-                    color: Theme.text-secondary;
-                    font-size: 1rem * Theme.small;
-                    vertical-alignment: center;
-                }
-            }
-            sandbox-menu := PopupWindow {
-                x: parent.width - self.width;
-                y: parent.height + Theme.space-xs;
-                width: 340px;
-                height: sandbox-body.preferred-height;
-                close-policy: close-on-click-outside;
-                Rectangle {
-                    background: Theme.surface;
-                    border-radius: Theme.radius-m;
-                    border-width: 1px;
-                    border-color: Theme.divider;
-                    drop-shadow-blur: 12px;
-                    drop-shadow-color: #0004;
-                    sandbox-body := VerticalLayout {
-                        padding: Theme.space-m;
-                        spacing: Theme.space-s;
-                        Text {
-                            text: Session.sandbox-label;
-                            color: Theme.text;
-                            font-weight: 600;
-                        }
-                        Small {
-                            text: Session.sandbox-detail;
-                            wrap: word-wrap;
-                        }
-                        TextButton {
-                            text: Session.sandbox-on ? "Turn the sandbox off" : "Sandbox Claude Code";
-                            danger: Session.sandbox-on;
-                            clicked => {
-                                Session.toggle-sandbox();
-                                sandbox-menu.close();
-                            }
-                        }
-                        if Session.sandbox-on: TextButton {
-                            text: Session.sandbox-desktop ? "Close the display to Claude" : "Let Claude use the display (UI tests)";
-                            clicked => {
-                                Session.toggle-sandbox-desktop();
-                                sandbox-menu.close();
-                            }
-                        }
-                        Caption {
-                            text: "Changing it starts Claude Code again; the conversation goes on.";
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-            }
+        // In the sidebar's foot while that shows; here while it is hidden.
+        if !root.sidebar-shown: SandboxChip {
+            height: Theme.chip;
+            y: (parent.height - self.height) / 2;
         }
         // Side questions: labelled, as a bare question mark reads as help.
         Pressable {
@@ -1420,9 +1444,7 @@ export component AppWindow inherits Window {
             return reject;
         }
         HorizontalLayout {
-            if root.sidebar-shown: Sidebar {
-                sandbox-clicked => { header.open-sandbox-menu(); }
-            }
+            if root.sidebar-shown: Sidebar { }
             if root.sidebar-shown: Rectangle {
                 width: 1px;
                 background: Theme.divider;

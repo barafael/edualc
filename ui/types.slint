@@ -168,6 +168,10 @@ export enum PromptKind { none, tool, question, plan }
 // of the conversation's column, or all of it.
 export enum ComposerSize { fit, chosen, tall, full }
 
+// What a running turn is doing, for the line that sweeps the composer's edge: the model at
+// work (thinking, writing), or a tool.
+export enum Activity { idle, model, tool }
+
 // An image pasted into the composer, to go with the next message.
 export struct ImageChip {
     thumbnail: image,
