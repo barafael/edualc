@@ -1,8 +1,8 @@
 // The shared pieces the window is built from. Each takes its look from `Theme` and `Motion`.
 
 import { Motion, Theme } from "theme.slint";
-import { MenuItem } from "types.slint";
-import { Session, TextSelection } from "state.slint";
+import { FocusArea, MenuItem } from "types.slint";
+import { Focus, Session, TextSelection } from "state.slint";
 
 // A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
 export component Icon inherits Image {
@@ -32,11 +32,54 @@ export component Caption inherits Text {
 
 // Something to click that isn't a button: a row, a header. Lit while hovered or pressed,
 // tinted while selected (with a bar of the accent, so selection isn't told by tint alone).
+// Makes the control it is in reachable with Tab: Enter or Space presses it, and a ring in the
+// accent shows the focus. A click doesn't take the focus, so writing goes on where it was.
+export component KeyPress inherits FocusScope {
+    in property <length> ring-radius: Theme.radius-s;
+    callback pressed;
+    focus-on-click: false;
+    key-pressed(event) => {
+        if event.text == Key.Return || event.text == " " {
+            root.pressed();
+            return accept;
+        }
+        return reject;
+    }
+    // A gap between the ring and the control, so it shows around one in the accent too.
+    if root.has-focus: Rectangle {
+        x: -4px;
+        y: -4px;
+        width: parent.width + 8px;
+        height: parent.height + 8px;
+        border-radius: root.ring-radius + 4px;
+        border-width: 2px;
+        border-color: Theme.accent;
+    }
+}
+
+// An area's edge in the Tab order: Tab that reaches it goes round to the area's other end
+// (`crossed`; see `Focus`), so Tab and Shift+Tab stay within the area.
+export component AreaFence inherits FocusScope {
+    in property <FocusArea> area;
+    callback crossed;
+    // No height, and the width it is given: a fixed width would bound a layout's across it.
+    height: 0px;
+    focus-on-click: false;
+    focus-gained(reason) => {
+        if reason == FocusReason.tab-navigation {
+            Focus.area = root.area;
+            root.crossed();
+        }
+    }
+}
+
 export component Pressable inherits Rectangle {
     in property <bool> selected;
     // Where the arrow keys are in a list, shown as the pointer's hover is.
     in property <bool> highlighted;
     in property <bool> enabled: true;
+    // Reached with Tab; rows that the arrow keys go through (a menu's, say) are not.
+    in property <bool> tab-stop: true;
     out property <bool> hovered: touch.has-hover;
     callback clicked;
     accessible-role: button;
@@ -59,6 +102,11 @@ export component Pressable inherits Rectangle {
         background: Theme.accent;
     }
     @children
+    KeyPress {
+        enabled: root.enabled && root.tab-stop;
+        ring-radius: root.border-radius;
+        pressed => { root.clicked(); }
+    }
 }
 
 // A button that is only an icon, its label as the tooltip.
@@ -92,6 +140,11 @@ export component IconButton inherits Rectangle {
         width: root.icon-size;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
+    }
+    KeyPress {
+        enabled: root.enabled;
+        ring-radius: root.border-radius;
+        pressed => { root.clicked(); }
     }
 }
 
@@ -140,6 +193,11 @@ export component TextButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+    KeyPress {
+        enabled: root.enabled;
+        ring-radius: root.border-radius;
+        pressed => { root.clicked(); }
     }
 }
 
@@ -237,6 +295,7 @@ export component Field inherits Rectangle {
     in property <string> placeholder;
     in property <bool> enabled: true;
     in-out property <string> text <=> input.text;
+    out property <bool> has-focus: input.has-focus;
     callback accepted(string);
     callback edited(string);
     forward-focus: input;
@@ -332,12 +391,17 @@ export component MenuButton inherits Rectangle {
             y: (parent.height - self.height) / 2;
         }
     }
+    function open() {
+        root.highlighted = max(0, root.current-index);
+        menu.show();
+    }
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => {
-            root.highlighted = max(0, root.current-index);
-            menu.show();
-        }
+        clicked => { root.open(); }
+    }
+    KeyPress {
+        ring-radius: root.border-radius;
+        pressed => { root.open(); }
     }
     menu := PopupWindow {
         x: 0;
@@ -382,6 +446,7 @@ export component MenuButton inherits Rectangle {
                 for item[index] in root.model: Pressable {
                     selected: index == root.current-index;
                     highlighted: index == root.highlighted;
+                    tab-stop: false;
                     clicked => {
                         root.current-index = index;
                         root.selected(index);

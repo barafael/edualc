@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -202,6 +202,26 @@ export global Side {
     callback copy(int);
     callback to-conversation;
     callback branch;
+}
+
+// Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and
+// Shift+F6 go from one to the next.
+export global Focus {
+    // The area the focus was last seen in.
+    in-out property <FocusArea> area: FocusArea.writing;
+    // A fence is sending the focus round: the next fence Tab reaches leaves it there, as an
+    // area with nothing to focus would send it round for ever.
+    in-out property <bool> going-round;
+    // Moves the focus on as Tab (true) or Shift+Tab would, once the event at hand is done;
+    // clears `going-round` then.
+    callback step(bool);
+    // F6, Shift+F6 and Ctrl+K: the area to go to, and a count bumped each time. The area's
+    // home takes the focus (the sidebar's filter, the transcript, what Claude asks or else the
+    // composer, the side panel's question), and clears `pending`; a home made just then (the
+    // sidebar shown by Ctrl+K) takes it as it is made.
+    in-out property <FocusArea> wanted;
+    in-out property <int> wanted-serial;
+    in-out property <bool> pending;
 }
 
 // The usage panel: the CLI's `/usage` and `/context`, shown over the conversation.

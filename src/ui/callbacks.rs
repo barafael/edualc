@@ -7,7 +7,8 @@ use slint::ComponentHandle;
 use crate::app::{Action, Event, PermissionMode};
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, LineBreak, Prompt, Session, Sessions, Side, Transcript, Usage,
+    AppWindow, Clipboard, Composer, Focus, LineBreak, Prompt, Session, Sessions, Side, Transcript,
+    Usage,
 };
 use crate::settings::Zoom;
 
@@ -205,6 +206,31 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     window
         .global::<Clipboard>()
         .on_copy(actions.on_text(Action::Copy));
+
+    // An area fence sends the focus round (see `AreaFence`): from the fence it moved to, a Tab
+    // (or Shift+Tab) goes on into the area, once the focus event at hand is done.
+    let weak = window.as_weak();
+    window.global::<Focus>().on_step(move |forward| {
+        let weak = weak.clone();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let key = if forward {
+                slint::platform::Key::Tab
+            } else {
+                slint::platform::Key::Backtab
+            };
+            let text = slint::SharedString::from(key);
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+            window.global::<Focus>().set_going_round(false);
+        });
+    });
 
     // Closing ends the process first (it gets a moment to tidy up), then the event loop.
     window.window().on_close_requested(move || {

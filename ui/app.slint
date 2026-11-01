@@ -3,9 +3,9 @@
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
-import { Activity, ComposerSize, LiveState, PermissionKind, PromptKind, SideView, TaskKind } from "types.slint";
-import { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
-import { Caption, Field, Icon, IconButton, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
+import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SideView, TaskKind } from "types.slint";
+import { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
 import { PlanReview } from "plan.slint";
 import { SidePanel } from "side.slint";
@@ -13,7 +13,7 @@ import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
 export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, ImageChip, Entry, EntryKind, LiveItem, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, TaskItem, TaskKind, ToolState } from "types.slint";
-export { Clipboard, Composer, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+export { Clipboard, Composer, Focus, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
 // work is another window's to show, and a moving dot here would keep this one drawing.
@@ -207,6 +207,17 @@ component Sidebar inherits Rectangle {
     max-width: Theme.sidebar;
     horizontal-stretch: 0;
     background: Theme.surface-raised;
+    // Tab goes round within the sidebar.
+    sidebar-start := AreaFence {
+        area: FocusArea.sidebar;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                sidebar-end.focus();
+                Focus.step(false);
+            }
+        }
+    }
     VerticalLayout {
         padding: Theme.space-m;
         spacing: Theme.space-s;
@@ -383,9 +394,24 @@ component Sidebar inherits Rectangle {
                 text: "Sessions started in this folder. Click one to continue it.";
                 wrap: word-wrap;
             }
+            // The sidebar's home for the keyboard (Ctrl+K, F6).
             Field {
+                property <int> wanted: Focus.wanted-serial;
                 placeholder: "Filter";
                 edited(text) => { Sessions.filter-edited(text); }
+                init => { self.take-wanted(); }
+                changed wanted => { self.take-wanted(); }
+                changed has-focus => {
+                    if self.has-focus {
+                        Focus.area = FocusArea.sidebar;
+                    }
+                }
+                function take-wanted() {
+                    if Focus.pending && Focus.wanted == FocusArea.sidebar {
+                        Focus.pending = false;
+                        self.focus();
+                    }
+                }
             }
             if Sessions.items.length == 0: Small {
                 text: "None yet: what you start here is listed here.";
@@ -582,6 +608,16 @@ component Sidebar inherits Rectangle {
             }
         }
     }
+    sidebar-end := AreaFence {
+        area: FocusArea.sidebar;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                sidebar-start.focus();
+                Focus.step(true);
+            }
+        }
+    }
 }
 
 // What Claude waits for: may a tool run, its questions answered, its plan approved. Its buttons
@@ -594,12 +630,39 @@ component PromptBar inherits Rectangle {
     property <int> serial: Prompt.serial;
     // The question shown: they come one at a time.
     property <int> current;
+    // The focus comes into the prompt as it opens, unless a draft is being written (where the
+    // keys would go on into it), and with F6. It goes to what the prompt asks for first: the
+    // question's options, the comment on the plan, or what to do instead of a tool, never
+    // straight to a button. What takes it is made with the prompt or there already, so it is
+    // asked by a flag and a count (`grab-pending`, `grab-serial`), and clears the flag.
+    in-out property <bool> grab-pending;
+    in-out property <int> grab-serial;
+    function grab() {
+        Focus.area = FocusArea.writing;
+        root.grab-pending = true;
+        root.grab-serial += 1;
+    }
+    property <int> wanted: Focus.wanted-serial;
+    changed wanted => {
+        if Focus.pending && Focus.wanted == FocusArea.writing {
+            Focus.pending = false;
+            root.grab();
+        }
+    }
     changed serial => {
         root.armed = false;
         root.current = 0;
         arm-timer.running = true;
+        if Composer.draft == "" {
+            root.grab();
+        }
     }
-    init => { arm-timer.running = true; }
+    init => {
+        arm-timer.running = true;
+        if Composer.draft == "" {
+            root.grab();
+        }
+    }
     arm-timer := Timer {
         interval: 700ms;
         running: false;
@@ -682,12 +745,21 @@ component PromptBar inherits Rectangle {
                 // Enter denies with what was written, as Deny does: once armed like the buttons,
                 // and not with nothing written.
                 feedback := Field {
+                    property <int> grab: root.grab-serial;
                     horizontal-stretch: 1;
                     placeholder: "Or tell Claude what to do instead";
                     accepted(text) => {
                         if root.armed && text != "" {
                             Prompt.deny(Prompt.request, text);
                             self.text = "";
+                        }
+                    }
+                    init => { self.take(); }
+                    changed grab => { self.take(); }
+                    function take() {
+                        if root.grab-pending {
+                            root.grab-pending = false;
+                            self.focus();
                         }
                     }
                 }
@@ -703,8 +775,10 @@ component PromptBar inherits Rectangle {
                 alignment: start;
                 if Prompt.questions.length > 1: HorizontalLayout {
                     spacing: Theme.space-xs;
+                    // Left and Right in the options go between them.
                     for question[q] in Prompt.questions: Pressable {
                         selected: q == root.current;
+                        tab-stop: false;
                         accessible-label: question.header != "" ? question.header : "Question \{q + 1}";
                         clicked => { root.current = q; }
                         HorizontalLayout {
@@ -741,7 +815,9 @@ component PromptBar inherits Rectangle {
                         // one picked, else the first.
                         property <int> pointed: -1;
                         property <int> picked: -1;
-                        property <int> shown: self.pointed >= 0 ? self.pointed : self.picked >= 0 ? self.picked : 0;
+                        property <int> shown: self.pointed >= 0 ? self.pointed
+                            : options.has-focus ? options.at
+                            : self.picked >= 0 ? self.picked : 0;
                         visible: q == root.current;
                         height: self.visible ? self.preferred-height : 0px;
                         spacing: Theme.space-xs;
@@ -755,41 +831,110 @@ component PromptBar inherits Rectangle {
                         }
                         HorizontalLayout {
                             spacing: Theme.space-m;
-                            VerticalLayout {
+                            // One stop for Tab: Up and Down go through the options and Space
+                            // picks one; Enter picks one too, and for a single choice goes on to
+                            // the next question. Left and Right go between the questions.
+                            options := FocusScope {
+                                property <int> at: 0;
+                                property <int> grab: root.grab-serial;
                                 horizontal-stretch: 1;
-                                alignment: start;
-                                spacing: Theme.space-xs;
-                                for option[o] in question.options: Pressable {
-                                    selected: option.selected;
-                                    changed hovered => {
-                                        if self.hovered {
-                                            entry.pointed = o;
-                                        }
+                                focus-on-click: false;
+                                function take() {
+                                    if root.grab-pending && q == root.current {
+                                        root.grab-pending = false;
+                                        self.focus();
                                     }
-                                    clicked => {
-                                        entry.picked = o;
-                                        Prompt.toggle-option(q, o);
+                                }
+                                function pick() {
+                                    entry.picked = self.at;
+                                    Prompt.toggle-option(q, self.at);
+                                }
+                                // To the question at `to`, the keys with it.
+                                function go(to: int) {
+                                    root.current = clamp(to, 0, Prompt.questions.length - 1);
+                                    root.grab();
+                                }
+                                init => { self.take(); }
+                                changed grab => { self.take(); }
+                                key-pressed(event) => {
+                                    if event.text == Key.DownArrow {
+                                        self.at = min(self.at + 1, question.options.length - 1);
+                                        return accept;
                                     }
-                                    HorizontalLayout {
-                                        padding: Theme.space-s;
-                                        spacing: Theme.space-s;
-                                        Icon {
-                                            source: question.multi
-                                                ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
-                                                : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
-                                            tint: option.selected ? Theme.accent : Theme.text-tertiary;
+                                    if event.text == Key.UpArrow {
+                                        self.at = max(self.at - 1, 0);
+                                        return accept;
+                                    }
+                                    if event.text == " " {
+                                        self.pick();
+                                        return accept;
+                                    }
+                                    if event.text == Key.Return {
+                                        if question.multi {
+                                            self.pick();
+                                        } else {
+                                            if !question.options[self.at].selected {
+                                                self.pick();
+                                            }
+                                            self.go(q + 1);
                                         }
-                                        VerticalLayout {
-                                            horizontal-stretch: 1;
-                                            Text {
-                                                text: option.label;
-                                                color: Theme.text;
-                                                wrap: word-wrap;
+                                        return accept;
+                                    }
+                                    if event.text == Key.RightArrow {
+                                        self.go(q + 1);
+                                        return accept;
+                                    }
+                                    if event.text == Key.LeftArrow {
+                                        self.go(q - 1);
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                                VerticalLayout {
+                                    alignment: start;
+                                    spacing: Theme.space-xs;
+                                    for option[o] in question.options: Pressable {
+                                        selected: option.selected;
+                                        highlighted: options.has-focus && o == options.at;
+                                        tab-stop: false;
+                                        changed hovered => {
+                                            if self.hovered {
+                                                entry.pointed = o;
                                             }
-                                            if option.description != "": Small {
-                                                text: option.description;
-                                                wrap: word-wrap;
+                                        }
+                                        clicked => {
+                                            options.at = o;
+                                            entry.picked = o;
+                                            Prompt.toggle-option(q, o);
+                                        }
+                                        HorizontalLayout {
+                                            padding: Theme.space-s;
+                                            spacing: Theme.space-s;
+                                            Icon {
+                                                source: question.multi
+                                                    ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
+                                                    : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
+                                                tint: option.selected ? Theme.accent : Theme.text-tertiary;
                                             }
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                Text {
+                                                    text: option.label;
+                                                    color: Theme.text;
+                                                    wrap: word-wrap;
+                                                }
+                                                if option.description != "": Small {
+                                                    text: option.description;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+                                        // The option the keys are on, ringed: the hover's
+                                        // colour alone doesn't show on one picked.
+                                        if options.has-focus && o == options.at: Rectangle {
+                                            border-radius: parent.border-radius;
+                                            border-width: 2px;
+                                            border-color: Theme.accent;
                                         }
                                     }
                                 }
@@ -858,7 +1003,16 @@ component PromptBar inherits Rectangle {
                 text: Prompt.comment-count == 1 ? "1 comment on the plan goes with your answer." : "\{Prompt.comment-count} comments on the plan go with your answer.";
             }
             overall := Field {
+                property <int> grab: root.grab-serial;
                 placeholder: "A comment on the whole plan (optional)";
+                init => { self.take(); }
+                changed grab => { self.take(); }
+                function take() {
+                    if root.grab-pending {
+                        root.grab-pending = false;
+                        self.focus();
+                    }
+                }
             }
             HorizontalLayout {
                 spacing: Theme.space-s;
@@ -909,6 +1063,7 @@ component CommandList inherits Rectangle {
         padding: Theme.space-xs;
         for command[i] in Composer.commands: Pressable {
             highlighted: i == min(Composer.command-index, Composer.commands.length - 1);
+            tab-stop: false;
             clicked => { Composer.pick-command(i); }
             HorizontalLayout {
                 padding: Theme.space-s;
@@ -975,23 +1130,29 @@ component SendButton inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
+    function press() {
+        if root.stop {
+            Session.interrupt();
+        } else {
+            // Emptied at once (the app puts back what must wait), so an Esc right after finds
+            // the draft empty and stops the turn.
+            Composer.send(Composer.draft);
+            Composer.draft = "";
+            root.sent();
+        }
+    }
     touch := TouchArea {
         enabled: root.ready;
         mouse-cursor: pointer;
-        clicked => {
-            if root.stop {
-                Session.interrupt();
-            } else {
-                // Emptied at once (the app puts back what must wait), so an Esc right after
-                // finds the draft empty and stops the turn.
-                Composer.send(Composer.draft);
-                Composer.draft = "";
-                root.sent();
-            }
-        }
+        clicked => { root.press(); }
         if self.has-hover: Tooltip {
             text: @markdown("\{root.stop ? "Stop (Esc)" : "Send (Enter)"}");
         }
+    }
+    KeyPress {
+        enabled: root.ready;
+        ring-radius: root.border-radius;
+        pressed => { root.press(); }
     }
 }
 
@@ -1031,6 +1192,14 @@ component EditArea inherits Rectangle {
     public function focus-end() {
         input.focus();
         input.set-selection-offsets(2147483647, 2147483647);
+    }
+    // Where F6 goes in the writing area while Claude asks nothing.
+    property <int> wanted: Focus.wanted-serial;
+    changed wanted => {
+        if Focus.pending && Focus.wanted == FocusArea.writing && Prompt.kind == PromptKind.none && self.visible {
+            Focus.pending = false;
+            self.focus-end();
+        }
     }
     background: Theme.card;
     TouchArea {
@@ -1183,6 +1352,11 @@ component EditArea inherits Rectangle {
                 width: scroll.width;
                 height: max(scroll.height, measure.preferred-height);
                 text <=> Composer.draft;
+                changed has-focus => {
+                    if self.has-focus {
+                        Focus.area = FocusArea.writing;
+                    }
+                }
                 single-line: false;
                 wrap: word-wrap;
                 color: Theme.text;
@@ -1634,6 +1808,43 @@ export component AppWindow inherits Window {
     property <length> prompt-tallest: 400px;
     changed height => { self.prompt-tallest = self.height / 2; }
 
+    // The area after the one with the focus (or before it), of those shown.
+    function next-area(forward: bool) -> FocusArea {
+        if forward {
+            if Focus.area == FocusArea.sidebar {
+                return FocusArea.conversation;
+            }
+            if Focus.area == FocusArea.conversation {
+                return FocusArea.writing;
+            }
+            if Focus.area == FocusArea.writing && Side.view == SideView.shown {
+                return FocusArea.side;
+            }
+            return root.sidebar-shown ? FocusArea.sidebar : FocusArea.conversation;
+        }
+        if Focus.area == FocusArea.side {
+            return FocusArea.writing;
+        }
+        if Focus.area == FocusArea.writing {
+            return FocusArea.conversation;
+        }
+        if Focus.area == FocusArea.conversation && root.sidebar-shown {
+            return FocusArea.sidebar;
+        }
+        return Side.view == SideView.shown ? FocusArea.side : FocusArea.writing;
+    }
+
+    // Brings the focus to the area's home (see `Focus.wanted`).
+    function go-to(area: FocusArea) {
+        Focus.area = area;
+        Focus.wanted = area;
+        Focus.pending = area != FocusArea.conversation;
+        Focus.wanted-serial += 1;
+        if area == FocusArea.conversation {
+            reading.focus();
+        }
+    }
+
     // Hidden for room in a narrow window (Ctrl+B).
     in-out property <bool> sidebar-shown: true;
 
@@ -1672,6 +1883,16 @@ export component AppWindow inherits Window {
                 root.sidebar-shown = !root.sidebar-shown;
                 return accept;
             }
+            // F6 and Shift+F6 go from area to area; Ctrl+K to the sessions' filter.
+            if event.text == Key.F6 {
+                root.go-to(root.next-area(!event.modifiers.shift));
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "k" || event.text == "K") {
+                root.sidebar-shown = true;
+                root.go-to(FocusArea.sidebar);
+                return accept;
+            }
             // Text size: Ctrl and +/= (both, for layouts where + needs Shift), -, 0. Also the
             // keys those are on where they need Shift: `;` on Japanese (JIS) keyboards, where
             // + is Shift+;, and `à` on French (AZERTY) ones, where 0 is Shift+à.
@@ -1700,12 +1921,66 @@ export component AppWindow inherits Window {
             column := VerticalLayout {
                 horizontal-stretch: 1;
                 min-width: 360px;
+                // Tab goes round within the conversation (the header and the transcript), and
+                // within what Claude asks together with the composer.
+                conversation-start := AreaFence {
+                    area: FocusArea.conversation;
+                    crossed => {
+                        if !Focus.going-round {
+                            Focus.going-round = true;
+                            conversation-end.focus();
+                            Focus.step(false);
+                        }
+                    }
+                }
                 header := Header {
                     sidebar-shown: root.sidebar-shown;
                     toggle-sidebar => { root.sidebar-shown = !root.sidebar-shown; }
                 }
                 Rectangle {
                     vertical-stretch: 1;
+                    // The conversation's home for the keyboard (F6): the arrow keys, Page Up and
+                    // Down, Space, Home and End scroll it.
+                    reading := FocusScope {
+                        focus-on-click: false;
+                        function scroll-by(delta: length) {
+                            transcript.content-y = clamp(transcript.content-y - delta, min(0px, transcript.visible-height - transcript.content-height), 0px);
+                            transcript.follow = transcript.at-end();
+                        }
+                        changed has-focus => {
+                            if self.has-focus {
+                                Focus.area = FocusArea.conversation;
+                            }
+                        }
+                        key-pressed(event) => {
+                            if event.text == Key.DownArrow {
+                                self.scroll-by(4rem);
+                                return accept;
+                            }
+                            if event.text == Key.UpArrow {
+                                self.scroll-by(-4rem);
+                                return accept;
+                            }
+                            if event.text == Key.PageDown || event.text == " " {
+                                self.scroll-by(transcript.visible-height * 90%);
+                                return accept;
+                            }
+                            if event.text == Key.PageUp {
+                                self.scroll-by(-transcript.visible-height * 90%);
+                                return accept;
+                            }
+                            if event.text == Key.Home {
+                                transcript.content-y = 0;
+                                transcript.follow = transcript.at-end();
+                                return accept;
+                            }
+                            if event.text == Key.End {
+                                transcript.go-to-end();
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
                     transcript := ListView {
                         // Follow new output only while the end is in view, so reading back
                         // isn't interrupted. Opening a session starts at the end.
@@ -1862,6 +2137,31 @@ export component AppWindow inherits Window {
                         border-color: Theme.divider;
                         clicked => { transcript.go-to-end(); }
                     }
+                    // Scrolled by the keys: a ring inside its edge.
+                    if reading.has-focus: Rectangle {
+                        border-width: 2px;
+                        border-color: Theme.accent;
+                    }
+                }
+                conversation-end := AreaFence {
+                    area: FocusArea.conversation;
+                    crossed => {
+                        if !Focus.going-round {
+                            Focus.going-round = true;
+                            conversation-start.focus();
+                            Focus.step(true);
+                        }
+                    }
+                }
+                writing-start := AreaFence {
+                    area: FocusArea.writing;
+                    crossed => {
+                        if !Focus.going-round {
+                            Focus.going-round = true;
+                            writing-end.focus();
+                            Focus.step(false);
+                        }
+                    }
                 }
                 // What Claude asks and the commands matching the draft, in the transcript's
                 // column above the composer. Placed (`x`), so that their width, taken from the
@@ -1898,6 +2198,16 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                writing-end := AreaFence {
+                    area: FocusArea.writing;
+                    crossed => {
+                        if !Focus.going-round {
+                            Focus.going-round = true;
+                            writing-start.focus();
+                            Focus.step(true);
+                        }
+                    }
+                }
             }
             if Side.view == SideView.shown: Rectangle {
                 width: 1px;
@@ -1922,11 +2232,32 @@ export component AppWindow inherits Window {
             background: Theme.card;
             drop-shadow-blur: 24px;
             drop-shadow-color: Theme.shadow;
+            // Tab goes round within it.
+            tall-start := AreaFence {
+                area: FocusArea.writing;
+                crossed => {
+                    if !Focus.going-round {
+                        Focus.going-round = true;
+                        tall-end.focus();
+                        Focus.step(false);
+                    }
+                }
+            }
             tall := EditArea {
                 width: parent.width;
                 height: parent.height;
                 stretched: true;
                 init => { self.focus-end(); }
+            }
+            tall-end := AreaFence {
+                area: FocusArea.writing;
+                crossed => {
+                    if !Focus.going-round {
+                        Focus.going-round = true;
+                        tall-start.focus();
+                        Focus.step(true);
+                    }
+                }
             }
         }
     }

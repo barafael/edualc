@@ -200,6 +200,10 @@ export enum PromptKind { none, tool, question, plan }
 // of the conversation's column, or all of it.
 export enum ComposerSize { fit, chosen, tall, full }
 
+// The window's areas for the keyboard, in F6's order: the sidebar, the conversation (its header
+// and transcript), what Claude asks with the composer, and the side panel.
+export enum FocusArea { sidebar, conversation, writing, side }
+
 // What a running turn is doing, for the line that sweeps the composer's edge: the model at
 // work (thinking, writing), or a tool.
 export enum Activity { idle, model, tool }

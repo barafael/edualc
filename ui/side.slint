@@ -4,9 +4,9 @@
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { SideState } from "types.slint";
-import { Side } from "state.slint";
-import { Caption, Field, Icon, IconButton, Small, TextButton } from "widgets.slint";
+import { FocusArea, SideState } from "types.slint";
+import { Focus, Side } from "state.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, Small, TextButton } from "widgets.slint";
 import { BlockView } from "transcript.slint";
 
 export component SidePanel inherits Rectangle {
@@ -27,6 +27,24 @@ export component SidePanel inherits Rectangle {
         if Side.focus-wanted {
             Side.focus-wanted = false;
             follow-up.focus();
+        }
+    }
+    // F6 comes to the question; Tab goes round within the panel.
+    property <int> wanted: Focus.wanted-serial;
+    changed wanted => {
+        if Focus.pending && Focus.wanted == FocusArea.side {
+            Focus.pending = false;
+            follow-up.focus();
+        }
+    }
+    panel-start := AreaFence {
+        area: FocusArea.side;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                panel-end.focus();
+                Focus.step(false);
+            }
         }
     }
     VerticalLayout {
@@ -176,6 +194,16 @@ export component SidePanel inherits Rectangle {
                     enabled: Side.can-branch;
                     clicked => { Side.branch(); }
                 }
+            }
+        }
+    }
+    panel-end := AreaFence {
+        area: FocusArea.side;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                panel-start.focus();
+                Focus.step(true);
             }
         }
     }

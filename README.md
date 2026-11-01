@@ -104,6 +104,14 @@ other way around.
   paste. The account, cost and plan limits sit at the foot of the sidebar, which Ctrl+B hides; a
   click on them opens the usage details over the conversation, which stays in sight around them.
   While Claude Code isn't sandboxed, the foot of the sidebar says so above them too.
+- **The keyboard.** Every control can be reached with Tab and pressed with Enter or Space, a ring
+  showing where the focus is. Tab and Shift+Tab stay within the area they are in: the sidebar, the
+  conversation, what Claude asks together with the composer, or the side panel. F6 and Shift+F6 go
+  from one area to the next, and Ctrl+K goes to the sessions' filter. In the conversation the
+  arrow keys, Page Up and Down, Home and End scroll. When Claude asks, the focus comes into the
+  question (never onto Allow), unless you are writing a draft: Up and Down go through the options,
+  Space picks one, Enter picks one and goes on to the next question, Left and Right go between
+  the questions.
 
 ## Look
 
