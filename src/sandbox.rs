@@ -2,8 +2,10 @@
 //! commands, hooks, MCP servers) see the system and the toolchains read-only, may write only the
 //! project, its git directory, caches and temporary files, may reach no socket file but the
 //! ssh agent's, may signal nothing outside, and gain no privileges (`sudo` and `pkexec` don't
-//! work). What Claude Code runs on its own (settings and their hooks, skills, plugins) stays
-//! read-only, so nothing can be planted there to run outside the sandbox later.
+//! work). Other Claude Code sessions may message it, but it messages none of them: one that
+//! isn't sandboxed could do for it what the sandbox forbids. What Claude Code runs on its own
+//! (settings and their hooks, skills, plugins) stays read-only, so nothing can be planted there
+//! to run outside the sandbox later.
 //!
 //! Only the child is restricted: a thread restricts itself and starts it, and this window,
 //! which opens editors, notifies and stops other sessions, stays free. Landlock can't be
@@ -17,6 +19,7 @@
 //! bubblewrap mounts, and Landlock forbids mounting to what it restricts. Whoever turned Claude
 //! Code's on in their own settings keeps it, and this one stays off.
 
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use crate::external::claude_files::UserSettings;
@@ -53,6 +56,9 @@ pub(crate) struct Policy {
     devices: Vec<PathBuf>,
     /// Socket files it may connect to.
     sockets: Vec<PathBuf>,
+    /// Folders it may make a socket file in, for others to connect to; it may neither connect
+    /// to one there nor remove one, as it would to sweep away sessions it takes for ended.
+    inboxes: Vec<PathBuf>,
 }
 
 /// How far the kernel enforced the sandbox.
@@ -196,6 +202,10 @@ impl Policy {
         policy
             .sockets
             .extend(std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from));
+        policy.inboxes.extend(
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .and_then(|runtime| messaging_folder(&PathBuf::from(runtime))),
+        );
         if allowances.desktop {
             if let (Some(runtime), Some(display)) = (
                 std::env::var_os("XDG_RUNTIME_DIR"),
@@ -242,7 +252,8 @@ impl Policy {
             .add_rules(rules(&self.read, read))?
             .add_rules(rules(&self.write, write))?
             .add_rules(rules(&self.devices, device))?
-            .add_rules(rules(&self.sockets, AccessFs::ResolveUnix.into()))?;
+            .add_rules(rules(&self.sockets, AccessFs::ResolveUnix.into()))?
+            .add_rules(rules(&self.inboxes, AccessFs::MakeSock.into()))?;
         let status = ruleset.restrict_self()?;
         Ok(match status.ruleset {
             RulesetStatus::FullyEnforced => Enforcement::Full,
@@ -298,6 +309,20 @@ fn git_includes(home: &Path) -> Vec<PathBuf> {
             None => PathBuf::from(path),
         })
         .collect()
+}
+
+/// The folder Claude Code's sessions put their messaging sockets in, made as Claude Code makes
+/// it if no session has yet: the sandboxed one couldn't.
+fn messaging_folder(runtime: &Path) -> Option<PathBuf> {
+    let folder = runtime.join("cc-socks");
+    match std::fs::DirBuilder::new().mode(0o700).create(&folder) {
+        Ok(()) => Some(folder),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Some(folder),
+        Err(error) => {
+            tracing::debug!(%error, "no messaging folder");
+            None
+        }
+    }
 }
 
 /// `~/.ssh`'s public keys: readable, unlike the private ones beside them.
@@ -363,6 +388,7 @@ fn git_dirs(project: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::process::Command;
 
     use super::*;
@@ -384,6 +410,7 @@ mod tests {
             write: vec![project.clone()],
             devices: vec![PathBuf::from("/dev/null")],
             sockets: Vec::new(),
+            inboxes: Vec::new(),
         };
         let outcome = std::thread::scope(|scope| {
             scope
@@ -422,6 +449,48 @@ mod tests {
             std::fs::read_to_string(private.join("secret.txt")).is_ok(),
             "this thread stays free"
         );
+        std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
+    }
+
+    /// Claude Code's messaging: others reach a sandboxed session at its own socket, and it
+    /// reaches none of theirs, nor takes one away.
+    #[test]
+    fn a_sandboxed_session_can_be_messaged_but_messages_no_one() {
+        let scratch = std::env::temp_dir().join(format!("edualc-inbox-{}", std::process::id()));
+        let inbox = scratch.join("cc-socks");
+        std::fs::create_dir_all(&inbox).expect("an inbox folder");
+        let peer = inbox.join("peer.sock");
+        let _peer_listening = UnixListener::bind(&peer).expect("a peer's socket");
+        let own = inbox.join("own.sock");
+        let policy = Policy {
+            read: ["/usr", "/etc", "/proc"].map(PathBuf::from).to_vec(),
+            inboxes: vec![inbox],
+            ..Policy::default()
+        };
+        let outcome = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let enforcement = policy.restrict_this_thread().expect("a sandbox");
+                    let own_listening = UnixListener::bind(&own);
+                    // Landlock restricts this thread itself: no child is needed to try it.
+                    let to_peer = UnixStream::connect(&peer);
+                    let peer_removed = std::fs::remove_file(&peer);
+                    (enforcement, own_listening, to_peer, peer_removed)
+                })
+                .join()
+                .expect("the restricted thread")
+        });
+        let (enforcement, own_listening, to_peer, peer_removed) = outcome;
+        let own_listening = own_listening.expect("its own socket is made");
+        assert!(
+            UnixStream::connect(&own).is_ok(),
+            "others reach the sandboxed session"
+        );
+        if enforcement == Enforcement::Full {
+            assert!(to_peer.is_err(), "it reaches no other session");
+            assert!(peer_removed.is_err(), "nor takes another's socket away");
+        }
+        drop(own_listening);
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 
