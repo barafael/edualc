@@ -282,11 +282,8 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                 scope
                     .spawn(|| {
                         let enforcement = policy.restrict_this_thread()?;
-                        if enforcement != Enforcement::None {
-                            command.arg(format!(
-                                "--append-system-prompt={}",
-                                sandbox::NOTE_FOR_CLAUDE
-                            ));
+                        if let Some(note) = policy.note_for_claude(enforcement) {
+                            command.arg(format!("--append-system-prompt={note}"));
                         }
                         // The child's pipes are made with the daemon's runtime, from this thread.
                         let _in_runtime = runtime.enter();

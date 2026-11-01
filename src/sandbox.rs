@@ -51,17 +51,28 @@ pub(crate) const CLAUDE_CODE_RUNS: &[&str] = &[
     "keybindings.json",
 ];
 
-/// What a sandboxed Claude is told about its sandbox (`--append-system-prompt`). Not told, it
-/// took a denied podman for a broken install, and asked for `dangerouslyDisableSandbox`, which
-/// lifts only Claude Code's own sandbox.
-pub(crate) const NOTE_FOR_CLAUDE: &str = "\
+// What a sandboxed Claude is told about its sandbox, in parts (see `Policy::note_for_claude`).
+// Not told, it took a denied podman for a broken install, asked for `dangerouslyDisableSandbox`,
+// which lifts only Claude Code's own sandbox, and, finding no other session to tell, left what
+// it had for them in the project as a file.
+const NOTE_FILES: &str = "\
 This session runs in edualc, which keeps Claude Code and everything it starts in a Landlock \
-sandbox. It may change only the project, its git folder, caches and a temporary folder of its \
-own, which $TMPDIR names: /tmp and /var/tmp can't be written. The system and the usual \
-toolchains are read-only. The user's other files are out of reach, and so is every socket \
-file but the ssh agent's: no D-Bus, no container engine (podman, docker), nothing in \
-/run/user. Nothing gains privileges (no sudo). The network is open.
-
+sandbox. It may change only the project, its git folder, caches, /dev/shm and two folders of \
+its own: its Claude Code home, which $CLAUDE_CONFIG_DIR names, and a temporary folder, which \
+$TMPDIR names. /tmp and /var/tmp can't be written. ~/.claude isn't its home, and it can read \
+only part of it. The system and the usual toolchains are read-only, and the user's other \
+files are out of reach.";
+const NOTE_SOCKETS: &str = "\
+So is every socket file but the ssh agent's: no D-Bus, no container engine (podman, docker), \
+nothing in /run/user.";
+const NOTE_SOCKETS_BUT_DISPLAY: &str = "\
+So is every socket file but the ssh agent's and the Wayland display's: no D-Bus, no container \
+engine (podman, docker), nothing else in /run/user.";
+const NOTE_PRIVILEGES: &str = "Nothing gains privileges (no sudo). The network is open.";
+const NOTE_MESSAGING: &str = "\
+Other Claude Code sessions may message it, but it can't message or answer them, and ListAgents \
+won't list them: tell the user what it would send.";
+const NOTE_ENFORCED: &str = "\
 The kernel enforces this on the whole process, so `dangerouslyDisableSandbox` can't lift it. \
 \"Permission denied\" on a path outside the project, or a socket that can't be reached, comes \
 from this sandbox: don't look for a way around it. Tell the user what was blocked and what \
@@ -252,14 +263,40 @@ impl Policy {
         policy
     }
 
+    /// Whether the user let the desktop in (see [`Allowances::desktop`]).
+    fn lets_in_the_desktop(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| device == Path::new("/dev/dri"))
+    }
+
+    /// What a sandboxed Claude is told about its sandbox (`--append-system-prompt`), as far as
+    /// the kernel enforced it; nothing where it enforced none.
+    pub(crate) fn note_for_claude(&self, enforcement: Enforcement) -> Option<String> {
+        match enforcement {
+            Enforcement::None => None,
+            // An older kernel: connecting to socket files, the newest of what is asked, isn't
+            // guarded, so the note says nothing of them, nor of the other sessions' sockets.
+            Enforcement::Partial => {
+                Some(format!("{NOTE_FILES} {NOTE_PRIVILEGES}\n\n{NOTE_ENFORCED}"))
+            }
+            Enforcement::Full => {
+                let sockets = if self.lets_in_the_desktop() {
+                    NOTE_SOCKETS_BUT_DISPLAY
+                } else {
+                    NOTE_SOCKETS
+                };
+                Some(format!(
+                    "{NOTE_FILES} {sockets} {NOTE_PRIVILEGES}\n\n{NOTE_MESSAGING}\n\n{NOTE_ENFORCED}"
+                ))
+            }
+        }
+    }
+
     /// Variables of this window's environment the child isn't given: ways out of the sandbox
     /// (the session bus starts programs; niri's socket does too) and displays it may not use.
     pub(crate) fn hidden_variables(&self) -> &'static [&'static str] {
-        if self
-            .devices
-            .iter()
-            .any(|device| device == Path::new("/dev/dri"))
-        {
+        if self.lets_in_the_desktop() {
             &["DBUS_SESSION_BUS_ADDRESS", "NIRI_SOCKET", "DISPLAY"]
         } else {
             &[
@@ -611,5 +648,38 @@ mod tests {
             policy.read
         );
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
+    }
+
+    /// A sandboxed Claude is told where its own folders are, and only what the kernel guards:
+    /// the display where the user let the desktop in, nothing about socket files or other
+    /// sessions where the kernel can't keep them closed, and nothing without a sandbox.
+    #[test]
+    fn claude_is_told_only_what_the_kernel_guards() {
+        let project = std::env::temp_dir().join(format!("edualc-note-{}", std::process::id()));
+        let home = project.join("home");
+        let session_scratch = project.join("tmp");
+        let note = |desktop, enforcement| {
+            let own = Own {
+                home: &home,
+                scratch: &session_scratch,
+            };
+            let allowances = Allowances {
+                desktop,
+                read: &[],
+                write: &[],
+            };
+            Policy::for_project(&project, own, allowances).note_for_claude(enforcement)
+        };
+        let closed = note(false, Enforcement::Full).expect("a note");
+        assert!(closed.contains("$CLAUDE_CONFIG_DIR") && closed.contains("$TMPDIR"));
+        assert!(closed.contains("nothing in /run/user") && !closed.contains("Wayland"));
+        assert!(closed.contains("can't message or answer them"));
+        let with_desktop = note(true, Enforcement::Full).expect("a note");
+        assert!(with_desktop.contains("the Wayland display's"));
+        assert!(with_desktop.contains("nothing else in /run/user"));
+        let partial = note(false, Enforcement::Partial).expect("a note");
+        assert!(partial.contains("$CLAUDE_CONFIG_DIR") && partial.contains("$TMPDIR"));
+        assert!(!partial.contains("socket file") && !partial.contains("can't message"));
+        assert!(note(false, Enforcement::None).is_none());
     }
 }
