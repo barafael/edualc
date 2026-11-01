@@ -47,8 +47,10 @@ component SandboxChip inherits Pressable {
         padding-bottom: root.explains ? Theme.space-xs : 0;
         spacing: Theme.space-xs;
         Icon {
-            source: Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
-            tint: Session.sandboxed ? Theme.info : Theme.warning-text;
+            // Checked only once the kernel is known to hold it.
+            source: Session.sandbox-pending ? @image-url("@lucide/shield.svg")
+                : Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
+            tint: Session.sandbox-pending ? Theme.text-tertiary : Session.sandboxed ? Theme.info : Theme.warning-text;
             width: Theme.icon-small;
             y: root.explains ? Theme.space-xs : (parent.height - self.height) / 2;
         }
@@ -1502,8 +1504,10 @@ export component AppWindow inherits Window {
                 root.sidebar-shown = !root.sidebar-shown;
                 return accept;
             }
-            // Text size: Ctrl and +/= (both, for layouts where + needs Shift), -, 0.
-            if event.modifiers.control && (event.text == "+" || event.text == "=") {
+            // Text size: Ctrl and +/= (both, for layouts where + needs Shift), -, 0. Also the
+            // keys those are on where they need Shift: `;` on Japanese (JIS) keyboards, where
+            // + is Shift+;, and `à` on French (AZERTY) ones, where 0 is Shift+à.
+            if event.modifiers.control && (event.text == "+" || event.text == "=" || event.text == ";") {
                 Session.zoom(1);
                 return accept;
             }
@@ -1511,7 +1515,7 @@ export component AppWindow inherits Window {
                 Session.zoom(-1);
                 return accept;
             }
-            if event.modifiers.control && event.text == "0" {
+            if event.modifiers.control && (event.text == "0" || event.text == "à") {
                 Session.zoom(0);
                 return accept;
             }

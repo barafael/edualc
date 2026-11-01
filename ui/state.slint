@@ -46,6 +46,8 @@ export global Session {
     in property <string> sandbox-label;
     in property <string> sandbox-detail;
     in property <bool> sandboxed;
+    // How far the kernel enforces it isn't known yet (no process runs, or one is starting).
+    in property <bool> sandbox-pending;
     // What the settings ask: the sandbox, and the display let into it.
     in property <bool> sandbox-on;
     in property <bool> sandbox-desktop;

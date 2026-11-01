@@ -31,7 +31,7 @@ use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
 use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
 use crate::settings;
-use crate::tools;
+use crate::tools::{self, home_relative, shortened_path};
 
 mod callbacks;
 
@@ -549,7 +549,7 @@ impl View {
         worktree: Option<&Worktree>,
     ) {
         let session = self.window.global::<Session>();
-        session.set_cwd(short_path(cwd, 36).into());
+        session.set_cwd(shortened_path(cwd, 36).into());
         let project = sessions::folder_name(cwd);
         session.set_project(project.into());
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
@@ -566,6 +566,7 @@ impl View {
                 | Sandboxing::ClaudeCodes
                 | Sandboxing::Pending
         ));
+        session.set_sandbox_pending(status.sandboxing == Sandboxing::Pending);
         let (context, fraction) = match (status.context_tokens, status.context_window) {
             (0, _) => (String::new(), 0.0),
             (used, 0) => (short_count(used), 0.0),
@@ -685,6 +686,18 @@ impl View {
             None if !status.model.is_empty() => {
                 models.push((status.model.clone(), String::new()));
                 models.len() - 1
+            }
+            // Before Claude Code has said which models there are: a name, not a bare icon.
+            None if models.is_empty() => {
+                let name = status
+                    .model_choice
+                    .clone()
+                    .unwrap_or_else(|| "Default model".to_owned());
+                models.push((
+                    name,
+                    "Claude Code says which model this is once it runs".to_owned(),
+                ));
+                0
             }
             None => 0,
         };
@@ -1104,11 +1117,14 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
     match sandboxing {
         Sandboxing::Landlock(Enforcement::Full) => (
             "Sandboxed",
-            "Claude Code and everything it starts may change only this project, its git \
-             folder, caches and temporary files; it reads no private files, reaches no desktop \
-             service or socket but the ssh agent, and can't gain privileges (sudo). The network \
-             is open. A command failing with \"Permission denied\" reached past it: \
-             sandbox_read and sandbox_write in ~/.config/edualc/settings.json let more in.",
+            "The network is open.\n\
+             Claude Code, and everything it starts, may change only this project, its git \
+             folder, caches and temporary files.\n\
+             It can't read your private files, reach desktop services or sockets (except the \
+             ssh agent), or gain privileges (sudo).\n\
+             A command that fails with \"Permission denied\" was blocked by the sandbox. To \
+             allow more, add paths to sandbox_read or sandbox_write in \
+             ~/.config/edualc/settings.json.",
         ),
         Sandboxing::Landlock(Enforcement::Partial) => (
             "Partly sandboxed",
@@ -1127,21 +1143,9 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
         ),
         Sandboxing::Off => ("Not sandboxed", "Claude Code runs with all your rights."),
         Sandboxing::Pending => (
-            "Sandbox",
-            "How far this kernel holds the sandbox is known once Claude Code runs.",
+            "Sandbox: starting",
+            "How far this kernel enforces the sandbox is known once Claude Code runs.",
         ),
-    }
-}
-
-fn home_relative(path: &Path) -> String {
-    let home = dirs::home_dir();
-    match home
-        .as_deref()
-        .and_then(|home| path.strip_prefix(home).ok())
-    {
-        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
     }
 }
 
@@ -1154,23 +1158,6 @@ fn menu(items: &[(String, String)]) -> ModelRc<MenuItem> {
         })
         .collect();
     ModelRc::new(VecModel::from(items))
-}
-
-/// `path` relative to home, its middle left out if it is longer than `max_chars`: the start
-/// says where it is, the end which it is.
-fn short_path(path: &Path, max_chars: usize) -> String {
-    let full = home_relative(path);
-    if full.chars().count() <= max_chars {
-        return full;
-    }
-    let parts: Vec<&str> = full.split('/').collect();
-    match (
-        parts.first(),
-        parts.len().checked_sub(2).and_then(|at| parts.get(at..)),
-    ) {
-        (Some(first), Some(last)) if parts.len() > 3 => format!("{first}/…/{}", last.join("/")),
-        _ => full,
-    }
 }
 
 /// A running session's folder, unless its name already says it (names are made from the
@@ -1496,15 +1483,6 @@ pub(crate) fn short_count(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn long_paths_lose_their_middle() {
-        assert_eq!(
-            short_path(Path::new("/var/tmp/claude-1000/scratchpad/review"), 24),
-            "/…/scratchpad/review"
-        );
-        assert_eq!(short_path(Path::new("/srv/app"), 24), "/srv/app");
-    }
 
     #[test]
     fn a_folder_the_name_repeats_is_left_out() {

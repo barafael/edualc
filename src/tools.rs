@@ -228,15 +228,50 @@ fn diff(old: &str, new: &str) -> Vec<(DiffKind, String)> {
 }
 
 /// `path` relative to the working directory when inside it.
+/// The most a path outside the working directory takes on a card before its middle goes.
+const CARD_PATH_CHARS: usize = 60;
+
+/// A path as a card shows it: relative to the working directory inside it; otherwise as
+/// [`shortened_path`] gives it, so a long one keeps its file's name in view.
 pub(crate) fn short_path(path: &str, cwd: &Path) -> String {
     Path::new(path)
         .strip_prefix(cwd)
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
         .map_or_else(
-            || path.to_owned(),
+            || shortened_path(Path::new(path), CARD_PATH_CHARS),
             |relative| relative.display().to_string(),
         )
+}
+
+/// `path` relative to home, its middle left out if it is longer than `max_chars`: the start
+/// says where it is, the end which it is.
+pub(crate) fn shortened_path(path: &Path, max_chars: usize) -> String {
+    let full = home_relative(path);
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    let parts: Vec<&str> = full.split('/').collect();
+    match (
+        parts.first(),
+        parts.len().checked_sub(2).and_then(|at| parts.get(at..)),
+    ) {
+        (Some(first), Some(last)) if parts.len() > 3 => format!("{first}/…/{}", last.join("/")),
+        _ => full,
+    }
+}
+
+/// `path` from `~` when it is in the home folder.
+pub(crate) fn home_relative(path: &Path) -> String {
+    let home = dirs::home_dir();
+    match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 fn with_place(what: &str, place: &str) -> String {
@@ -324,6 +359,31 @@ pub(crate) fn result_text(content: Option<&UserContent>) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn long_paths_lose_their_middle() {
+        assert_eq!(
+            shortened_path(Path::new("/var/tmp/claude-1000/scratchpad/review"), 24),
+            "/…/scratchpad/review"
+        );
+        assert_eq!(shortened_path(Path::new("/srv/app"), 24), "/srv/app");
+    }
+
+    /// A card shows a path inside the project from the project; one outside, if long, keeps
+    /// its file's name and folder, which used to be cut off at the end.
+    #[test]
+    fn a_card_keeps_the_file_name_of_a_long_path() {
+        let cwd = Path::new("/srv/project");
+        assert_eq!(short_path("/srv/project/src/main.rs", cwd), "src/main.rs");
+        assert_eq!(
+            short_path(
+                "/var/tmp/claude-1000/-home-someone-code-a-project/0a1b2c3d/scratchpad/shell.png",
+                cwd
+            ),
+            "/…/scratchpad/shell.png"
+        );
+        assert_eq!(short_path("/etc/hosts", cwd), "/etc/hosts");
+    }
 
     #[test]
     fn edit_shows_a_diff_with_context() {
