@@ -51,6 +51,25 @@ pub(crate) const CLAUDE_CODE_RUNS: &[&str] = &[
     "keybindings.json",
 ];
 
+/// What a sandboxed Claude is told about its sandbox (`--append-system-prompt`). Not told, it
+/// took a denied podman for a broken install, and asked for `dangerouslyDisableSandbox`, which
+/// lifts only Claude Code's own sandbox.
+pub(crate) const NOTE_FOR_CLAUDE: &str = "\
+This session runs in edualc, which keeps Claude Code and everything it starts in a Landlock \
+sandbox. It may change only the project, its git folder, caches and a temporary folder of its \
+own, which $TMPDIR names: /tmp and /var/tmp can't be written. The system and the usual \
+toolchains are read-only. The user's other files are out of reach, and so is every socket \
+file but the ssh agent's: no D-Bus, no container engine (podman, docker), nothing in \
+/run/user. Nothing gains privileges (no sudo). The network is open.
+
+The kernel enforces this on the whole process, so `dangerouslyDisableSandbox` can't lift it. \
+\"Permission denied\" on a path outside the project, or a socket that can't be reached, comes \
+from this sandbox: don't look for a way around it. Tell the user what was blocked and what \
+for, and let them choose: run the command themselves outside edualc, allow the path \
+(`sandbox_read` or `sandbox_write` in ~/.config/edualc/settings.json, read when edualc's \
+window opens), or turn the sandbox off with the shield button in edualc's window, which \
+restarts the session.";
+
 /// What a sandboxed Claude may reach.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Policy {
