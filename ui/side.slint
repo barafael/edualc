@@ -178,8 +178,9 @@ export component SidePanel inherits Rectangle {
                     self.text = "";
                 }
             }
-            HorizontalLayout {
-                spacing: Theme.space-s;
+            // One above the other: side by side, they don't fit a zoomed panel.
+            VerticalLayout {
+                spacing: Theme.space-xs;
                 TextButton {
                     text: "Use in the conversation";
                     has-icon: true;

@@ -1003,25 +1003,25 @@ component PromptBar inherits Rectangle {
                         feedback.text = "";
                     }
                 }
-                // Enter denies with what was written, as Deny does: once armed like the buttons,
-                // and not with nothing written.
-                feedback := Field {
-                    property <int> grab: root.grab-serial;
-                    horizontal-stretch: 1;
-                    placeholder: "Or tell Claude what to do instead";
-                    accepted(text) => {
-                        if root.armed && text != "" {
-                            Prompt.deny(Prompt.request, text);
-                            self.text = "";
-                        }
+            }
+            // On a line of its own, so that a narrow or zoomed window doesn't push it out of
+            // sight beside a long "Always allow". Enter denies with what was written, as Deny
+            // does: once armed like the buttons, and not with nothing written.
+            feedback := Field {
+                property <int> grab: root.grab-serial;
+                placeholder: "Or tell Claude what to do instead";
+                accepted(text) => {
+                    if root.armed && text != "" {
+                        Prompt.deny(Prompt.request, text);
+                        self.text = "";
                     }
-                    init => { self.take(); }
-                    changed grab => { self.take(); }
-                    function take() {
-                        if root.grab-pending {
-                            root.grab-pending = false;
-                            self.focus();
-                        }
+                }
+                init => { self.take(); }
+                changed grab => { self.take(); }
+                function take() {
+                    if root.grab-pending {
+                        root.grab-pending = false;
+                        self.focus();
                     }
                 }
             }
@@ -2310,6 +2310,10 @@ export component AppWindow inherits Window {
                     // Down, Space, Home and End scroll it.
                     reading := FocusScope {
                         focus-on-click: false;
+                        // Where F6 brings the focus: a screen reader names it.
+                        accessible-role: groupbox;
+                        accessible-label: "Conversation";
+                        accessible-description: "The arrow keys, Page Up and Page Down scroll it";
                         function scroll-by(delta: length) {
                             transcript.content-y = clamp(transcript.content-y - delta, min(0px, transcript.visible-height - transcript.content-height), 0px);
                             transcript.follow = transcript.at-end();
