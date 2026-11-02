@@ -977,7 +977,7 @@ impl Session {
             return self;
         };
         if let Some(diverged) = diverged {
-            tell_diverged(diverged).await;
+            tell_diverged(diverged, shown.as_ref()).await;
         }
         // A sandboxed session's record, mirrored for others to message it by, until this ends.
         let mut mirror = record
@@ -1037,6 +1037,7 @@ impl Session {
                         self.lines_in += 1;
                         self.active = Instant::now();
                         self.pending.answered(&line);
+                        let line = initialize_with(&line).unwrap_or(line);
                         if let Some(writing) = stdin.as_mut()
                             && write_line(writing, &line).await.is_err()
                         {
@@ -1111,7 +1112,9 @@ impl Session {
                 tokio::task::spawn_blocking(move || home::copy_back_transcript(&home, &cwd, &id))
                     .await;
             match copied {
-                Ok(Ok(home::CopyBack::Diverged(diverged))) => tell_diverged(diverged).await,
+                Ok(Ok(home::CopyBack::Diverged(diverged))) => {
+                    tell_diverged(diverged, shown.as_ref()).await;
+                }
                 Ok(Ok(outcome)) => tracing::info!(?outcome, id = ?self.id, "transcript back home"),
                 Ok(Err(error)) => {
                     tracing::warn!(%error, id = ?self.id, "the transcript stays in the session's home");
@@ -1123,11 +1126,19 @@ impl Session {
     }
 }
 
-/// Tells the user, on the desktop, of a conversation whose transcript went two ways in and out
-/// of the sandbox (see `home::Diverged`): the window shows only the copy the session goes on
-/// from, and what only the other has would otherwise go unnoticed.
-async fn tell_diverged(diverged: home::Diverged) {
+/// Tells the user of a conversation whose transcript went two ways in and out of the sandbox
+/// (see `home::Diverged`), in the window that shows it and on the desktop: the window shows
+/// only the copy the session goes on from, and what only the other has would otherwise go
+/// unnoticed.
+async fn tell_diverged(
+    diverged: home::Diverged,
+    shown: Option<&(Generation, mpsc::Sender<FromDaemon>)>,
+) {
     tracing::warn!(left = %diverged.left.display(), "a conversation went two ways");
+    if let Some((key, outbox)) = shown {
+        let left = diverged.left.clone();
+        tell(outbox, FromDaemon::Diverged { key: *key, left }).await;
+    }
     let body = format!(
         "Two copies of a session's transcript went on separately, in and out of edualc's \
          sandbox. What only one of them has is kept in {}",
@@ -1141,6 +1152,34 @@ async fn tell_diverged(diverged: home::Diverged) {
         Ok(Err(error)) => tracing::warn!(%error, "couldn't tell of a conversation gone two ways"),
         Err(error) => tracing::error!(%error, "telling of a conversation gone two ways failed"),
     }
+}
+
+/// The window's `initialize` request as the daemon passes it on, the system prompt rendered
+/// afresh on every request: Claude Code otherwise records a session's first and reuses it on
+/// every resume, so that the note appended for the sandbox would follow the session's first
+/// launch, not this one. Any other line, none.
+fn initialize_with(line: &str) -> Option<String> {
+    // Most lines are prompts and answers, some with pasted images: not parsed for this.
+    if !line.contains("\"initialize\"") {
+        return None;
+    }
+    let mut message: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(line).ok()?;
+    let control_request =
+        message.get("type").and_then(serde_json::Value::as_str) == Some("control_request");
+    let request = message
+        .get_mut("request")
+        .and_then(serde_json::Value::as_object_mut)?;
+    let initialize =
+        request.get("subtype").and_then(serde_json::Value::as_str) == Some("initialize");
+    if !(control_request && initialize) {
+        return None;
+    }
+    request.insert(
+        "systemPromptSnapshot".to_owned(),
+        serde_json::Value::Bool(false),
+    );
+    serde_json::to_string(&message).ok()
 }
 
 /// What a window attaching is told again (sans-io): how many turns are under way, the
@@ -1300,6 +1339,37 @@ async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window's `initialize`, as it writes it, goes on with the system prompt rendered
+    /// afresh and the rest as it was; no other line is touched.
+    #[test]
+    fn initialize_renders_the_system_prompt_afresh() {
+        use crate::external::wire::{ControlRequest, Input, RequestId};
+        let id = RequestId::from("gui_1".to_owned());
+        let windows = serde_json::to_string(&Input::ControlRequest {
+            request_id: &id,
+            request: &ControlRequest::Initialize,
+        })
+        .expect("a line");
+        let passed_on = initialize_with(&windows).expect("an initialize");
+        let mut expected: serde_json::Value = serde_json::from_str(&windows).expect("JSON");
+        if let Some(request) = expected
+            .get_mut("request")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            request.insert(
+                "systemPromptSnapshot".to_owned(),
+                serde_json::Value::Bool(false),
+            );
+        }
+        let passed_on: serde_json::Value = serde_json::from_str(&passed_on).expect("JSON");
+        assert_eq!(passed_on, expected);
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"\"initialize\" it"}}"#;
+        assert_eq!(initialize_with(prompt), None);
+        let other =
+            r#"{"type":"control_request","request_id":"r","request":{"subtype":"interrupt"}}"#;
+        assert_eq!(initialize_with(other), None);
+    }
 
     fn launch() -> Launch {
         Launch {

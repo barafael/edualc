@@ -59,6 +59,11 @@ impl App {
                 self.chat.error(failure.to_string());
             }
             Output::Ended(code) => self.ended(code),
+            Output::Diverged(left) => self.chat.info(format!(
+                "This conversation went two ways in and out of the sandbox. What only the other \
+                 copy has is kept in {}",
+                left.display()
+            )),
         }
     }
 

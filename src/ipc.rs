@@ -557,7 +557,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 10;
+pub(crate) const PROTOCOL: u32 = 11;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -652,6 +652,10 @@ pub(crate) enum FromDaemon {
     },
     /// The process ended, with its exit code if it exited on its own.
     Ended { key: Generation, code: Option<i32> },
+    /// The session's transcript went two ways in and out of the sandbox, found as it was
+    /// resumed or as its transcript was copied back: `left` is the copy it doesn't go on from,
+    /// with what only that copy has.
+    Diverged { key: Generation, left: PathBuf },
     Done {
         request: ActId,
         result: Result<(), ActFailure>,

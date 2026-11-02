@@ -33,6 +33,9 @@ pub(crate) enum Output {
     Log(String),
     /// It ended, with its exit code if it exited on its own.
     Ended(Option<i32>),
+    /// Its transcript went two ways in and out of the sandbox; this copy, which it doesn't go
+    /// on from, keeps what only it has.
+    Diverged(PathBuf),
 }
 
 impl Output {
