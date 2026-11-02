@@ -599,6 +599,17 @@ mod tests {
         MessagingName::of(&id, Path::new("/work/project"))
     }
 
+    /// The window knows the permission requests for send_message by the name the CLI gives
+    /// them, and asks about each message so.
+    #[test]
+    fn the_window_knows_send_message_by_its_name() {
+        use crate::external::wire::ToolName;
+        assert_eq!(
+            ToolName::from(Tool::SendMessage.qualified()),
+            ToolName::RelaySendMessage
+        );
+    }
+
     fn asked(request_id: &str, tool: Tool, tool_use: &str, input: &Value) -> String {
         json!({"type": "control_request", "request_id": request_id, "request": {
             "subtype": "can_use_tool", "tool_name": tool.qualified(), "input": input,

@@ -923,9 +923,11 @@ impl View {
                 prompt.set_title(title.into());
                 prompt.set_summary(summary.into());
                 prompt.set_detail(detail.into());
-                // Only a rule the window can say in full is offered.
+                // Only a rule the window can say in full is offered, and none for a message to
+                // another session: the user allows each (see `relay`).
                 let always = suggestions
                     .first()
+                    .filter(|_| ask.tool != ToolName::RelaySendMessage)
                     .and_then(|offered| offered.rule.as_ref())
                     .map(always_label)
                     .unwrap_or_default();
@@ -1185,6 +1187,12 @@ fn tool_prompt(ask: &Ask, cwd: &Path) -> (String, String) {
             "Allow Claude to run this command?"
         };
         return (title.into(), field("command"));
+    }
+    if ask.tool == ToolName::RelaySendMessage {
+        return (
+            format!("Allow Claude to send this message to {}?", field("to")),
+            field("message"),
+        );
     }
     match ask.tool.kind() {
         ToolKind::Edit | ToolKind::Write => (

@@ -174,6 +174,14 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
                 view.markdown = field("plan").to_owned();
             }
         }
+        ToolName::RelaySendMessage => {
+            view.title = format!("Message to {}", field("to"));
+            let message = field("message");
+            view.summary = first_line(message);
+            if full {
+                view.detail = message.to_owned();
+            }
+        }
         ToolName::Other(name) if name.starts_with("mcp__") => {
             let mut parts = name.trim_start_matches("mcp__").splitn(2, "__");
             let server = parts.next().unwrap_or("");

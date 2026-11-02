@@ -126,6 +126,9 @@ pub(crate) enum ToolName {
     TodoWrite,
     AskUserQuestion,
     ExitPlanMode,
+    /// edualc's own message relay (see `relay`), asked about before each message.
+    #[strum(serialize = "mcp__edualc__send_message")]
+    RelaySendMessage,
     #[strum(default)]
     Other(String),
 }
@@ -163,6 +166,7 @@ impl ToolName {
             | Self::TodoWrite
             | Self::AskUserQuestion
             | Self::ExitPlanMode
+            | Self::RelaySendMessage
             | Self::Other(_) => ToolKind::Other,
         }
     }
@@ -191,6 +195,7 @@ impl ToolName {
             | Self::Skill
             | Self::TodoWrite
             | Self::AskUserQuestion
+            | Self::RelaySendMessage
             | Self::Other(_) => false,
         }
     }
