@@ -1719,7 +1719,10 @@ impl App {
             self.load_sessions();
         }
         // Its title, as the sidebar lists it; its name to message it by until it has one.
-        let title = session.title.clone().unwrap_or_else(|| session.name.clone());
+        let title = session
+            .title
+            .clone()
+            .unwrap_or_else(|| session.name.clone());
         self.reset_session(Some(session.id.clone()), Some(title));
         self.load_session(session.id.clone(), session.cwd.clone());
         self.forget_watch();
