@@ -996,9 +996,12 @@ component PromptBar inherits Rectangle {
                     primary: true;
                     clicked => { Prompt.allow(Prompt.request); }
                 }
+                // A long rule gives way in a narrow window, said in full on hover and to
+                // assistive technology; Allow and Deny keep their words.
                 if Prompt.always-label != "": TextButton {
                     enabled: root.armed;
                     text: Prompt.always-label;
+                    may-shorten: true;
                     clicked => { Prompt.allow-always(Prompt.request); }
                 }
                 TextButton {
@@ -1437,6 +1440,10 @@ component EditArea inherits Rectangle {
     // The most a drag makes it.
     in property <length> tallest-dragged: 600px;
     property <length> line: one-line.preferred-height;
+    // Too narrow for the menus' names: set as the width changes, not bound to it, as the
+    // menus' widths make that width.
+    property <bool> narrow;
+    changed width => { self.narrow = self.width < 720px; }
     // How it was before it was made taller.
     function back() {
         Composer.size = Composer.chosen-height > 0 ? ComposerSize.chosen : ComposerSize.fit;
@@ -1746,6 +1753,8 @@ component EditArea inherits Rectangle {
                 model: Session.modes;
                 current-index <=> Session.mode-index;
                 max-width: 220px;
+                // Its icon and colour tell the mode; the model's name needs the room more.
+                compact: root.narrow;
                 icon: root.mode == PermissionKind.accept-edits ? @image-url("@lucide/file-pen-line.svg")
                     : root.mode == PermissionKind.plan ? @image-url("@lucide/map.svg")
                     : root.mode == PermissionKind.auto ? @image-url("@lucide/zap.svg")

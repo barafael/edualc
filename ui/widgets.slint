@@ -171,6 +171,9 @@ export component TextButton inherits Rectangle {
     // What assistive technology calls it, where its text alone would be the same as another
     // button's nearby.
     in property <string> label: root.text;
+    // Its text may be cut short (…) where the row has no room for all of it, said in full on
+    // hover; others keep theirs whole.
+    in property <bool> may-shorten;
     callback clicked;
     accessible-role: button;
     accessible-label: root.label;
@@ -198,11 +201,13 @@ export component TextButton inherits Rectangle {
             width: Theme.icon-small;
             y: (parent.height - self.height) / 2;
         }
-        Text {
+        shown := Text {
             text: root.text;
             color: root.ink;
             vertical-alignment: center;
             font-weight: root.primary ? 600 : 400;
+            overflow: elide;
+            min-width: root.may-shorten ? 0px : self.preferred-width;
             // The button says it.
             accessible-role: none;
         }
@@ -211,6 +216,9 @@ export component TextButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        if self.has-hover && shown.width < shown.preferred-width: Tooltip {
+            text: @markdown("\{root.text}");
+        }
     }
     keys := KeyPress {
         enabled: root.enabled;
@@ -409,6 +417,8 @@ export component MenuButton inherits Rectangle {
     in property <color> tint: Theme.text-secondary;
     // Above the choices in the menu, e.g. "Permission mode".
     in property <string> heading;
+    // Only its icon, the choice told on hover: where a narrow window would cut its name.
+    in property <bool> compact;
     callback selected(int);
     property <string> current: root.current-index >= 0 && root.current-index < root.model.length
         ? root.model[root.current-index].title : "";
@@ -421,11 +431,12 @@ export component MenuButton inherits Rectangle {
     accessible-action-default => { root.open(); }
     accessible-action-expand => { root.open(); }
     height: Theme.chip;
-    min-width: 0px;
+    // Its name gives way to the room left; its icons don't.
+    min-width: root.compact ? content.preferred-width : 0px;
     border-radius: Theme.radius-m;
     background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
     animate background { duration: Motion.fast; easing: ease-out; }
-    HorizontalLayout {
+    content := HorizontalLayout {
         padding-left: Theme.space-s;
         padding-right: Theme.space-xs;
         spacing: Theme.space-xs;
@@ -435,13 +446,14 @@ export component MenuButton inherits Rectangle {
             width: Theme.icon-small;
             y: (parent.height - self.height) / 2;
         }
-        Text {
+        if !root.compact: Text {
             text: root.current;
             color: root.tint;
             font-size: 1rem * Theme.small;
             vertical-alignment: center;
             overflow: elide;
             min-width: 0px;
+            accessible-role: none;
         }
         Icon {
             source: @image-url("@lucide/chevron-up.svg");
@@ -457,6 +469,9 @@ export component MenuButton inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.open(); }
+        if self.has-hover && root.compact: Tooltip {
+            text: @markdown("\{root.heading}: \{root.current}");
+        }
     }
     KeyPress {
         ring-radius: root.border-radius;
