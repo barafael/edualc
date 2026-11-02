@@ -51,9 +51,16 @@ other way around.
   - **Keep planning**: Claude gets each comment quoted with the part it's about, and revises.
   - **Approve**: the comments go into the approved plan as notes under their parts. The CLI hands
     Claude an edited plan as the "Approved Plan (edited by user)".
-- **Sessions.** This folder's past sessions are listed with their titles and ages; opening one shows its
-  transcript and continues it. Any folder Claude Code was used in is one click away. Links open only
-  if they are web pages or mail.
+- **Sessions, running and earlier, in one list.** The sidebar lists first the sessions running now,
+  in any folder and this window's own among them, under "Running · N" (with how many need you),
+  then this folder's earlier ones. A running session's row has two lines: its title, then what it
+  does (needs you, working, idle), the name to message it by and its folder when another; its
+  running subagents are counted beside it. Needing you shows a hand, working a dot, idle a ring, so
+  the states aren't told by colour alone; a session that needs you comes first, the others keep
+  their place. Opening an earlier session shows its transcript and continues it. A cut-off title
+  shows whole on hover, and the sidebar's right edge is dragged to widen it (kept; a double click
+  gives the default back) or moved with the arrow keys. Any folder Claude Code was used in is one
+  click away. Links open only if they are web pages or mail.
 - **Pasted images.** Ctrl+V in the composer takes the clipboard's PNG, JPEG, GIF or WebP along
   with the next message, shown as a thumbnail until it is sent. A GIF or WebP goes as a PNG (an
   animation as its first frame). The image is never decoded in the window:
@@ -79,10 +86,10 @@ other way around.
   the session is started. It picks a new session's id itself (`--session-id`), so the name holds from the first
   start.
 - **Running sessions, everywhere.** Every Claude Code session running on the machine, in any
-  terminal or folder, is listed with what it's doing. You get a desktop notification when one starts
-  waiting for its user. Opening one follows it live without touching it. From there, **Go to its
-  window** (niri) or **Continue here as a copy** (`--resume --fork-session`), since two processes
-  shouldn't drive one session.
+  terminal or folder, is in that list with what it's doing. You get a desktop notification when one
+  starts waiting for its user. Opening one follows it live without touching it (or shows it here,
+  if this window's daemon runs it). From there, **Go to its window** (niri) or **Continue here as a
+  copy** (`--resume --fork-session`), since two processes shouldn't drive one session.
 - **Side questions (`/btw`), beside the conversation.** `/btw …` (or the header's button) asks through
   the CLI's own `side_question`: answered with the conversation's context, without joining it or
   running tools. The answers wait in a side panel instead of taking over the input, which stays free.
@@ -184,6 +191,7 @@ Without them installed, notifications come without an icon.
 | `src/tools.rs`, `src/markdown.rs`, `src/plan.rs` | how tool calls, Markdown and plan comments read |
 | `src/grouping.rs` | runs of tool calls, folded into one line |
 | `src/sessions.rs` | saved sessions (`~/.claude/projects`) and running ones (`~/.claude/sessions`) |
+| `src/sidebar.rs` | the sidebar's list: running sessions (the window's own among them), then this folder's earlier ones |
 | `src/watcher.rs` | inotify: noticing the running sessions' records and a followed transcript change |
 | `src/sandbox.rs`, `src/trust.rs` | the Landlock sandbox for `claude`, and which folders are trusted |
 | `src/process.rs` | what `/proc` says about a process (to tell a session's process from a reused pid) |
