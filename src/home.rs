@@ -18,7 +18,7 @@ use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
@@ -330,8 +330,10 @@ fn global_config(real: &Path, cwd: &Path) -> Result<String, Error> {
     Ok(Value::Object(global).to_string())
 }
 
-/// The project's memory as the user's sessions left it, over what sandboxed sessions wrote:
-/// the user's files win by name, the index lists both.
+/// The project's memory as the user's sessions left it, over what sandboxed sessions wrote. A
+/// user's file the user changed since it was last seeded is copied in; one the user hasn't
+/// changed leaves the session's version, which the session may have edited. The index takes the
+/// session's entry where the user's is as seeded (see `merged_index`).
 fn merge_memory(
     staging: &Staging,
     home_fd: &OwnedFd,
@@ -339,45 +341,170 @@ fn merge_memory(
     real: &Path,
     cwd: &Path,
 ) -> Result<(), Error> {
-    let relative = Path::new("projects")
-        .join(sessions::project_name(cwd))
-        .join("memory");
+    let project = sessions::project_name(cwd);
+    let relative = Path::new("projects").join(&project).join("memory");
     let source = real.join(&relative);
     let Ok(entries) = std::fs::read_dir(&source) else {
         return Ok(());
     };
+    let homes = home.path().parent().unwrap_or(home.path());
+    let manifest_name = format!(".{project}.seeded.json");
+    let seeded = Seeded::read(&homes.join(&manifest_name));
+    let mut now = Seeded::default();
     let target_path = home.path().join(&relative);
     let target = open_beneath(home_fd, &target_path, &relative)?;
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
             continue;
         }
         let staged = format!("memory-{name}");
         if name == "MEMORY.md" {
             let theirs = std::fs::read_to_string(entry.path()).map_err(io(&entry.path()))?;
-            let index = merged_index(&theirs, read_beneath(&target, name).as_deref());
+            let index = merged_index(
+                &theirs,
+                read_beneath(&target, name).as_deref(),
+                seeded.index.as_deref(),
+            );
             staging.write(&staged, index.as_bytes())?;
-        } else {
-            copy_tree(&entry.path(), &staging.path().join(&staged))?;
+            staging.move_into(&target, &target_path, &staged, name)?;
+            now.index = Some(theirs);
+            continue;
         }
-        staging.move_into(&target, &target_path, &staged, name)?;
+        let stamp = Stamp::of(&metadata);
+        let sessions_own = rustix::fs::statat(&target, name, AtFlags::SYMLINK_NOFOLLOW)
+            .ok()
+            .filter(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile);
+        let keep_the_sessions = match (sessions_own, seeded.files.get(name)) {
+            (None, _) => false,
+            (Some(_), Some(was)) => *was == stamp,
+            // Seeded before stamps were kept: the newer of the two stays.
+            (Some(ours), None) => {
+                let users_ns = u64::try_from(metadata.mtime_nsec()).unwrap_or_default();
+                (ours.st_mtime, ours.st_mtime_nsec) > (metadata.mtime(), users_ns)
+            }
+        };
+        if !keep_the_sessions {
+            copy_tree(&entry.path(), &staging.path().join(&staged))?;
+            staging.move_into(&target, &target_path, &staged, name)?;
+        }
+        now.files.insert(name.to_owned(), stamp);
     }
-    Ok(())
+    let manifest = serde_json::to_vec(&now).map_err(|source| Error::Json {
+        path: homes.join(&manifest_name),
+        source,
+    })?;
+    staging.write(&manifest_name, &manifest)?;
+    staging.move_into(
+        &open_folder(CWD, homes)?,
+        homes,
+        &manifest_name,
+        &manifest_name,
+    )
 }
 
-/// The user's memory index, then the lines only the sandboxed sessions' has.
-fn merged_index(users: &str, sandboxed: Option<&str>) -> String {
-    let mut index = users.trim_end().to_owned();
-    for line in sandboxed.unwrap_or("").lines() {
-        if !line.trim().is_empty() && !users.lines().any(|known| known == line) {
-            index.push('\n');
-            index.push_str(line);
+/// What a project's memory was in the user's home when it was last seeded into its sandboxed
+/// home. Kept beside the homes, out of the sandboxes' reach, so that a file the user hasn't
+/// changed since isn't seeded over what a sandboxed session made of it.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Seeded {
+    /// By file name.
+    files: std::collections::BTreeMap<String, Stamp>,
+    /// The user's index.
+    index: Option<String>,
+}
+
+impl Seeded {
+    /// The manifest at `path`; an empty one where there is none, or none that reads.
+    fn read(path: &Path) -> Self {
+        let small =
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.len() <= MEMORY_INDEX_BYTES * 4);
+        if !small {
+            return Self::default();
+        }
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+}
+
+/// A file as its length, inode and change time (which only the kernel sets) tell it apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stamp {
+    length: u64,
+    inode: u64,
+    changed_s: i64,
+    changed_ns: i64,
+}
+
+impl Stamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            length: metadata.len(),
+            inode: metadata.ino(),
+            changed_s: metadata.ctime(),
+            changed_ns: metadata.ctime_nsec(),
         }
     }
-    index.push('\n');
-    index
+}
+
+/// The memory index for the sandboxed home, entries told apart by the file each links to: the
+/// user's, but the session's own version of an entry the user hasn't changed since it was seeded
+/// (`seeded`, the user's index then), none of an entry the session removed, then the entries only
+/// the session has. Without `seeded`, the user's entry wins.
+fn merged_index(users: &str, sandboxed: Option<&str>, seeded: Option<&str>) -> String {
+    let Some(sandboxed) = sandboxed else {
+        // Nothing of the session's to keep: the user's, as it is.
+        return format!("{}\n", users.trim_end());
+    };
+    let sessions: Vec<&str> = sandboxed
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let as_seeded = |line: &str| seeded.is_some_and(|seeded| seeded.lines().any(|was| was == line));
+    let mut index: Vec<&str> = Vec::new();
+    for line in users.trim_end().lines() {
+        let Some(target) = link_target(line) else {
+            index.push(line);
+            continue;
+        };
+        let session_s = sessions
+            .iter()
+            .copied()
+            .find(|line| link_target(line) == Some(target));
+        match (session_s, as_seeded(line)) {
+            (Some(session_s), true) => index.push(session_s),
+            (None, true) => {}
+            (Some(_) | None, false) => index.push(line),
+        }
+    }
+    for line in sessions {
+        let known = link_target(line).is_some_and(|target| {
+            users
+                .lines()
+                .any(|user_s| link_target(user_s) == Some(target))
+        });
+        if !known && !index.contains(&line) {
+            index.push(line);
+        }
+    }
+    let mut merged = index.join("\n");
+    merged.push('\n');
+    merged
+}
+
+/// The file an index line links to, as in `- [Title](file.md) — what it holds`.
+fn link_target(line: &str) -> Option<&str> {
+    let start = line.find("](")?.checked_add(2)?;
+    let rest = line.get(start..)?;
+    rest.get(..rest.find(')')?)
 }
 
 /// A file in an opened folder, unless it is missing, a link, or too long.
@@ -1055,10 +1182,65 @@ mod tests {
         let users = "- [A](a.md) — a\n- [B](b.md) — b\n";
         let sandboxed = "- [B](b.md) — b\n- [C](c.md) — c\n\n";
         assert_eq!(
-            merged_index(users, Some(sandboxed)),
+            merged_index(users, Some(sandboxed), None),
             "- [A](a.md) — a\n- [B](b.md) — b\n- [C](c.md) — c\n"
         );
-        assert_eq!(merged_index(users, None), users);
+        assert_eq!(merged_index(users, None, Some(users)), users);
+    }
+
+    /// An entry the session edited stays edited, once, where the user's is as it was seeded; an
+    /// entry the user changed since wins; one the session removed stays removed.
+    #[test]
+    fn the_sessions_entries_stay_where_the_user_didnt_change_them() {
+        let seeded = "# Memory\n- [A](a.md) — a\n- [B](b.md) — b\n- [D](d.md) — d\n";
+        let users =
+            "# Memory\n- [A](a.md) — a\n- [B](b.md) — b, as the user put it\n- [D](d.md) — d\n";
+        let sandboxed = "# Memory\n- [A](a.md) — a, as the session put it\n- [B](b.md) — b, \
+                         as the session put it\n- [C](c.md) — c\n";
+        assert_eq!(
+            merged_index(users, Some(sandboxed), Some(seeded)),
+            "# Memory\n- [A](a.md) — a, as the session put it\n- [B](b.md) — b, as the user put \
+             it\n- [C](c.md) — c\n"
+        );
+    }
+
+    /// A memory file the user hasn't changed since it was seeded keeps what the session made of
+    /// it; one the user changed since is seeded again.
+    #[test]
+    fn a_memory_file_is_seeded_again_only_where_the_user_changed_it() {
+        let scratch = std::env::temp_dir().join(format!("edualc-memory-{}", std::process::id()));
+        let cwd = Path::new("/work/project");
+        let relative = Path::new("projects")
+            .join(sessions::project_name(cwd))
+            .join("memory");
+        let real = scratch.join("real");
+        std::fs::create_dir_all(real.join(&relative)).expect("the user's memory");
+        let users = real.join(&relative).join("note.md");
+        std::fs::write(&users, "v1").expect("a memory file");
+        let homes = scratch.join("homes");
+        let home = Home(homes.join("project"));
+        create_private_folder(home.path()).expect("a home");
+        let seed = || {
+            let staging = Staging::make(&homes).expect("staging");
+            let home_fd = open_folder(CWD, home.path()).expect("the home");
+            merge_memory(&staging, &home_fd, &home, &real, cwd).expect("seeded");
+        };
+        let sessions = home.path().join(&relative).join("note.md");
+        seed();
+        assert_eq!(std::fs::read_to_string(&sessions).expect("seeded"), "v1");
+        std::fs::write(&sessions, "v1, as the session put it").expect("edited");
+        seed();
+        assert_eq!(
+            std::fs::read_to_string(&sessions).expect("kept"),
+            "v1, as the session put it"
+        );
+        std::fs::write(&users, "v2, as the user put it").expect("changed");
+        seed();
+        assert_eq!(
+            std::fs::read_to_string(&sessions).expect("seeded again"),
+            "v2, as the user put it"
+        );
+        std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 
     #[test]
