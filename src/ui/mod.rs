@@ -198,6 +198,13 @@ impl View {
         preferences.set_sandbox_write(shown(&settings.sandbox_write));
     }
 
+    /// Whether a sandboxed session's messages to other sessions go without asking.
+    pub(crate) fn set_messages_unasked(&self, unasked: bool) {
+        self.window
+            .global::<Preferences>()
+            .set_messages_unasked(unasked);
+    }
+
     pub(crate) fn set_look(&self, look: settings::Look) {
         let theme = self.window.global::<Theme>();
         theme.set_look(match look {

@@ -280,6 +280,8 @@ pub(crate) enum Action {
     SendWith(settings::SendKey),
     /// The language of text in Han characters alone, as chosen in the settings.
     HanLanguage(crate::cjk::CjkLanguage),
+    /// Whether a sandboxed session's messages to other sessions go without asking, flipped.
+    ToggleMessagesUnasked,
     /// Picks a folder for the sandbox to let Claude into so.
     AddSandboxFolder(SandboxAccess),
     /// Takes a folder, as shown, from those the sandbox lets Claude into so.
@@ -706,6 +708,7 @@ impl App {
         view.set_send_key(settings.send_with);
         view.set_han_language(settings.han_language());
         view.set_sandbox_folders(&settings);
+        view.set_messages_unasked(settings.sandbox_messages_unasked);
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -907,6 +910,13 @@ impl App {
             Action::OpenSession(id) => self.open_session(id),
             Action::OpenProject(path) => self.open_project(&path),
             Action::BrowseProject => self.pick_folder(FolderUse::Project),
+            // The relay is told as the sandboxed process starts (`SandboxWish`).
+            Action::ToggleMessagesUnasked => {
+                self.settings.sandbox_messages_unasked = !self.settings.sandbox_messages_unasked;
+                self.view
+                    .set_messages_unasked(self.settings.sandbox_messages_unasked);
+                self.sandbox_changed();
+            }
             Action::AddSandboxFolder(access) => self.pick_folder(FolderUse::Sandbox(access)),
             Action::ForgetSandboxFolder { access, folder } => {
                 self.settings

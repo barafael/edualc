@@ -222,6 +222,13 @@ export component SettingsPanel inherits Rectangle {
                     enabled: Session.sandbox-on;
                     clicked => { Session.toggle-sandbox-hardware(); }
                 }
+                Check {
+                    title: "Let it message other sessions without asking";
+                    detail: "Each message it sends to another Claude Code session goes without a question to you; each still shows in the conversation. Off, you are asked about each, except a reply to a session of edualc's that wrote to it first.";
+                    checked: Preferences.messages-unasked;
+                    enabled: Session.sandbox-on;
+                    clicked => { Preferences.toggle-messages-unasked(); }
+                }
                 SandboxFolders {
                     title: "Folders it may also read";
                     detail: "A toolchain's home, say, with what is under it.";

@@ -250,6 +250,9 @@ export global Preferences {
     in property <[string]> sandbox-write;
     callback add-sandbox-folder(SandboxAccess);
     callback forget-sandbox-folder(SandboxAccess, string);
+    // A sandboxed session's messages to other sessions go without asking the user.
+    in property <bool> messages-unasked;
+    callback toggle-messages-unasked;
 }
 
 // Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and

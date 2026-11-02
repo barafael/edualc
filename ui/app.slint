@@ -135,6 +135,12 @@ component SandboxChip inherits Pressable {
                     text: "For this folder: debug probes and boards, but also any other USB device you can open, such as a phone.";
                     wrap: word-wrap;
                 }
+                // Said while it holds, as it changes what reaches other sessions unseen.
+                if Session.sandbox-on && Preferences.messages-unasked: Caption {
+                    text: "Its messages to other sessions go without asking you (see the settings, Ctrl+,).";
+                    wrap: word-wrap;
+                    color: Theme.warning-text;
+                }
                 Caption {
                     text: "Changing it starts Claude Code again; the conversation goes on.";
                     wrap: word-wrap;

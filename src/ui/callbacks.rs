@@ -146,6 +146,9 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         SandboxAccess::Read => ipc::SandboxAccess::Read,
         SandboxAccess::Write => ipc::SandboxAccess::Write,
     };
+    window
+        .global::<Preferences>()
+        .on_toggle_messages_unasked(actions.on(|| Action::ToggleMessagesUnasked));
     window.global::<Preferences>().on_add_sandbox_folder({
         let actions = actions.clone();
         move |access| actions.send(Action::AddSandboxFolder(access_of(access)))
