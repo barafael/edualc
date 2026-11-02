@@ -5,13 +5,15 @@ import { FocusArea, MenuItem } from "types.slint";
 import { Focus, Session, TextSelection } from "state.slint";
 
 // A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
+// Only drawn, as the control it is in names what it does. Without an `accessible-role`: Slint
+// 1.19 exposes an element whose component sets `accessible-role: none` on its root as an
+// unnamed node of unknown role, where one without any accessible property isn't exposed.
 export component Icon inherits Image {
     in property <color> tint: Theme.text-secondary;
     width: Theme.icon;
     height: self.width;
     image-fit: contain;
     colorize: root.tint;
-    accessible-role: none;
 }
 
 export component Title inherits Text {

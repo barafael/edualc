@@ -132,7 +132,7 @@ export component HeronMark inherits Image {
     height: self.width;
     image-fit: contain;
     colorize: Theme.claude;
-    accessible-role: none;
+    // Only drawn, and without an `accessible-role` (see `Icon`).
     source: root.frame < 0 ? @image-url("../assets/heron.svg")
         : root.act == Act.looking-back ? @image-url("../assets/heron-looking-back.svg")
         // Nibbling at its back.
