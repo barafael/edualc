@@ -78,9 +78,9 @@ pub(crate) struct Earlier {
     pub(crate) shown: bool,
 }
 
-/// The rows, in order: the running sessions (those waiting for their user first, then those at
-/// work, then the idle; this folder's before others'), then the earlier ones as saved. A part
-/// with nothing to list has no heading.
+/// The rows, in order: the running sessions (those waiting for their user first, then the
+/// others, this folder's before others', by title), then the earlier ones as saved. A part with
+/// nothing to list has no heading.
 pub(crate) fn rows(listing: &Listing<'_>) -> Vec<Row> {
     let own_id = listing.own.as_ref().map(|own| own.id);
     let mut running: Vec<Running> = listing
@@ -155,7 +155,15 @@ pub(crate) fn rows(listing: &Listing<'_>) -> Vec<Row> {
             ],
         )
     });
-    running.sort_by_key(|row| (urgency(row.state), !row.here, row.title.to_lowercase()));
+    // Only waiting moves a session up: one that starts or ends a turn keeps its place, so the
+    // rows don't move under the pointer every few seconds.
+    running.sort_by_key(|row| {
+        (
+            row.state != LiveStatus::Waiting,
+            !row.here,
+            row.title.to_lowercase(),
+        )
+    });
     let mut rows = Vec::with_capacity(running.len() + earlier.len() + 2);
     if !running.is_empty() {
         rows.push(Row::RunningHeading {
@@ -174,16 +182,6 @@ pub(crate) fn rows(listing: &Listing<'_>) -> Vec<Row> {
         rows.extend(earlier.into_iter().map(Row::Earlier));
     }
     rows
-}
-
-/// What needs its user comes first.
-fn urgency(state: LiveStatus) -> u8 {
-    match state {
-        LiveStatus::Waiting => 0,
-        LiveStatus::Busy => 1,
-        LiveStatus::Idle => 2,
-        LiveStatus::Other => 3,
-    }
 }
 
 /// Whether any of `texts` holds `filter`, letter case aside; an empty filter lets all through.
@@ -337,20 +335,35 @@ mod tests {
     fn those_waiting_for_their_user_come_first_then_this_folders() {
         let live = [
             titled(live(1, "dotfiles-9c", "/code/dotfiles", Busy), "niri"),
-            titled(live(2, "beep-2a", "/code/beep", Idle), "Attachments"),
+            titled(live(2, "beep-2a", "/code/beep", Idle), "Threads"),
             titled(live(3, "inneneinrichtung-4f", "/x/inn", Waiting), "Room"),
-            titled(live(4, "beep-7d", "/code/beep", Busy), "Threads"),
+            titled(live(4, "beep-7d", "/code/beep", Busy), "Attachments"),
         ];
         assert_eq!(
             titles(&rows(&listing(None, &live, &[], ""))),
             [
                 "# running 4, 1 waiting",
                 "> Room",
+                "> Attachments",
                 "> Threads",
-                "> niri",
-                "> Attachments"
+                "> niri"
             ]
         );
+    }
+
+    /// A session that starts or ends a turn keeps its place; only waiting moves it up.
+    #[test]
+    fn working_or_idle_a_session_keeps_its_place() {
+        let order = |states: [LiveStatus; 2]| {
+            let live = [
+                titled(live(1, "beep-2a", "/code/beep", states[0]), "Attachments"),
+                titled(live(2, "beep-7d", "/code/beep", states[1]), "Threads"),
+            ];
+            titles(&rows(&listing(None, &live, &[], "")))
+        };
+        assert_eq!(order([Idle, Busy]), order([Busy, Idle]));
+        let waiting_first = order([Idle, Waiting]);
+        assert_eq!(waiting_first.get(1).map(String::as_str), Some("> Threads"));
     }
 
     #[test]
