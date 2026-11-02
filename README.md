@@ -245,6 +245,11 @@ sources) and `cargo test` are clean.
 - `@` file mentions and per-session effort aren't there yet. Images are pasted, not dropped in.
   An image shows at most 480 px wide; there is no larger view yet.
 - Finding another session's window needs niri.
+- A sandboxed session gets your sign-in token once, as it starts, and can't renew it. It works only
+  until that token runs out, which is at most 8 hours and can be minutes, then has to be started
+  again. A sign-in to another account doesn't reach it either. Claude Code gives a new token only
+  to a host that is Claude Desktop, Cowork or VS Code. The way out would be a proxy that adds the
+  token to each request (`ANTHROPIC_UNIX_SOCKET`), which isn't built.
 
 ## License
 
