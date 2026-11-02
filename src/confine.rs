@@ -92,6 +92,8 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
         .map(PathBuf::from)
         .collect();
     read.extend(all_but(&home, &secrets));
+    // Itself, which it starts to decode images (`decode`), wherever it is installed or built.
+    read.extend(std::env::current_exe().ok());
     // The sessions and transcripts the window lists, where `CLAUDE_CONFIG_DIR` keeps them
     // outside the home folder.
     if !claude.starts_with(&home) {
