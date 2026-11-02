@@ -445,11 +445,15 @@ component Sidebar inherits Rectangle {
     // The widest it is dragged to.
     property <length> widest: 720px;
     callback hide;
-    min-width: 200px;
+    // No narrower than its header's buttons (their size grows with the zoom): a narrow window
+    // took it below them, and they spilled over the conversation's title.
+    min-width: max(200px, head.min-width + 2 * Theme.space-m);
     preferred-width: Sessions.chosen-width > 0 ? Sessions.chosen-width : Theme.sidebar;
     max-width: self.preferred-width;
     horizontal-stretch: 0;
     background: Theme.surface-raised;
+    // Nothing of it draws over the conversation, however narrow it is made.
+    clip: true;
     // Tab goes round within the sidebar.
     sidebar-start := AreaFence {
         area: FocusArea.sidebar;
@@ -464,7 +468,7 @@ component Sidebar inherits Rectangle {
     VerticalLayout {
         padding: Theme.space-m;
         spacing: Theme.space-s;
-        HorizontalLayout {
+        head := HorizontalLayout {
             spacing: Theme.space-s;
             padding-left: Theme.space-xs;
             // edualc's heron, at the size of the grid it is drawn on.
@@ -472,10 +476,13 @@ component Sidebar inherits Rectangle {
                 width: 24px;
                 y: (parent.height - self.height) / 2;
             }
+            // Gives way first: the buttons beside it keep their size.
             Title {
                 text: "edualc";
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                overflow: elide;
+                min-width: 0px;
             }
             IconButton {
                 icon: @image-url("@lucide/palette.svg");
