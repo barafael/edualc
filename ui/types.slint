@@ -121,6 +121,17 @@ export enum SideView { hidden, shown, folded }
 
 export enum SideState { pending, retrying, answered, failed }
 
+// A step of a subagent's, as the side panel follows it: what it was asked, what it said, a tool
+// it called.
+export enum StepKind { asked, said, called }
+
+export struct PeekStep {
+    kind: StepKind,
+    // The tool's name, for a call.
+    title: string,
+    text: string,
+}
+
 // A side question and its answer (Markdown blocks), or why there is none.
 export struct SideExchange {
     question: string,

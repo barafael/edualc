@@ -8,7 +8,7 @@ use crate::app::{Action, Event, PermissionMode};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Preferences, Prompt,
+    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, Preferences, Prompt,
     SandboxAccess, SendKey, Session, Sessions, Side, Transcript, Usage,
 };
 use crate::ipc;
@@ -189,6 +189,10 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     side.on_copy(actions.on_index(Action::CopySide));
     side.on_to_conversation(actions.on(|| Action::SideToConversation));
     side.on_branch(actions.on(|| Action::BranchSide));
+
+    let peek = window.global::<Peek>();
+    peek.on_follow(actions.on_text(|task| Action::OpenPeek(task.into())));
+    peek.on_close(actions.on(|| Action::ClosePeek));
 
     let sessions = window.global::<Sessions>();
     sessions.on_new_session(actions.on(|| Action::NewSession));

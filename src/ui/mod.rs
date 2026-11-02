@@ -24,10 +24,10 @@ use crate::external::wire::{
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
     EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock,
-    MenuItem, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
-    QuestionOption, SendKey, Session, SessionItem, Sessions, ShownImage, Side, SideExchange,
-    SideState, StatRow, StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript,
-    Usage,
+    MenuItem, PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind,
+    Question, QuestionOption, SendKey, Session, SessionItem, Sessions, ShownImage, Side,
+    SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem, TaskKind, Theme,
+    ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -736,6 +736,25 @@ impl View {
         session.set_tasks_summary(tasks_summary(&kinds).into());
         let items: Vec<TaskItem> = tasks.running().map(task_item).collect();
         session.set_tasks(ModelRc::new(VecModel::from(items)));
+    }
+
+    /// The subagent followed in the side panel, if one is, and whether it still runs.
+    pub(crate) fn render_peek(&self, peek: Option<&crate::app::Peek>, tasks: &Tasks) {
+        let global = self.window.global::<crate::generated::Peek>();
+        let Some(peek) = peek else {
+            global.set_open(false);
+            global.set_steps(ModelRc::default());
+            return;
+        };
+        let running = tasks
+            .running()
+            .any(|running| running.task.task_id == peek.task);
+        global.set_open(true);
+        global.set_title(peek.title.as_str().into());
+        global.set_detail(peek_detail(peek.agent.as_deref()).into());
+        global.set_running(running);
+        let steps: Vec<PeekStep> = peek.steps.iter().map(peek_step).collect();
+        global.set_steps(ModelRc::new(VecModel::from(steps)));
     }
 
     /// The model and mode menus, and which of each is in use.
@@ -1663,6 +1682,26 @@ fn task_item(running: Running<'_>) -> TaskItem {
         used: used.unwrap_or_default().into(),
         now: now.unwrap_or_default().into(),
         peekable: task.task_type == wire::TaskKind::LocalAgent,
+    }
+}
+
+/// "Agent · Explore", as the chip's list names a subagent.
+fn peek_detail(agent: Option<&str>) -> String {
+    match agent {
+        Some(agent) => format!("Agent · {agent}"),
+        None => "Agent".to_owned(),
+    }
+}
+
+fn peek_step(step: &crate::app::Step) -> PeekStep {
+    PeekStep {
+        kind: match step.kind {
+            crate::app::StepKind::Asked => StepKind::Asked,
+            crate::app::StepKind::Said => StepKind::Said,
+            crate::app::StepKind::Called => StepKind::Called,
+        },
+        title: step.title.as_str().into(),
+        text: step.text.as_str().into(),
     }
 }
 

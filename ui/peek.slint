@@ -1,0 +1,110 @@
+// A subagent's work, followed beside the conversation and read only: what it was asked, what it
+// says and each tool it calls, the latest at the foot. The chip's list of what runs opens it.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { StepKind } from "types.slint";
+import { Peek } from "state.slint";
+import { Caption, Icon, IconButton, Small } from "widgets.slint";
+
+export component PeekPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    follow-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            steps.content-y = min(0px, steps.visible-height - steps.content-height);
+        }
+    }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 52px;
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-xs;
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/bot.svg");
+                tint: Theme.claude;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: Peek.title;
+                    font-weight: 600;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                Caption {
+                    text: Peek.running ? Peek.detail + " · running" : Peek.detail + " · ended";
+                    overflow: elide;
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Stop following this agent";
+                y: (parent.height - self.height) / 2;
+                clicked => { Peek.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        if Peek.steps.length == 0: VerticalLayout {
+            padding: Theme.space-m;
+            Small {
+                text: "Nothing of its conversation is saved yet. It shows here as it goes.";
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+        steps := ListView {
+            vertical-stretch: 1;
+            // As the transcript does: the move waits for the pass that measured the rows.
+            changed content-height => { follow-timer.running = true; }
+            for step in Peek.steps: VerticalLayout {
+                padding-left: Theme.space-m;
+                padding-right: Theme.space-m;
+                padding-top: Theme.space-xs;
+                padding-bottom: Theme.space-xs;
+                if step.kind == StepKind.asked: Rectangle {
+                    border-radius: Theme.radius-l;
+                    background: Theme.bubble;
+                    HorizontalLayout {
+                        padding: Theme.space-s;
+                        padding-left: Theme.space-m;
+                        padding-right: Theme.space-m;
+                        Text {
+                            text: step.text;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if step.kind == StepKind.said: Text {
+                    text: step.text;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if step.kind == StepKind.called: HorizontalLayout {
+                    spacing: Theme.space-s;
+                    Small {
+                        text: step.title;
+                        color: Theme.text-secondary;
+                        font-weight: 600;
+                    }
+                    Small {
+                        text: step.text;
+                        color: Theme.text-secondary;
+                        font-family: Theme.mono;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+}

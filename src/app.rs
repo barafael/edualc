@@ -34,12 +34,14 @@ use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
 
 mod images;
+mod peek;
 mod protocol;
 mod side;
 mod tasks;
 mod usage;
 mod worktree;
 
+pub(crate) use peek::{Peek, Step, StepKind};
 pub(crate) use side::{Answer, SideChat, SideView};
 pub(crate) use tasks::{Place, Running, TaskProgress, Tasks};
 
@@ -119,6 +121,11 @@ pub(crate) enum Event {
     /// What a watched session's transcript says after what is shown.
     TranscriptGrew {
         id: SessionId,
+        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+    },
+    /// What the transcript of the subagent peeked into says after what is shown.
+    PeekGrew {
+        task: wire::TaskId,
         result: std::io::Result<(Vec<TranscriptLine>, u64)>,
     },
     LiveListed(Vec<LiveSession>),
@@ -258,6 +265,9 @@ pub(crate) enum Action {
     ToggleSide,
     DismissSide,
     CopySide(usize),
+    /// Follow a subagent's conversation in the side panel.
+    OpenPeek(wire::TaskId),
+    ClosePeek,
     SideToConversation,
     BranchSide,
     /// Opens the session's worktree with the opener at this place in the menu (0: here).
@@ -557,6 +567,7 @@ struct Redraw {
     side: bool,
     usage: bool,
     tasks: bool,
+    peek: bool,
 }
 
 impl Redraw {
@@ -570,6 +581,7 @@ impl Redraw {
             side: true,
             usage: true,
             tasks: true,
+            peek: true,
         }
     }
 }
@@ -615,6 +627,8 @@ pub(crate) struct App {
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, std::time::Instant>,
     watch: Option<Watch>,
+    /// The subagent whose conversation the side panel follows.
+    peek: Option<Peek>,
     watcher: Option<Watcher>,
     /// The watch on the running sessions' records.
     records: Option<Watched>,
@@ -700,6 +714,7 @@ impl App {
             listing_live: Refresh::Idle,
             notified: HashMap::new(),
             watch: None,
+            peek: None,
             watcher: None,
             records: None,
             side: SideChat::default(),
@@ -798,6 +813,7 @@ impl App {
             Event::ProjectsListed(projects) => self.view.render_projects(&projects),
             Event::SessionLoaded { id, path, result } => self.session_loaded(&id, path, result),
             Event::TranscriptGrew { id, result } => self.transcript_grew(&id, result),
+            Event::PeekGrew { task, result } => self.peek_grew(&task, result),
             Event::LiveListed(live) => self.live_listed(live),
             Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
             Event::Acted { request, result } => self.acted(request, result),
@@ -910,6 +926,8 @@ impl App {
             Action::CopySide(index) => self.copy_side(index),
             Action::SideToConversation => self.side_to_conversation(),
             Action::BranchSide => self.branch_side(),
+            Action::OpenPeek(task) => self.open_peek(task),
+            Action::ClosePeek => self.close_peek(),
             Action::OpenWorktree(index) => self.open_worktree(index),
             Action::ShowUsage => self.show_usage(),
             Action::HideUsage => {
@@ -1037,6 +1055,10 @@ impl App {
         }
         if redraw.tasks {
             self.view.render_tasks(&self.status.tasks);
+        }
+        if redraw.peek || redraw.tasks {
+            self.view
+                .render_peek(self.peek.as_ref(), &self.status.tasks);
         }
         if redraw.side {
             let can_ask = self.watch.is_none();
@@ -1343,6 +1365,7 @@ impl App {
 
     /// Leaves the session shown for another, letting go of its process.
     fn leave(&mut self) {
+        self.close_peek();
         self.let_go();
         self.stop();
     }
@@ -1636,6 +1659,8 @@ impl App {
             .is_some_and(|watch| watch.watched == Some(watched))
         {
             self.read_on();
+        } else if self.peeks_at(watched) {
+            self.peek_changed();
         } else if let Some(watcher) = &self.watcher {
             // A transcript no longer followed.
             watcher.forget(watched);

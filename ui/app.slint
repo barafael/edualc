@@ -4,18 +4,19 @@
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
 import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SideView, TaskKind } from "types.slint";
-import { Clipboard, Composer, Focus, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
 import { Heron, HeronMark } from "heron.slint";
+import { PeekPanel } from "peek.slint";
 import { PlanReview } from "plan.slint";
 import { SettingsPanel } from "settings.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
-export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveItem, SandboxAccess, LiveState, MdBlock, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, TaskItem, TaskKind, ToolState } from "types.slint";
-export { Clipboard, Composer, Focus, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveItem, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
+export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
 // work is another window's to show, and a moving dot here would keep this one drawing.
@@ -181,34 +182,51 @@ component TasksChip inherits Pressable {
                     color: Theme.text;
                     font-weight: 600;
                 }
-                for task in Session.tasks: HorizontalLayout {
-                    spacing: Theme.space-s;
-                    Icon {
-                        source: task.kind == TaskKind.agent ? @image-url("@lucide/bot.svg")
-                            : task.kind == TaskKind.command ? @image-url("@lucide/square-terminal.svg")
-                            : task.kind == TaskKind.workflow ? @image-url("@lucide/workflow.svg")
-                            : task.kind == TaskKind.monitor ? @image-url("@lucide/radar.svg")
-                            : @image-url("@lucide/circle-dashed.svg");
-                        tint: Theme.text-secondary;
-                        width: Theme.icon-small;
-                        y: Theme.space-xs / 2;
+                // A subagent's row opens what it does beside the conversation.
+                for task in Session.tasks: Pressable {
+                    enabled: task.peekable;
+                    tab-stop: task.peekable;
+                    accessible-label: task.peekable ? "Follow " + task.title : task.title;
+                    clicked => {
+                        tasks-menu.close();
+                        Peek.follow(task.id);
                     }
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        Text {
-                            text: task.title;
-                            color: Theme.text;
-                            wrap: word-wrap;
+                    HorizontalLayout {
+                        padding: Theme.space-xs;
+                        spacing: Theme.space-s;
+                        Icon {
+                            source: task.kind == TaskKind.agent ? @image-url("@lucide/bot.svg")
+                                : task.kind == TaskKind.command ? @image-url("@lucide/square-terminal.svg")
+                                : task.kind == TaskKind.workflow ? @image-url("@lucide/workflow.svg")
+                                : task.kind == TaskKind.monitor ? @image-url("@lucide/radar.svg")
+                                : @image-url("@lucide/circle-dashed.svg");
+                            tint: Theme.text-secondary;
+                            width: Theme.icon-small;
+                            y: Theme.space-xs / 2;
                         }
-                        Caption {
-                            text: task.detail;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: task.title;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            Caption {
+                                text: task.detail;
+                            }
+                            if task.used != "": Caption {
+                                text: task.used;
+                            }
+                            if task.now != "": Caption {
+                                text: task.now;
+                                wrap: word-wrap;
+                            }
                         }
-                        if task.used != "": Caption {
-                            text: task.used;
-                        }
-                        if task.now != "": Caption {
-                            text: task.now;
-                            wrap: word-wrap;
+                        if task.peekable: Icon {
+                            source: @image-url("@lucide/chevron-right.svg");
+                            tint: Theme.text-tertiary;
+                            width: Theme.icon-small;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
@@ -2371,11 +2389,19 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            if Side.view == SideView.shown: Rectangle {
+            if Side.view == SideView.shown || Peek.open: Rectangle {
                 width: 1px;
                 background: Theme.divider;
             }
-            if Side.view == SideView.shown: SidePanel {
+            // A subagent followed takes the panel's place while it is open; the side questions
+            // wait meanwhile.
+            if Side.view == SideView.shown && !Peek.open: SidePanel {
+                min-width: 280px;
+                preferred-width: Theme.side-panel;
+                max-width: Theme.side-panel;
+                horizontal-stretch: 0;
+            }
+            if Peek.open: PeekPanel {
                 min-width: 280px;
                 preferred-width: Theme.side-panel;
                 max-width: Theme.side-panel;
