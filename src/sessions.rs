@@ -248,6 +248,46 @@ pub(crate) fn find_transcript(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
     })
 }
 
+/// The Claude Code home a session's process writes its transcripts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudeHome {
+    /// The user's own.
+    Users,
+    /// Its folder's sandboxed home (see `home`). The user's own follows the session's transcript
+    /// there, not its subagents'.
+    Sandboxed,
+}
+
+/// Where session `id` working in `cwd` writes its transcript in `home`, or will once it writes
+/// (see [`transcript_in`]).
+pub(crate) fn written_transcript(home: ClaudeHome, cwd: &Path, id: &SessionId) -> PathBuf {
+    let projects = match home {
+        ClaudeHome::Users => None,
+        ClaudeHome::Sandboxed => Home::of(cwd).map(|home| home.projects()),
+    }
+    .unwrap_or_else(projects_dir);
+    transcript_in(&projects, cwd, id)
+}
+
+/// Where session `id` working in `cwd` has its transcript in the folder of projects' folders
+/// `projects`: under its folder's project, or another's when it moved there (into a worktree);
+/// under its folder's project if it is not written yet.
+fn transcript_in(projects: &Path, cwd: &Path, id: &SessionId) -> PathBuf {
+    let name = format!("{}.jsonl", id.as_str());
+    let own = projects.join(project_name(cwd)).join(&name);
+    if own.is_file() {
+        return own;
+    }
+    newest(
+        std::fs::read_dir(projects)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join(&name)),
+    )
+    .unwrap_or(own)
+}
+
 /// A session's transcript in the user's own home, whatever its project.
 pub(crate) fn find_user_transcript(id: &SessionId) -> Option<PathBuf> {
     let name = format!("{}.jsonl", id.as_str());
@@ -708,6 +748,40 @@ mod tests {
         assert_eq!(running_agents(&session, later), 0, "quiet too long");
         assert_eq!(running_agents(&dir.join("none.jsonl"), written), 0);
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
+    }
+
+    /// A session's transcript in a home is under its folder's project, or under the project it
+    /// moved to; under its folder's while not written.
+    #[test]
+    fn a_transcript_in_a_home_is_found_where_it_went() {
+        let projects = std::env::temp_dir().join(format!("edualc-home-{}", std::process::id()));
+        let cwd = Path::new("/w/app");
+        let id =
+            SessionId::try_from("0b8f1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d".to_owned()).expect("an id");
+        let own = projects.join("-w-app").join(format!("{id}.jsonl"));
+        assert_eq!(transcript_in(&projects, cwd, &id), own, "not written yet");
+        let moved = projects.join("-w-app-wt").join(format!("{id}.jsonl"));
+        std::fs::create_dir_all(moved.parent().expect("a folder")).expect("a project folder");
+        std::fs::write(&moved, "").expect("a transcript");
+        assert_eq!(
+            transcript_in(&projects, cwd, &id),
+            moved,
+            "moved to a worktree"
+        );
+        std::fs::create_dir_all(own.parent().expect("a folder")).expect("a project folder");
+        std::fs::write(&own, "").expect("a transcript");
+        let later = SystemTime::now() + std::time::Duration::from_secs(60);
+        File::options()
+            .write(true)
+            .open(&moved)
+            .and_then(|file| file.set_modified(later))
+            .expect("the moved one newer");
+        assert_eq!(
+            transcript_in(&projects, cwd, &id),
+            own,
+            "its folder's first, if newer elsewhere"
+        );
+        std::fs::remove_dir_all(&projects).expect("the scratch folder goes");
     }
 
     #[test]

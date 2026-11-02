@@ -10,7 +10,7 @@ use crate::sessions;
 use crate::tools::{self, Depth};
 use crate::watcher::Watched;
 
-use super::{App, Event, Refresh};
+use super::{App, Event, Refresh, Sandboxing};
 
 impl App {
     /// Shows subagent `task`'s conversation in the side panel, followed as it goes.
@@ -28,9 +28,15 @@ impl App {
         let Some(id) = self.status.session_id.as_ref() else {
             return;
         };
-        // Not found, it is yet to be written where this folder's sessions go.
-        let session = sessions::find_transcript(&self.cwd, id)
-            .unwrap_or_else(|| sessions::transcript_path(&self.cwd, id));
+        // Beside the session's transcript in the home its process writes in: the user's own
+        // follows a sandboxed session's transcript, but not its subagents'.
+        let home = match self.status.sandboxing {
+            Sandboxing::Landlock(_) => sessions::ClaudeHome::Sandboxed,
+            Sandboxing::Pending | Sandboxing::Off | Sandboxing::ClaudeCodes => {
+                sessions::ClaudeHome::Users
+            }
+        };
+        let session = sessions::written_transcript(home, &self.cwd, id);
         let path = transcript_of(&session, &task);
         self.close_peek();
         let mut peek = Peek::new(task, title, path);
