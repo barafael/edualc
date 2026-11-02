@@ -2124,12 +2124,11 @@ export component AppWindow inherits Window {
                         // The rows shown, each taking room: a folded run's later calls aren't
                         // in the list (see `View::new`).
                         for entry[position] in Transcript.entries: HorizontalLayout {
-                            alignment: start;
-                            padding-left: Theme.space-xl;
+                            alignment: center;
                             padding-top: position == 0 ? Theme.space-xl : Theme.space-s;
                             padding-bottom: position == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
                             EntryView {
-                                width: min(transcript.visible-width - 2 * Theme.space-xl, Theme.column);
+                                width: min(transcript.visible-width - 2 * Theme.column-margin, Theme.column);
                                 entry: entry;
                                 index: entry.index;
                             }
@@ -2315,11 +2314,11 @@ export component AppWindow inherits Window {
                 // space there is, doesn't size that space in turn.
                 if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust: Rectangle {
                     height: dock.preferred-height;
-                    // At the left, a margin in, as the transcript's column is.
+                    // Centered, as wide as the transcript's column.
                     dock := VerticalLayout {
-                        x: Theme.space-xl;
+                        x: (parent.width - self.width) / 2;
                         y: 0;
-                        width: min(parent.width - 2 * Theme.space-xl, Theme.column);
+                        width: min(parent.width - 2 * Theme.column-margin, Theme.column);
                         height: self.preferred-height;
                         padding-bottom: Theme.space-s;
                         spacing: Theme.space-s;

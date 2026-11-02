@@ -288,7 +288,9 @@ export global Theme {
     out property <length> header: max(46px, self.base-size * 3.1);
     out property <length> sidebar: max(272px, self.base-size * 18);
     out property <length> side-panel: max(400px, self.base-size * 26);
-    // The transcript reads best as a column (about 90 characters), not the window's width. It
-    // starts at the left: centered in a wide window, all the text looked centered.
-    out property <length> column: max(880px, self.base-size * 58);
+    // The transcript reads best as a column (about 100 characters of Fira Sans), not the
+    // window's width: centered, with margins of `column-margin` at least, so it takes much of a
+    // wide window.
+    out property <length> column: max(960px, self.base-size * 64);
+    out property <length> column-margin: self.space-l;
 }
