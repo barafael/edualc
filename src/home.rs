@@ -227,13 +227,14 @@ impl AccessToken {
 }
 
 /// Makes `home` ready for a session working in `cwd` on `conversation`, its temporary files
-/// in `scratch`: seeds it afresh from the user's own home.
+/// in `scratch`: seeds it afresh from the user's own home. A resumed session's transcript that
+/// went on separately in the user's home is named.
 pub(crate) fn prepare(
     home: &Home,
     cwd: &Path,
     scratch: &Scratch,
     conversation: &Conversation,
-) -> Result<(), Error> {
+) -> Result<Option<Diverged>, Error> {
     let homes = home.path().parent().unwrap_or(home.path());
     create_private_folder(home.path())?;
     let staging = Staging::make(homes)?;
@@ -262,10 +263,12 @@ pub(crate) fn prepare(
 
     merge_memory(&staging, &home_fd, home, &real, cwd)?;
 
-    if let Conversation::Continue(id) | Conversation::Fork { of: id, .. } = conversation {
-        copy_in_transcript(&staging, &home_fd, home, id)?;
+    match conversation {
+        Conversation::Continue(id) | Conversation::Fork { of: id, .. } => {
+            copy_in_transcript(&staging, &home_fd, home, id)
+        }
+        Conversation::New(_) => Ok(None),
     }
-    Ok(())
 }
 
 /// The user's settings, with Claude Code's temporary files in `scratch`. A setting's `env`
@@ -397,27 +400,30 @@ fn read_beneath(folder: &OwnedFd, name: &str) -> Option<String> {
 }
 
 /// A session resumed from the user's own home: its transcript and its subagents' copied in,
-/// unless the home has it already, as long as the user's copy or longer.
+/// unless the home has it already, as long as the user's copy or longer. Where the two went on
+/// separately, the home's is kept, and the user's is named as left behind.
 fn copy_in_transcript(
     staging: &Staging,
     home_fd: &OwnedFd,
     home: &Home,
     id: &SessionId,
-) -> Result<(), Error> {
+) -> Result<Option<Diverged>, Error> {
     let name = format!("{}.jsonl", id.as_str());
     let Some(source) = sessions::find_user_transcript(id) else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(project) = source
         .parent()
         .and_then(Path::file_name)
         .and_then(|project| project.to_str())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let relative = Path::new("projects").join(project);
-    if !users_goes_on(&source, home, &relative, &name)? {
-        return Ok(());
+    match copy_in(&source, home, &relative, &name)? {
+        CopyIn::Take => {}
+        CopyIn::Keep => return Ok(None),
+        CopyIn::Diverged => return Ok(Some(Diverged { left: source })),
     }
     let target_path = home.path().join(&relative);
     let target = open_beneath(home_fd, &target_path, &relative)?;
@@ -429,31 +435,49 @@ fn copy_in_transcript(
         copy_tree(&companion, &staging.path().join(folder))?;
         staging.move_into(&target, &target_path, folder, folder)?;
     }
-    Ok(())
+    Ok(None)
 }
 
-/// Whether the user's transcript at `users` is to be copied in over the home's copy at
-/// `relative`/`name`: where the home has none, or the user's goes on from it (the session was
-/// resumed in a terminal since). A copy that is no plain file is replaced, never read.
-fn users_goes_on(users: &Path, home: &Home, relative: &Path, name: &str) -> Result<bool, Error> {
+/// Whether a resumed session's transcript is copied in from the user's own home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyIn {
+    /// The home has none, or the user's goes on from it (the session was resumed in a terminal
+    /// since), or the home's is no plain file, which is replaced, never read.
+    Take,
+    /// The home's is the same, or goes on from the user's.
+    Keep,
+    /// Each went on without the other.
+    Diverged,
+}
+
+/// How the user's transcript at `users` stands to the home's copy at `relative`/`name`.
+fn copy_in(users: &Path, home: &Home, relative: &Path, name: &str) -> Result<CopyIn, Error> {
     let own = match open_existing(home.path(), relative, name) {
         Ok(Some(own)) => own,
-        Ok(None) | Err(Error::NotOwnFile(_)) => return Ok(true),
-        Err(Error::TooLong(_)) => return Ok(false),
+        Ok(None) | Err(Error::NotOwnFile(_)) => return Ok(CopyIn::Take),
+        Err(Error::TooLong(_)) => return Ok(CopyIn::Keep),
         Err(error) => return Err(error),
     };
-    let own_path = home.path().join(relative).join(name);
     let theirs = std::fs::File::open(users).map_err(io(users))?;
-    let length_of = |file: &std::fs::File| file.metadata().map(|metadata| metadata.len());
-    if length_of(&theirs).map_err(io(users))? <= length_of(&own).map_err(io(&own_path))? {
-        return Ok(false);
-    }
     let related = relation(BufReader::new(theirs), BufReader::new(own)).map_err(io(users))?;
-    Ok(related == Relation::Extends)
+    Ok(match related {
+        Relation::Extends => CopyIn::Take,
+        Relation::Same | Relation::Extended => CopyIn::Keep,
+        Relation::Apart => CopyIn::Diverged,
+    })
 }
 
-/// What became of a sandboxed session's transcript as the session ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Two copies of a session's transcript that went on separately: it was resumed in one home
+/// while the other held what it wrote last. It goes on from one; the other stays where it is,
+/// with what only it has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Diverged {
+    /// The copy the session doesn't go on from.
+    pub(crate) left: PathBuf,
+}
+
+/// What became of a sandboxed session's transcript, copied back.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CopyBack {
     /// The user's own home has it now.
     Copied,
@@ -461,9 +485,20 @@ pub(crate) enum CopyBack {
     Unchanged,
     /// The session wrote none.
     NoneWritten,
-    /// The user's copy went on without it (the session was resumed in a terminal meanwhile),
-    /// so it stays as it is.
-    KeptTheUsers,
+    /// The user's copy goes on from it (the session was resumed in a terminal since), so it
+    /// stays as it is.
+    UsersGoesOn,
+    /// Each went on without the other: the user's copy stays, and the home's is left behind.
+    Diverged(Diverged),
+}
+
+/// Before a session working in `cwd` is resumed outside the sandbox: what it last wrote in its
+/// sandboxed home there, copied back, so that it goes on from that.
+pub(crate) fn bring_back(cwd: &Path, id: &SessionId) -> Result<CopyBack, Error> {
+    let Some(home) = Home::of(cwd) else {
+        return Ok(CopyBack::NoneWritten);
+    };
+    copy_back_transcript(&home, cwd, id)
 }
 
 /// Copies the transcript a sandboxed session wrote in `home` into the user's own home, so that
@@ -521,7 +556,8 @@ fn copy_back(
             copy.place(&name)?;
             Ok(CopyBack::Copied)
         }
-        Relation::Extended | Relation::Apart => Ok(CopyBack::KeptTheUsers),
+        Relation::Extended => Ok(CopyBack::UsersGoesOn),
+        Relation::Apart => Ok(CopyBack::Diverged(Diverged { left: source_path })),
     }
 }
 
@@ -1101,21 +1137,24 @@ mod tests {
         copying.done();
     }
 
-    /// Resumed in a terminal meanwhile, the user's copy went on its own way, or further: it
-    /// stays as it is.
+    /// Resumed in a terminal meanwhile, the user's copy went further, or its own way: it stays
+    /// as it is, and a copy that went its own way is told apart, naming the one left behind.
     #[test]
     fn the_users_copy_that_went_on_stays() {
         let copying = Copying::new("back-kept");
         std::fs::write(copying.sandboxed(), entry("a") + &entry("b")).expect("a transcript");
-        for users in [
-            entry("a") + &entry("c"),
-            entry("a") + &entry("b") + &entry("c"),
+        let left = Diverged {
+            left: copying.sandboxed(),
+        };
+        for (users, outcome) in [
+            (entry("a") + &entry("c"), CopyBack::Diverged(left)),
+            (
+                entry("a") + &entry("b") + &entry("c"),
+                CopyBack::UsersGoesOn,
+            ),
         ] {
             copying.write_users(&users);
-            assert_eq!(
-                copying.copy_back().expect("compared"),
-                CopyBack::KeptTheUsers
-            );
+            assert_eq!(copying.copy_back().expect("compared"), outcome);
             assert_eq!(copying.users_text(), users);
             assert_eq!(copying.users_folder(), [Copying::name()]);
         }
@@ -1192,14 +1231,15 @@ mod tests {
     }
 
     /// Resuming, the user's copy is taken where it goes on from the home's (the session went on
-    /// in a terminal), and where the home's is no plain file.
+    /// in a terminal), and where the home's is no plain file; two copies that went their own
+    /// ways are told apart, and the home's is kept.
     #[test]
     fn copying_in_takes_the_users_copy_only_where_it_goes_on() {
         let copying = Copying::new("in-goes-on");
         let name = Copying::name();
-        let goes_on = |users: &str| {
+        let copy_in_over = |users: &str| {
             copying.write_users(users);
-            users_goes_on(
+            copy_in(
                 &copying.users_copy(),
                 &copying.home,
                 &copying.relative,
@@ -1207,15 +1247,24 @@ mod tests {
             )
             .expect("compared")
         };
-        assert!(goes_on(&entry("a")), "the home has none");
+        assert_eq!(copy_in_over(&entry("a")), CopyIn::Take, "the home has none");
         std::fs::write(copying.sandboxed(), entry("a") + &entry("b")).expect("the home's copy");
-        assert!(goes_on(&(entry("a") + &entry("b") + &entry("c"))));
-        assert!(!goes_on(&(entry("a") + &entry("b"))), "the same");
-        assert!(!goes_on(&entry("a")), "shorter");
-        assert!(!goes_on(&(entry("a") + &entry("c") + &entry("d"))), "apart");
+        let further = entry("a") + &entry("b") + &entry("c");
+        assert_eq!(copy_in_over(&further), CopyIn::Take);
+        let same = entry("a") + &entry("b");
+        assert_eq!(copy_in_over(&same), CopyIn::Keep);
+        assert_eq!(copy_in_over(&entry("a")), CopyIn::Keep, "shorter");
+        let apart = entry("a") + &entry("c");
+        assert_eq!(copy_in_over(&apart), CopyIn::Diverged);
+        let apart_and_longer = entry("a") + &entry("c") + &entry("d");
+        assert_eq!(copy_in_over(&apart_and_longer), CopyIn::Diverged);
         std::fs::remove_file(copying.sandboxed()).expect("the copy goes");
         std::os::unix::fs::symlink(copying.users_copy(), copying.sandboxed()).expect("a link");
-        assert!(goes_on(&entry("a")), "a link is replaced");
+        assert_eq!(
+            copy_in_over(&entry("a")),
+            CopyIn::Take,
+            "a link is replaced"
+        );
         copying.done();
     }
 }

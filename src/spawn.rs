@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 
 use crate::claude::{Conversation, Launch};
 use crate::external::wire::SessionId;
-use crate::home::{self, AccessToken, Home, Scratch};
+use crate::home::{self, AccessToken, CopyBack, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
 use crate::{mirror, process, sessions};
 
@@ -111,6 +111,9 @@ pub(crate) struct Spawned {
     pub(crate) scratch: Option<Scratch>,
     /// A sandboxed session's record to mirror for other sessions to message it by.
     pub(crate) record: Option<mirror::Source>,
+    /// A resumed session whose transcript went on separately in and out of the sandbox: the
+    /// copy it doesn't go on from, for the user to be told of.
+    pub(crate) diverged: Option<home::Diverged>,
 }
 
 /// What a sandboxed start takes: its sandbox, its own home and temporary folder, and the
@@ -120,6 +123,7 @@ struct Sandboxed {
     home: Home,
     scratch: Scratch,
     sign_in: Option<SignIn>,
+    diverged: Option<home::Diverged>,
 }
 
 /// The user's sign-in on its way to a sandboxed session, through a pipe the session inherits:
@@ -257,6 +261,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
             home,
             scratch,
             sign_in,
+            diverged,
         }) => {
             // Restricted, the thread starts the child, which keeps the restriction, and ends.
             let (child, enforcement) = std::thread::scope(|scope| {
@@ -287,16 +292,40 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                     id: launch.conversation.id().clone(),
                     cwd,
                 }),
+                diverged,
             })
         }
         None => {
+            let diverged = match &launch.conversation {
+                Conversation::Continue(id) | Conversation::Fork { of: id, .. } => {
+                    brought_back(&cwd, id)
+                }
+                Conversation::New(_) => None,
+            };
             let _in_runtime = runtime.enter();
             Ok(Spawned {
                 child: command.spawn().map_err(Error::Start)?,
                 enforcement: None,
                 scratch: None,
                 record: None,
+                diverged,
             })
+        }
+    }
+}
+
+/// Before session `id` is resumed outside the sandbox: what it last wrote in its sandboxed home,
+/// brought back so that it goes on from there; the copy left behind where the two went their
+/// own ways. A copy that can't be brought back doesn't keep the session from starting.
+fn brought_back(cwd: &Path, id: &SessionId) -> Option<home::Diverged> {
+    match home::bring_back(cwd, id) {
+        Ok(CopyBack::Diverged(diverged)) => Some(diverged),
+        Ok(
+            CopyBack::Copied | CopyBack::Unchanged | CopyBack::NoneWritten | CopyBack::UsersGoesOn,
+        ) => None,
+        Err(error) => {
+            tracing::warn!(%error, "the sandboxed home's transcript isn't brought back");
+            None
         }
     }
 }
@@ -311,7 +340,7 @@ fn sandboxed(
 ) -> Result<Sandboxed, Error> {
     let home = Home::of(cwd).ok_or(home::Error::NoStateFolder)?;
     let scratch = Scratch::make(launch.conversation.id())?;
-    home::prepare(&home, cwd, &scratch, &launch.conversation)?;
+    let diverged = home::prepare(&home, cwd, &scratch, &launch.conversation)?;
     let read = absolute(&wish.read)?;
     let write = absolute(&wish.write)?;
     let policy = Policy::for_project(
@@ -340,6 +369,7 @@ fn sandboxed(
         home,
         scratch,
         sign_in,
+        diverged,
     })
 }
 

@@ -971,10 +971,14 @@ impl Session {
             enforcement,
             scratch: _kept_while_running,
             record,
+            diverged,
         } = spawned;
         let Some(pid) = child.id() else {
             return self;
         };
+        if let Some(diverged) = diverged {
+            tell_diverged(diverged).await;
+        }
         // A sandboxed session's record, mirrored for others to message it by, until this ends.
         let mut mirror = record
             .as_ref()
@@ -1107,6 +1111,7 @@ impl Session {
                 tokio::task::spawn_blocking(move || home::copy_back_transcript(&home, &cwd, &id))
                     .await;
             match copied {
+                Ok(Ok(home::CopyBack::Diverged(diverged))) => tell_diverged(diverged).await,
                 Ok(Ok(outcome)) => tracing::info!(?outcome, id = ?self.id, "transcript back home"),
                 Ok(Err(error)) => {
                     tracing::warn!(%error, id = ?self.id, "the transcript stays in the session's home");
@@ -1115,6 +1120,26 @@ impl Session {
             }
         }
         self
+    }
+}
+
+/// Tells the user, on the desktop, of a conversation whose transcript went two ways in and out
+/// of the sandbox (see `home::Diverged`): the window shows only the copy the session goes on
+/// from, and what only the other has would otherwise go unnoticed.
+async fn tell_diverged(diverged: home::Diverged) {
+    tracing::warn!(left = %diverged.left.display(), "a conversation went two ways");
+    let body = format!(
+        "Two copies of a session's transcript went on separately, in and out of edualc's \
+         sandbox. What only one of them has is kept in {}",
+        diverged.left.display()
+    );
+    let told =
+        tokio::task::spawn_blocking(move || desktop::notify("A conversation went two ways", &body))
+            .await;
+    match told {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "couldn't tell of a conversation gone two ways"),
+        Err(error) => tracing::error!(%error, "telling of a conversation gone two ways failed"),
     }
 }
 
@@ -1535,6 +1560,7 @@ mod tests {
             enforcement: None,
             scratch: None,
             record: None,
+            diverged: None,
         }
     }
 
