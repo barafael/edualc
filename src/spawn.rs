@@ -14,7 +14,7 @@ use crate::claude::{Conversation, FolderConfiguration, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, CopyBack, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
-use crate::{mirror, process, sessions};
+use crate::{mirror, process, relay, sessions};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
 /// child would take them as its own and think itself nested.
@@ -300,6 +300,15 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                     id: launch.conversation.id().clone(),
                     cwd,
                     name,
+                    consent: if launch
+                        .sandbox
+                        .as_ref()
+                        .is_some_and(|wish| wish.messages_unasked)
+                    {
+                        relay::Consent::NotAsked
+                    } else {
+                        relay::Consent::EachMessage
+                    },
                 }),
                 diverged,
             })

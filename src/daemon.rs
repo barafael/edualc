@@ -999,7 +999,7 @@ impl Session {
         // A sandboxed session's messages to other sessions, carried as the user allows them.
         let mut relaying = record
             .as_ref()
-            .map(|record| Relay::new(record.name.clone()));
+            .map(|record| Relay::new(record.name.clone(), record.consent));
         // A sandboxed session's transcript, followed into the user's copy as it is written.
         let mut follower = record
             .as_ref()

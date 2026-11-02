@@ -57,6 +57,8 @@ pub(crate) struct Source {
     pub(crate) cwd: PathBuf,
     /// The name other sessions message it by, as its record gives it.
     pub(crate) name: MessagingName,
+    /// Whether the user is asked about each message it sends (see `relay`).
+    pub(crate) consent: crate::relay::Consent,
 }
 
 /// Who the mirrored session must be.

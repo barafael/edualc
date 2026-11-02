@@ -1260,6 +1260,7 @@ impl App {
             sandbox: (self.settings.sandbox && !own_sandbox).then(|| SandboxWish {
                 desktop: self.settings.sandbox_desktop,
                 hardware: self.settings.hardware_in(&self.cwd),
+                messages_unasked: self.settings.sandbox_messages_unasked,
                 read: self.settings.sandbox_read.clone(),
                 write: self.settings.sandbox_write.clone(),
             }),

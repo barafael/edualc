@@ -94,6 +94,8 @@ pub(crate) struct SandboxWish {
     pub(crate) desktop: bool,
     /// USB devices and serial ports, for debug probes and boards.
     pub(crate) hardware: bool,
+    /// Its messages to other sessions go without the user being asked about each.
+    pub(crate) messages_unasked: bool,
     pub(crate) read: Vec<PathBuf>,
     pub(crate) write: Vec<PathBuf>,
 }

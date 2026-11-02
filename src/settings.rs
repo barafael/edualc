@@ -27,6 +27,10 @@ pub(crate) struct Settings {
     /// ports: debug probes, boards, serial monitors.
     #[serde(default)]
     pub(crate) sandbox_hardware: Vec<PathBuf>,
+    /// A sandboxed session's messages to other sessions go without the user being asked about
+    /// each (see `relay`).
+    #[serde(default)]
+    pub(crate) sandbox_messages_unasked: bool,
     /// More the sandbox lets Claude read (a toolchain's home, say), and write.
     #[serde(default)]
     pub(crate) sandbox_read: Vec<PathBuf>,
@@ -88,6 +92,7 @@ impl Default for Settings {
             sandbox: true,
             sandbox_desktop: false,
             sandbox_hardware: Vec::new(),
+            sandbox_messages_unasked: false,
             sandbox_read: Vec::new(),
             sandbox_write: Vec::new(),
             composer_height_px: None,

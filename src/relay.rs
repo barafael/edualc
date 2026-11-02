@@ -113,10 +113,19 @@ pub(crate) fn registration() -> [(&'static str, Value); 2] {
 #[derive(Debug)]
 pub(crate) struct Relay {
     sender: MessagingName,
+    consent: Consent,
     /// By permission request id: the tool use it is for.
     asked: HashMap<String, String>,
     /// By tool use id: what the user allowed it to send.
     allowed: HashMap<String, SendArguments>,
+}
+
+/// Whether the user is asked about each message a sandboxed session sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Consent {
+    EachMessage,
+    /// The user's setting: its messages go without asking, the window shown only the call.
+    NotAsked,
 }
 
 /// What becomes of a line the process wrote.
@@ -213,9 +222,10 @@ pub(crate) enum Refusal {
 }
 
 impl Relay {
-    pub(crate) fn new(sender: MessagingName) -> Self {
+    pub(crate) fn new(sender: MessagingName, consent: Consent) -> Self {
         Self {
             sender,
+            consent,
             asked: HashMap::new(),
             allowed: HashMap::new(),
         }
@@ -245,8 +255,12 @@ impl Relay {
                 input,
                 tool_use_id,
             } => {
-                if tool_name == Tool::ListSessions.qualified() {
-                    // Reading the names of running sessions changes nothing.
+                // Reading the names of running sessions changes nothing; a message goes unasked
+                // where the user set it so.
+                let unasked = tool_name == Tool::ListSessions.qualified()
+                    || (tool_name == Tool::SendMessage.qualified()
+                        && self.consent == Consent::NotAsked);
+                if unasked {
                     let allow = json!({"behavior": "allow", "updatedInput": input});
                     FromProcess::Answer(answer(&request_id, &allow))
                 } else {
@@ -356,7 +370,7 @@ impl Relay {
                     .meta
                     .and_then(|meta| meta.tool_use_id)
                     .and_then(|tool_use| self.allowed.remove(&tool_use));
-                if allowed.as_ref() == Some(&asked) {
+                if allowed.as_ref() == Some(&asked) || self.consent == Consent::NotAsked {
                     FromProcess::Work(Work {
                         job: Job::Send(asked),
                         reply,
@@ -661,7 +675,7 @@ mod tests {
     /// one denied, never asked, changed since, or asked again is refused.
     #[test]
     fn a_message_goes_only_as_the_user_allowed_it() {
-        let mut relay = Relay::new(name(SENDER_ID));
+        let mut relay = Relay::new(name(SENDER_ID), Consent::EachMessage);
         let input = json!({"to": "peer-07", "message": "hello"});
         let allow = json!({"behavior": "allow", "updatedInput": input});
         let deny = json!({"behavior": "deny", "message": "no"});
@@ -704,11 +718,33 @@ mod tests {
         );
     }
 
+    /// Where the user set messages to go unasked, the window isn't asked, and a call goes even
+    /// where nobody was (auto mode).
+    #[test]
+    fn unasked_messages_go_without_the_window() {
+        let mut relay = Relay::new(name(SENDER_ID), Consent::NotAsked);
+        let input = json!({"to": "peer-07", "message": "hello"});
+        let allowed = relay.process_said(&asked("r1", Tool::SendMessage, "t1", &input));
+        let FromProcess::Answer(line) = allowed else {
+            panic!("the window was asked: {allowed:?}");
+        };
+        assert!(line.contains("\"behavior\":\"allow\""));
+        for (request, tool_use) in [("m1", "t1"), ("m2", "never-asked")] {
+            assert!(
+                matches!(
+                    relay.process_said(&call(request, tool_use, &input)),
+                    FromProcess::Work(_)
+                ),
+                "{tool_use}"
+            );
+        }
+    }
+
     /// The server answers MCP's handshake and listing, and lists its two tools; listing sessions
     /// isn't asked about; everything else goes on to the window.
     #[test]
     fn the_server_answers_for_itself_and_passes_the_rest_on() {
-        let mut relay = Relay::new(name(SENDER_ID));
+        let mut relay = Relay::new(name(SENDER_ID), Consent::EachMessage);
         let initialize = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18"}});
         let initialized = mcp_response(&relay.process_said(&rpc("a", &initialize)));
