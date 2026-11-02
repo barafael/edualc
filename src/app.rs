@@ -337,6 +337,9 @@ pub(crate) struct Status {
     pub(crate) version: String,
     /// Prompts sent and not answered yet.
     pub(crate) turns: usize,
+    /// The user stopped the turn under way: it ends as failed, which isn't to be shown as a
+    /// failure.
+    pub(crate) stop_asked: bool,
     pub(crate) doing: Doing,
     /// What runs besides the turn's own steps: subagents, commands, workflows.
     pub(crate) tasks: Tasks,
@@ -1418,6 +1421,7 @@ impl App {
         self.asks.clear();
         self.requests.clear();
         self.status.turns = 0;
+        self.status.stop_asked = false;
         self.status.doing = Doing::Nothing;
         // They ran in the process.
         self.status.tasks.clear();
@@ -1975,6 +1979,7 @@ impl App {
     /// Stops Claude's turn, and the `!` command running: an interrupt stops both.
     fn interrupt(&mut self) {
         if self.status.turns > 0 || self.chat.shell_running() {
+            self.status.stop_asked = self.status.turns > 0;
             self.request(&ControlRequest::Interrupt, Request::Interrupt);
         }
     }

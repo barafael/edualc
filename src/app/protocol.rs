@@ -287,8 +287,11 @@ impl App {
             self.status.doing = Doing::Nothing;
             self.chat.end_turn();
         }
-        // An interruption ends a turn this way too; the transcript already says so.
-        if result.is_error && result.subtype != ResultKind::ErrorDuringExecution {
+        // A turn the user stopped ends as failed during execution, and the transcript already
+        // says so; one that failed so on its own (an API error after the retries) is told.
+        let stopped = std::mem::take(&mut self.status.stop_asked)
+            && result.subtype == ResultKind::ErrorDuringExecution;
+        if result.is_error && !stopped {
             let errors: Vec<String> = result
                 .errors
                 .iter()
