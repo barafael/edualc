@@ -372,6 +372,13 @@ fn sandboxed(
         .env("CLAUDE_CONFIG_DIR", home.path())
         .env("CLAUDE_CODE_TMPDIR", scratch.path())
         .env("TMPDIR", scratch.path());
+    // Remote Control goes over the network, which the sandbox leaves open, to sessions and
+    // clients outside it. As a flag setting it outranks the settings the session may rewrite in
+    // its own home (checked with `get_settings` on Claude Code 2.1.316).
+    command.arg(format!(
+        "--settings={}",
+        serde_json::json!({"disableRemoteControl": true})
+    ));
     let sign_in = SignIn::prepare(command)?;
     Ok(Sandboxed {
         policy,
