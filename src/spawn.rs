@@ -118,6 +118,8 @@ pub(crate) struct Spawned {
     /// A resumed session whose transcript went on separately in and out of the sandbox: the
     /// copy it doesn't go on from, for the user to be told of.
     pub(crate) diverged: Option<home::Diverged>,
+    /// The name other sessions message it by (`--name`).
+    pub(crate) name: MessagingName,
 }
 
 /// What a sandboxed start takes: its sandbox, its own home and temporary folder, and the
@@ -299,7 +301,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                     home,
                     id: launch.conversation.id().clone(),
                     cwd,
-                    name,
+                    name: name.clone(),
                     consent: if launch
                         .sandbox
                         .as_ref()
@@ -311,6 +313,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                     },
                 }),
                 diverged,
+                name,
             })
         }
         None => {
@@ -327,6 +330,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                 scratch: None,
                 record: None,
                 diverged,
+                name,
             })
         }
     }

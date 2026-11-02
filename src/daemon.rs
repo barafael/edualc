@@ -650,6 +650,10 @@ impl Hub {
         let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
         let mut tasks = JoinSet::new();
+        // Who wrote to whom, for sandboxed sessions to answer (see `relay::Replies`); it ends
+        // as the sessions holding its sender do.
+        let (replies, replying) = mpsc::channel(QUEUE);
+        tokio::spawn(keep_replies(replying));
         loop {
             let steps = tokio::select! {
                 request = requests.recv() => match request {
@@ -669,7 +673,8 @@ impl Hub {
                                     orders.insert(id, order);
                                     let key = self.key_of(id);
                                     let shown = key.map(|key| (key, outbox.clone()));
-                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
+                                    let replies = replies.clone();
+                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown, replies));
                                 }
                                 Step::Tell { id, command: Order::Attach { key } } => {
                                     send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
@@ -878,11 +883,12 @@ async fn host(
     runtime: tokio::runtime::Handle,
     commands: mpsc::Receiver<Command>,
     shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+    replies: mpsc::Sender<ToReplies>,
 ) -> Session {
     let session = Session::new(id);
     let spawned = tokio::task::spawn_blocking(move || spawn::spawn(&launch, &runtime)).await;
     let failure = match spawned {
-        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown).await,
+        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown, replies).await,
         Ok(Err(error)) => StartFailure::from(error),
         Err(error) => {
             tracing::error!(%error, "starting a session failed");
@@ -971,6 +977,7 @@ impl Session {
         spawned: spawn::Spawned,
         mut commands: mpsc::Receiver<Command>,
         shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+        replies: mpsc::Sender<ToReplies>,
     ) -> Self {
         // The session's temporary folder goes when this ends.
         let spawn::Spawned {
@@ -979,6 +986,7 @@ impl Session {
             scratch: _kept_while_running,
             record,
             diverged,
+            name,
         } = spawned;
         let Some(pid) = child.id() else {
             return self;
@@ -1087,12 +1095,34 @@ impl Session {
                 line = output.recv(), if output_open => match line {
                     Some((stream, line)) => {
                         self.active = Instant::now();
-                        let relayed = match (stream, relaying.as_mut()) {
+                        let mut relayed = match (stream, relaying.as_mut()) {
                             (Stream::Out, Some(relaying)) => relaying.process_said(&line),
-                            (Stream::Out | Stream::Err, _) => FromProcess::PassOn,
+                            (Stream::Out, None) => {
+                                // Outside the sandbox: whom it writes to, for them to answer.
+                                for to in relay::sent_to(&line) {
+                                    let wrote = ToReplies::Wrote { from: name.clone(), to };
+                                    if let Err(error) = replies.try_send(wrote) {
+                                        tracing::debug!(%error, "a message written isn't kept for answering");
+                                    }
+                                }
+                                FromProcess::PassOn
+                            }
+                            (Stream::Err, _) => FromProcess::PassOn,
                         };
+                        if let FromProcess::Consult(consult) = relayed {
+                            relayed = match relaying.as_mut() {
+                                Some(relaying) => {
+                                    let sender = relaying.sender().clone();
+                                    let may = may_answer(&replies, sender, consult.to()).await;
+                                    relaying.consulted(consult, may)
+                                }
+                                None => FromProcess::PassOn,
+                            };
+                        }
                         let answer = match relayed {
-                            FromProcess::PassOn => None,
+                            // Decided above: a message consulted about is passed on, answered
+                            // or carried out by now.
+                            FromProcess::PassOn | FromProcess::Consult(_) => None,
                             FromProcess::Answer(answer) => Some(answer),
                             FromProcess::Work(Work { job, reply }) => {
                                 let places = relay::Places::of_user();
@@ -1197,6 +1227,59 @@ impl Session {
 /// (see `home::Diverged`), in the window that shows it and on the desktop: the window shows
 /// only the copy the session goes on from, and what only the other has would otherwise go
 /// unnoticed.
+/// What the sessions tell or ask the keeper of who wrote to whom (see `relay::Replies`).
+#[derive(Debug)]
+enum ToReplies {
+    /// Session `from`, outside the sandbox, sent a message to `to`.
+    Wrote {
+        from: spawn::MessagingName,
+        to: String,
+    },
+    /// Whether sandboxed session `sender` may answer `to` without the user being asked.
+    MayAnswer {
+        sender: spawn::MessagingName,
+        to: String,
+        answer: tokio::sync::oneshot::Sender<bool>,
+    },
+}
+
+/// Keeps who wrote to whom for the daemon's sessions, until none of them can tell it more.
+async fn keep_replies(mut requests: mpsc::Receiver<ToReplies>) {
+    let mut replies = relay::Replies::default();
+    while let Some(request) = requests.recv().await {
+        match request {
+            ToReplies::Wrote { from, to } => {
+                replies.wrote(from, &to, std::time::Instant::now());
+            }
+            ToReplies::MayAnswer { sender, to, answer } => {
+                let may = replies.may_answer(&sender, &to, std::time::Instant::now());
+                if answer.send(may).is_err() {
+                    tracing::debug!("a session stopped waiting to hear whether it may answer");
+                }
+            }
+        }
+    }
+}
+
+/// Whether sandboxed session `sender` may answer `to` without the user being asked; not, where
+/// the keeper can't tell.
+async fn may_answer(
+    replies: &mpsc::Sender<ToReplies>,
+    sender: spawn::MessagingName,
+    to: &str,
+) -> bool {
+    let (answer, answered) = tokio::sync::oneshot::channel();
+    let to = to.to_owned();
+    if replies
+        .send(ToReplies::MayAnswer { sender, to, answer })
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    answered.await.unwrap_or(false)
+}
+
 async fn tell_diverged(
     diverged: home::Diverged,
     shown: Option<&(Generation, mpsc::Sender<FromDaemon>)>,
@@ -1815,6 +1898,11 @@ mod tests {
             scratch: None,
             record: None,
             diverged: None,
+            name: spawn::MessagingName::of(
+                &SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
+                    .expect("a session id"),
+                std::path::Path::new("/tmp"),
+            ),
         }
     }
 
@@ -1842,8 +1930,9 @@ mod tests {
                 .await
                 .expect("queued");
         });
+        let (replies, _unheard) = mpsc::channel(QUEUE);
         let session = Session::new(HostedId::default().next())
-            .event_loop(cat(), commands, None)
+            .event_loop(cat(), commands, None, replies)
             .await;
         attach.await.expect("the attaching task");
         assert_eq!(session.lines_in, 2);

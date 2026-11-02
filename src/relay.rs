@@ -17,14 +17,16 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::fs::{Mode, OFlags};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator as _;
 
 use crate::external::claude_files::{SessionKey, SessionRecord};
-use crate::external::mcp::{JsonRpc, Line, Permission, Request, SendArguments, ToolCall};
+use crate::external::mcp::{
+    Block, JsonRpc, Line, Permission, Request, SendArguments, ToolCall, Turn,
+};
 use crate::spawn::MessagingName;
 use crate::{mirror, process, sessions};
 
@@ -137,6 +139,110 @@ pub(crate) enum FromProcess {
     Answer(String),
     /// To carry out (see [`carry_out`]), then answer with the outcome.
     Work(Work),
+    /// A message the user wasn't asked about yet: whether it answers a session that wrote to
+    /// this one (see [`Replies`]) decides, through [`Relay::consulted`].
+    Consult(Consult),
+}
+
+/// A message to decide on.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Consult {
+    /// The CLI asks whether it may go: the window is asked unless it is a reply.
+    Permission {
+        request_id: String,
+        tool_use: String,
+        arguments: SendArguments,
+    },
+    /// The call itself, nobody asked (auto mode): it goes only as a reply.
+    Call {
+        reply: Reply,
+        arguments: SendArguments,
+    },
+}
+
+impl Consult {
+    /// The session it is for.
+    pub(crate) fn to(&self) -> &str {
+        match self {
+            Self::Permission { arguments, .. } | Self::Call { arguments, .. } => &arguments.to,
+        }
+    }
+}
+
+/// How long a session outside the sandbox that wrote to a sandboxed one may be answered by it
+/// without the user being asked.
+const REPLY_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Messages kept for answering at once.
+const WROTE: usize = 256;
+
+/// The messages sessions outside the sandbox sent, as the daemon hosting them saw them call
+/// SendMessage: a sandboxed session they wrote to may answer each once, within minutes, without
+/// the user being asked (sans-io; one task of the daemon's holds it). Only a session the daemon
+/// hosts counts: what reaches a sandboxed session from elsewhere goes past edualc, and its own
+/// record of it is the sandbox's, which could claim anything.
+#[derive(Debug, Default)]
+pub(crate) struct Replies {
+    wrote: Vec<Wrote>,
+}
+
+#[derive(Debug)]
+struct Wrote {
+    from: MessagingName,
+    to: String,
+    at: Instant,
+}
+
+impl Replies {
+    /// Session `from`, outside the sandbox, sent a message to `to`.
+    pub(crate) fn wrote(&mut self, from: MessagingName, to: &str, at: Instant) {
+        self.wrote
+            .retain(|wrote| at.saturating_duration_since(wrote.at) < REPLY_WINDOW);
+        if self.wrote.len() < WROTE {
+            self.wrote.push(Wrote {
+                from,
+                to: bare(to).to_owned(),
+                at,
+            });
+        }
+    }
+
+    /// Whether `sender` may answer `to` without the user being asked: `to` wrote to it in the
+    /// last minutes, and wasn't answered so since. Spends it.
+    pub(crate) fn may_answer(&mut self, sender: &MessagingName, to: &str, at: Instant) -> bool {
+        let to = bare(to);
+        let found = self.wrote.iter().position(|wrote| {
+            wrote.from.as_str() == to
+                && wrote.to == sender.as_str()
+                && at.saturating_duration_since(wrote.at) < REPLY_WINDOW
+        });
+        found.map(|found| self.wrote.remove(found)).is_some()
+    }
+}
+
+/// A session's name as ListAgents lists it, without the `[ref]` after it.
+fn bare(name: &str) -> &str {
+    name.split_once(" [").map_or(name, |(bare, _)| bare).trim()
+}
+
+/// The sessions a line from a session outside the sandbox sends messages to: its SendMessage
+/// calls, as Claude makes them.
+pub(crate) fn sent_to(line: &str) -> Vec<String> {
+    if !line.contains("\"SendMessage\"") {
+        return Vec::new();
+    }
+    let Ok(Turn::Assistant { message }) = serde_json::from_str(line) else {
+        return Vec::new();
+    };
+    message
+        .content
+        .into_iter()
+        .filter_map(|block| match block {
+            Block::ToolUse { name, input } if name == "SendMessage" => {
+                input.get("to").and_then(Value::as_str).map(str::to_owned)
+            }
+            Block::ToolUse { .. } | Block::Other => None,
+        })
+        .collect()
 }
 
 /// A tool call to carry out, and where its answer goes.
@@ -263,13 +369,16 @@ impl Relay {
                 if unasked {
                     let allow = json!({"behavior": "allow", "updatedInput": input});
                     FromProcess::Answer(answer(&request_id, &allow))
+                } else if tool_name == Tool::SendMessage.qualified()
+                    && let Some(tool_use) = tool_use_id
+                    && let Ok(arguments) = serde_json::from_value::<SendArguments>(input)
+                {
+                    FromProcess::Consult(Consult::Permission {
+                        request_id,
+                        tool_use,
+                        arguments,
+                    })
                 } else {
-                    if tool_name == Tool::SendMessage.qualified()
-                        && let Some(tool_use) = tool_use_id
-                        && self.asked.len() < PENDING
-                    {
-                        self.asked.insert(request_id, tool_use);
-                    }
                     FromProcess::PassOn
                 }
             }
@@ -278,6 +387,50 @@ impl Relay {
                 message,
             } if server_name == SERVER => self.served(&request_id, message),
             Request::McpMessage { .. } | Request::Other => FromProcess::PassOn,
+        }
+    }
+
+    /// A message decided on: one that answers a session that wrote to this one goes without the
+    /// user being asked (`may_answer`, see [`Replies`]); any other is asked about in the window,
+    /// or refused where nobody may be asked.
+    pub(crate) fn consulted(&mut self, consult: Consult, may_answer: bool) -> FromProcess {
+        match (consult, may_answer) {
+            (
+                Consult::Permission {
+                    tool_use,
+                    arguments,
+                    request_id,
+                },
+                true,
+            ) => {
+                let allow = json!({"behavior": "allow", "updatedInput": {
+                    "to": arguments.to, "message": arguments.message
+                }});
+                if self.allowed.len() < PENDING {
+                    self.allowed.insert(tool_use, arguments);
+                }
+                FromProcess::Answer(answer(&request_id, &allow))
+            }
+            (
+                Consult::Permission {
+                    request_id,
+                    tool_use,
+                    ..
+                },
+                false,
+            ) => {
+                if self.asked.len() < PENDING {
+                    self.asked.insert(request_id, tool_use);
+                }
+                FromProcess::PassOn
+            }
+            (Consult::Call { reply, arguments }, true) => FromProcess::Work(Work {
+                job: Job::Send(arguments),
+                reply,
+            }),
+            (Consult::Call { reply, .. }, false) => {
+                FromProcess::Answer(reply.answer(&Outcome::Refused(Refusal::NotAllowed)))
+            }
         }
     }
 
@@ -376,7 +529,10 @@ impl Relay {
                         reply,
                     })
                 } else {
-                    refused(reply, Refusal::NotAllowed)
+                    FromProcess::Consult(Consult::Call {
+                        reply,
+                        arguments: asked,
+                    })
                 }
             }
             Err(_) => refused(reply, Refusal::Unreadable),
@@ -671,6 +827,15 @@ mod tests {
         mcp_response(said).pointer("/result/isError") == Some(&Value::Bool(true))
     }
 
+    /// A line the process wrote, decided on as the daemon does, `may_answer` what the keeper of
+    /// who wrote to whom says.
+    fn decided(relay: &mut Relay, line: &str, may_answer: bool) -> FromProcess {
+        match relay.process_said(line) {
+            FromProcess::Consult(consult) => relay.consulted(consult, may_answer),
+            other @ (FromProcess::PassOn | FromProcess::Answer(_) | FromProcess::Work(_)) => other,
+        }
+    }
+
     /// A message goes out only for the very call the user allowed, as they allowed it, once;
     /// one denied, never asked, changed since, or asked again is refused.
     #[test]
@@ -679,8 +844,9 @@ mod tests {
         let input = json!({"to": "peer-07", "message": "hello"});
         let allow = json!({"behavior": "allow", "updatedInput": input});
         let deny = json!({"behavior": "deny", "message": "no"});
+        let mut said = |line: &str| decided(&mut relay, line, false);
         assert_eq!(
-            relay.process_said(&asked("r1", Tool::SendMessage, "t1", &input)),
+            said(&asked("r1", Tool::SendMessage, "t1", &input)),
             FromProcess::PassOn,
             "the window is asked"
         );
@@ -689,33 +855,100 @@ mod tests {
             to: "peer-07".to_owned(),
             message: "hello".to_owned(),
         };
-        match relay.process_said(&call("m1", "t1", &input)) {
+        match decided(&mut relay, &call("m1", "t1", &input), false) {
             FromProcess::Work(work) => assert_eq!(work.job, Job::Send(sent)),
-            other @ (FromProcess::PassOn | FromProcess::Answer(_)) => {
+            other @ (FromProcess::PassOn | FromProcess::Answer(_) | FromProcess::Consult(_)) => {
                 panic!("not carried out: {other:?}");
             }
         }
-        assert!(
-            refused(&relay.process_said(&call("m2", "t1", &input))),
-            "once"
-        );
-        assert!(
-            refused(&relay.process_said(&call("m3", "t9", &input))),
-            "never asked"
-        );
-        relay.process_said(&asked("r2", Tool::SendMessage, "t2", &input));
+        let mut said = |line: &str| decided(&mut relay, line, false);
+        assert!(refused(&said(&call("m2", "t1", &input))), "once");
+        assert!(refused(&said(&call("m3", "t9", &input))), "never asked");
+        said(&asked("r2", Tool::SendMessage, "t2", &input));
         relay.window_said(&answered("r2", &deny));
         assert!(
-            refused(&relay.process_said(&call("m4", "t2", &input))),
+            refused(&decided(&mut relay, &call("m4", "t2", &input), false)),
             "denied"
         );
-        relay.process_said(&asked("r3", Tool::SendMessage, "t3", &input));
+        decided(
+            &mut relay,
+            &asked("r3", Tool::SendMessage, "t3", &input),
+            false,
+        );
         relay.window_said(&answered("r3", &allow));
         let changed = json!({"to": "peer-07", "message": "something else"});
         assert!(
-            refused(&relay.process_said(&call("m5", "t3", &changed))),
+            refused(&decided(&mut relay, &call("m5", "t3", &changed), false)),
             "changed"
         );
+    }
+
+    /// A session that wrote to a sandboxed one may be answered by it once, within minutes, and
+    /// only by the session it wrote to.
+    #[test]
+    fn a_session_that_wrote_may_be_answered_once_within_minutes() {
+        let (sender, peer, other) = (
+            name(SENDER_ID),
+            name(PEER_ID),
+            name("33333333-2222-4333-8444-555555555555"),
+        );
+        let now = Instant::now();
+        let mut replies = Replies::default();
+        replies.wrote(peer.clone(), &format!("{sender} [3ea497]"), now);
+        let later = now + Duration::from_secs(60);
+        assert!(
+            !replies.may_answer(&other, peer.as_str(), later),
+            "not to it"
+        );
+        assert!(replies.may_answer(&sender, &format!("{peer} [f639dc]"), later));
+        assert!(!replies.may_answer(&sender, peer.as_str(), later), "once");
+        replies.wrote(peer.clone(), sender.as_str(), now);
+        let too_late = now + REPLY_WINDOW;
+        assert!(
+            !replies.may_answer(&sender, peer.as_str(), too_late),
+            "minutes"
+        );
+    }
+
+    /// A reply needs no question in the window, nor anyone asked at all (auto mode); a message
+    /// that answers nobody is asked about, or refused where nobody is asked.
+    #[test]
+    fn a_reply_goes_without_a_question() {
+        let mut relay = Relay::new(name(SENDER_ID), Consent::EachMessage);
+        let input = json!({"to": "peer-07", "message": "thanks"});
+        let allowed = decided(
+            &mut relay,
+            &asked("r1", Tool::SendMessage, "t1", &input),
+            true,
+        );
+        assert!(matches!(&allowed, FromProcess::Answer(line) if line.contains("\"allow\"")));
+        assert!(matches!(
+            decided(&mut relay, &call("m1", "t1", &input), false),
+            FromProcess::Work(_)
+        ));
+        assert!(matches!(
+            decided(&mut relay, &call("m2", "t2", &input), true),
+            FromProcess::Work(_)
+        ));
+        assert!(refused(&decided(
+            &mut relay,
+            &call("m3", "t3", &input),
+            false
+        )));
+    }
+
+    /// What a session outside the sandbox sends: its SendMessage calls' recipients, nothing of
+    /// its other tools or lines.
+    #[test]
+    fn the_messages_a_session_sends_are_read_from_its_calls() {
+        let turn = json!({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "I'll ask."},
+            {"type": "tool_use", "name": "SendMessage", "input": {"to": "peer-07", "message": "hi"}},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo SendMessage"}}
+        ]}});
+        assert_eq!(sent_to(&turn.to_string()), ["peer-07"]);
+        let result = json!({"type": "result", "result": "SendMessage"});
+        assert!(sent_to(&result.to_string()).is_empty());
     }
 
     /// Where the user set messages to go unasked, the window isn't asked, and a call goes even

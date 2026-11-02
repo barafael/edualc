@@ -100,3 +100,32 @@ pub(crate) struct SendArguments {
     pub(crate) to: String,
     pub(crate) message: String,
 }
+
+/// A line of a session's turn, in the tool calls Claude makes in it.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum Turn {
+    Assistant {
+        message: AssistantMessage,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AssistantMessage {
+    #[serde(default)]
+    pub(crate) content: Vec<Block>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum Block {
+    ToolUse {
+        name: String,
+        #[serde(default)]
+        input: Value,
+    },
+    #[serde(other)]
+    Other,
+}
