@@ -15,6 +15,7 @@ import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, Table
 component TableView inherits HorizontalLayout {
     in property <MdBlock> block;
     in property <string> key;
+    in property <string> font;
     // Fluent's horizontal scroll bar lies over the bottom of what it scrolls.
     property <length> scroll-bar: 14px;
     property <bool> overflowing: grid.min-width > scroll.visible-width;
@@ -52,6 +53,7 @@ component TableView inherits HorizontalLayout {
                             TableCell {
                                 text: cell;
                                 key: "\{root.key}:r\{row-index}c\{column-index}";
+                                default-font-family: root.font;
                             }
                         }
                     }
@@ -78,9 +80,13 @@ export component BlockView inherits VerticalLayout {
     in property <MdBlock> block;
     in property <string> key;
     in property <bool> first;
+    // The family the prose is set in; empty for the window's (see `Entry.font`). Code keeps
+    // its own.
+    in property <string> font;
     if root.block.kind == BlockKind.text: Selectable {
         text: root.block.body;
         key: root.key;
+        default-font-family: root.font;
     }
     // Bold already (see `src/ui/mod.rs`); a size by level.
     if root.block.kind == BlockKind.heading: VerticalLayout {
@@ -88,6 +94,7 @@ export component BlockView inherits VerticalLayout {
         Selectable {
             text: root.block.body;
             key: root.key;
+            default-font-family: root.font;
             default-font-size: 1rem * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
         }
     }
@@ -101,6 +108,7 @@ export component BlockView inherits VerticalLayout {
     if root.block.kind == BlockKind.table: TableView {
         block: root.block;
         key: root.key;
+        font: root.font;
     }
     if root.block.kind == BlockKind.quote: HorizontalLayout {
         spacing: Theme.space-m;
@@ -113,6 +121,7 @@ export component BlockView inherits VerticalLayout {
             text: root.block.body;
             key: root.key;
             default-color: Theme.text-secondary;
+            default-font-family: root.font;
         }
     }
     if root.block.kind == BlockKind.rule: VerticalLayout {
@@ -128,11 +137,13 @@ export component BlockView inherits VerticalLayout {
 export component MarkdownView inherits VerticalLayout {
     in property <[MdBlock]> blocks;
     in property <int> index;
+    in property <string> font;
     spacing: Theme.space-s;
     for block[i] in root.blocks: BlockView {
         block: block;
         key: "e\{root.index}:b\{i}";
         first: i == 0;
+        font: root.font;
     }
 }
 
@@ -379,6 +390,7 @@ component UserBubble inherits HorizontalLayout {
             Selectable {
                 text: root.entry.body;
                 key: "e\{root.index}:text";
+                default-font-family: root.entry.font;
             }
         }
     }
@@ -391,6 +403,7 @@ component AssistantText inherits VerticalLayout {
     MarkdownView {
         blocks: root.entry.blocks;
         index: root.index;
+        font: root.entry.font;
     }
     HorizontalLayout {
         alignment: start;
@@ -448,6 +461,7 @@ component Thinking inherits VerticalLayout {
             text: root.entry.body;
             key: "e\{root.index}:text";
             default-color: Theme.text-tertiary;
+            default-font-family: root.entry.font;
         }
     }
 }
@@ -496,6 +510,7 @@ export component EntryView inherits VerticalLayout {
         horizontal-alignment: center;
         default-color: Theme.text-tertiary;
         default-font-size: 1rem * Theme.small;
+        default-font-family: root.entry.font;
     }
     if root.entry.kind == EntryKind.error: Rectangle {
         border-radius: Theme.radius-m;
@@ -512,6 +527,7 @@ export component EntryView inherits VerticalLayout {
                 text: root.entry.body;
                 key: "e\{root.index}:text";
                 default-color: Theme.danger-text;
+                default-font-family: root.entry.font;
             }
         }
     }

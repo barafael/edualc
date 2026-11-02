@@ -229,6 +229,12 @@ impl Chat {
         self.changes.push(Change::Reset);
     }
 
+    /// Marks every entry changed, to be drawn again (in another font, say).
+    pub(crate) fn touch_all(&mut self) {
+        self.changes
+            .extend((0..self.entries.len()).map(Change::Updated));
+    }
+
     fn push(&mut self, body: Body, nested: bool) -> usize {
         let index = self.entries.len();
         self.entries.push(Entry { body, nested });

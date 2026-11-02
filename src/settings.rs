@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cjk::CjkLanguage;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
@@ -38,6 +40,10 @@ pub(crate) struct Settings {
     /// The key that sends what is written in the composer.
     #[serde(default)]
     pub(crate) send_with: SendKey,
+    /// The language of text with Han characters alone (see `cjk`); none for the desktop's,
+    /// or Japanese if that isn't a CJK one.
+    #[serde(default)]
+    pub(crate) han_text: Option<CjkLanguage>,
 }
 
 /// What sends the draft: Enter (Shift+Enter or Ctrl+Enter start a new line), or Ctrl+Enter
@@ -82,6 +88,7 @@ impl Default for Settings {
             composer_height_px: None,
             look: Look::default(),
             send_with: SendKey::default(),
+            han_text: None,
         }
     }
 }
@@ -117,6 +124,14 @@ impl Settings {
 
     pub(crate) fn scale(&self) -> f32 {
         f32::from(self.zoom_percent) / 100.0
+    }
+
+    /// The language text with Han characters alone is taken to be in: the one chosen, else
+    /// the desktop's if CJK, else Japanese.
+    pub(crate) fn han_language(&self) -> CjkLanguage {
+        self.han_text
+            .or_else(CjkLanguage::of_desktop)
+            .unwrap_or(CjkLanguage::Japanese)
     }
 
     /// Whether the sandbox lets Claude reach USB devices and serial ports in `folder`: it, or a

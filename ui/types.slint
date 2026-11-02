@@ -61,6 +61,9 @@ export struct Entry {
     kind: EntryKind,
     // The text of user messages, notes, errors and thinking.
     body: styled-text,
+    // The family its prose is set in, for the glyph shapes of its CJK characters (see
+    // `src/cjk.rs`); empty for the window's.
+    font: string,
     // Assistant text; a plan to approve.
     blocks: [MdBlock],
     tool-title: string,
@@ -203,6 +206,9 @@ export enum ComposerSize { fit, chosen, tall, full }
 // What sends the draft: Enter (Shift+Enter or Ctrl+Enter start a new line), or Ctrl+Enter
 // (Enter starts a new line).
 export enum SendKey { enter, ctrl-enter }
+
+// The language text with Han characters alone is drawn in (see `src/cjk.rs`).
+export enum HanLanguage { japanese, simplified-chinese, traditional-chinese, korean }
 
 // The window's areas for the keyboard, in F6's order: the sidebar, the conversation (its header
 // and transcript), what Claude asks with the composer, and the side panel.

@@ -10,6 +10,7 @@ mod app;
 mod appearance;
 mod buses;
 mod chat;
+mod cjk;
 mod claude;
 mod confine;
 mod daemon;

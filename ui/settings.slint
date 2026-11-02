@@ -2,7 +2,7 @@
 // them. Each takes effect at once and is kept in `settings.json`.
 
 import { Theme } from "theme.slint";
-import { SendKey } from "types.slint";
+import { HanLanguage, SendKey } from "types.slint";
 import { Preferences } from "state.slint";
 import { Caption, Icon, IconButton, Pressable, Small, Title } from "widgets.slint";
 
@@ -99,6 +99,40 @@ export component SettingsPanel inherits Rectangle {
                     detail: "Enter starts a new line, so a stray Enter never sends half a message.";
                     chosen: Preferences.send-key == SendKey.ctrl-enter;
                     clicked => { Preferences.choose-send-key(SendKey.ctrl-enter); }
+                }
+                // Kana and Hangul tell a text's language themselves; Han characters alone don't.
+                Text {
+                    text: "Text in Han characters alone";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: "Chinese, Japanese and Korean draw many Han characters differently. A message with kana is set as Japanese and one with Hangul as Korean; one in Han characters alone as chosen here.";
+                    wrap: word-wrap;
+                }
+                Choice {
+                    title: "Japanese";
+                    detail: "Noto Sans CJK JP";
+                    chosen: Preferences.han-language == HanLanguage.japanese;
+                    clicked => { Preferences.choose-han-language(HanLanguage.japanese); }
+                }
+                Choice {
+                    title: "Simplified Chinese";
+                    detail: "Noto Sans CJK SC";
+                    chosen: Preferences.han-language == HanLanguage.simplified-chinese;
+                    clicked => { Preferences.choose-han-language(HanLanguage.simplified-chinese); }
+                }
+                Choice {
+                    title: "Traditional Chinese";
+                    detail: "Noto Sans CJK TC";
+                    chosen: Preferences.han-language == HanLanguage.traditional-chinese;
+                    clicked => { Preferences.choose-han-language(HanLanguage.traditional-chinese); }
+                }
+                Choice {
+                    title: "Korean";
+                    detail: "Noto Sans CJK KR";
+                    chosen: Preferences.han-language == HanLanguage.korean;
+                    clicked => { Preferences.choose-han-language(HanLanguage.korean); }
                 }
             }
         }

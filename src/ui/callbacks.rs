@@ -5,10 +5,11 @@ use async_channel::Sender;
 use slint::ComponentHandle;
 
 use crate::app::{Action, Event, PermissionMode};
+use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, LineBreak, Preferences, Prompt, SendKey, Session,
-    Sessions, Side, Transcript, Usage,
+    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Preferences, Prompt, SendKey,
+    Session, Sessions, Side, Transcript, Usage,
 };
 use crate::settings::{self, Zoom};
 
@@ -136,6 +137,17 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             actions.send(Action::SendWith(match key {
                 SendKey::Enter => settings::SendKey::Enter,
                 SendKey::CtrlEnter => settings::SendKey::CtrlEnter,
+            }));
+        }
+    });
+    window.global::<Preferences>().on_choose_han_language({
+        let actions = actions.clone();
+        move |language| {
+            actions.send(Action::HanLanguage(match language {
+                HanLanguage::Japanese => CjkLanguage::Japanese,
+                HanLanguage::SimplifiedChinese => CjkLanguage::SimplifiedChinese,
+                HanLanguage::TraditionalChinese => CjkLanguage::TraditionalChinese,
+                HanLanguage::Korean => CjkLanguage::Korean,
             }));
         }
     });

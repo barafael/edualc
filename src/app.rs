@@ -264,6 +264,8 @@ pub(crate) enum Action {
     SwitchLook,
     /// The key that sends the draft, as chosen in the settings.
     SendWith(settings::SendKey),
+    /// The language of text in Han characters alone, as chosen in the settings.
+    HanLanguage(crate::cjk::CjkLanguage),
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
@@ -646,7 +648,7 @@ impl App {
             fonts,
             text_size: desktop_text_size,
         } = desktop_found;
-        let view = View::new(window, &openers, fonts);
+        let mut view = View::new(window, &openers, fonts);
         let settings = settings::load().unwrap_or_else(|error| {
             tracing::warn!(%error, "starting with the default settings");
             Settings::default()
@@ -655,6 +657,7 @@ impl App {
         view.set_composer_height(settings.composer_height_px);
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
+        view.set_han_language(settings.han_language());
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -929,6 +932,15 @@ impl App {
                 self.view.set_send_key(key);
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the key that sends");
+                }
+            }
+            Action::HanLanguage(language) => {
+                self.settings.han_text = Some(language);
+                self.view.set_han_language(language);
+                // Messages already drawn are drawn again in it.
+                self.chat.touch_all();
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the language of Han text");
                 }
             }
             Action::ComposerHeight(height_px) => {

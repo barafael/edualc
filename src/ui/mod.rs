@@ -15,6 +15,7 @@ use crate::app::{
     SideView, Status, Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
+use crate::cjk::CjkLanguage;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::wire::{
@@ -22,8 +23,8 @@ use crate::external::wire::{
 };
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock, MenuItem,
-    PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
+    EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock,
+    MenuItem, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
     QuestionOption, SendKey, Session, SessionItem, Sessions, ShownImage, Side, SideExchange,
     SideState, StatRow, StatSection, TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript,
     Usage,
@@ -65,6 +66,8 @@ pub(crate) struct View {
     modes: Vec<(String, String)>,
     /// The conversation's images, as far as they are decoded; one not here is still decoded.
     images: HashMap<ImageKey, ShownImage>,
+    /// The language text with Han characters alone is set in (see `cjk`).
+    han: CjkLanguage,
 }
 
 struct Blocks {
@@ -122,7 +125,22 @@ impl View {
             models: Vec::new(),
             modes: Vec::new(),
             images: HashMap::new(),
+            han: CjkLanguage::Japanese,
         }
+    }
+
+    /// The language text with Han characters alone is set in, from the next row drawn on, and
+    /// the setting's choice on the settings page.
+    pub(crate) fn set_han_language(&mut self, han: CjkLanguage) {
+        self.han = han;
+        self.window
+            .global::<Preferences>()
+            .set_han_language(match han {
+                CjkLanguage::Japanese => HanLanguage::Japanese,
+                CjkLanguage::SimplifiedChinese => HanLanguage::SimplifiedChinese,
+                CjkLanguage::TraditionalChinese => HanLanguage::TraditionalChinese,
+                CjkLanguage::Korean => HanLanguage::Korean,
+            });
     }
 
     /// Image `key`'s pixels, or why it can't be shown.
@@ -421,13 +439,18 @@ impl View {
             }
             Some(Grouping::Alone) | None => {}
         }
+        // A message with CJK characters is set in the CJK family of its language (see `cjk`).
+        let font =
+            |text: &str| CjkLanguage::of_text(text, self.han).map_or("", CjkLanguage::family);
         match &entry.body {
             Body::User(text) => {
                 row.kind = EntryKind::User;
                 row.body = markdown::plain(text);
+                row.font = font(text).into();
             }
             Body::Assistant(text) => {
                 row.kind = EntryKind::Assistant;
+                row.font = font(text).into();
                 row.blocks = self.sync_blocks(index, text);
             }
             Body::Thinking { text, expanded } => {
@@ -436,15 +459,18 @@ impl View {
                     row.body = markdown::plain(text);
                 }
                 row.expanded = *expanded;
+                row.font = font(text).into();
             }
             // Notes come from slash commands, which use Markdown (`sonnet`).
             Body::Info(text) => {
                 row.kind = EntryKind::Info;
                 row.body = markdown::styled(text);
+                row.font = font(text).into();
             }
             Body::Error(text) => {
                 row.kind = EntryKind::Error;
                 row.body = markdown::plain(text);
+                row.font = font(text).into();
             }
             Body::Tool { tool, expanded } => {
                 let depth = card_depth(*expanded, row.hidden);

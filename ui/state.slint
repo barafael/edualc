@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -220,6 +220,10 @@ export global Preferences {
     in-out property <bool> open;
     in property <SendKey> send-key;
     callback choose-send-key(SendKey);
+    // The language text with Han characters alone is drawn in, as in use (the one chosen, or
+    // the desktop's, or Japanese).
+    in property <HanLanguage> han-language;
+    callback choose-han-language(HanLanguage);
 }
 
 // Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and
