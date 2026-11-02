@@ -1473,10 +1473,18 @@ impl App {
     }
 
     /// Whether the session shown has something under way that ending its process would cut
-    /// short: a turn (from its prompt being written on), a `!` command, or a request waiting
-    /// for the user.
+    /// short: a turn (from its prompt being written on), a `!` command, a request waiting for
+    /// the user, or a task running in the background (a subagent, a shell, a monitor), which a
+    /// stopped turn leaves running.
     fn under_way(&self) -> bool {
-        self.status.turns > 0 || self.chat.shell_running() || !self.asks.is_empty()
+        self.status.turns > 0
+            || self.chat.shell_running()
+            || !self.asks.is_empty()
+            || self
+                .status
+                .tasks
+                .running()
+                .any(|running| !running.task.ambient)
     }
 
     /// Lets go of the process: one with something under way runs on in the daemon, for this
@@ -1496,6 +1504,9 @@ impl App {
         self.close_peek();
         self.let_go();
         self.stop();
+        // A process let go of runs on, listed by its record, which the list read while it was
+        // this window's left out; nothing else would read it again for up to a minute.
+        self.list_live();
     }
 
     fn quit(&mut self) {
@@ -1707,7 +1718,9 @@ impl App {
             self.sessions.clear();
             self.load_sessions();
         }
-        self.reset_session(Some(session.id.clone()), Some(session.name.clone()));
+        // Its title, as the sidebar lists it; its name to message it by until it has one.
+        let title = session.title.clone().unwrap_or_else(|| session.name.clone());
+        self.reset_session(Some(session.id.clone()), Some(title));
         self.load_session(session.id.clone(), session.cwd.clone());
         self.forget_watch();
         self.watch = Some(Watch {
