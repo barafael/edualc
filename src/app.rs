@@ -341,8 +341,8 @@ pub(crate) struct Status {
     pub(crate) version: String,
     /// Prompts sent and not answered yet.
     pub(crate) turns: usize,
-    /// The user stopped the turn under way: it ends as failed, which isn't to be shown as a
-    /// failure.
+    /// The user stopped the turn under way, with Stop or by denying a tool call with nothing
+    /// said: it ends as failed, which isn't to be shown as a failure.
     pub(crate) stop_asked: bool,
     pub(crate) doing: Doing,
     /// What runs besides the turn's own steps: subagents, commands, workflows.
@@ -2208,6 +2208,9 @@ impl App {
             ),
             AskKind::Tool { .. } => (feedback.to_owned(), false),
         };
+        if interrupt {
+            self.status.stop_asked = self.status.turns > 0;
+        }
         let response = PermissionResult::Deny { message, interrupt };
         self.answer(&ask, &response, ToolState::Denied);
     }
