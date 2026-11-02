@@ -64,7 +64,18 @@ pub(crate) struct ToolUseId(String);
 
 /// A task Claude Code runs (a subagent, a shell command, a monitor), the same on every event
 /// about it and in its background list.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    derive_more::From,
+    derive_more::Display,
+)]
 #[serde(transparent)]
 pub(crate) struct TaskId(String);
 
@@ -408,6 +419,16 @@ pub(crate) enum System {
     TaskNotification {
         task_id: TaskId,
     },
+    /// How far a task got, now and then while it runs.
+    TaskProgress {
+        task_id: TaskId,
+        usage: TaskUsage,
+        #[serde(default)]
+        last_tool_name: Option<ToolName>,
+        /// A line on what it does now, where Claude Code makes one.
+        #[serde(default)]
+        summary: Option<String>,
+    },
     /// A request to the API failed; Claude Code tries it again after a while.
     ApiRetry {
         attempt: u32,
@@ -434,6 +455,17 @@ pub(crate) enum RetryCause {
     #[default]
     #[serde(other)]
     Unknown,
+}
+
+/// What a task used so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub(crate) struct TaskUsage {
+    #[serde(default)]
+    pub(crate) total_tokens: u64,
+    #[serde(default)]
+    pub(crate) tool_uses: u64,
+    #[serde(default)]
+    pub(crate) duration_ms: u64,
 }
 
 /// What changed about a task.
@@ -1056,6 +1088,7 @@ pub(crate) enum PeekedSubtype {
     TaskStarted,
     TaskUpdated,
     TaskNotification,
+    TaskProgress,
     #[serde(other)]
     Other,
 }

@@ -1194,6 +1194,8 @@ struct Pending {
     /// What was said about each task begun in this turn and not yet ended: a foreground one is
     /// in no list of background tasks.
     open_tasks: BTreeMap<TaskId, Vec<String>>,
+    /// How far each running task got, as last said; a background one runs on after its turn.
+    progress: BTreeMap<TaskId, String>,
     asked: BTreeMap<String, String>,
     /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
     /// counts them, for one that attaches meanwhile.
@@ -1230,6 +1232,14 @@ impl Pending {
             (PeekedKind::System, Some(PeekedSubtype::TaskNotification), _) => {
                 if let Some(task) = peek.task_id {
                     self.open_tasks.remove(&task);
+                    self.progress.remove(&task);
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskProgress), _) => {
+                if let Some(task) = peek.task_id
+                    && (self.progress.len() < MAX_PENDING || self.progress.contains_key(&task))
+                {
+                    self.progress.insert(task, line.to_owned());
                 }
             }
             (PeekedKind::ControlRequest, _, Some(id)) if self.asked.len() < MAX_PENDING => {
@@ -1272,6 +1282,7 @@ impl Pending {
             .iter()
             .chain(self.tasks.iter())
             .chain(self.open_tasks.values().flatten())
+            .chain(self.progress.values())
             .chain(self.asked.values())
     }
 }
@@ -1589,6 +1600,25 @@ mod tests {
         );
         pending.said(r#"{"type":"result","subtype":"success","is_error":false}"#);
         assert_eq!(pending.lines().collect::<Vec<_>>(), [init, list, asked]);
+    }
+
+    /// Only a task's latest progress is told again, past the turn's end (a background task runs
+    /// on), until the task ends.
+    #[test]
+    fn a_tasks_latest_progress_is_told_until_it_ends() {
+        let mut pending = Pending::default();
+        let progress = |tokens: u32| {
+            format!(
+                r#"{{"type":"system","subtype":"task_progress","task_id":"a1","description":"d","usage":{{"total_tokens":{tokens},"tool_uses":1,"duration_ms":5}}}}"#
+            )
+        };
+        let (early, late) = (progress(10), progress(20));
+        pending.said(&early);
+        pending.said(&late);
+        pending.said(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [&late]);
+        pending.said(r#"{"type":"system","subtype":"task_notification","task_id":"a1","status":"completed"}"#);
+        assert_eq!(pending.lines().count(), 0);
     }
 
     /// Turns are counted as the window counts them: one for each prompt written, one fewer for

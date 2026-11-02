@@ -203,6 +203,13 @@ component TasksChip inherits Pressable {
                         Caption {
                             text: task.detail;
                         }
+                        if task.used != "": Caption {
+                            text: task.used;
+                        }
+                        if task.now != "": Caption {
+                            text: task.now;
+                            wrap: word-wrap;
+                        }
                     }
                 }
             }

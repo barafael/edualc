@@ -11,8 +11,8 @@ use slint::{
 use strum::IntoEnumIterator;
 
 use crate::app::{
-    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Place, Sandboxing, SideChat,
-    SideView, Status, Tasks, UsagePanel, Watch,
+    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Place, Running, Sandboxing,
+    SideChat, SideView, Status, Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::CjkLanguage;
@@ -714,12 +714,12 @@ impl View {
     /// What runs in the background: each task, and how much of each kind.
     pub(crate) fn render_tasks(&self, tasks: &Tasks) {
         let session = self.window.global::<Session>();
-        let kinds: Vec<wire::TaskKind> = tasks.running().map(|(task, _)| task.task_type).collect();
-        session.set_tasks_summary(tasks_summary(&kinds).into());
-        let items: Vec<TaskItem> = tasks
+        let kinds: Vec<wire::TaskKind> = tasks
             .running()
-            .map(|(task, place)| task_item(task, place))
+            .map(|running| running.task.task_type)
             .collect();
+        session.set_tasks_summary(tasks_summary(&kinds).into());
+        let items: Vec<TaskItem> = tasks.running().map(task_item).collect();
         session.set_tasks(ModelRc::new(VecModel::from(items)));
     }
 
@@ -1609,7 +1609,12 @@ fn task_kind(kind: wire::TaskKind) -> TaskKind {
     }
 }
 
-fn task_item(task: &wire::BackgroundTask, place: Place) -> TaskItem {
+fn task_item(running: Running<'_>) -> TaskItem {
+    let Running {
+        task,
+        place,
+        progress,
+    } = running;
     let what = match task.task_type {
         wire::TaskKind::LocalAgent => "Agent",
         wire::TaskKind::RemoteAgent => "Agent in the cloud",
@@ -1626,7 +1631,14 @@ fn task_item(task: &wire::BackgroundTask, place: Place) -> TaskItem {
     if place == Place::Foreground {
         detail.push_str(" · in the foreground");
     }
+    let used = progress.map(|progress| task_used(progress.usage));
+    let now = progress.and_then(|progress| match (&progress.summary, &progress.last_tool) {
+        (Some(summary), _) => Some(summary.clone()),
+        (None, Some(tool)) => Some(format!("Last used {tool}")),
+        (None, None) => None,
+    });
     TaskItem {
+        id: task.task_id.to_string().into(),
         kind: task_kind(task.task_type),
         title: if task.description.is_empty() {
             what.into()
@@ -1634,7 +1646,27 @@ fn task_item(task: &wire::BackgroundTask, place: Place) -> TaskItem {
             task.description.as_str().into()
         },
         detail: detail.into(),
+        used: used.unwrap_or_default().into(),
+        now: now.unwrap_or_default().into(),
+        peekable: task.task_type == wire::TaskKind::LocalAgent,
     }
+}
+
+/// "14 tool uses · 31k tokens · 2m 40s"; what is still none is left out.
+fn task_used(usage: wire::TaskUsage) -> String {
+    let tools = match usage.tool_uses {
+        0 => None,
+        1 => Some("1 tool use".to_owned()),
+        uses => Some(format!("{uses} tool uses")),
+    };
+    let tokens =
+        (usage.total_tokens > 0).then(|| format!("{} tokens", short_count(usage.total_tokens)));
+    let time = (usage.duration_ms > 0).then(|| duration_text(usage.duration_ms));
+    [tools, tokens, time]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// How much runs of each kind, the most common kinds of work first: "2 agents, 1 command".
@@ -1736,18 +1768,65 @@ mod tests {
     /// foreground where the turn waits for it.
     #[test]
     fn a_task_says_what_it_does_and_where() {
+        let running = |task, place| Running {
+            task,
+            place,
+            progress: None,
+        };
         let explore = task("local_agent", Some("Explore"), "Find the tests");
-        let agent = task_item(&explore, Place::Background);
+        let agent = task_item(running(&explore, Place::Background));
         assert_eq!(agent.kind, TaskKind::Agent);
         assert_eq!(agent.title, "Find the tests");
         assert_eq!(agent.detail, "Agent · Explore");
+        assert!(agent.peekable && agent.used.is_empty() && agent.now.is_empty());
         assert_eq!(
-            task_item(&explore, Place::Foreground).detail,
+            task_item(running(&explore, Place::Foreground)).detail,
             "Agent · Explore · in the foreground"
         );
-        let unnamed = task_item(&task("local_bash", None, ""), Place::Background);
+        let command = task("local_bash", None, "");
+        let unnamed = task_item(running(&command, Place::Background));
         assert_eq!(unnamed.title, "Shell command");
         assert_eq!(unnamed.detail, "Shell command");
+        assert!(!unnamed.peekable, "only a subagent has a conversation");
+    }
+
+    /// What a task used reads briefly and leaves out what is none; what it does now is its
+    /// summary, else the tool it used last.
+    #[test]
+    fn a_tasks_progress_reads_briefly() {
+        let usage = |tool_uses, total_tokens, duration_ms| wire::TaskUsage {
+            total_tokens,
+            tool_uses,
+            duration_ms,
+        };
+        assert_eq!(
+            task_used(usage(14, 31_200, 160_000)),
+            "14 tool uses · 31k tokens · 2m 40s"
+        );
+        assert_eq!(task_used(usage(1, 0, 0)), "1 tool use");
+        assert_eq!(task_used(usage(0, 0, 0)), "");
+        let explore = task("local_agent", Some("Explore"), "Find the tests");
+        let with = |summary: Option<&str>| {
+            let progress = crate::app::TaskProgress {
+                usage: usage(2, 900, 3_000),
+                last_tool: Some(wire::ToolName::Grep),
+                summary: summary.map(str::to_owned),
+            };
+            let item = task_item(Running {
+                task: &explore,
+                place: Place::Background,
+                progress: Some(&progress),
+            });
+            (item.used.to_string(), item.now.to_string())
+        };
+        assert_eq!(
+            with(None),
+            (
+                "2 tool uses · 900 tokens · 3s".to_owned(),
+                "Last used Grep".to_owned()
+            )
+        );
+        assert_eq!(with(Some("Reading the parser")).1, "Reading the parser");
     }
 
     #[test]

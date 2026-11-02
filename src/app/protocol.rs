@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::{App, Doing, LimitUse, Mode, Request, Sandboxing};
+use super::{App, Doing, LimitUse, Mode, Request, Sandboxing, TaskProgress};
 use crate::chat::{Origin, UserText};
 use crate::claude::Output;
 use crate::external::wire::{
@@ -239,6 +239,19 @@ impl App {
             }
             System::TaskNotification { task_id } => {
                 self.redraw.tasks |= self.status.tasks.end(&task_id);
+            }
+            System::TaskProgress {
+                task_id,
+                usage,
+                last_tool_name,
+                summary,
+            } => {
+                let progress = TaskProgress {
+                    usage,
+                    last_tool: last_tool_name,
+                    summary: summary.filter(|line| !line.trim().is_empty()),
+                };
+                self.redraw.tasks |= self.status.tasks.progress(task_id, progress);
             }
             System::ControlRequestProgress { request_id, status } => {
                 if status == Progress::ApiRetry

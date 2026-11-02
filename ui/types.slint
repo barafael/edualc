@@ -224,9 +224,17 @@ export enum TaskKind { agent, command, workflow, monitor, other }
 // A task running in the background: what it does, and what kind of agent runs it ("Explore"),
 // or what it is ("Shell command").
 export struct TaskItem {
+    // Claude Code's id for it, to peek into it by.
+    id: string,
     kind: TaskKind,
     title: string,
     detail: string,
+    // What it used so far ("14 tool uses · 31k tokens · 2m 40s"); empty before it says.
+    used: string,
+    // What it does now, as far as known; empty if nothing is.
+    now: string,
+    // Its conversation can be followed (a subagent's).
+    peekable: bool,
 }
 
 // An image pasted into the composer, to go with the next message.

@@ -40,7 +40,7 @@ mod usage;
 mod worktree;
 
 pub(crate) use side::{Answer, SideChat, SideView};
-pub(crate) use tasks::{Place, Tasks};
+pub(crate) use tasks::{Place, Running, TaskProgress, Tasks};
 
 /// The permission modes the menu offers, as the CLI names them.
 #[derive(
