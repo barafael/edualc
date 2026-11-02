@@ -311,7 +311,8 @@ export component Field inherits Rectangle {
     background: Theme.field;
     opacity: root.enabled ? 1 : 0.55;
     clip: true;
-    // Gone too while an input method composes, as what it composes isn't in `text` yet.
+    // Gone too while an input method composes, as what it composes isn't in `text` yet. Only
+    // drawn: the entry itself tells assistive technology.
     if input.text == "" && input.preedit-text == "": Text {
         x: root.margin;
         width: parent.width - 2 * root.margin;
@@ -320,6 +321,7 @@ export component Field inherits Rectangle {
         color: Theme.text-faint;
         vertical-alignment: center;
         overflow: elide;
+        accessible-role: none;
     }
     input := TextInput {
         x: root.margin + root.scrolled;
@@ -331,6 +333,7 @@ export component Field inherits Rectangle {
         color: Theme.text;
         selection-background-color: Theme.selection;
         selection-foreground-color: Theme.selection-text;
+        accessible-label: root.placeholder;
         accessible-placeholder-text: root.placeholder;
         accepted => { root.accepted(self.text); }
         edited => { root.edited(self.text); }
@@ -361,6 +364,9 @@ export component MenuButton inherits Rectangle {
     accessible-role: combobox;
     accessible-label: root.heading;
     accessible-value: root.current;
+    accessible-expandable: true;
+    accessible-action-default => { root.open(); }
+    accessible-action-expand => { root.open(); }
     height: Theme.chip;
     min-width: 0px;
     border-radius: Theme.radius-m;

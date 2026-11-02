@@ -1410,6 +1410,8 @@ component EditArea inherits Rectangle {
                     : "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
                 overflow: elide;
                 color: Theme.text-faint;
+                // Only drawn: the entry itself tells assistive technology.
+                accessible-role: none;
             }
             // What the command in the draft takes, after it (the draft is one line then).
             if Composer.argument-hint != "" && !root.hint-dismissed && input.preedit-text == "": Text {
@@ -1435,6 +1437,7 @@ component EditArea inherits Rectangle {
                 font-family: Composer.shell ? Theme.mono : Theme.sans;
                 selection-background-color: Theme.selection;
                 selection-foreground-color: Theme.selection-text;
+                accessible-label: "Message to Claude";
                 accessible-placeholder-text: "Message Claude, or start with ! for a shell command";
                 edited => {
                     Composer.command-index = 0;
