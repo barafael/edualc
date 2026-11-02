@@ -73,6 +73,7 @@ fn foldable(entry: &Entry) -> Option<&Tool> {
         | Body::User(_)
         | Body::Assistant(_)
         | Body::Thinking { .. }
+        | Body::Peer { .. }
         | Body::Info(_)
         | Body::Error(_) => None,
     }

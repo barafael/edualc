@@ -12,7 +12,9 @@ use serde::Deserialize;
 
 use crate::chat::UserText;
 use crate::external::claude_files::{AgentRecord, LiveRecord};
-use crate::external::wire::{self, SessionId, TranscriptCwd, TranscriptLine, UserContent};
+use crate::external::wire::{
+    self, MessageOrigin, SessionId, TranscriptCwd, TranscriptLine, UserContent,
+};
 use crate::home::Home;
 use crate::process;
 
@@ -597,18 +599,35 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
     if let Some(title) = custom.or(generated).or(summary) {
         return Some((title, worktree));
     }
+    // The first prompt; or, for a session another one started by writing to it, that message,
+    // whose turn can fill more than the head before the user writes anything.
     file.seek(SeekFrom::Start(0)).ok()?;
     head_lines(file)
-        .filter_map(|line| match serde_json::from_str(&line) {
+        .find_map(|line| match serde_json::from_str(&line) {
+            Ok(TranscriptLine::User {
+                is_sidechain: false,
+                origin: Some(MessageOrigin::Peer { name, body }),
+                ..
+            }) => Some(peer_title(name.as_deref(), body.as_deref())),
             Ok(TranscriptLine::User {
                 message,
                 is_meta: false,
                 is_sidechain: false,
-            }) => Some(message),
+                ..
+            }) => prompt_text(&message.content),
             Ok(_) | Err(_) => None,
         })
-        .find_map(|message| prompt_text(&message.content))
         .map(|prompt| (crate::tools::truncate_chars(prompt.trim(), 80), worktree))
+}
+
+/// A title from another session's message: who sent it and what it says, as far as known.
+fn peer_title(name: Option<&str>, body: Option<&str>) -> String {
+    match (name, body) {
+        (Some(name), Some(body)) => format!("{name}: {}", body.trim()),
+        (None, Some(body)) => body.to_owned(),
+        (Some(name), None) => format!("Message from {name}"),
+        (None, None) => "Message from another session".to_owned(),
+    }
 }
 
 /// The worktree a session works in now, as its transcript last said.
@@ -831,6 +850,40 @@ mod tests {
         assert_eq!(
             title_after("NPU describer, native").as_deref(),
             Some("NPU describer, native")
+        );
+        std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
+    }
+
+    /// A session another session started by writing to it is titled by that message, and so
+    /// listed, though the user's first prompt comes later than the head that is read; a
+    /// session the user started keeps its prompt, whatever reached it after.
+    #[test]
+    fn a_session_another_started_is_titled_by_its_message() {
+        let dir = std::env::temp_dir().join(format!("edualc-peer-titles-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490482.jsonl");
+        let title_of = |lines: &[serde_json::Value]| {
+            let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+            std::fs::write(&path, text).expect("a transcript");
+            summary(&path).map(|(title, _)| title)
+        };
+        let peer = json!({
+            "type": "user",
+            "isMeta": true,
+            "message": { "role": "user", "content": "Another Claude session sent a message: …" },
+            "origin": { "kind": "peer", "from": "unknown", "name": "sterling-gibbon-94",
+                        "body": "Please reply with one sentence." },
+        });
+        let filler = json!({ "type": "attachment", "attachment": {
+            "type": "skill_listing", "content": "x".repeat(usize::try_from(PEEK_BYTES).expect("small")) } });
+        let prompt = json!({ "type": "user", "message": { "role": "user", "content": "Send a second note" } });
+        assert_eq!(
+            title_of(&[peer.clone(), filler, prompt.clone()]).as_deref(),
+            Some("sterling-gibbon-94: Please reply with one sentence.")
+        );
+        assert_eq!(
+            title_of(&[prompt, peer]).as_deref(),
+            Some("Send a second note")
         );
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
     }

@@ -8,8 +8,8 @@ use crate::chat::{Origin, UserText};
 use crate::claude::Output;
 use crate::external::wire::{
     self, Activity, CommandInfo, ContentBlock, ControlRequest, ControlResponse, IncomingRequest,
-    Initialized, Message, Progress, RateLimits, ResultKind, StreamEvent, System, TurnResult,
-    UserContent,
+    Initialized, Message, Progress, RateLimits, ResultKind, Sender, StreamEvent, System,
+    TurnResult, UserContent,
 };
 use crate::ipc::Generation;
 
@@ -103,17 +103,21 @@ impl App {
                     self.status.doing = Doing::Running(name.clone());
                 }
             }
-            Message::User { message } => {
-                if let UserContent::Text(text) = &message.content
-                    && matches!(
-                        UserText::of(text),
-                        UserText::Shell(_) | UserText::ShellOutput { .. }
-                    )
-                {
-                    self.shell_rows.push(text.clone());
+            Message::User(line) => match line.sender() {
+                Sender::Peer { name, body } => self.chat.peer_message(&line.message, name, body),
+                Sender::Replayed => {}
+                Sender::Session => {
+                    if let UserContent::Text(text) = &line.message.content
+                        && matches!(
+                            UserText::of(text),
+                            UserText::Shell(_) | UserText::ShellOutput { .. }
+                        )
+                    {
+                        self.shell_rows.push(text.clone());
+                    }
+                    self.chat.user_message(&line.message, Origin::Live);
                 }
-                self.chat.user_message(&message, Origin::Live);
-            }
+            },
             Message::System(system) => self.system(system),
             Message::Result(result) => self.result(&result),
             Message::RateLimitEvent { rate_limit_info } => self.take_limits(&rate_limit_info),

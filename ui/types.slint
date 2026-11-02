@@ -24,7 +24,7 @@ export struct MdBlock {
     column-stretch: [float],
 }
 
-export enum EntryKind { user, assistant, thinking, tool, image, info, error }
+export enum EntryKind { user, assistant, thinking, tool, image, peer, info, error }
 
 // How far an image in the conversation is: decoded and shown, still being decoded, or not to
 // be shown.
@@ -59,8 +59,10 @@ export struct Entry {
     // by; not its place in the list, which leaves out what is hidden.
     index: int,
     kind: EntryKind,
-    // The text of user messages, notes, errors and thinking.
+    // The text of user messages, other sessions' messages, notes, errors and thinking.
     body: styled-text,
+    // Who sent another session's message, by the name it gave.
+    sender: string,
     // The family its prose is set in, for the glyph shapes of its CJK characters (see
     // `src/cjk.rs`); empty for the window's.
     font: string,

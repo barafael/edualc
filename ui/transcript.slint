@@ -407,6 +407,48 @@ component UserBubble inherits HorizontalLayout {
     }
 }
 
+// A message another session sent this one: on Claude's side, as Claude is the one it is for,
+// with who sent it above it, so it isn't taken for something the user wrote.
+component PeerBubble inherits HorizontalLayout {
+    in property <Entry> entry;
+    in property <int> index;
+    alignment: start;
+    Rectangle {
+        max-width: root.width * 0.85;
+        border-radius: Theme.bubble-radius;
+        border-width: 1px;
+        border-color: Theme.control-border;
+        VerticalLayout {
+            padding-left: Theme.space-l;
+            padding-right: Theme.space-l;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: Theme.space-xs;
+            HorizontalLayout {
+                alignment: start;
+                spacing: Theme.space-s;
+                Icon {
+                    source: @image-url("@lucide/messages-square.svg");
+                    tint: Theme.text-tertiary;
+                    width: Theme.icon-small;
+                }
+                Text {
+                    text: "Message from \{root.entry.sender}";
+                    color: Theme.text-tertiary;
+                    font-size: 1rem * Theme.small;
+                    vertical-alignment: center;
+                }
+            }
+            Selectable {
+                text: root.entry.body;
+                key: "e\{root.index}:text";
+                default-font-family: root.entry.font;
+                line-height-factor: Theme.line-factor(root.entry.font);
+            }
+        }
+    }
+}
+
 component AssistantText inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
@@ -493,6 +535,10 @@ export component EntryView inherits VerticalLayout {
             shown: shown;
             room: root.width * 0.85;
         }
+    }
+    if root.entry.kind == EntryKind.peer: PeerBubble {
+        entry: root.entry;
+        index: root.index;
     }
     if root.entry.kind == EntryKind.assistant: AssistantText {
         entry: root.entry;

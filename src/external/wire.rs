@@ -213,9 +213,7 @@ pub(crate) enum Message {
         message: ApiMessage,
         parent_tool_use_id: Option<ToolUseId>,
     },
-    User {
-        message: UserMessage,
-    },
+    User(UserLine),
     System(System),
     Result(TurnResult),
     RateLimitEvent {
@@ -359,6 +357,63 @@ impl Usage {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct UserMessage {
     pub(crate) content: UserContent,
+}
+
+/// A user-role message on the stream: a tool's result, a command's output, or (asked for with
+/// `--replay-user-messages`) Claude Code's echo of a message it took in.
+#[derive(Debug, Deserialize)]
+pub(crate) struct UserLine {
+    pub(crate) message: UserMessage,
+    #[serde(default, rename = "isReplay")]
+    is_replay: bool,
+    #[serde(default)]
+    origin: Option<MessageOrigin>,
+}
+
+/// Where a user-role message came from (`SDKMessageOrigin`), as far as the window tells them
+/// apart.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum MessageOrigin {
+    /// Another session, through this one's inbox. `name` is what the sender calls itself, and
+    /// `body` the message without its envelope; Claude Code gives both only for a message that
+    /// came in one envelope, as its SendMessage sends them.
+    Peer {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// Who a user-role message on the stream is from, for showing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sender<'a> {
+    /// Another session: see `MessageOrigin::Peer`.
+    Peer {
+        name: Option<&'a str>,
+        body: Option<&'a str>,
+    },
+    /// A message Claude Code took in, echoed: the window's own, shown as it was sent, or a
+    /// background task's notice, which the task list shows.
+    Replayed,
+    /// Claude Code itself: tool results, what commands print.
+    Session,
+}
+
+impl UserLine {
+    pub(crate) fn sender(&self) -> Sender<'_> {
+        match (&self.origin, self.is_replay) {
+            (Some(MessageOrigin::Peer { name, body }), _) => Sender::Peer {
+                name: name.as_deref(),
+                body: body.as_deref(),
+            },
+            (Some(MessageOrigin::Other) | None, true) => Sender::Replayed,
+            (Some(MessageOrigin::Other) | None, false) => Sender::Session,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1022,6 +1077,9 @@ pub(crate) enum TranscriptLine {
         is_meta: bool,
         #[serde(default, rename = "isSidechain")]
         is_sidechain: bool,
+        /// Set on a message another session sent (which is also `isMeta`).
+        #[serde(default)]
+        origin: Option<MessageOrigin>,
     },
     Assistant {
         message: ApiMessage,
@@ -1369,6 +1427,66 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// User-role lines as Claude Code 2.1.316 sends them with `--replay-user-messages`
+    /// (recorded on the bench): another session's message is told apart from the window's own
+    /// echoed back, and from Claude Code's own tool results.
+    #[test]
+    fn user_lines_say_who_sent_them() {
+        let user_line = |line: Value| match serde_json::from_value(line) {
+            Ok(Message::User(line)) => line,
+            other => panic!("a user line, not {other:?}"),
+        };
+        let enveloped = user_line(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "Another Claude session sent a message:\n<cross-session-message from=\"uds:/s.sock\" from-name=\"replay-tester\">\nReply with pong\n</cross-session-message>" },
+            "parent_tool_use_id": null,
+            "isReplay": true,
+            "isSynthetic": true,
+            "origin": { "kind": "peer", "from": "unknown", "verifiedPeerPid": 238_858,
+                        "name": "replay-tester", "body": "Reply with pong" },
+        }));
+        assert_eq!(
+            enveloped.sender(),
+            Sender::Peer {
+                name: Some("replay-tester"),
+                body: Some("Reply with pong"),
+            }
+        );
+        let bare = user_line(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "[A message from b]\n\nhello" },
+            "isReplay": true,
+            "origin": { "kind": "peer", "from": "unknown" },
+        }));
+        assert_eq!(
+            bare.sender(),
+            Sender::Peer {
+                name: None,
+                body: None,
+            }
+        );
+        let own = user_line(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "Hi" },
+            "isReplay": true,
+        }));
+        assert_eq!(own.sender(), Sender::Replayed);
+        let notice = user_line(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "<task-notification>done</task-notification>" },
+            "isReplay": true,
+            "origin": { "kind": "task-notification" },
+        }));
+        assert_eq!(notice.sender(), Sender::Replayed);
+        let result = user_line(json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": "a.txt" },
+            ] },
+        }));
+        assert_eq!(result.sender(), Sender::Session);
+    }
 
     #[test]
     fn messages_parse_as_the_cli_sends_them() {

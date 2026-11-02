@@ -8,8 +8,8 @@ use serde_json::{Map, Value};
 
 use crate::decode::Picture;
 use crate::external::wire::{
-    ApiMessage, ContentBlock, Delta, MessageId, ReceivedImage, StreamEvent, System, ToolName,
-    ToolUseId, TranscriptLine, UserContent, UserMessage,
+    ApiMessage, ContentBlock, Delta, MessageId, MessageOrigin, ReceivedImage, StreamEvent, System,
+    ToolName, ToolUseId, TranscriptLine, UserContent, UserMessage,
 };
 use crate::tools;
 
@@ -99,6 +99,11 @@ pub(crate) enum Body {
     },
     /// An image the user sent.
     Image(ImageKey),
+    /// A message another session sent, by the name it gave, if any.
+    Peer {
+        from: Option<String>,
+        text: String,
+    },
     Info(String),
     Error(String),
 }
@@ -118,7 +123,8 @@ impl Entry {
             | Body::Assistant(text)
             | Body::Info(text)
             | Body::Error(text)
-            | Body::Thinking { text, .. } => text,
+            | Body::Thinking { text, .. }
+            | Body::Peer { text, .. } => text,
             Body::Tool { tool, .. } => &tool.output,
             Body::Shell { shell, .. } => &shell.output,
             Body::Image(_) => "",
@@ -246,6 +252,24 @@ impl Chat {
         self.push(Body::User(text.into()), false);
     }
 
+    /// A message another session sent: its `body`, or, for one that came without an envelope
+    /// to take the body from, the whole text Claude was given.
+    pub(crate) fn peer_message(
+        &mut self,
+        message: &UserMessage,
+        from: Option<&str>,
+        body: Option<&str>,
+    ) {
+        let text = body.map_or_else(|| tools::result_text(Some(&message.content)), str::to_owned);
+        self.push(
+            Body::Peer {
+                from: from.map(str::to_owned),
+                text,
+            },
+            false,
+        );
+    }
+
     pub(crate) fn info(&mut self, text: impl Into<String>) {
         self.push(Body::Info(text.into()), false);
     }
@@ -302,6 +326,7 @@ impl Chat {
             | Body::Thinking { .. }
             | Body::Shell { .. }
             | Body::Image(_)
+            | Body::Peer { .. }
             | Body::Info(_)
             | Body::Error(_) => None,
         }
@@ -332,6 +357,7 @@ impl Chat {
                 | Body::Assistant(_)
                 | Body::Thinking { .. }
                 | Body::Shell { .. }
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => false,
             };
@@ -352,6 +378,7 @@ impl Chat {
                 | Body::Assistant(_)
                 | Body::Thinking { .. }
                 | Body::Shell { .. }
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => &[],
             })
@@ -409,6 +436,7 @@ impl Chat {
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
                 | Body::Image(_)
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => None,
             });
@@ -479,6 +507,7 @@ impl Chat {
             Body::User(_)
             | Body::Assistant(_)
             | Body::Image(_)
+            | Body::Peer { .. }
             | Body::Info(_)
             | Body::Error(_) => return,
         }
@@ -753,8 +782,15 @@ impl Chat {
             match line {
                 TranscriptLine::User {
                     message,
+                    is_sidechain: false,
+                    origin: Some(MessageOrigin::Peer { name, body }),
+                    ..
+                } => self.peer_message(message, name.as_deref(), body.as_deref()),
+                TranscriptLine::User {
+                    message,
                     is_meta: false,
                     is_sidechain: false,
+                    ..
                 } => self.user_message(message, Origin::Transcript),
                 TranscriptLine::Assistant {
                     message,
@@ -961,6 +997,7 @@ mod tests {
                 | Body::Thinking { .. }
                 | Body::Tool { .. }
                 | Body::Image(_)
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => None,
             })
@@ -1054,6 +1091,53 @@ mod tests {
         );
     }
 
+    /// Another session's message shows as its own kind of entry, by the name the sender gave:
+    /// live, its body without the envelope, or the whole text when it came without one; from
+    /// a saved transcript, where Claude Code keeps it as a meta line, all the same.
+    #[test]
+    fn messages_from_other_sessions_show_who_sent_them() {
+        let message = |content: &str| -> UserMessage {
+            serde_json::from_value(json!({ "content": content })).expect("a user message")
+        };
+        let peers = |chat: &Chat| -> Vec<(Option<String>, String)> {
+            chat.entries
+                .iter()
+                .map(|entry| {
+                    let Body::Peer { from, text } = &entry.body else {
+                        panic!("another session's message, not {:?}", entry.body);
+                    };
+                    (from.clone(), text.clone())
+                })
+                .collect()
+        };
+        let mut chat = Chat::default();
+        chat.peer_message(
+            &message("<cross-session-message from-name=\"b\">\nhi\n</cross-session-message>"),
+            Some("b"),
+            Some("hi"),
+        );
+        chat.peer_message(&message("[A message from c]\n\nhello"), None, None);
+        assert_eq!(
+            peers(&chat),
+            [
+                (Some("b".to_owned()), "hi".to_owned()),
+                (None, "[A message from c]\n\nhello".to_owned()),
+            ]
+        );
+
+        let lines: Vec<TranscriptLine> = [json!({
+            "type": "user",
+            "isMeta": true,
+            "message": { "role": "user", "content": "Another Claude session sent a message: …" },
+            "origin": { "kind": "peer", "from": "unknown", "name": "b", "body": "hi" },
+        })]
+        .into_iter()
+        .map(|line| serde_json::from_value(line).expect("a transcript line"))
+        .collect();
+        let saved = Chat::from_transcript(&lines);
+        assert_eq!(peers(&saved), [(Some("b".to_owned()), "hi".to_owned())]);
+    }
+
     /// Saved `!` rows: the terminal's, with no exit code, are commands that ended; edualc's,
     /// sent ahead of a prompt in one message, come before it; one never told of ending, as a
     /// session was saved, runs no more.
@@ -1141,6 +1225,7 @@ mod tests {
                 | Body::Thinking { .. }
                 | Body::Shell { .. }
                 | Body::Image(_)
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => format!("{:?}", entry.copy_text()),
             })

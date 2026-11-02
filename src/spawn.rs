@@ -220,6 +220,9 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        // Echoes what reaches the session's inbox from other sessions, which is shown; the
+        // window's own messages come back too, and are left out.
+        "--replay-user-messages",
         // Permission requests come to the window as `can_use_tool` control requests.
         "--permission-prompt-tool",
         "stdio",

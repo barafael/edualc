@@ -435,6 +435,7 @@ impl View {
                 | Body::Tool { .. }
                 | Body::Shell { .. }
                 | Body::Image(_)
+                | Body::Peer { .. }
                 | Body::Info(_)
                 | Body::Error(_) => {
                     let row = self.row(index, entry, cwd);
@@ -493,6 +494,13 @@ impl View {
                     row.body = markdown::plain(text);
                 }
                 row.expanded = *expanded;
+                row.font = self.family(text);
+            }
+            // Sessions write Markdown to each other, as they do to the user.
+            Body::Peer { from, text } => {
+                row.kind = EntryKind::Peer;
+                row.body = markdown::styled(text);
+                row.sender = from.as_deref().unwrap_or("another session").into();
                 row.font = self.family(text);
             }
             // Notes come from slash commands, which use Markdown (`sonnet`).
