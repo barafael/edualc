@@ -20,8 +20,14 @@ export global Session {
     // ("2 agents, 1 command"); some of it runs on between turns.
     in property <[TaskItem]> tasks;
     in property <string> tasks-summary;
-    // Bumped to open the list of what runs (the sidebar's count of agents asks for it).
+    // Bumped to open the list of what runs: the sidebar's count of agents asks for it, and a
+    // stopped turn that left tasks running.
     in-out property <int> tasks-wanted;
+    // The user stopped a turn and these run on; the list says so until the next prompt.
+    in property <bool> tasks-left-running;
+    // Stop the task with this id, or all of them.
+    callback stop-task(string);
+    callback stop-all-tasks;
     // The context used ("25k / 1M") and how full it is, 0 to 1.
     in property <string> context;
     in property <float> context-fraction;

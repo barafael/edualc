@@ -1517,7 +1517,9 @@ mod tests {
         let id = RequestId::from("gui_1".to_owned());
         let windows = serde_json::to_string(&Input::ControlRequest {
             request_id: &id,
-            request: &ControlRequest::Initialize,
+            request: &ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            },
         })
         .expect("a line");
         let expected = |fields: &[(&str, serde_json::Value)]| {

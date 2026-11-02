@@ -289,8 +289,12 @@ impl App {
         }
         // A turn the user stopped ends as failed during execution, and the transcript already
         // says so; one that failed so on its own (an API error after the retries) is told.
-        let stopped = std::mem::take(&mut self.status.stop_asked)
-            && result.subtype == ResultKind::ErrorDuringExecution;
+        let stop_asked = std::mem::take(&mut self.status.stop_asked);
+        let stopped = stop_asked && result.subtype == ResultKind::ErrorDuringExecution;
+        // However the turn says it ended, what runs beside it went on.
+        if stop_asked {
+            self.tasks_after_stop();
+        }
         if result.is_error && !stopped {
             let errors: Vec<String> = result
                 .errors
@@ -354,7 +358,8 @@ impl App {
                 self.status.mode = Some(Mode::Known(mode));
                 self.status.mode_choice = Some(mode);
             }
-            (Request::Interrupt, Ok(_)) => {}
+            // The task's end comes as its notification.
+            (Request::Interrupt | Request::StopTask(_), Ok(_)) => {}
             (Request::Side(index), outcome) => self.side_answered(index, outcome),
             (Request::Usage, outcome) => self.usage_answered(outcome),
             (Request::ContextUsage, outcome) => self.context_answered(outcome),
@@ -371,6 +376,18 @@ impl App {
             }
             (Request::Interrupt, Err(error)) => {
                 tracing::warn!(%error, "claude refused to interrupt")
+            }
+            (Request::StopTask(task), Err(error)) => {
+                let what = self
+                    .status
+                    .tasks
+                    .running()
+                    .find(|running| running.task.task_id == task)
+                    .map_or_else(
+                        || "the task".to_owned(),
+                        |running| format!("\u{201c}{}\u{201d}", running.task.description),
+                    );
+                self.chat.error(format!("Couldn't stop {what}: {error}"));
             }
         }
         // A refused switch puts the menu back.

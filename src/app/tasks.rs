@@ -5,8 +5,48 @@
 use std::collections::BTreeMap;
 
 use crate::external::wire::{
-    BackgroundTask, TaskId, TaskKind, TaskPatch, TaskStatus, TaskUsage, ToolName,
+    BackgroundTask, ControlRequest, TaskId, TaskKind, TaskPatch, TaskStatus, TaskUsage, ToolName,
 };
+
+use super::{App, Request};
+
+impl App {
+    /// The user stopped the turn, which ends only the turn: if tasks run on, their list opens
+    /// and says so, for the user to stop them or leave them running.
+    pub(super) fn tasks_after_stop(&mut self) {
+        if self.status.tasks.running().next().is_some() {
+            self.status.tasks_left_running = true;
+            self.redraw.tasks = true;
+            self.view.show_tasks();
+        }
+    }
+
+    pub(super) fn stop_task(&mut self, task: TaskId) {
+        if self
+            .status
+            .tasks
+            .running()
+            .any(|running| running.task.task_id == task)
+        {
+            let stop = ControlRequest::StopTask {
+                task_id: task.clone(),
+            };
+            self.request(&stop, Request::StopTask(task));
+        }
+    }
+
+    pub(super) fn stop_all_tasks(&mut self) {
+        let tasks: Vec<TaskId> = self
+            .status
+            .tasks
+            .running()
+            .map(|running| running.task.task_id.clone())
+            .collect();
+        for task in tasks {
+            self.stop_task(task);
+        }
+    }
+}
 
 /// Where a task runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

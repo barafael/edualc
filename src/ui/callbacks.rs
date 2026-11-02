@@ -115,6 +115,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
 
     let session = window.global::<Session>();
     session.on_interrupt(actions.on(|| Action::Interrupt));
+    session.on_stop_task(actions.on_text(|task| Action::StopTask(task.into())));
+    session.on_stop_all_tasks(actions.on(|| Action::StopAllTasks));
     session.on_choose_model(actions.on_index(Action::ChooseModel));
     session.on_choose_mode(actions.on_index(Action::ChooseMode));
     session.on_open_url(actions.on_text(Action::OpenUrl));

@@ -73,6 +73,7 @@ pub(crate) struct ToolUseId(String);
     Ord,
     Hash,
     Deserialize,
+    Serialize,
     derive_more::From,
     derive_more::Display,
 )]
@@ -1267,8 +1268,18 @@ enum Role {
 #[derive(Debug, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub(crate) enum ControlRequest {
-    Initialize,
+    Initialize {
+        /// This window stops tasks one by one (`StopTask`), so an interrupt ends only the turn:
+        /// background agents, commands and monitors run on. Taken from the first window to
+        /// initialize a process.
+        #[serde(rename = "perTaskStopAffordance")]
+        per_task_stop_affordance: bool,
+    },
     Interrupt,
+    /// Stops one task (a subagent, a command, a monitor).
+    StopTask {
+        task_id: TaskId,
+    },
     SetModel {
         model: String,
     },
@@ -1641,6 +1652,29 @@ mod tests {
                 "request_id": "gui_1",
                 "request": { "subtype": "get_context_usage" },
             })
+        );
+        // As the SDK's types for 2.1.316 name them.
+        let request = ControlRequest::Initialize {
+            per_task_stop_affordance: true,
+        };
+        assert_eq!(
+            encoded(&Input::ControlRequest {
+                request_id: &id,
+                request: &request,
+            })
+            .get("request"),
+            Some(&json!({ "subtype": "initialize", "perTaskStopAffordance": true }))
+        );
+        let request = ControlRequest::StopTask {
+            task_id: TaskId::from("a1b2".to_owned()),
+        };
+        assert_eq!(
+            encoded(&Input::ControlRequest {
+                request_id: &id,
+                request: &request,
+            })
+            .get("request"),
+            Some(&json!({ "subtype": "stop_task", "task_id": "a1b2" }))
         );
         let offered = json!({ "type": "addRules", "rules": [], "behavior": "allow" });
         let allow = PermissionResult::Allow {

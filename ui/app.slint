@@ -205,10 +205,26 @@ component TasksChip inherits Pressable {
             tasks-body := VerticalLayout {
                 padding: Theme.space-m;
                 spacing: Theme.space-s;
-                Text {
-                    text: "Running now";
-                    color: Theme.text;
-                    font-weight: 600;
+                HorizontalLayout {
+                    spacing: Theme.space-s;
+                    Text {
+                        text: Session.tasks-left-running ? "Still running" : "Running now";
+                        color: Theme.text;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    if Session.tasks.length > 1: TextButton {
+                        text: "Stop all";
+                        clicked => { Session.stop-all-tasks(); }
+                    }
+                }
+                // Stopping a turn leaves what runs beside it running, as the user wanted:
+                // they decide here.
+                if Session.tasks-left-running: Small {
+                    text: "The turn stopped; these go on. Stop them here, or leave them running.";
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
                 }
                 // A subagent's row opens what it does beside the conversation.
                 for task in Session.tasks: Pressable {
@@ -250,11 +266,23 @@ component TasksChip inherits Pressable {
                                 wrap: word-wrap;
                             }
                         }
+                        // Not a bare square, which reads as a checkbox in a list.
+                        IconButton {
+                            icon: @image-url("@lucide/circle-stop.svg");
+                            icon-size: Theme.icon-small;
+                            label: "Stop " + task.title;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { Session.stop-task(task.id); }
+                        }
                         if task.peekable: Icon {
                             source: @image-url("@lucide/chevron-right.svg");
                             tint: Theme.text-tertiary;
                             width: Theme.icon-small;
                             y: (parent.height - self.height) / 2;
+                        }
+                        // The chevron's room, so that every row's stop button lines up.
+                        if !task.peekable: Rectangle {
+                            width: Theme.icon-small;
                         }
                     }
                 }

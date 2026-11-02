@@ -733,7 +733,8 @@ impl View {
     }
 
     /// What runs in the background: each task, and how much of each kind.
-    pub(crate) fn render_tasks(&self, tasks: &Tasks) {
+    /// What runs besides the turn, and whether a stopped turn left it running.
+    pub(crate) fn render_tasks(&self, tasks: &Tasks, left_running: bool) {
         let session = self.window.global::<Session>();
         let kinds: Vec<wire::TaskKind> = tasks
             .running()
@@ -742,6 +743,13 @@ impl View {
         session.set_tasks_summary(tasks_summary(&kinds).into());
         let items: Vec<TaskItem> = tasks.running().map(task_item).collect();
         session.set_tasks(ModelRc::new(VecModel::from(items)));
+        session.set_tasks_left_running(left_running);
+    }
+
+    /// Opens the list of what runs.
+    pub(crate) fn show_tasks(&self) {
+        let session = self.window.global::<Session>();
+        session.set_tasks_wanted(session.get_tasks_wanted().wrapping_add(1));
     }
 
     /// The subagent followed in the side panel, if one is, and whether it still runs.

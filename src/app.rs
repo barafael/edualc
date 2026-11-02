@@ -269,6 +269,8 @@ pub(crate) enum Action {
     /// Follow a subagent's conversation in the side panel.
     OpenPeek(wire::TaskId),
     ClosePeek,
+    StopTask(wire::TaskId),
+    StopAllTasks,
     SideToConversation,
     BranchSide,
     /// Opens the session's worktree with the opener at this place in the menu (0: here).
@@ -345,6 +347,8 @@ pub(crate) struct Status {
     pub(crate) doing: Doing,
     /// What runs besides the turn's own steps: subagents, commands, workflows.
     pub(crate) tasks: Tasks,
+    /// The user stopped a turn and tasks ran on, which their list says until the next prompt.
+    pub(crate) tasks_left_running: bool,
     pub(crate) context_tokens: u64,
     pub(crate) context_window: u64,
     pub(crate) cost_usd: f64,
@@ -513,6 +517,7 @@ pub(crate) enum Request {
     Model(String),
     Mode(PermissionMode),
     Interrupt,
+    StopTask(wire::TaskId),
     /// A side question, by its place in the side chat.
     Side(usize),
     Usage,
@@ -604,6 +609,12 @@ struct OwnMark {
 
 /// Lines of stderr kept, to say why the process ended.
 const LOG_LINES: usize = 20;
+/// What the window asks a process first. It stops tasks one by one, so stopping a turn leaves
+/// background agents, commands and monitors running, as the user asked; what runs on is then
+/// listed for them to stop or leave.
+const INITIALIZE: ControlRequest = ControlRequest::Initialize {
+    per_task_stop_affordance: true,
+};
 /// How often the running sessions are looked at without being told of a change: a process that
 /// crashed leaves its record behind.
 const TICK: Duration = Duration::from_secs(60);
@@ -963,6 +974,8 @@ impl App {
             Action::BranchSide => self.branch_side(),
             Action::OpenPeek(task) => self.open_peek(task),
             Action::ClosePeek => self.close_peek(),
+            Action::StopTask(task) => self.stop_task(task),
+            Action::StopAllTasks => self.stop_all_tasks(),
             Action::OpenWorktree(index) => self.open_worktree(index),
             Action::ShowUsage => self.show_usage(),
             Action::HideUsage => {
@@ -1095,7 +1108,8 @@ impl App {
             self.view.render_usage(&self.usage, &self.status);
         }
         if redraw.tasks {
-            self.view.render_tasks(&self.status.tasks);
+            self.view
+                .render_tasks(&self.status.tasks, self.status.tasks_left_running);
         }
         if redraw.peek || redraw.tasks {
             self.view
@@ -1291,7 +1305,7 @@ impl App {
                 return;
             }
         }
-        self.request(&ControlRequest::Initialize, Request::Initialize);
+        self.request(&INITIALIZE, Request::Initialize);
         if let Some(mode) = self.status.mode_choice {
             self.request(
                 &ControlRequest::SetPermissionMode { mode },
@@ -1436,6 +1450,7 @@ impl App {
         self.status.doing = Doing::Nothing;
         // They ran in the process.
         self.status.tasks.clear();
+        self.status.tasks_left_running = false;
         self.redraw.tasks = true;
         self.chat.stop_shells();
         self.usage.waiting = 0;
@@ -1603,7 +1618,7 @@ impl App {
             }
         }
         // What the process offers, again: the window that started it asked before.
-        self.request(&ControlRequest::Initialize, Request::Initialize);
+        self.request(&INITIALIZE, Request::Initialize);
         self.redraw = Redraw::everything();
         self.view.focus_composer();
     }
@@ -1958,6 +1973,9 @@ impl App {
         }
         self.status.turns += 1;
         self.status.doing = Doing::Starting;
+        if std::mem::take(&mut self.status.tasks_left_running) {
+            self.redraw.tasks = true;
+        }
         self.start_listening();
         let shell_rows = std::mem::take(&mut self.shell_rows);
         self.write(|process| process.prompt(&shell_rows, &images, text));
