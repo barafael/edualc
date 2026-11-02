@@ -15,10 +15,20 @@ pub(crate) enum DiffKind {
     Hunk,
 }
 
+/// How a call's summary reads, and so how it is set: as code (a command, a path, a pattern, a
+/// URL, the input), or as words (a question, what an agent is to do).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Writing {
+    #[default]
+    Code,
+    Prose,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ToolView {
     pub(crate) title: String,
     pub(crate) summary: String,
+    pub(crate) summary_reads_as: Writing,
     /// Shown when expanded, as plain monospace text; empty if the summary says it all.
     pub(crate) detail: String,
     pub(crate) diff: Vec<(DiffKind, String)>,
@@ -209,6 +219,31 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
         view.diff
             .push((DiffKind::Hunk, format!("… {cut} more lines")));
     }
+    view.summary_reads_as = match name {
+        ToolName::WebSearch
+        | ToolName::Task
+        | ToolName::Agent
+        | ToolName::TodoWrite
+        | ToolName::AskUserQuestion
+        | ToolName::ExitPlanMode
+        | ToolName::RelaySendMessage => Writing::Prose,
+        ToolName::Bash
+        | ToolName::BashOutput
+        | ToolName::KillShell
+        | ToolName::Monitor
+        | ToolName::Read
+        | ToolName::NotebookRead
+        | ToolName::Write
+        | ToolName::Edit
+        | ToolName::MultiEdit
+        | ToolName::NotebookEdit
+        | ToolName::Glob
+        | ToolName::Grep
+        | ToolName::Ls
+        | ToolName::WebFetch
+        | ToolName::Skill
+        | ToolName::Other(_) => Writing::Code,
+    };
     view
 }
 

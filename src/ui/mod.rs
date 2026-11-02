@@ -533,6 +533,7 @@ impl View {
         row.expanded = expanded;
         row.tool_title = view.title.into();
         row.tool_summary = view.summary.into();
+        row.tool_summary_prose = view.summary_reads_as == tools::Writing::Prose;
         row.tool_state = state;
         row.has_detail = !view.detail.is_empty();
         row.detail = markdown::plain(&view.detail);

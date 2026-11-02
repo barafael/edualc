@@ -321,8 +321,8 @@ component ToolCard inherits Rectangle {
                 Text {
                     text: root.entry.tool-summary;
                     color: Theme.text-secondary;
-                    font-family: Theme.mono;
-                    font-size: 1rem * Theme.code-size;
+                    font-family: root.entry.tool-summary-prose ? Theme.sans : Theme.mono;
+                    font-size: root.entry.tool-summary-prose ? 1rem : 1rem * Theme.code-size;
                     overflow: elide;
                     vertical-alignment: center;
                     horizontal-stretch: 1;

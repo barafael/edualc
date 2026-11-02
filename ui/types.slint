@@ -68,6 +68,8 @@ export struct Entry {
     blocks: [MdBlock],
     tool-title: string,
     tool-summary: string,
+    // The summary is words (a question, an agent's task), not code: set as prose.
+    tool-summary-prose: bool,
     tool-state: ToolState,
     // A tool call's input worth showing (the full command, a subagent's prompt).
     detail: styled-text,
