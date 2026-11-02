@@ -154,6 +154,8 @@ component TasksChip inherits Pressable {
     border-radius: Theme.radius-m;
     accessible-label: "Running now: " + Session.tasks-summary;
     clicked => { tasks-menu.show(); }
+    property <int> wanted: Session.tasks-wanted;
+    changed wanted => { tasks-menu.show(); }
     HorizontalLayout {
         padding-left: Theme.space-s;
         padding-right: Theme.space-s;
@@ -288,6 +290,23 @@ component SessionHeading inherits Rectangle {
 
 // A session running now (this window's, another's, a terminal's), on two lines: its title,
 // then what it does, its name to message it by and where it runs; its subagents counted.
+// How many subagents a running session has: a bot and the number.
+component AgentCount inherits HorizontalLayout {
+    in property <int> agents;
+    spacing: Theme.space-xs;
+    Icon {
+        source: @image-url("@lucide/bot.svg");
+        width: Theme.icon-small;
+        tint: Theme.text-tertiary;
+        y: (parent.height - self.height) / 2;
+    }
+    Caption {
+        text: root.agents;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
 component RunningRow inherits Pressable {
     in property <SessionRow> entry;
     height: Theme.row-tall;
@@ -320,19 +339,20 @@ component RunningRow inherits Pressable {
                 accessible-role: none;
             }
         }
-        if root.entry.agents > 0: HorizontalLayout {
-            spacing: Theme.space-xs;
-            Icon {
-                source: @image-url("@lucide/bot.svg");
-                width: Theme.icon-small;
-                tint: Theme.text-tertiary;
-                y: (parent.height - self.height) / 2;
+        // The session shown here: its count opens the list of what runs, where an agent's
+        // work can be followed.
+        if root.entry.agents > 0 && root.entry.selected: Pressable {
+            accessible-label: root.entry.agents == 1 ? "1 agent running, show it"
+                : "\{root.entry.agents} agents running, show them";
+            clicked => { Session.tasks-wanted += 1; }
+            AgentCount {
+                agents: root.entry.agents;
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-xs;
             }
-            Caption {
-                text: root.entry.agents;
-                vertical-alignment: center;
-                accessible-role: none;
-            }
+        }
+        if root.entry.agents > 0 && !root.entry.selected: AgentCount {
+            agents: root.entry.agents;
         }
     }
     // The whole title, where the row cuts it off.

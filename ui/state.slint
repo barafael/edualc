@@ -16,10 +16,12 @@ export global Session {
     // What Claude is doing ("Thinking", "Running Bash"); empty when idle.
     in property <string> status;
     in property <Activity> activity;
-    // What runs in the background (subagents, commands), and how much of each ("2 agents,
-    // 1 command"); it runs on between turns.
+    // What runs besides the turn's own steps (subagents, commands), and how much of each
+    // ("2 agents, 1 command"); some of it runs on between turns.
     in property <[TaskItem]> tasks;
     in property <string> tasks-summary;
+    // Bumped to open the list of what runs (the sidebar's count of agents asks for it).
+    in-out property <int> tasks-wanted;
     // The context used ("25k / 1M") and how full it is, 0 to 1.
     in property <string> context;
     in property <float> context-fraction;
