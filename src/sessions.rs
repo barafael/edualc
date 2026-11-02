@@ -462,10 +462,11 @@ pub(crate) fn running_agents(transcript: &Path, now: SystemTime) -> usize {
             let finished = read_small(record, RECORD_BYTES)
                 .and_then(|text| serde_json::from_str::<AgentRecord>(&text).ok())
                 .is_some_and(|record| record.finished);
+            // Written after `now` (a clock set back, or `now` taken first): just written.
             let quiet_for = std::fs::metadata(agent_transcript)
                 .and_then(|metadata| metadata.modified())
                 .ok()
-                .and_then(|written| now.duration_since(written).ok());
+                .map(|written| now.duration_since(written).unwrap_or_default());
             !finished && quiet_for.is_some_and(|quiet| quiet < AGENT_QUIET)
         })
         .count()
@@ -700,6 +701,9 @@ mod tests {
             .and_then(|metadata| metadata.modified())
             .expect("a time it was written");
         assert_eq!(running_agents(&session, written), 2, "a1 and a3");
+        // Written after `now` reads as just written, whatever order the files were made in.
+        let before = written - std::time::Duration::from_secs(1);
+        assert_eq!(running_agents(&session, before), 2, "a1 and a3");
         let later = written + AGENT_QUIET + std::time::Duration::from_secs(1);
         assert_eq!(running_agents(&session, later), 0, "quiet too long");
         assert_eq!(running_agents(&dir.join("none.jsonl"), written), 0);
