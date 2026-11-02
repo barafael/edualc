@@ -557,7 +557,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 12;
+pub(crate) const PROTOCOL: u32 = 13;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -840,6 +840,23 @@ pub(crate) enum Stream {
     Err,
 }
 
+/// What a folder is picked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum FolderUse {
+    /// To open it, and work in it.
+    Project,
+    /// To let the sandbox's processes into it.
+    Sandbox(SandboxAccess),
+}
+
+/// How far the sandbox lets Claude into a folder the user added (`Settings::sandbox_read`,
+/// `Settings::sandbox_write`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SandboxAccess {
+    Read,
+    Write,
+}
+
 /// What the window can have the desktop do; it does nothing else outside its sandbox.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -850,8 +867,8 @@ pub(crate) enum Act {
     },
     /// A link from the conversation: only web pages and mail are opened.
     OpenUrl(String),
-    /// The desktop's folder picker; answered by `Picked`.
-    PickFolder,
+    /// The desktop's folder picker, titled for what the folder is for; answered by `Picked`.
+    PickFolder(FolderUse),
     /// The clipboard's image, if it holds one; answered by `Pasted`.
     PasteImage,
     /// Whether the terminal's trust dialog was accepted for the folder, or one it is in, which

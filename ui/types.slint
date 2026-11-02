@@ -210,6 +210,9 @@ export enum SendKey { enter, ctrl-enter }
 // The language text with Han characters alone is drawn in (see `src/cjk.rs`).
 export enum HanLanguage { japanese, simplified-chinese, traditional-chinese, korean }
 
+// How far the sandbox lets Claude into a folder the user added.
+export enum SandboxAccess { read, write }
+
 // The window's areas for the keyboard, in F6's order: the sidebar, the conversation (its header
 // and transcript), what Claude asks with the composer, and the side panel.
 export enum FocusArea { sidebar, conversation, writing, side }

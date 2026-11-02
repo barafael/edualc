@@ -21,7 +21,8 @@ use crate::external::wire::{
 };
 use crate::generated::AppWindow;
 use crate::ipc::{
-    Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, Runs, ToDaemon,
+    Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Runs,
+    SandboxAccess, ToDaemon,
 };
 use crate::link::{self, Link};
 use crate::plan;
@@ -195,6 +196,8 @@ enum Acting {
     Bringing(LiveSession),
     /// Reading the clipboard's image, for the next message.
     Pasting,
+    /// The folder picker, for a folder to be used so.
+    Picking(FolderUse),
 }
 
 /// What the user did in the window.
@@ -266,6 +269,13 @@ pub(crate) enum Action {
     SendWith(settings::SendKey),
     /// The language of text in Han characters alone, as chosen in the settings.
     HanLanguage(crate::cjk::CjkLanguage),
+    /// Picks a folder for the sandbox to let Claude into so.
+    AddSandboxFolder(SandboxAccess),
+    /// Takes a folder, as shown, from those the sandbox lets Claude into so.
+    ForgetSandboxFolder {
+        access: SandboxAccess,
+        folder: String,
+    },
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
@@ -660,6 +670,7 @@ impl App {
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
         view.set_han_language(settings.han_language());
+        view.set_sandbox_folders(&settings);
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -790,12 +801,20 @@ impl App {
             Event::LiveListed(live) => self.live_listed(live),
             Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
             Event::Acted { request, result } => self.acted(request, result),
-            Event::Picked { request, folder } => {
-                self.acting.remove(&request);
-                if let Some(folder) = folder {
+            Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
+                (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
                     self.open_project(&folder.to_string_lossy());
                 }
-            }
+                (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
+                    let folders = self.settings.sandbox_folders(access);
+                    if !folders.contains(&folder) {
+                        folders.push(folder);
+                        self.sandbox_folders_changed();
+                    }
+                }
+                // Nothing picked, or for a request since forgotten.
+                (Some(_) | None, _) => {}
+            },
             Event::Trusted {
                 request,
                 accepted,
@@ -845,7 +864,14 @@ impl App {
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
             Action::OpenProject(path) => self.open_project(&path),
-            Action::BrowseProject => self.ask_desktop(Act::PickFolder, Acting::Desktop),
+            Action::BrowseProject => self.pick_folder(FolderUse::Project),
+            Action::AddSandboxFolder(access) => self.pick_folder(FolderUse::Sandbox(access)),
+            Action::ForgetSandboxFolder { access, folder } => {
+                self.settings
+                    .sandbox_folders(access)
+                    .retain(|kept| kept.to_string_lossy() != folder);
+                self.sandbox_folders_changed();
+            }
             Action::ListProjects => self.in_background(sessions::projects, Event::ProjectsListed),
             Action::ChooseModel(index) => self.choose_model(index),
             Action::ChooseMode(index) => self.choose_mode(index),
@@ -1172,9 +1198,27 @@ impl App {
                 tracing::warn!(%failure, "the desktop didn't do it");
                 self.chat.error(failure.to_string());
             }
-            // Answered as `Pasted`.
-            (Some(Acting::Desktop | Acting::Pasting), Ok(())) | (None, _) => {}
-            (Some(Acting::Pasting), Err(failure)) => self.chat.error(failure.to_string()),
+            // A paste is answered as `Pasted`, a folder picked as `Picked`.
+            (Some(Acting::Desktop | Acting::Pasting | Acting::Picking(_)), Ok(())) | (None, _) => {}
+            (Some(Acting::Pasting | Acting::Picking(_)), Err(failure)) => {
+                self.chat.error(failure.to_string());
+            }
+        }
+    }
+
+    /// The desktop's folder picker, for a folder to be used so; `Event::Picked` answers.
+    fn pick_folder(&mut self, folder_use: FolderUse) {
+        self.ask_desktop(Act::PickFolder(folder_use), Acting::Picking(folder_use));
+    }
+
+    /// Keeps the changed folders the sandbox lets Claude into, shows them, and starts a
+    /// sandboxed process again under them, continuing the session.
+    fn sandbox_folders_changed(&mut self) {
+        self.view.set_sandbox_folders(&self.settings);
+        if self.settings.sandbox {
+            self.sandbox_changed();
+        } else if let Err(error) = settings::save(&self.settings) {
+            tracing::warn!(%error, "couldn't keep the sandbox's folders");
         }
     }
 

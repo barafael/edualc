@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, LiveItem, MenuItem, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -226,6 +226,12 @@ export global Preferences {
     // the desktop's, or Japanese).
     in property <HanLanguage> han-language;
     callback choose-han-language(HanLanguage);
+    // The folders the sandbox lets Claude read, and change, beyond its own: picked, or taken
+    // off as shown.
+    in property <[string]> sandbox-read;
+    in property <[string]> sandbox-write;
+    callback add-sandbox-folder(SandboxAccess);
+    callback forget-sandbox-folder(SandboxAccess, string);
 }
 
 // Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and

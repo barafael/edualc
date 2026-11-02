@@ -2,9 +2,9 @@
 // them. Each takes effect at once and is kept in `settings.json`.
 
 import { Theme } from "theme.slint";
-import { HanLanguage, SendKey } from "types.slint";
-import { Preferences } from "state.slint";
-import { Caption, Icon, IconButton, Pressable, Small, Title } from "widgets.slint";
+import { HanLanguage, SandboxAccess, SendKey } from "types.slint";
+import { Preferences, Session } from "state.slint";
+import { Caption, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
 
 // One of a setting's choices: its name, what it means, and whether it is the one in use.
 component Choice inherits Pressable {
@@ -35,6 +35,82 @@ component Choice inherits Pressable {
                 text: root.detail;
                 wrap: word-wrap;
             }
+        }
+    }
+}
+
+// A setting that is on or off: its name, what it means, and whether it is on.
+component Check inherits Pressable {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> checked;
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-label: root.title;
+    accessible-description: root.detail;
+    HorizontalLayout {
+        padding: Theme.space-s;
+        padding-left: Theme.space-m;
+        spacing: Theme.space-s;
+        Icon {
+            source: root.checked ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg");
+            tint: !root.enabled ? Theme.text-tertiary : root.checked ? Theme.accent : Theme.text-secondary;
+            width: Theme.icon-small;
+            y: Theme.space-xs;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: root.enabled ? Theme.text : Theme.text-tertiary;
+            }
+            Small {
+                text: root.detail;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// The folders the sandbox lets Claude into so, beyond its own: each can be taken off, and
+// another picked.
+component SandboxFolders inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+    in property <[string]> folders;
+    in property <SandboxAccess> access;
+    spacing: Theme.space-xs;
+    padding-left: Theme.space-m;
+    Text {
+        text: root.title;
+        color: Theme.text;
+    }
+    Small {
+        text: root.folders.length == 0 ? root.detail + " None yet." : root.detail;
+        wrap: word-wrap;
+    }
+    for folder in root.folders: HorizontalLayout {
+        spacing: Theme.space-s;
+        Text {
+            text: folder;
+            color: Theme.text;
+            font-family: Theme.mono;
+            font-size: 1rem * Theme.code-size;
+            overflow: elide;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        IconButton {
+            icon: @image-url("@lucide/x.svg");
+            label: "Take " + folder + " off";
+            clicked => { Preferences.forget-sandbox-folder(root.access, folder); }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        TextButton {
+            text: "Add a folder…";
+            clicked => { Preferences.add-sandbox-folder(root.access); }
         }
     }
 }
@@ -75,14 +151,60 @@ export component SettingsPanel inherits Rectangle {
             height: 1px;
             background: Theme.divider;
         }
-        HorizontalLayout {
-            alignment: center;
-            padding-top: Theme.space-l;
-            padding-bottom: Theme.space-xl;
-            VerticalLayout {
+        Flickable {
+            vertical-stretch: 1;
+            content-height: page.preferred-height;
+            page := VerticalLayout {
+                x: (parent.width - self.width) / 2;
                 width: min(root.width - 2 * Theme.space-xl, 640px);
+                padding-top: Theme.space-l;
+                padding-bottom: Theme.space-xl;
                 spacing: Theme.space-xs;
                 alignment: start;
+                Text {
+                    text: "Sandbox";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: "In the sandbox, Claude Code and everything it starts may change only the project, its git folder, caches and temporary files, and can't read your private files. A change here starts Claude Code again; the conversation goes on.";
+                    wrap: word-wrap;
+                }
+                Check {
+                    title: "Sandbox Claude Code";
+                    detail: Session.sandbox-on ? "Landlock keeps it to what is listed here." : "It runs with all your rights.";
+                    checked: Session.sandbox-on;
+                    clicked => { Session.toggle-sandbox(); }
+                }
+                Check {
+                    title: "Let it use the display";
+                    detail: "Windows on your desktop and the GPU, for testing user interfaces.";
+                    checked: Session.sandbox-desktop;
+                    enabled: Session.sandbox-on;
+                    clicked => { Session.toggle-sandbox-desktop(); }
+                }
+                Check {
+                    title: "Let it use USB devices and serial ports in " + Session.project;
+                    detail: "For this folder and those under it: debug probes and boards, but also any other USB device you can open, such as a phone.";
+                    checked: Session.sandbox-hardware;
+                    enabled: Session.sandbox-on;
+                    clicked => { Session.toggle-sandbox-hardware(); }
+                }
+                SandboxFolders {
+                    title: "Folders it may also read";
+                    detail: "A toolchain's home, say, with what is under it.";
+                    folders: Preferences.sandbox-read;
+                    access: SandboxAccess.read;
+                }
+                SandboxFolders {
+                    title: "Folders it may also change";
+                    detail: "With what is under them.";
+                    folders: Preferences.sandbox-write;
+                    access: SandboxAccess.write;
+                }
+                Rectangle {
+                    height: Theme.space-m;
+                }
                 Text {
                     text: "Sending";
                     font-weight: 600;

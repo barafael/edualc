@@ -8,9 +8,10 @@ use crate::app::{Action, Event, PermissionMode};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Preferences, Prompt, SendKey,
-    Session, Sessions, Side, Transcript, Usage,
+    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Preferences, Prompt,
+    SandboxAccess, SendKey, Session, Sessions, Side, Transcript, Usage,
 };
+use crate::ipc;
 use crate::settings::{self, Zoom};
 
 /// A way to the app, for a callback to keep.
@@ -139,6 +140,23 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
                 SendKey::Enter => settings::SendKey::Enter,
                 SendKey::CtrlEnter => settings::SendKey::CtrlEnter,
             }));
+        }
+    });
+    let access_of = |access| match access {
+        SandboxAccess::Read => ipc::SandboxAccess::Read,
+        SandboxAccess::Write => ipc::SandboxAccess::Write,
+    };
+    window.global::<Preferences>().on_add_sandbox_folder({
+        let actions = actions.clone();
+        move |access| actions.send(Action::AddSandboxFolder(access_of(access)))
+    });
+    window.global::<Preferences>().on_forget_sandbox_folder({
+        let actions = actions.clone();
+        move |access, folder| {
+            actions.send(Action::ForgetSandboxFolder {
+                access: access_of(access),
+                folder: folder.into(),
+            });
         }
     });
     window.global::<Preferences>().on_choose_han_language({

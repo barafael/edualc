@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cjk::CjkLanguage;
+use crate::ipc::SandboxAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,6 +125,14 @@ impl Settings {
 
     pub(crate) fn scale(&self) -> f32 {
         f32::from(self.zoom_percent) / 100.0
+    }
+
+    /// The folders, with what is under them, the sandbox lets Claude into so, beyond its own.
+    pub(crate) fn sandbox_folders(&mut self, access: SandboxAccess) -> &mut Vec<PathBuf> {
+        match access {
+            SandboxAccess::Read => &mut self.sandbox_read,
+            SandboxAccess::Write => &mut self.sandbox_write,
+        }
     }
 
     /// The language text with Han characters alone is taken to be in: the one chosen, else

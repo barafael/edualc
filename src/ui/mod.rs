@@ -2,7 +2,7 @@
 //! callbacks, which become the app's actions (`wire`).
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use slint::{
     ComponentHandle, Model, ModelExt, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -182,6 +182,21 @@ impl View {
             settings::SendKey::Enter => SendKey::Enter,
             settings::SendKey::CtrlEnter => SendKey::CtrlEnter,
         });
+    }
+
+    /// The folders the sandbox lets Claude read and change, beyond its own, as the settings page
+    /// lists them.
+    pub(crate) fn set_sandbox_folders(&self, settings: &settings::Settings) {
+        let shown = |folders: &[PathBuf]| {
+            let shown: Vec<SharedString> = folders
+                .iter()
+                .map(|folder| folder.to_string_lossy().as_ref().into())
+                .collect();
+            ModelRc::new(VecModel::from(shown))
+        };
+        let preferences = self.window.global::<Preferences>();
+        preferences.set_sandbox_read(shown(&settings.sandbox_read));
+        preferences.set_sandbox_write(shown(&settings.sandbox_write));
     }
 
     pub(crate) fn set_look(&self, look: settings::Look) {
@@ -1222,8 +1237,7 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
              It can't read your private files, reach desktop services or sockets (except the \
              ssh agent), or gain privileges (sudo).\n\
              A command that fails with \"Permission denied\" was blocked by the sandbox. To \
-             allow more, add paths to sandbox_read or sandbox_write in \
-             ~/.config/edualc/settings.json.",
+             allow more, add folders in the settings (Ctrl+,).",
         ),
         Sandboxing::Landlock(Enforcement::Partial) => (
             "Partly sandboxed",

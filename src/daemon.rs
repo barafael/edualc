@@ -35,8 +35,8 @@ use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
-    PasteFailure, StartFailure, Stream, ToDaemon,
+    self, Act, ActFailure, ActId, Deframer, FolderUse, FromDaemon, Generation, Hosted, HostedId,
+    LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
 };
 use crate::mirror::{self, Mirror};
 use crate::{home, spawn, trust};
@@ -391,11 +391,14 @@ impl Connection {
 /// Does what the desktop is asked, on a thread of its own (it may take a while), and tells the
 /// window.
 async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
-    if act == Act::PickFolder {
-        let picked = tokio::task::spawn_blocking(|| {
-            rfd::FileDialog::new()
-                .set_title("Open a folder")
-                .pick_folder()
+    if let Act::PickFolder(folder_use) = act {
+        let title = match folder_use {
+            FolderUse::Project => "Open a folder",
+            FolderUse::Sandbox(SandboxAccess::Read) => "A folder Claude may read in the sandbox",
+            FolderUse::Sandbox(SandboxAccess::Write) => "A folder Claude may change in the sandbox",
+        };
+        let picked = tokio::task::spawn_blocking(move || {
+            rfd::FileDialog::new().set_title(title).pick_folder()
         })
         .await;
         let folder = picked.unwrap_or_else(|error| {
@@ -573,7 +576,7 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
         Act::StopSession(running) => desktop::stop_session(&running)?,
         // Answered as `Picked`, `Pasted` and `Trusted`, in `act_for`.
-        Act::PickFolder | Act::PasteImage | Act::CheckTrust { .. } => {}
+        Act::PickFolder(_) | Act::PasteImage | Act::CheckTrust { .. } => {}
     }
     Ok(())
 }
