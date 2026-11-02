@@ -414,9 +414,17 @@ impl View {
                 continue;
             };
             match &entry.body {
-                // The blocks model changes in place; the row itself stays.
+                // The blocks model changes in place; the row itself stays, unless the text
+                // grew into CJK (its first kana, say), which sets its family.
                 Body::Assistant(text) => {
                     self.sync_blocks(index, text);
+                    let family = self.family(text);
+                    if let Some(mut row) = rows.row_data(index)
+                        && row.font != family
+                    {
+                        row.font = family;
+                        rows.set_row_data(index, row);
+                    }
                 }
                 // Folded thinking shows none of its text.
                 Body::Thinking {
@@ -434,6 +442,14 @@ impl View {
                 }
             }
         }
+    }
+
+    /// The family a message's prose is set in: a message with CJK characters in the CJK family
+    /// of its language (see `cjk`), others in the window's (empty).
+    fn family(&self, text: &str) -> SharedString {
+        CjkLanguage::of_text(text, self.han)
+            .map_or("", CjkLanguage::family)
+            .into()
     }
 
     fn row(&mut self, index: usize, entry: &chat::Entry, cwd: &Path) -> Entry {
@@ -460,18 +476,15 @@ impl View {
             }
             Some(Grouping::Alone) | None => {}
         }
-        // A message with CJK characters is set in the CJK family of its language (see `cjk`).
-        let font =
-            |text: &str| CjkLanguage::of_text(text, self.han).map_or("", CjkLanguage::family);
         match &entry.body {
             Body::User(text) => {
                 row.kind = EntryKind::User;
                 row.body = markdown::plain(text);
-                row.font = font(text).into();
+                row.font = self.family(text);
             }
             Body::Assistant(text) => {
                 row.kind = EntryKind::Assistant;
-                row.font = font(text).into();
+                row.font = self.family(text);
                 row.blocks = self.sync_blocks(index, text);
             }
             Body::Thinking { text, expanded } => {
@@ -480,18 +493,18 @@ impl View {
                     row.body = markdown::plain(text);
                 }
                 row.expanded = *expanded;
-                row.font = font(text).into();
+                row.font = self.family(text);
             }
             // Notes come from slash commands, which use Markdown (`sonnet`).
             Body::Info(text) => {
                 row.kind = EntryKind::Info;
                 row.body = markdown::styled(text);
-                row.font = font(text).into();
+                row.font = self.family(text);
             }
             Body::Error(text) => {
                 row.kind = EntryKind::Error;
                 row.body = markdown::plain(text);
-                row.font = font(text).into();
+                row.font = self.family(text);
             }
             Body::Tool { tool, expanded } => {
                 let depth = card_depth(*expanded, row.hidden);
