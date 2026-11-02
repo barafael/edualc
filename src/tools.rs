@@ -184,6 +184,28 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
                 view.markdown = field("plan").to_owned();
             }
         }
+        ToolName::SendMessage => {
+            let to = field("to");
+            // An inbox's address (`uds:…`, as Claude Code tells a session to answer by) says
+            // nothing to the user; it stays in the detail.
+            let addressed = ["uds:", "bridge:", "did:"]
+                .iter()
+                .any(|scheme| to.starts_with(scheme));
+            view.title = if addressed {
+                "Message to another session".to_owned()
+            } else {
+                format!("Message to {to}")
+            };
+            let message = field("message");
+            view.summary = first_line(message);
+            if full {
+                view.detail = if addressed {
+                    format!("{message}\n\nTo {to}")
+                } else {
+                    message.to_owned()
+                };
+            }
+        }
         ToolName::RelaySendMessage => {
             view.title = format!("Message to {}", field("to"));
             let message = field("message");
@@ -226,6 +248,7 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
         | ToolName::TodoWrite
         | ToolName::AskUserQuestion
         | ToolName::ExitPlanMode
+        | ToolName::SendMessage
         | ToolName::RelaySendMessage => Writing::Prose,
         ToolName::Bash
         | ToolName::BashOutput
@@ -466,6 +489,33 @@ mod tests {
         );
         assert_eq!(view.title, "create_issue");
         assert!(view.summary.starts_with("github  "));
+    }
+
+    /// Claude Code's own SendMessage reads as a message, not as its input's JSON: to a session
+    /// by name, or, by an inbox's address (as Claude Code tells a session to answer), to
+    /// "another session", the address kept in the detail.
+    #[test]
+    fn messages_to_sessions_read_as_messages() {
+        let card = |to: &str| {
+            let input = json!({ "to": to, "summary": "Ping", "message": "Ping 2 from A.\nMore." });
+            describe(
+                &ToolName::from("SendMessage".to_owned()),
+                &input,
+                Path::new("/"),
+                Depth::Full,
+            )
+        };
+        let by_name = card("decent-perch-55");
+        assert_eq!(by_name.title, "Message to decent-perch-55");
+        assert_eq!(by_name.summary, "Ping 2 from A. …");
+        assert_eq!(by_name.detail, "Ping 2 from A.\nMore.");
+        let by_address = card("uds:/run/user/1000/cc-socks/2164.sock");
+        assert_eq!(by_address.title, "Message to another session");
+        assert_eq!(
+            by_address.detail,
+            "Ping 2 from A.\nMore.\n\nTo uds:/run/user/1000/cc-socks/2164.sock"
+        );
+        assert_eq!(by_address.summary_reads_as, Writing::Prose);
     }
 
     #[test]

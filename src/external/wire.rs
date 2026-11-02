@@ -127,6 +127,9 @@ pub(crate) enum ToolName {
     TodoWrite,
     AskUserQuestion,
     ExitPlanMode,
+    /// Claude Code's own message to another session, by name or by its inbox's address, or to
+    /// one of its subagents.
+    SendMessage,
     /// edualc's own message relay (see `relay`), asked about before each message.
     #[strum(serialize = "mcp__edualc__send_message")]
     RelaySendMessage,
@@ -167,6 +170,7 @@ impl ToolName {
             | Self::TodoWrite
             | Self::AskUserQuestion
             | Self::ExitPlanMode
+            | Self::SendMessage
             | Self::RelaySendMessage
             | Self::Other(_) => ToolKind::Other,
         }
@@ -196,6 +200,7 @@ impl ToolName {
             | Self::Skill
             | Self::TodoWrite
             | Self::AskUserQuestion
+            | Self::SendMessage
             | Self::RelaySendMessage
             | Self::Other(_) => false,
         }
