@@ -33,7 +33,7 @@ use crate::buses::{self, Buses};
 use crate::claude::{Conversation, Launch};
 use crate::decode::{self, Refusal};
 use crate::desktop;
-use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId};
+use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
     PasteFailure, StartFailure, Stream, ToDaemon,
@@ -1152,6 +1152,9 @@ struct Pending {
     init: Option<String>,
     /// The latest list of background tasks: each one names them all.
     tasks: Option<String>,
+    /// What was said about each task begun in this turn and not yet ended: a foreground one is
+    /// in no list of background tasks.
+    open_tasks: BTreeMap<TaskId, Vec<String>>,
     asked: BTreeMap<String, String>,
     /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
     /// counts them, for one that attaches meanwhile.
@@ -1171,6 +1174,25 @@ impl Pending {
             (PeekedKind::System, Some(PeekedSubtype::BackgroundTasksChanged), _) => {
                 self.tasks = Some(line.to_owned());
             }
+            (PeekedKind::System, Some(PeekedSubtype::TaskStarted), _) => {
+                if let Some(task) = peek.task_id
+                    && self.open_tasks.len() < MAX_PENDING
+                {
+                    self.open_tasks.insert(task, vec![line.to_owned()]);
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskUpdated), _) => {
+                if let Some(said) = peek.task_id.and_then(|task| self.open_tasks.get_mut(&task))
+                    && said.len() < MAX_PENDING
+                {
+                    said.push(line.to_owned());
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskNotification), _) => {
+                if let Some(task) = peek.task_id {
+                    self.open_tasks.remove(&task);
+                }
+            }
             (PeekedKind::ControlRequest, _, Some(id)) if self.asked.len() < MAX_PENDING => {
                 self.asked.insert(id, line.to_owned());
             }
@@ -1179,6 +1201,8 @@ impl Pending {
             }
             (PeekedKind::Result, _, _) => {
                 self.turns = self.turns.saturating_sub(1);
+                // No foreground task outlives its turn, and the list names those that run on.
+                self.open_tasks.clear();
             }
             _ => {}
         }
@@ -1208,6 +1232,7 @@ impl Pending {
         self.init
             .iter()
             .chain(self.tasks.iter())
+            .chain(self.open_tasks.values().flatten())
             .chain(self.asked.values())
     }
 }
@@ -1461,6 +1486,39 @@ mod tests {
         assert_eq!(pending.lines().collect::<Vec<_>>(), [init, one, asked]);
         pending.said(none);
         assert_eq!(pending.lines().collect::<Vec<_>>(), [init, none, asked]);
+    }
+
+    /// A task begun and not yet ended is told again, all that was said about it, in order and
+    /// after the background list: a foreground one is in no list. Its end, or the turn's, drops
+    /// it.
+    #[test]
+    fn open_tasks_are_told_until_they_end() {
+        let mut pending = Pending::default();
+        let init = r#"{"type":"system","subtype":"init","session_id":"a","model":"m"}"#;
+        let list = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        let started = |id: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"task_started","task_id":"{id}","is_backgrounded":false,"task_type":"local_agent","description":"d"}}"#
+            )
+        };
+        let (agent, other) = (started("a1"), started("a2"));
+        let moved = r#"{"type":"system","subtype":"task_updated","task_id":"a1","patch":{"is_backgrounded":true}}"#;
+        let ended = r#"{"type":"system","subtype":"task_notification","task_id":"a2","status":"completed"}"#;
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        for line in [init, list, &agent, &other, asked, moved] {
+            pending.said(line);
+        }
+        assert_eq!(
+            pending.lines().collect::<Vec<_>>(),
+            [init, list, &agent, moved, &other, asked]
+        );
+        pending.said(ended);
+        assert_eq!(
+            pending.lines().collect::<Vec<_>>(),
+            [init, list, &agent, moved, asked]
+        );
+        pending.said(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, list, asked]);
     }
 
     /// Turns are counted as the window counts them: one for each prompt written, one fewer for

@@ -11,8 +11,8 @@ use slint::{
 use strum::IntoEnumIterator;
 
 use crate::app::{
-    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Sandboxing, SideChat, SideView,
-    Status, UsagePanel, Watch,
+    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Place, Sandboxing, SideChat,
+    SideView, Status, Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::decode::{Picture, Pixels};
@@ -686,10 +686,14 @@ impl View {
     }
 
     /// What runs in the background: each task, and how much of each kind.
-    pub(crate) fn render_tasks(&self, tasks: &[wire::BackgroundTask]) {
+    pub(crate) fn render_tasks(&self, tasks: &Tasks) {
         let session = self.window.global::<Session>();
-        session.set_tasks_summary(tasks_summary(tasks).into());
-        let items: Vec<TaskItem> = tasks.iter().map(task_item).collect();
+        let kinds: Vec<wire::TaskKind> = tasks.running().map(|(task, _)| task.task_type).collect();
+        session.set_tasks_summary(tasks_summary(&kinds).into());
+        let items: Vec<TaskItem> = tasks
+            .running()
+            .map(|(task, place)| task_item(task, place))
+            .collect();
         session.set_tasks(ModelRc::new(VecModel::from(items)));
     }
 
@@ -1566,8 +1570,7 @@ fn diff_kind(kind: tools::DiffKind) -> DiffKind {
     }
 }
 
-/// 950, 4.2k, 45k, 1.2M.
-/// The kind of a background task as the window tells them apart.
+/// The kind of a task as the window tells them apart.
 fn task_kind(kind: wire::TaskKind) -> TaskKind {
     match kind {
         wire::TaskKind::LocalAgent
@@ -1580,7 +1583,7 @@ fn task_kind(kind: wire::TaskKind) -> TaskKind {
     }
 }
 
-fn task_item(task: &wire::BackgroundTask) -> TaskItem {
+fn task_item(task: &wire::BackgroundTask, place: Place) -> TaskItem {
     let what = match task.task_type {
         wire::TaskKind::LocalAgent => "Agent",
         wire::TaskKind::RemoteAgent => "Agent in the cloud",
@@ -1590,10 +1593,13 @@ fn task_item(task: &wire::BackgroundTask) -> TaskItem {
         wire::TaskKind::MonitorMcp | wire::TaskKind::MonitorWs => "Monitor",
         wire::TaskKind::Other => "Task",
     };
-    let detail = match &task.subagent_type {
+    let mut detail = match &task.subagent_type {
         Some(agent) => format!("{what} · {agent}"),
         None => what.to_owned(),
     };
+    if place == Place::Foreground {
+        detail.push_str(" · in the foreground");
+    }
     TaskItem {
         kind: task_kind(task.task_type),
         title: if task.description.is_empty() {
@@ -1606,7 +1612,7 @@ fn task_item(task: &wire::BackgroundTask) -> TaskItem {
 }
 
 /// How much runs of each kind, the most common kinds of work first: "2 agents, 1 command".
-fn tasks_summary(tasks: &[wire::BackgroundTask]) -> String {
+fn tasks_summary(kinds: &[wire::TaskKind]) -> String {
     [
         TaskKind::Agent,
         TaskKind::Command,
@@ -1616,9 +1622,9 @@ fn tasks_summary(tasks: &[wire::BackgroundTask]) -> String {
     ]
     .into_iter()
     .filter_map(|kind| {
-        let count = tasks
+        let count = kinds
             .iter()
-            .filter(|task| task_kind(task.task_type) == kind)
+            .filter(|task_type| task_kind(**task_type) == kind)
             .count();
         let (one, many) = match kind {
             TaskKind::Agent => ("agent", "agents"),
@@ -1637,6 +1643,7 @@ fn tasks_summary(tasks: &[wire::BackgroundTask]) -> String {
     .join(", ")
 }
 
+/// 950, 4.2k, 45k, 1.2M.
 pub(crate) fn short_count(count: u64) -> String {
     let scaled = |divisor: u32, unit: &str| {
         let hundreds = f64::from(u32::try_from(count / 100).unwrap_or(u32::MAX));
@@ -1676,46 +1683,43 @@ mod tests {
     /// Counted by kind, agents first, each kind once however its tasks are interleaved.
     #[test]
     fn background_tasks_are_counted_by_kind() {
-        let task = |task_type| wire::BackgroundTask {
-            task_type,
-            subagent_type: None,
-            description: String::new(),
-            ambient: false,
-        };
         assert_eq!(tasks_summary(&[]), "");
-        assert_eq!(
-            tasks_summary(&[task(wire::TaskKind::LocalBash)]),
-            "1 command"
-        );
+        assert_eq!(tasks_summary(&[wire::TaskKind::LocalBash]), "1 command");
         assert_eq!(
             tasks_summary(&[
-                task(wire::TaskKind::LocalBash),
-                task(wire::TaskKind::LocalAgent),
-                task(wire::TaskKind::Other),
-                task(wire::TaskKind::RemoteAgent),
+                wire::TaskKind::LocalBash,
+                wire::TaskKind::LocalAgent,
+                wire::TaskKind::Other,
+                wire::TaskKind::RemoteAgent,
             ]),
             "2 agents, 1 command, 1 task"
         );
     }
 
-    /// A task is named by what it does, and by its agent's kind where it has one.
+    fn task(kind: &str, agent: Option<&str>, description: &str) -> wire::BackgroundTask {
+        serde_json::from_value(serde_json::json!({
+            "task_id": "t",
+            "task_type": kind,
+            "subagent_type": agent,
+            "description": description,
+        }))
+        .expect("a task")
+    }
+
+    /// A task is named by what it does, by its agent's kind where it has one, and as in the
+    /// foreground where the turn waits for it.
     #[test]
-    fn a_background_task_says_what_it_does() {
-        let agent = task_item(&wire::BackgroundTask {
-            task_type: wire::TaskKind::LocalAgent,
-            subagent_type: Some("Explore".to_owned()),
-            description: "Find the tests".to_owned(),
-            ambient: false,
-        });
+    fn a_task_says_what_it_does_and_where() {
+        let explore = task("local_agent", Some("Explore"), "Find the tests");
+        let agent = task_item(&explore, Place::Background);
         assert_eq!(agent.kind, TaskKind::Agent);
         assert_eq!(agent.title, "Find the tests");
         assert_eq!(agent.detail, "Agent · Explore");
-        let unnamed = task_item(&wire::BackgroundTask {
-            task_type: wire::TaskKind::LocalBash,
-            subagent_type: None,
-            description: String::new(),
-            ambient: false,
-        });
+        assert_eq!(
+            task_item(&explore, Place::Foreground).detail,
+            "Agent · Explore · in the foreground"
+        );
+        let unnamed = task_item(&task("local_bash", None, ""), Place::Background);
         assert_eq!(unnamed.title, "Shell command");
         assert_eq!(unnamed.detail, "Shell command");
     }

@@ -209,12 +209,31 @@ impl App {
                 });
             }
             System::CompactBoundary => self.chat.info("Conversation compacted"),
-            System::BackgroundTasksChanged { mut tasks } => {
-                tasks.retain(|task| !task.ambient);
-                if tasks != self.status.tasks {
-                    self.status.tasks = tasks;
-                    self.redraw.tasks = true;
-                }
+            System::BackgroundTasksChanged { tasks } => {
+                self.redraw.tasks |= self.status.tasks.list(tasks);
+            }
+            System::TaskStarted {
+                task_id,
+                task_type,
+                subagent_type,
+                description,
+                is_backgrounded,
+                ambient,
+            } => {
+                let task = wire::BackgroundTask {
+                    task_id,
+                    task_type: task_type.unwrap_or(wire::TaskKind::Other),
+                    subagent_type,
+                    description,
+                    ambient,
+                };
+                self.redraw.tasks |= self.status.tasks.start(task, is_backgrounded);
+            }
+            System::TaskUpdated { task_id, patch } => {
+                self.redraw.tasks |= self.status.tasks.update(&task_id, &patch);
+            }
+            System::TaskNotification { task_id } => {
+                self.redraw.tasks |= self.status.tasks.end(&task_id);
             }
             System::ControlRequestProgress { request_id, status } => {
                 if status == Progress::ApiRetry
@@ -234,6 +253,7 @@ impl App {
 
     fn result(&mut self, result: &TurnResult) {
         self.status.turns = self.status.turns.saturating_sub(1);
+        self.redraw.tasks |= self.status.tasks.end_turn();
         if let Some(cost) = result.total_cost_usd {
             self.status.cost_usd = cost;
         }

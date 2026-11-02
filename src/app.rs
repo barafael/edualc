@@ -35,10 +35,12 @@ use crate::watcher::{Watched, Watcher};
 mod images;
 mod protocol;
 mod side;
+mod tasks;
 mod usage;
 mod worktree;
 
 pub(crate) use side::{Answer, SideChat, SideView};
+pub(crate) use tasks::{Place, Tasks};
 
 /// The permission modes the menu offers, as the CLI names them.
 #[derive(
@@ -309,8 +311,8 @@ pub(crate) struct Status {
     /// Prompts sent and not answered yet.
     pub(crate) turns: usize,
     pub(crate) doing: Doing,
-    /// What runs in the background (subagents, commands), as the process last listed it.
-    pub(crate) tasks: Vec<wire::BackgroundTask>,
+    /// What runs besides the turn's own steps: subagents, commands, workflows.
+    pub(crate) tasks: Tasks,
     pub(crate) context_tokens: u64,
     pub(crate) context_window: u64,
     pub(crate) cost_usd: f64,

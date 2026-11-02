@@ -62,6 +62,12 @@ impl SessionId {
 #[serde(transparent)]
 pub(crate) struct ToolUseId(String);
 
+/// A task Claude Code runs (a subagent, a shell command, a monitor), the same on every event
+/// about it and in its background list.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct TaskId(String);
+
 /// An API message, whose stream events and complete copy arrive separately.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize)]
 #[serde(transparent)]
@@ -378,6 +384,30 @@ pub(crate) enum System {
     BackgroundTasksChanged {
         tasks: Vec<BackgroundTask>,
     },
+    /// A task began: in the background, or in the foreground with its tool call waiting for it.
+    /// Foreground tasks are in no background list until they are moved there.
+    TaskStarted {
+        task_id: TaskId,
+        #[serde(default)]
+        task_type: Option<TaskKind>,
+        #[serde(default)]
+        subagent_type: Option<String>,
+        #[serde(default)]
+        description: String,
+        /// Told for agents and shell commands only.
+        #[serde(default)]
+        is_backgrounded: Option<bool>,
+        #[serde(default)]
+        ambient: bool,
+    },
+    TaskUpdated {
+        task_id: TaskId,
+        patch: TaskPatch,
+    },
+    /// A task ended, however it did.
+    TaskNotification {
+        task_id: TaskId,
+    },
     /// A request to the API failed; Claude Code tries it again after a while.
     ApiRetry {
         attempt: u32,
@@ -406,9 +436,40 @@ pub(crate) enum RetryCause {
     Unknown,
 }
 
+/// What changed about a task.
+#[derive(Debug, Deserialize)]
+pub(crate) struct TaskPatch {
+    #[serde(default)]
+    pub(crate) status: Option<TaskStatus>,
+    /// Moved to the background (true).
+    #[serde(default)]
+    pub(crate) is_backgrounded: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TaskStatus {
+    Pending,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Killed,
+    #[serde(other)]
+    Other,
+}
+
+impl TaskStatus {
+    /// Whether the task has ended.
+    pub(crate) fn ended(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Killed)
+    }
+}
+
 /// A task Claude Code runs in the background, as its list names it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct BackgroundTask {
+    pub(crate) task_id: TaskId,
     pub(crate) task_type: TaskKind,
     /// An agent's kind ("general-purpose", "Explore").
     #[serde(default)]
@@ -968,6 +1029,8 @@ pub(crate) struct ControlPeek {
     pub(crate) request_id: Option<String>,
     #[serde(default)]
     pub(crate) response: Option<PeekedResponse>,
+    #[serde(default)]
+    pub(crate) task_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -990,6 +1053,9 @@ pub(crate) enum PeekedKind {
 pub(crate) enum PeekedSubtype {
     Init,
     BackgroundTasksChanged,
+    TaskStarted,
+    TaskUpdated,
+    TaskNotification,
     #[serde(other)]
     Other,
 }
@@ -1337,18 +1403,21 @@ mod tests {
             tasks,
             [
                 BackgroundTask {
+                    task_id: TaskId("abd53f17ea727bd1f".to_owned()),
                     task_type: TaskKind::LocalAgent,
                     subagent_type: Some("general-purpose".to_owned()),
                     description: "Count to three".to_owned(),
                     ambient: false,
                 },
                 BackgroundTask {
+                    task_id: TaskId("bd2gnyclv".to_owned()),
                     task_type: TaskKind::LocalBash,
                     subagent_type: None,
                     description: "Sleep three seconds".to_owned(),
                     ambient: false,
                 },
                 BackgroundTask {
+                    task_id: TaskId("x".to_owned()),
                     task_type: TaskKind::Other,
                     subagent_type: None,
                     description: "Something new".to_owned(),
@@ -1358,6 +1427,69 @@ mod tests {
         );
         let line = json!({ "type": "keep_alive" });
         assert!(matches!(serde_json::from_value(line), Ok(Message::Other)));
+    }
+
+    /// A task's start, change and end, in the shapes of Claude Code 2.1.316's SDK types; a
+    /// foreground agent tells it isn't backgrounded.
+    #[test]
+    fn task_events_name_their_task() {
+        let parse = |line: Value| serde_json::from_value::<Message>(line).ok();
+        let started = parse(json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "a1",
+            "tool_use_id": "toolu_1",
+            "description": "Find the parser",
+            "subagent_type": "Explore",
+            "is_backgrounded": false,
+            "task_type": "local_agent",
+            "uuid": "u",
+            "session_id": "s",
+        }));
+        let Some(Message::System(System::TaskStarted {
+            task_id,
+            task_type,
+            subagent_type,
+            is_backgrounded,
+            ambient,
+            ..
+        })) = started
+        else {
+            panic!("a task's start");
+        };
+        assert_eq!(task_id, TaskId("a1".to_owned()));
+        assert_eq!(task_type, Some(TaskKind::LocalAgent));
+        assert_eq!(subagent_type.as_deref(), Some("Explore"));
+        assert_eq!((is_backgrounded, ambient), (Some(false), false));
+
+        let updated = parse(json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "a1",
+            "patch": { "is_backgrounded": true, "status": "running" },
+            "uuid": "u",
+            "session_id": "s",
+        }));
+        let Some(Message::System(System::TaskUpdated { patch, .. })) = updated else {
+            panic!("a task's change");
+        };
+        assert_eq!(patch.is_backgrounded, Some(true));
+        assert!(patch.status.is_some_and(|status| !status.ended()));
+
+        let ended = parse(json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "a1",
+            "status": "completed",
+            "output_file": "/tmp/x",
+            "summary": "Found it",
+            "uuid": "u",
+            "session_id": "s",
+        }));
+        assert!(matches!(
+            ended,
+            Some(Message::System(System::TaskNotification { task_id })) if task_id == TaskId("a1".to_owned())
+        ));
     }
 
     #[test]
