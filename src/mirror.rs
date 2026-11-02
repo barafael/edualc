@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::external::wire::SessionId;
 use crate::home::Home;
+use crate::spawn::MessagingName;
 use crate::{process, sessions};
 
 /// A record runs to a kilobyte; anything far larger isn't one.
@@ -54,6 +55,8 @@ pub(crate) struct Source {
     pub(crate) home: Home,
     pub(crate) id: SessionId,
     pub(crate) cwd: PathBuf,
+    /// The name other sessions message it by, as its record gives it.
+    pub(crate) name: MessagingName,
 }
 
 /// Who the mirrored session must be.
@@ -206,7 +209,7 @@ impl Drop for Records {
 
 /// A file in the opened folder, if it is a regular one (no link, no pipe that would hold the
 /// reading up) of at most `limit` bytes.
-fn read_regular(folder: &OwnedFd, name: &OsStr, limit: u64) -> Option<String> {
+pub(crate) fn read_regular(folder: &OwnedFd, name: &OsStr, limit: u64) -> Option<String> {
     let file = rustix::fs::openat(
         folder,
         name,
@@ -267,7 +270,7 @@ impl Mirror {
     /// Follows the record of the session `source` started as process `pid`; call from the
     /// daemon's runtime.
     pub(crate) fn start(source: &Source, pid: u32) -> Result<Self, Error> {
-        let Source { home, id, cwd } = source;
+        let Source { home, id, cwd, .. } = source;
         let expected = Expected::of(pid, id.clone(), cwd.clone())?;
         let own_path = home.path().join("sessions");
         let watch = |source: std::io::Error| Error::Watch {

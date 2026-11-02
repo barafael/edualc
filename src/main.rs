@@ -25,6 +25,7 @@ mod markdown;
 mod mirror;
 mod plan;
 mod process;
+mod relay;
 mod sandbox;
 mod sessions;
 mod settings;

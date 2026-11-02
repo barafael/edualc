@@ -76,8 +76,10 @@ USB devices and serial ports are closed to it; the user can open them for this f
 edualc's sandbox menu.";
 const NOTE_PRIVILEGES: &str = "Nothing gains privileges (no sudo). The network is open.";
 const NOTE_MESSAGING: &str = "\
-Other Claude Code sessions may message it, but it can't message or answer them, and ListAgents \
-won't list them: tell the user what it would send.";
+Other Claude Code sessions may message it, but it can't reach them itself: its own SendMessage \
+and ListAgents reach only its own subagents. To message another session, or to answer one, it \
+uses edualc's send_message tool with the session's name (list_sessions lists them); the user is \
+asked to allow each message, and one not allowed isn't sent.";
 const NOTE_ENFORCED: &str = "\
 The kernel enforces this on the whole process, so `dangerouslyDisableSandbox` can't lift it. \
 \"Permission denied\" on a path outside the project, or a socket that can't be reached, comes \
@@ -725,7 +727,7 @@ mod tests {
         let closed = note(false, Enforcement::Full).expect("a note");
         assert!(closed.contains("$CLAUDE_CONFIG_DIR") && closed.contains("$TMPDIR"));
         assert!(closed.contains("nothing in /run/user") && !closed.contains("Wayland"));
-        assert!(closed.contains("can't message or answer them"));
+        assert!(closed.contains("can't reach them itself") && closed.contains("send_message"));
         assert!(closed.contains("USB devices and serial ports are closed"));
         let with_desktop = note(true, Enforcement::Full).expect("a note");
         assert!(with_desktop.contains("the Wayland display's"));
@@ -734,7 +736,7 @@ mod tests {
         assert!(with_hardware.contains("serial ports there were as it started are open"));
         let partial = note(false, Enforcement::Partial).expect("a note");
         assert!(partial.contains("$CLAUDE_CONFIG_DIR") && partial.contains("$TMPDIR"));
-        assert!(!partial.contains("socket file") && !partial.contains("can't message"));
+        assert!(!partial.contains("socket file") && !partial.contains("can't reach them"));
         assert!(note(false, Enforcement::None).is_none());
     }
 

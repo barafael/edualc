@@ -39,6 +39,7 @@ use crate::ipc::{
     LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
 };
 use crate::mirror::{self, Mirror};
+use crate::relay::{self, FromProcess, Relay, Work};
 use crate::{home, spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
@@ -992,6 +993,10 @@ impl Session {
                     None
                 }
             });
+        // A sandboxed session's messages to other sessions, carried as the user allows them.
+        let mut relaying = record
+            .as_ref()
+            .map(|record| Relay::new(record.name.clone()));
         let mut shown = shown;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
@@ -1040,7 +1045,10 @@ impl Session {
                         self.lines_in += 1;
                         self.active = Instant::now();
                         self.pending.answered(&line);
-                        let line = initialize_with(&line).unwrap_or(line);
+                        if let Some(relaying) = relaying.as_mut() {
+                            relaying.window_said(&line);
+                        }
+                        let line = initialize_with(&line, relaying.is_some()).unwrap_or(line);
                         if let Some(writing) = stdin.as_mut()
                             && write_line(writing, &line).await.is_err()
                         {
@@ -1070,6 +1078,34 @@ impl Session {
                 line = output.recv(), if output_open => match line {
                     Some((stream, line)) => {
                         self.active = Instant::now();
+                        let relayed = match (stream, relaying.as_mut()) {
+                            (Stream::Out, Some(relaying)) => relaying.process_said(&line),
+                            (Stream::Out | Stream::Err, _) => FromProcess::PassOn,
+                        };
+                        let answer = match relayed {
+                            FromProcess::PassOn => None,
+                            FromProcess::Answer(answer) => Some(answer),
+                            FromProcess::Work(Work { job, reply }) => {
+                                let places = relay::Places::of_user();
+                                let sender = relaying.as_ref().map(|relaying| relaying.sender().clone());
+                                let failed = || relay::Outcome::Refused(relay::Refusal::Failed);
+                                let carried = tokio::task::spawn_blocking(move || match sender {
+                                    Some(sender) => relay::carry_out(&places, &sender, &job),
+                                    None => failed(),
+                                })
+                                .await;
+                                Some(reply.answer(&carried.unwrap_or_else(|_| failed())))
+                            }
+                        };
+                        if let Some(answer) = answer {
+                            // The relay's own: answered to the process, shown to no window.
+                            if let Some(writing) = stdin.as_mut()
+                                && write_line(writing, &answer).await.is_err()
+                            {
+                                tracing::debug!(id = ?self.id, "claude's input closed");
+                            }
+                            continue;
+                        }
                         if stream == Stream::Out {
                             self.pending.said(&line);
                         }
@@ -1110,7 +1146,7 @@ impl Session {
             tell(outbox, FromDaemon::Ended { key: *key, code }).await;
         }
         drop(mirror);
-        if let Some(mirror::Source { home, id, cwd }) = record {
+        if let Some(mirror::Source { home, id, cwd, .. }) = record {
             let copied =
                 tokio::task::spawn_blocking(move || home::copy_back_transcript(&home, &cwd, &id))
                     .await;
@@ -1160,8 +1196,9 @@ async fn tell_diverged(
 /// The window's `initialize` request as the daemon passes it on, the system prompt rendered
 /// afresh on every request: Claude Code otherwise records a session's first and reuses it on
 /// every resume, so that the note appended for the sandbox would follow the session's first
-/// launch, not this one. Any other line, none.
-fn initialize_with(line: &str) -> Option<String> {
+/// launch, not this one. With `relaying`, edualc's messaging tool registered too (see
+/// `relay`). Any other line, none.
+fn initialize_with(line: &str, relaying: bool) -> Option<String> {
     // Most lines are prompts and answers, some with pasted images: not parsed for this.
     if !line.contains("\"initialize\"") {
         return None;
@@ -1182,6 +1219,11 @@ fn initialize_with(line: &str) -> Option<String> {
         "systemPromptSnapshot".to_owned(),
         serde_json::Value::Bool(false),
     );
+    if relaying {
+        for (field, value) in relay::registration() {
+            request.insert(field.to_owned(), value);
+        }
+    }
     serde_json::to_string(&message).ok()
 }
 
@@ -1356,7 +1398,8 @@ mod tests {
     use crate::claude::FolderConfiguration;
 
     /// The window's `initialize`, as it writes it, goes on with the system prompt rendered
-    /// afresh and the rest as it was; no other line is touched.
+    /// afresh and the rest as it was, and for a sandboxed session with edualc's messaging tool
+    /// registered, `send_message` asked about each time; no other line is touched.
     #[test]
     fn initialize_renders_the_system_prompt_afresh() {
         use crate::external::wire::{ControlRequest, Input, RequestId};
@@ -1366,24 +1409,44 @@ mod tests {
             request: &ControlRequest::Initialize,
         })
         .expect("a line");
-        let passed_on = initialize_with(&windows).expect("an initialize");
-        let mut expected: serde_json::Value = serde_json::from_str(&windows).expect("JSON");
-        if let Some(request) = expected
-            .get_mut("request")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            request.insert(
-                "systemPromptSnapshot".to_owned(),
-                serde_json::Value::Bool(false),
+        let expected = |fields: &[(&str, serde_json::Value)]| {
+            let mut expected: serde_json::Value = serde_json::from_str(&windows).expect("JSON");
+            if let Some(request) = expected
+                .get_mut("request")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (field, value) in fields {
+                    request.insert((*field).to_owned(), value.clone());
+                }
+            }
+            expected
+        };
+        let passed_on = |relaying| -> serde_json::Value {
+            let line = initialize_with(&windows, relaying).expect("an initialize");
+            serde_json::from_str(&line).expect("JSON")
+        };
+        let afresh = ("systemPromptSnapshot", serde_json::Value::Bool(false));
+        assert_eq!(passed_on(false), expected(std::slice::from_ref(&afresh)));
+        let registered = serde_json::json!({
+            "sdkMcpServers": ["edualc"],
+            "sdkMcpServerConfigs": {"edualc": {"tools": [
+                {"name": "send_message", "permission_policy": "always_ask"}
+            ]}}
+        });
+        let mut fields = vec![afresh];
+        if let Some(registered) = registered.as_object() {
+            fields.extend(
+                registered
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.clone())),
             );
         }
-        let passed_on: serde_json::Value = serde_json::from_str(&passed_on).expect("JSON");
-        assert_eq!(passed_on, expected);
+        assert_eq!(passed_on(true), expected(&fields));
         let prompt = r#"{"type":"user","message":{"role":"user","content":"\"initialize\" it"}}"#;
-        assert_eq!(initialize_with(prompt), None);
+        assert_eq!(initialize_with(prompt, true), None);
         let other =
             r#"{"type":"control_request","request_id":"r","request":{"subtype":"interrupt"}}"#;
-        assert_eq!(initialize_with(other), None);
+        assert_eq!(initialize_with(other, true), None);
     }
 
     fn launch() -> Launch {

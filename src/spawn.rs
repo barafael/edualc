@@ -60,18 +60,22 @@ pub(crate) enum Error {
 /// and a noun picked by the session's id, so the same each time it runs, then its project. The
 /// CLI's own name comes from the process id, and changes as the session is started again.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-struct MessagingName(String);
+pub(crate) struct MessagingName(String);
 
 impl MessagingName {
     /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
     /// and two digits, all but the folder picked by the id.
-    fn of(id: &SessionId, cwd: &Path) -> Self {
+    pub(crate) fn of(id: &SessionId, cwd: &Path) -> Self {
         Self(format!(
             "{}-{}-{:02}",
             sessions::PetName::of(id),
             project_part(cwd),
             sessions::id_number(id, 16) % 100
         ))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -235,10 +239,8 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
             ]);
         }
     }
-    command.arg(format!(
-        "--name={}",
-        MessagingName::of(launch.conversation.id(), &cwd)
-    ));
+    let name = MessagingName::of(launch.conversation.id(), &cwd);
+    command.arg(format!("--name={name}"));
     if let Some(model) = &launch.model {
         command.arg(format!("--model={}", model_name(model)?));
     }
@@ -297,6 +299,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
                     home,
                     id: launch.conversation.id().clone(),
                     cwd,
+                    name,
                 }),
                 diverged,
             })
