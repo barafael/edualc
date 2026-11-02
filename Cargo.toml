@@ -15,9 +15,12 @@ path = "src/main.rs"
 # `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
 # on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
 # the latest). These are the patches b33p's fork carries. Go back to crates.io once 1.19 is out.
+# On top, from the user's fork until upstream takes them (its `edualc` branch merges them): a
+# loose Markdown list's text on its bullet's line (slint-ui/slint#14665), and `line-height-factor`
+# on `StyledText` again (#14666).
 # Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
 # widgets, so Qt would only add a dependency (and, at this revision, garbled italics).
-slint = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
+slint = { git = "https://github.com/felintusun/slint", rev = "3e0eba8a9dbc8aad391dde51fdab9014bac88021", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -66,7 +69,7 @@ petname = { version = "3.2", default-features = false, features = ["default-word
 zeroize = "1.9"
 
 [build-dependencies]
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "8d7072cbfb7b8ed5f38913c440dad9249384cb1d", version = "1.19.0" }
+slint-build = { git = "https://github.com/felintusun/slint", rev = "3e0eba8a9dbc8aad391dde51fdab9014bac88021", version = "1.19.0" }
 # The icons (Lucide), written out for the UI as `@image-url("@lucide/<name>.svg")`.
 lucide-static-svg = "1.55"
 
