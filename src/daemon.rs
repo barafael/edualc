@@ -1100,6 +1100,7 @@ impl Session {
                             (Stream::Out, None) => {
                                 // Outside the sandbox: whom it writes to, for them to answer.
                                 for to in relay::sent_to(&line) {
+                                    let to = named(&to).await;
                                     let wrote = ToReplies::Wrote { from: name.clone(), to };
                                     if let Err(error) = replies.try_send(wrote) {
                                         tracing::debug!(%error, "a message written isn't kept for answering");
@@ -1113,7 +1114,8 @@ impl Session {
                             relayed = match relaying.as_mut() {
                                 Some(relaying) => {
                                     let sender = relaying.sender().clone();
-                                    let may = may_answer(&replies, sender, consult.to()).await;
+                                    let to = named(consult.to()).await;
+                                    let may = may_answer(&replies, sender, to).await;
                                     relaying.consulted(consult, may)
                                 }
                                 None => FromProcess::PassOn,
@@ -1266,10 +1268,9 @@ async fn keep_replies(mut requests: mpsc::Receiver<ToReplies>) {
 async fn may_answer(
     replies: &mpsc::Sender<ToReplies>,
     sender: spawn::MessagingName,
-    to: &str,
+    to: String,
 ) -> bool {
     let (answer, answered) = tokio::sync::oneshot::channel();
-    let to = to.to_owned();
     if replies
         .send(ToReplies::MayAnswer { sender, to, answer })
         .await
@@ -1278,6 +1279,16 @@ async fn may_answer(
         return false;
     }
     answered.await.unwrap_or(false)
+}
+
+/// The name of the session `to` addresses, read off the running sessions' records (see
+/// `relay::named`); as it is, where they can't be read.
+async fn named(to: &str) -> String {
+    let places = relay::Places::of_user();
+    let address = to.to_owned();
+    tokio::task::spawn_blocking(move || relay::named(&places, &address))
+        .await
+        .unwrap_or_else(|_| to.to_owned())
 }
 
 async fn tell_diverged(

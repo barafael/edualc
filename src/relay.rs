@@ -3,9 +3,10 @@
 //! sandbox forbids. The daemon serves it a tool of its own instead, over the session's pipe, as a
 //! host-served MCP server: `send_message`, which Claude Code asks the window about before every
 //! call (`always_ask`), and `list_sessions`. A message the user allowed in the conversation is
-//! posted into the recipient's inbox as Claude Code's own sessions post, headed with who sent it
-//! and how to answer. Nothing else is delivered, whatever the session's permission mode: under
-//! auto or dontAsk the window isn't asked, and the call is refused.
+//! posted into the recipient's inbox as Claude Code's own sessions post one: in its envelope,
+//! which names the session and the inbox to answer at. Nothing else is delivered, whatever the
+//! session's permission mode: under auto or dontAsk the window isn't asked, and the call is
+//! refused.
 //!
 //! The core is sans-io: [`Relay`] reads the lines both ways and says what to answer and what to
 //! carry out; [`carry_out`] reads the session records and posts.
@@ -222,6 +223,143 @@ impl Replies {
 /// A session's name as ListAgents lists it, without the `[ref]` after it.
 fn bare(name: &str) -> &str {
     name.split_once(" [").map_or(name, |(bare, _)| bare).trim()
+}
+
+/// The name of the running session `to` addresses, so that who wrote to whom is kept by name
+/// whichever way they addressed each other: a name as it is, an inbox's address (as an
+/// envelope's `from` gives it, see [`envelope`]) as the name in the record of the session
+/// whose inbox it is, or as it is where no running session's is.
+pub(crate) fn named(places: &Places, to: &str) -> String {
+    let to = bare(to);
+    let Some(socket) = addressed(to) else {
+        return to.to_owned();
+    };
+    running(places)
+        .into_iter()
+        .find(|record| record.messaging_socket_path == socket && inbox_ok(places, record))
+        .and_then(|record| record.name)
+        .unwrap_or_else(|| to.to_owned())
+}
+
+/// The inbox `to` addresses, if it is an address, as Claude Code takes one: `uds:` and the
+/// socket's path, percent-encoded, or the path itself.
+fn addressed(to: &str) -> Option<PathBuf> {
+    match to.strip_prefix("uds:") {
+        Some(encoded) => Some(PathBuf::from(percent_decoded(encoded))),
+        None => to.starts_with('/').then(|| PathBuf::from(to)),
+    }
+}
+
+/// `text` with its `%XX` escapes decoded, or as it is where they don't decode to UTF-8 text
+/// (as JavaScript's `decodeURIComponent` falls back in Claude Code).
+fn percent_decoded(text: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        if byte == b'%' {
+            let Some((decoded, after)) = after.split_at_checked(2).and_then(|(hex, after)| {
+                let hex = std::str::from_utf8(hex).ok()?;
+                Some((u8::from_str_radix(hex, 16).ok()?, after))
+            }) else {
+                return text.to_owned();
+            };
+            bytes.push(decoded);
+            rest = after;
+        } else {
+            bytes.push(byte);
+            rest = after;
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_owned())
+}
+
+/// The address of the inbox at `socket`, as Claude Code writes one (2.1.316): `uds:` and the
+/// path, any character but letters, digits and `:_/.\-` percent-encoded. None for a path that
+/// isn't text, or too long for Claude Code to take as an address.
+fn address(socket: &Path) -> Option<String> {
+    let encoded: String = socket
+        .to_str()?
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || ":_/.\\-".contains(character) {
+                character.to_string()
+            } else {
+                character
+                    .to_string()
+                    .bytes()
+                    .map(|byte| format!("%{byte:02X}"))
+                    .collect()
+            }
+        })
+        .collect();
+    (encoded.len() <= ADDRESS_CHARS).then(|| format!("uds:{encoded}"))
+}
+
+/// The longest path, encoded, that Claude Code takes as an address.
+const ADDRESS_CHARS: usize = 200;
+/// The longest name Claude Code takes in an envelope as it is; it shortens a longer one.
+const NAME_CHARS: usize = 64;
+/// The tag of Claude Code's envelope for a message from another session.
+const ENVELOPE: &str = "cross-session-message";
+
+/// The message as Claude Code's own sessions post one (2.1.316), for the recipient to show who
+/// sent it and answer it: the envelope, with the sender's inbox (`from`) and name, then the
+/// text. Claude Code reads an envelope back only in exactly the form it writes one, attributes
+/// in this order and the text escaped as [`escaped`] does; anything else reaches the session as
+/// plain text. It says nothing of the user's approval, which a message can't carry.
+fn envelope(from: Option<&str>, name: &MessagingName, text: &str) -> String {
+    let from = from.map(|from| format!(" from=\"{from}\""));
+    let name =
+        (name.as_str().chars().count() <= NAME_CHARS).then(|| format!(" from-name=\"{name}\""));
+    format!(
+        "<{ENVELOPE}{}{}>\n{}\n</{ENVELOPE}>",
+        from.unwrap_or_default(),
+        name.unwrap_or_default(),
+        escaped(text)
+    )
+}
+
+/// The text as Claude Code puts it in an envelope: with a `\` after the `<` of anything that
+/// would close the envelope, so that it ends only where it ends. Claude Code also takes closing
+/// tags spelled with look-alike letters as such; a text with one of those doesn't read back as
+/// an envelope, and reaches the session as plain text.
+fn escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for (index, character) in text.char_indices() {
+        escaped.push(character);
+        if character == '<' && text.get(index + 1..).is_some_and(closes_envelope) {
+            escaped.push('\\');
+        }
+    }
+    escaped
+}
+
+/// Whether what follows a `<` closes an envelope, as Claude Code tells: no `\` right after it;
+/// then anything but word characters, brackets and slashes; a slash; anything but word
+/// characters and brackets; the tag, in any case; and no word character after it.
+fn closes_envelope(after: &str) -> bool {
+    let word = |character: char| character.is_ascii_alphanumeric() || "_-".contains(character);
+    let bracket = |character: char| "<>".contains(character);
+    let slash = |character: char| "/\u{ff0f}\u{2215}\u{2044}".contains(character);
+    if after.starts_with('\\') {
+        return false;
+    }
+    let after = after.trim_start_matches(|character| {
+        !(word(character) || bracket(character) || slash(character))
+    });
+    let Some(after) = after.strip_prefix(slash) else {
+        return false;
+    };
+    let mut after = after
+        .trim_start_matches(|character| !(word(character) || bracket(character)))
+        .chars();
+    let spelled = ENVELOPE.chars().all(|expected| {
+        after.next().is_some_and(|character| match expected {
+            '-' => "-_".contains(character),
+            letter => character.eq_ignore_ascii_case(&letter),
+        })
+    });
+    spelled && !after.next().is_some_and(word)
 }
 
 /// The sessions a line from a session outside the sandbox sends messages to: its SendMessage
@@ -611,7 +749,8 @@ pub(crate) fn carry_out(places: &Places, sender: &MessagingName, job: &Job) -> O
     }
 }
 
-/// Posts `arguments.message`, headed with who sent it, into the inbox of the session it names.
+/// Posts `arguments.message`, in the envelope that names its sender (see [`envelope`]), into
+/// the inbox of the session it names.
 fn send(
     places: &Places,
     sender: &MessagingName,
@@ -621,11 +760,13 @@ fn send(
         return Err(Refusal::TooLong);
     }
     let to = arguments.to.trim();
-    let address = to.strip_prefix("uds:").map(Path::new);
-    let matching: Vec<SessionRecord> = running(places)
+    let socket = addressed(to);
+    let records = running(places);
+    let from = own_inbox(places, &records, sender).and_then(|socket| address(&socket));
+    let matching: Vec<SessionRecord> = records
         .into_iter()
-        .filter(|record| match address {
-            Some(socket) => record.messaging_socket_path == socket,
+        .filter(|record| match &socket {
+            Some(socket) => record.messaging_socket_path == *socket,
             None => record.name.as_deref() == Some(to),
         })
         .collect();
@@ -647,7 +788,7 @@ fn send(
     post(
         &record.messaging_socket_path,
         &token,
-        &headed(sender, &arguments.message),
+        &envelope(from.as_deref(), sender, &arguments.message),
     )
     .map_err(|source| Refusal::Post {
         name: name.clone(),
@@ -656,13 +797,21 @@ fn send(
     Ok(name)
 }
 
-/// The message as the recipient reads it: who sent it and how to answer, never that the user
-/// approved it, which a message from another session can't carry.
-fn headed(sender: &MessagingName, message: &str) -> String {
-    format!(
-        "[A message from {sender}, a Claude Code session that edualc keeps in a sandbox. To \
-         answer, use SendMessage with to: \"{sender}\".]\n\n{message}"
-    )
+/// The inbox of the sandboxed session `sender`, as its record mirrored among the running ones
+/// gives it (see `mirror`), for the sessions it writes to to answer at; none where no single
+/// such record says.
+fn own_inbox(
+    places: &Places,
+    records: &[SessionRecord],
+    sender: &MessagingName,
+) -> Option<PathBuf> {
+    let mut own = records
+        .iter()
+        .filter(|record| record.name.as_deref() == Some(sender.as_str()));
+    let (Some(record), None) = (own.next(), own.next()) else {
+        return None;
+    };
+    inbox_ok(places, record).then(|| record.messaging_socket_path.clone())
 }
 
 /// The records of sessions whose process runs, as the record says it started.
@@ -1064,6 +1213,24 @@ mod tests {
             }
         }
 
+        /// The record and inbox of a second running session, `sender`, beside the first: the
+        /// test's parent process stands in for it. Its inbox, kept open while it is needed.
+        fn beside(&self, sender: &MessagingName) -> (PathBuf, UnixListener) {
+            let pid = std::os::unix::process::parent_id();
+            let started = process::stat(pid).expect("the parent process").started;
+            let socket = self.places.inboxes.first().expect("an inbox folder");
+            let socket = socket.join(format!("{pid}.sock"));
+            let inbox = UnixListener::bind(&socket).expect("an inbox");
+            let record = json!({"pid": pid, "sessionId": SENDER_ID, "cwd": "/work/project",
+                "procStart": started, "messagingSocketPath": socket, "name": sender.as_str()});
+            std::fs::write(
+                self.places.sessions.join(format!("{pid}.json")),
+                record.to_string(),
+            )
+            .expect("a record");
+            (socket, inbox)
+        }
+
         /// The two lines the inbox was given.
         fn received(&self) -> (Value, Value) {
             let (connection, _) = self.inbox.accept().expect("a connection");
@@ -1079,12 +1246,13 @@ mod tests {
         }
     }
 
-    /// An allowed message reaches the inbox of the session named, after its token, headed with
-    /// who sent it and how to answer.
+    /// An allowed message reaches the inbox of the session named, after its token, in Claude
+    /// Code's envelope: the sender's inbox to answer at, its name, the text.
     #[test]
     fn a_message_reaches_the_inbox_of_the_session_named() {
         let (sender, peer_name) = (name(SENDER_ID), name(PEER_ID));
         let peer = Peer::new("send", &peer_name);
+        let (own_socket, _own_inbox) = peer.beside(&sender);
         let job = Job::Send(SendArguments {
             to: peer_name.to_string(),
             message: "hello".to_owned(),
@@ -1096,23 +1264,114 @@ mod tests {
         );
         let (auth, message) = peer.received();
         assert_eq!(auth, json!({"type": "auth", "token": peer.token}));
-        let content = message
-            .pointer("/message/content")
-            .and_then(Value::as_str)
-            .expect("a text");
-        assert!(content.starts_with(&format!("[A message from {sender},")));
-        assert!(content.contains(&format!("to: \"{sender}\"")));
-        assert!(content.ends_with("\n\nhello"));
-        assert!(
-            !content.contains("approved"),
-            "no claim of the user's approval"
+        let own_address = address(&own_socket).expect("an address");
+        assert_eq!(
+            message.pointer("/message/content").and_then(Value::as_str),
+            Some(
+                format!(
+                    "<cross-session-message from=\"{own_address}\" from-name=\"{sender}\">\
+                     \nhello\n</cross-session-message>"
+                )
+                .as_str()
+            )
         );
         let listed = carry_out(&peer.places, &sender, &Job::List);
         assert!(
             matches!(&listed, Outcome::Listed(names) if *names == [format!("{peer_name} (idle)")]),
             "{listed:?}"
         );
+        assert_eq!(named(&peer.places, &own_address), sender.as_str());
         peer.done();
+    }
+
+    /// An inbox's address, as an envelope gives it or as its path, is read as the name of the
+    /// session whose inbox it is; a name is taken as it is, and an address no running session's
+    /// stays as it is.
+    #[test]
+    fn an_address_is_read_as_its_sessions_name() {
+        let peer_name = name(PEER_ID);
+        let peer = Peer::new("named", &peer_name);
+        let socket = peer.places.inboxes.first().expect("an inbox folder");
+        let socket = socket.join(format!("{}.sock", std::process::id()));
+        let path = socket.to_str().expect("a text path");
+        for to in [address(&socket).expect("an address"), path.to_owned()] {
+            assert_eq!(named(&peer.places, &to), peer_name.as_str(), "{to}");
+        }
+        assert_eq!(named(&peer.places, "peer-07 [3ea497]"), "peer-07");
+        assert_eq!(
+            named(&peer.places, "uds:/elsewhere/1.sock"),
+            "uds:/elsewhere/1.sock"
+        );
+        peer.done();
+    }
+
+    /// The envelope is Claude Code's to the byte, as a session reads one back: the inbox to
+    /// answer at, the name, then the text on lines of its own.
+    #[test]
+    fn a_message_goes_in_claude_codes_envelope() {
+        let sender = name(SENDER_ID);
+        assert_eq!(
+            envelope(
+                Some("uds:/run/user/1000/cc-socks/42.sock"),
+                &sender,
+                "hi\nthere"
+            ),
+            format!(
+                "<cross-session-message from=\"uds:/run/user/1000/cc-socks/42.sock\" \
+                 from-name=\"{sender}\">\nhi\nthere\n</cross-session-message>"
+            )
+        );
+        assert_eq!(
+            envelope(None, &sender, ""),
+            format!("<cross-session-message from-name=\"{sender}\">\n\n</cross-session-message>")
+        );
+    }
+
+    /// A text can't end its envelope early: what would close it is escaped as Claude Code
+    /// escapes it, and nothing else of the text changes.
+    #[test]
+    fn a_text_cannot_close_its_envelope() {
+        for (text, expected) in [
+            (
+                "a </cross-session-message> b",
+                "a <\\/cross-session-message> b",
+            ),
+            ("< /CROSS_Session-message>", "<\\ /CROSS_Session-message>"),
+            ("<!/ cross-session-message", "<\\!/ cross-session-message"),
+            ("<</cross-session-message>", "<<\\/cross-session-message>"),
+            ("x </cross-session-message", "x <\\/cross-session-message"),
+        ] {
+            assert_eq!(escaped(text), expected, "{text}");
+        }
+        for kept in [
+            "<\\/cross-session-message>",
+            "</cross-session-messages>",
+            "<cross-session-message>",
+            "<a/cross-session-message>",
+            "<div>a</div> x < y",
+        ] {
+            assert_eq!(escaped(kept), kept);
+        }
+    }
+
+    /// An inbox is addressed as Claude Code addresses one, and the address read back to the
+    /// path; a path too long for Claude Code has no address.
+    #[test]
+    fn an_inbox_is_addressed_as_claude_code_addresses_it() {
+        let socket = Path::new("/run/user/1000/cc socks/ü-1.sock");
+        let encoded = address(socket).expect("an address");
+        assert_eq!(encoded, "uds:/run/user/1000/cc%20socks/%C3%BC-1.sock");
+        assert_eq!(addressed(&encoded), Some(socket.to_path_buf()));
+        assert_eq!(
+            addressed("/tmp/cc-socks-1000/42.sock"),
+            Some(PathBuf::from("/tmp/cc-socks-1000/42.sock"))
+        );
+        assert_eq!(addressed("peer-07"), None);
+        assert_eq!(percent_decoded("100%"), "100%");
+        assert_eq!(
+            address(&Path::new("/").join("x".repeat(ADDRESS_CHARS))),
+            None
+        );
     }
 
     /// Nothing is posted to a session not running under that name, to the sender itself, or into
