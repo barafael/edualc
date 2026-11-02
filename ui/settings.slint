@@ -110,6 +110,7 @@ component SandboxFolders inherits VerticalLayout {
         alignment: start;
         TextButton {
             text: "Add a folder…";
+            label: "Add to " + root.title.to-lowercase();
             clicked => { Preferences.add-sandbox-folder(root.access); }
         }
     }

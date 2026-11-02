@@ -158,9 +158,13 @@ export component TextButton inherits Rectangle {
     in property <bool> primary;
     in property <bool> danger;
     in property <bool> enabled: true;
+    // What assistive technology calls it, where its text alone would be the same as another
+    // button's nearby.
+    in property <string> label: root.text;
     callback clicked;
     accessible-role: button;
-    accessible-label: root.text;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
     // Assistive tools press it as a click would: not before it is enabled (armed).
     accessible-action-default => { if root.enabled { root.clicked(); } }
     property <color> ink: root.primary ? Theme.on-accent : root.danger ? Theme.danger-text : Theme.text;
@@ -189,6 +193,8 @@ export component TextButton inherits Rectangle {
             color: root.ink;
             vertical-alignment: center;
             font-weight: root.primary ? 600 : 400;
+            // The button says it.
+            accessible-role: none;
         }
     }
     touch := TouchArea {
