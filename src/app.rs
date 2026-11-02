@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::chat::{Change, Chat, ImageKey, ToolState};
-use crate::claude::{self, Claude, Launch, Output, Resume, SandboxWish};
+use crate::claude::{self, Claude, FolderConfiguration, Launch, Output, Resume, SandboxWish};
 use crate::decode::{Picture, Pixels};
 use crate::desktop;
 use crate::external::wire::{
@@ -283,6 +283,8 @@ pub(crate) enum Action {
     BringHere,
     /// Trusts the folder shown, to start Claude Code in it.
     TrustFolder,
+    /// Starts Claude Code in the folder shown this once, without its configuration.
+    StartWithoutFolderSettings,
     /// Turns the sandbox on or off, starting the process again.
     ToggleSandbox,
     /// Lets the sandboxed Claude use the display, or stops it, starting the process again.
@@ -890,6 +892,7 @@ impl App {
             }
             Action::BringHere => self.bring_here(),
             Action::TrustFolder => self.trust_folder(),
+            Action::StartWithoutFolderSettings => self.start_without_folder_settings(),
             Action::ToggleSandbox => {
                 self.settings.sandbox = !self.settings.sandbox;
                 self.sandbox_changed();
@@ -1053,7 +1056,7 @@ impl App {
         if trust::trusted_in_edualc(&self.cwd, &self.settings)
             || self.accepted_in_terminal.contains(&self.cwd)
         {
-            self.launch(resume);
+            self.launch(resume, FolderConfiguration::Read);
             return;
         }
         self.status.sandboxing = if self.settings.sandbox {
@@ -1098,14 +1101,14 @@ impl App {
         };
         if accepted {
             self.accepted_in_terminal.insert(self.cwd.clone());
-            self.launch(resume);
+            self.launch(resume, FolderConfiguration::Read);
         } else {
             self.trust_gate = TrustGate::Asking { resume, runs };
         }
     }
 
-    /// Starts a process in the working directory, trusted.
-    fn launch(&mut self, resume: Option<Resume>) {
+    /// Starts a process in the working directory: trusted, or without the folder's configuration.
+    fn launch(&mut self, resume: Option<Resume>, folder_configuration: FolderConfiguration) {
         self.trust_gate = TrustGate::Open;
         self.generation = self.generation.next();
         self.log.clear();
@@ -1125,6 +1128,7 @@ impl App {
                 read: self.settings.sandbox_read.clone(),
                 write: self.settings.sandbox_write.clone(),
             }),
+            folder_configuration,
         };
         // How far it is sandboxed is known once the daemon started it (`Output::Started`).
         self.status.sandboxing = if own_sandbox {
@@ -1187,7 +1191,26 @@ impl App {
         if let Err(error) = settings::save(&self.settings) {
             tracing::warn!(%error, "couldn't keep the trusted folder");
         }
-        self.launch(resume);
+        self.launch(resume, FolderConfiguration::Read);
+        self.view.focus_composer();
+    }
+
+    /// Starts what waited for the folder's trust without its configuration, this once: the
+    /// next start asks again.
+    fn start_without_folder_settings(&mut self) {
+        let resume = match std::mem::take(&mut self.trust_gate) {
+            TrustGate::Asking { resume, .. } => resume,
+            kept @ (TrustGate::Open | TrustGate::Checking { .. }) => {
+                self.trust_gate = kept;
+                return;
+            }
+        };
+        self.chat.info(
+            "Started without this folder's settings: its hooks, permissions, environment and \
+             MCP servers don't apply, and neither do your own MCP servers or claude.ai \
+             connectors.",
+        );
+        self.launch(resume, FolderConfiguration::Skipped);
         self.view.focus_composer();
     }
 

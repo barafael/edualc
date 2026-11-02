@@ -1350,6 +1350,7 @@ async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude::FolderConfiguration;
 
     /// The window's `initialize`, as it writes it, goes on with the system prompt rendered
     /// afresh and the rest as it was; no other line is touched.
@@ -1391,6 +1392,7 @@ mod tests {
             ),
             model: None,
             sandbox: None,
+            folder_configuration: FolderConfiguration::Read,
         }
     }
 

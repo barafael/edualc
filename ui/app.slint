@@ -1795,12 +1795,21 @@ component TrustBar inherits Rectangle {
                 }
             }
         }
+        // As the terminal's dialog lets one go on without them; asked again at the next start.
+        Small {
+            text: "Without its settings, Claude Code starts with only your own: none of this runs, and neither do any MCP servers or claude.ai connectors, yours included. You're asked again next time.";
+            wrap: word-wrap;
+        }
         HorizontalLayout {
             spacing: Theme.space-s;
             alignment: end;
             TextButton {
                 text: "Open another folder";
                 clicked => { Sessions.browse-project(); }
+            }
+            TextButton {
+                text: "Start without its settings";
+                clicked => { Session.start-without-folder-settings(); }
             }
             TextButton {
                 text: "Trust this folder";

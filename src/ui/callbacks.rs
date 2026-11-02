@@ -121,6 +121,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_go_to_window(actions.on(|| Action::GoToWindow));
     session.on_bring_here(actions.on(|| Action::BringHere));
     session.on_trust_folder(actions.on(|| Action::TrustFolder));
+    session.on_start_without_folder_settings(actions.on(|| Action::StartWithoutFolderSettings));
     session.on_toggle_sandbox(actions.on(|| Action::ToggleSandbox));
     session.on_toggle_sandbox_desktop(actions.on(|| Action::ToggleSandboxDesktop));
     session.on_toggle_sandbox_hardware(actions.on(|| Action::ToggleSandboxHardware));

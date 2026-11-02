@@ -48,6 +48,8 @@ export global Session {
     // What the folder's own configuration would run or set there, a line each, plain text.
     in property <[string]> trust-runs;
     callback trust-folder;
+    // Starts it this once with the user's own settings alone (see `FolderConfiguration`).
+    callback start-without-folder-settings;
     // What keeps Claude Code in: a word for the header, and what it means.
     in property <string> sandbox-label;
     in property <string> sandbox-detail;

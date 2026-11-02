@@ -10,7 +10,7 @@ use std::process::Stdio;
 use rustix::io::FdFlags;
 use tokio::process::{Child, Command};
 
-use crate::claude::{Conversation, Launch};
+use crate::claude::{Conversation, FolderConfiguration, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, CopyBack, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
@@ -241,6 +241,12 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
     ));
     if let Some(model) = &launch.model {
         command.arg(format!("--model={}", model_name(model)?));
+    }
+    match launch.folder_configuration {
+        FolderConfiguration::Read => {}
+        FolderConfiguration::Skipped => {
+            command.args(["--setting-sources=user", "--strict-mcp-config"]);
+        }
     }
     for name in INHERITED_SESSION {
         command.env_remove(name);

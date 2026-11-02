@@ -69,6 +69,22 @@ pub(crate) struct Launch {
     pub(crate) model: Option<String>,
     /// Sandboxed, and with what let in, unless `None`.
     pub(crate) sandbox: Option<SandboxWish>,
+    /// Whether the folder's own configuration is read.
+    pub(crate) folder_configuration: FolderConfiguration,
+}
+
+/// Whether Claude Code reads what a folder configures (`.claude/settings*.json`, `.mcp.json`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum FolderConfiguration {
+    /// As for a trusted folder: its hooks, environment, helpers and MCP servers apply.
+    #[default]
+    Read,
+    /// Not trusted, and started anyway without it: only the user's own settings apply, and no
+    /// MCP servers from configuration at all, the user's and claude.ai connectors included
+    /// (`--setting-sources user --strict-mcp-config`), as Claude Code's own trust dialog lets
+    /// one go on without them. Servers the host serves in `initialize` stay (checked with CLI
+    /// 2.1.316).
+    Skipped,
 }
 
 /// The sandbox asked for; the daemon makes the policy from it.
