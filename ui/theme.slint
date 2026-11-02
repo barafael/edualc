@@ -254,21 +254,34 @@ export global Theme {
     // Ctrl+-); in logical pixels, which the window scales for the screen.
     in property <length> base-size: 15px;
 
-    // Text sizes, in `rem` (the base size): `font-size: 1rem * Theme.small`.
-    out property <float> caption: 0.8;
+    // Text sizes, in `rem` (the base size): `font-size: 1rem * Theme.small`. Nothing people read
+    // is set below about 14 px at the desktop's 15 (the typography review's floor).
+    out property <float> caption: 0.93;
     out property <float> small: 0.9;
-    out property <float> code-size: 0.92;
+    // The conversation's messages, a size up from the interface, as the user chose after the
+    // typography review; their code and headings scale with them.
+    out property <float> message: 1.1;
+    // Fira Code's x-height at 0.95 is 97% of Fira Sans's, for code to look the size of the
+    // prose around it (the typography research).
+    out property <float> code-size: 0.95;
     out property <float> title: 1.1;
     out property <float> heading: 1.3;
     out property <float> display: 1.6;
 
-    // The line height factor for a message's prose in `family`: CJK text (set in its Noto Sans
-    // CJK family, see `src/cjk.rs`) is spaced at 1.7 em, as the user decided after the Digital
-    // Agency's guidelines and JLReq's ½–1 em between lines; the factor scales the family's own
-    // line height, 1.448 em. Other text keeps its font's.
+    // Line heights, as the user chose after the typography research: a message's prose at
+    // 1.5 em; CJK prose (set in its Noto Sans CJK family, see `src/cjk.rs`) at 1.75 em, the
+    // Digital Agency's style for lines past 40 characters, after JLReq's gap of about 1 em
+    // there; code at 1.4 em. Slint's `line-height-factor` scales the font's own line height:
+    // Fira Sans's 1.2 em, Noto Sans CJK's 1.448, Fira Code's 1.231. Every line of a block
+    // keeps its pitch, whatever font draws a character in it.
     public pure function line-factor(family: string) -> float {
-        return family == "" ? 1 : 1.7 / 1.448;
+        return family == "" ? 1.5 / 1.2 : 1.75 / 1.448;
     }
+    // Headings and table cells, a little tighter: their lines are few and short.
+    public pure function tight-line-factor(family: string) -> float {
+        return family == "" ? 1.3 / 1.2 : 1.5 / 1.448;
+    }
+    out property <float> code-line-factor: 1.4 / 1.231;
 
     // Corners.
     out property <length> radius-s: 6px;
@@ -296,9 +309,12 @@ export global Theme {
     out property <length> header: max(46px, self.base-size * 3.1);
     out property <length> sidebar: max(272px, self.base-size * 18);
     out property <length> side-panel: max(400px, self.base-size * 26);
-    // The transcript reads best as a column (about 100 characters of Fira Sans), not the
-    // window's width: centered, with margins of `column-margin` at least, so it takes much of a
-    // wide window.
-    out property <length> column: max(960px, self.base-size * 64);
+    // The transcript's measure, in ems of its messages (`message`), as the user chose after the
+    // typography review: prose, lists and headings at most 42 em (about 92 characters of Fira
+    // Sans, 42 of CJK); code blocks, tables and tool output as wide as they need, up to 70 em
+    // (100 to 120 columns of code), centered on the same line. Only in ems, so a line holds as
+    // many characters at any zoom; with margins of `column-margin` at least.
+    out property <length> measure: self.base-size * self.message * 42;
+    out property <length> wide-measure: self.base-size * self.message * 70;
     out property <length> column-margin: self.space-l;
 }

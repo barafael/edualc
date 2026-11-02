@@ -11,6 +11,9 @@ export struct TableRow {
 export struct MdBlock {
     kind: BlockKind,
     body: styled-text,
+    // The family its prose is set in, by its own text's script (see `src/cjk.rs`); empty for
+    // the window's.
+    font: string,
     // The code's language, from its fence.
     lang: string,
     // A heading's level, 1 to 6.

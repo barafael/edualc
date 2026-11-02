@@ -2410,7 +2410,7 @@ export component AppWindow inherits Window {
                             padding-top: position == 0 ? Theme.space-xl : Theme.space-s;
                             padding-bottom: position == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
                             EntryView {
-                                width: min(transcript.visible-width - 2 * Theme.column-margin, Theme.column);
+                                width: min(transcript.visible-width - 2 * Theme.column-margin, Theme.wide-measure);
                                 entry: entry;
                                 index: entry.index;
                             }
@@ -2596,11 +2596,12 @@ export component AppWindow inherits Window {
                 // space there is, doesn't size that space in turn.
                 if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust: Rectangle {
                     height: dock.preferred-height;
-                    // Centered, as wide as the transcript's column.
+                    // Centered, as wide as the transcript's code and tables may be: a
+                    // permission prompt shows commands and diffs.
                     dock := VerticalLayout {
                         x: (parent.width - self.width) / 2;
                         y: 0;
-                        width: min(parent.width - 2 * Theme.column-margin, Theme.column);
+                        width: min(parent.width - 2 * Theme.column-margin, Theme.wide-measure);
                         height: self.preferred-height;
                         padding-bottom: Theme.space-s;
                         spacing: Theme.space-s;

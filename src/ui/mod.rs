@@ -132,6 +132,8 @@ impl View {
     /// the setting's choice on the settings page.
     pub(crate) fn set_han_language(&mut self, han: CjkLanguage) {
         self.han = han;
+        // Each Markdown block carries its family, and an unchanged block isn't drawn again.
+        self.blocks.clear();
         self.window
             .global::<Preferences>()
             .set_han_language(match han {
@@ -299,8 +301,10 @@ impl View {
                     Answer::Pending => (SideState::Pending, ModelRc::default(), ""),
                     Answer::Retrying => (SideState::Retrying, ModelRc::default(), ""),
                     Answer::Answered(text) => {
-                        let blocks: Vec<MdBlock> =
-                            markdown::blocks(text).iter().map(md_block).collect();
+                        let blocks: Vec<MdBlock> = markdown::blocks(text)
+                            .iter()
+                            .map(|block| md_block(block, self.han))
+                            .collect();
                         (
                             SideState::Answered,
                             ModelRc::new(VecModel::from(blocks)),
@@ -445,12 +449,9 @@ impl View {
         }
     }
 
-    /// The family a message's prose is set in: a message with CJK characters in the CJK family
-    /// of its language (see `cjk`), others in the window's (empty).
+    /// The family a message's prose is set in (see `family`).
     fn family(&self, text: &str) -> SharedString {
-        CjkLanguage::of_text(text, self.han)
-            .map_or("", CjkLanguage::family)
-            .into()
+        family(text, self.han)
     }
 
     fn row(&mut self, index: usize, entry: &chat::Entry, cwd: &Path) -> Entry {
@@ -595,8 +596,8 @@ impl View {
         for (position, block) in blocks.iter().enumerate() {
             match slot.shown.get(position) {
                 Some(shown) if shown == block => {}
-                Some(_) => rows.set_row_data(position, md_block(block)),
-                None => rows.push(md_block(block)),
+                Some(_) => rows.set_row_data(position, md_block(block, self.han)),
+                None => rows.push(md_block(block, self.han)),
             }
         }
         while rows.row_count() > blocks.len() {
@@ -927,7 +928,7 @@ impl View {
                     let rows: Vec<PlanSection> = parts
                         .iter()
                         .map(|part| PlanSection {
-                            block: md_block(&part.block),
+                            block: md_block(&part.block, self.han),
                             excerpt: crate::plan::excerpt(&input.plan, part).into(),
                             comment: part.comment.as_str().into(),
                             editing: false,
@@ -1099,17 +1100,29 @@ impl View {
     }
 }
 
-fn md_block(block: &Block) -> MdBlock {
+/// The family prose is set in: CJK text in the CJK family of its language (see `cjk`), other
+/// text in the window's (empty).
+fn family(text: &str, han: CjkLanguage) -> SharedString {
+    CjkLanguage::of_text(text, han)
+        .map_or("", CjkLanguage::family)
+        .into()
+}
+
+/// A Markdown block for the window; its prose in the family of its own text, as a paragraph's
+/// script sets its lines (`han` for Han characters alone).
+fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
     match block {
         Block::Text(source) => MdBlock {
             kind: BlockKind::Text,
             body: markdown::styled(source),
+            font: family(source, han),
             ..MdBlock::default()
         },
         Block::Heading(level, source) => MdBlock {
             kind: BlockKind::Heading,
             body: markdown::styled(&format!("**{source}**")),
             level: i32::from(*level),
+            font: family(source, han),
             ..MdBlock::default()
         },
         Block::Code { lang, code } => MdBlock {
@@ -1122,6 +1135,7 @@ fn md_block(block: &Block) -> MdBlock {
         Block::Quote(source) => MdBlock {
             kind: BlockKind::Quote,
             body: markdown::styled(source),
+            font: family(source, han),
             ..MdBlock::default()
         },
         Block::Table(table) => {
@@ -1151,6 +1165,7 @@ fn md_block(block: &Block) -> MdBlock {
                 .collect();
             MdBlock {
                 kind: BlockKind::Table,
+                font: family(&table.source, han),
                 raw: table.source.as_str().into(),
                 rows: ModelRc::new(VecModel::from(rows)),
                 column_stretch: ModelRc::new(VecModel::from(column_stretch)),

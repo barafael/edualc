@@ -285,6 +285,8 @@ export component CodeBox inherits Rectangle {
     // Keeps code's lines whole: one wider than the box scrolls sideways, as a wide table does
     // (a Markdown code block). Otherwise the text wraps (a tool's input or output).
     in property <bool> keeps-lines;
+    // The text's size against the interface's code, as a message scales it (`Theme.message`).
+    in property <float> scale: 1;
     callback copy;
     // Fluent's horizontal scroll bar lies over the bottom of what it scrolls.
     property <length> scroll-bar: 14px;
@@ -317,10 +319,13 @@ export component CodeBox inherits Rectangle {
             key: root.key;
             default-color: root.ink;
             default-font-family: Theme.mono;
-            default-font-size: 1rem * Theme.code-size;
+            default-font-size: 1rem * Theme.code-size * root.scale;
+            line-height-factor: Theme.code-line-factor;
         }
         if root.keeps-lines: lines := ScrollView {
             property <bool> overflowing: code.preferred-width > self.visible-width;
+            // As wide as its longest line, for the box to grow to where there is room.
+            preferred-width: code.preferred-width;
             height: code.preferred-height + (self.overflowing ? root.scroll-bar : 0px);
             vertical-scrollbar-policy: always-off;
             content-width: max(self.visible-width, code.preferred-width);
@@ -331,7 +336,8 @@ export component CodeBox inherits Rectangle {
                 key: root.key;
                 default-color: root.ink;
                 default-font-family: Theme.mono;
-                default-font-size: 1rem * Theme.code-size;
+                default-font-size: 1rem * Theme.code-size * root.scale;
+                line-height-factor: Theme.code-line-factor;
             }
         }
         if root.note != "": Caption {

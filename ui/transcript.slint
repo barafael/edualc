@@ -15,7 +15,6 @@ import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, Table
 component TableView inherits HorizontalLayout {
     in property <MdBlock> block;
     in property <string> key;
-    in property <string> font;
     // Fluent's horizontal scroll bar lies over the bottom of what it scrolls.
     property <length> scroll-bar: 14px;
     property <bool> overflowing: grid.min-width > scroll.visible-width;
@@ -53,8 +52,9 @@ component TableView inherits HorizontalLayout {
                             TableCell {
                                 text: cell;
                                 key: "\{root.key}:r\{row-index}c\{column-index}";
-                                default-font-family: root.font;
-                                line-height-factor: Theme.line-factor(root.font);
+                                default-font-family: root.block.font;
+                                default-font-size: 1rem * Theme.message;
+                                line-height-factor: Theme.tight-line-factor(root.block.font);
                             }
                         }
                     }
@@ -81,40 +81,63 @@ export component BlockView inherits VerticalLayout {
     in property <MdBlock> block;
     in property <string> key;
     in property <bool> first;
-    // The family the prose is set in; empty for the window's (see `Entry.font`). Code keeps
-    // its own.
-    in property <string> font;
-    if root.block.kind == BlockKind.text: Selectable {
-        text: root.block.body;
-        key: root.key;
-        default-font-family: root.font;
-        line-height-factor: Theme.line-factor(root.font);
+    // How far prose keeps in from each side, so that it holds to its measure while code and
+    // tables may take the `room` there is (see `Theme.measure`). Both come from the row's
+    // width, never from what the blocks hold. Without an inset, every block fills the width.
+    in property <length> inset;
+    in property <length> room;
+    if root.block.kind == BlockKind.text: HorizontalLayout {
+        padding-left: root.inset;
+        padding-right: root.inset;
+        Selectable {
+            text: root.block.body;
+            key: root.key;
+            default-font-family: root.block.font;
+            default-font-size: 1rem * Theme.message;
+            line-height-factor: Theme.line-factor(root.block.font);
+        }
     }
     // Bold already (see `src/ui/mod.rs`); a size by level.
     if root.block.kind == BlockKind.heading: VerticalLayout {
         padding-top: root.first ? 0 : Theme.space-xs;
+        padding-left: root.inset;
+        padding-right: root.inset;
         Selectable {
             text: root.block.body;
             key: root.key;
-            default-font-family: root.font;
-            line-height-factor: Theme.line-factor(root.font);
-            default-font-size: 1rem * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
+            default-font-family: root.block.font;
+            line-height-factor: Theme.tight-line-factor(root.block.font);
+            default-font-size: 1rem * Theme.message * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
         }
     }
-    if root.block.kind == BlockKind.code: CodeBox {
-        body: root.block.body;
-        key: root.key;
-        label: root.block.lang;
-        copyable: true;
-        keeps-lines: true;
-        copy => { Clipboard.copy(root.block.raw); }
+    // Code and tables are never narrower than the prose, and wider as their content needs, up
+    // to the room there is.
+    if root.block.kind == BlockKind.code: HorizontalLayout {
+        property <length> side: min(root.inset, max(0px, (root.room - code.preferred-width) / 2));
+        padding-left: self.side;
+        padding-right: self.side;
+        code := CodeBox {
+            body: root.block.body;
+            key: root.key;
+            label: root.block.lang;
+            copyable: true;
+            keeps-lines: true;
+            scale: Theme.message;
+            copy => { Clipboard.copy(root.block.raw); }
+        }
     }
-    if root.block.kind == BlockKind.table: TableView {
-        block: root.block;
-        key: root.key;
-        font: root.font;
+    if root.block.kind == BlockKind.table: HorizontalLayout {
+        property <length> side: min(root.inset, max(0px, (root.room - table.preferred-width) / 2));
+        padding-left: self.side;
+        padding-right: self.side;
+        table := TableView {
+            block: root.block;
+            key: root.key;
+        }
     }
     if root.block.kind == BlockKind.quote: HorizontalLayout {
+        padding-left: root.inset;
+        padding-right: root.inset;
         spacing: Theme.space-m;
         Rectangle {
             width: 3px;
@@ -125,13 +148,16 @@ export component BlockView inherits VerticalLayout {
             text: root.block.body;
             key: root.key;
             default-color: Theme.text-secondary;
-            default-font-family: root.font;
-            line-height-factor: Theme.line-factor(root.font);
+            default-font-family: root.block.font;
+            default-font-size: 1rem * Theme.message;
+            line-height-factor: Theme.line-factor(root.block.font);
         }
     }
     if root.block.kind == BlockKind.rule: VerticalLayout {
         padding-top: Theme.space-xs;
         padding-bottom: Theme.space-xs;
+        padding-left: root.inset;
+        padding-right: root.inset;
         Rectangle {
             height: 1px;
             background: Theme.divider;
@@ -142,13 +168,16 @@ export component BlockView inherits VerticalLayout {
 export component MarkdownView inherits VerticalLayout {
     in property <[MdBlock]> blocks;
     in property <int> index;
-    in property <string> font;
+    // See `BlockView`.
+    in property <length> inset;
+    in property <length> room;
     spacing: Theme.space-s;
     for block[i] in root.blocks: BlockView {
         block: block;
         key: "e\{root.index}:b\{i}";
         first: i == 0;
-        font: root.font;
+        inset: root.inset;
+        room: root.room;
     }
 }
 
@@ -172,6 +201,7 @@ component DiffView inherits Rectangle {
                     color: line.kind == DiffKind.added ? Theme.added-text : Theme.removed-text;
                     font-family: Theme.mono;
                     font-size: 1rem * Theme.code-size;
+                    line-height-factor: Theme.code-line-factor;
                 }
                 Text {
                     horizontal-stretch: 1;
@@ -181,6 +211,7 @@ component DiffView inherits Rectangle {
                     color: line.kind == DiffKind.hunk ? Theme.text-faint : Theme.text;
                     font-family: Theme.mono;
                     font-size: 1rem * Theme.code-size;
+                    line-height-factor: Theme.code-line-factor;
                 }
             }
         }
@@ -295,6 +326,9 @@ component ToolCard inherits Rectangle {
     in property <int> index;
     // How wide its images may be: from the row, as the card sizes itself from what it holds.
     in property <length> image-room;
+    // As wide as its diff, input, output and images need, for the row to give it that much
+    // where there is room; its summary line and Markdown wrap or shorten to fit instead.
+    out property <length> natural-width: content.preferred-width;
     property <string> state-label: root.entry.tool-state == ToolState.awaiting ? "Waiting for you"
         : root.entry.tool-state == ToolState.failed ? "Failed"
         : root.entry.tool-state == ToolState.denied ? "Denied"
@@ -304,7 +338,7 @@ component ToolCard inherits Rectangle {
     border-width: 1px;
     border-color: root.entry.tool-state == ToolState.awaiting ? Theme.warning : Theme.divider;
     background: Theme.card;
-    VerticalLayout {
+    content := VerticalLayout {
         Pressable {
             border-radius: Theme.radius-m;
             clicked => { Transcript.toggle(root.index); }
@@ -331,6 +365,7 @@ component ToolCard inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     min-width: 0px;
+                    preferred-width: 0px;
                 }
                 if root.state-label != "": Small {
                     text: root.state-label;
@@ -357,6 +392,7 @@ component ToolCard inherits Rectangle {
                 ink: Theme.text-secondary;
             }
             if root.entry.blocks.length > 0: Rectangle {
+                preferred-width: 0px;
                 border-radius: Theme.radius-m;
                 background: Theme.surface;
                 VerticalLayout {
@@ -401,6 +437,7 @@ component UserBubble inherits HorizontalLayout {
                 text: root.entry.body;
                 key: "e\{root.index}:text";
                 default-font-family: root.entry.font;
+                default-font-size: 1rem * Theme.message;
                 line-height-factor: Theme.line-factor(root.entry.font);
             }
         }
@@ -443,6 +480,7 @@ component PeerBubble inherits HorizontalLayout {
                 text: root.entry.body;
                 key: "e\{root.index}:text";
                 default-font-family: root.entry.font;
+                default-font-size: 1rem * Theme.message;
                 line-height-factor: Theme.line-factor(root.entry.font);
             }
         }
@@ -452,14 +490,19 @@ component PeerBubble inherits HorizontalLayout {
 component AssistantText inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
+    // See `BlockView`.
+    in property <length> inset;
+    in property <length> room;
     spacing: 2px;
     MarkdownView {
         blocks: root.entry.blocks;
         index: root.index;
-        font: root.entry.font;
+        inset: root.inset;
+        room: root.room;
     }
     HorizontalLayout {
         alignment: start;
+        padding-left: root.inset;
         IconButton {
             icon: @image-url("@lucide/copy.svg");
             label: "Copy message";
@@ -515,6 +558,7 @@ component Thinking inherits VerticalLayout {
             key: "e\{root.index}:text";
             default-color: Theme.text-tertiary;
             default-font-family: root.entry.font;
+            default-font-size: 1rem * Theme.message;
             line-height-factor: Theme.line-factor(root.entry.font);
         }
     }
@@ -524,45 +568,67 @@ export component EntryView inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
     padding-left: root.entry.nested ? Theme.space-xl : 0;
+    // The room the row gives (its width is the caller's, never what the entry holds), and the
+    // prose's measure in it, centered on the same line (see `Theme.measure`).
+    property <length> room: root.width - root.padding-left;
+    property <length> prose: min(self.room, Theme.measure);
     if root.entry.kind == EntryKind.user: UserBubble {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         entry: root.entry;
         index: root.index;
     }
     // An image the user sent, where their messages are.
     if root.entry.kind == EntryKind.image: HorizontalLayout {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         alignment: end;
         for shown in root.entry.images: ImageView {
             shown: shown;
-            room: root.width * 0.85;
+            room: root.prose * 0.85;
         }
     }
     if root.entry.kind == EntryKind.peer: PeerBubble {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         entry: root.entry;
         index: root.index;
     }
     if root.entry.kind == EntryKind.assistant: AssistantText {
         entry: root.entry;
         index: root.index;
+        inset: (root.room - root.prose) / 2;
+        room: root.room;
     }
     if root.entry.kind == EntryKind.thinking: Thinking {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         entry: root.entry;
         index: root.index;
     }
     if root.entry.group == GroupRole.head: RunLine {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         entry: root.entry;
         index: root.index;
     }
-    // An open run's calls, indented under its line; a folded run shows only the line.
-    if root.entry.kind == EntryKind.tool && (root.entry.group == GroupRole.alone || root.entry.group-open): HorizontalLayout {
-        padding-left: root.entry.group == GroupRole.alone ? 0 : Theme.space-l;
+    // An open run's calls, indented under its line; a folded run shows only the line. A card
+    // is as wide as the prose, or as its content needs where there is room.
+    if root.entry.kind == EntryKind.tool && (root.entry.group == GroupRole.alone || root.entry.group-open): tool-row := HorizontalLayout {
+        property <length> indent: root.entry.group == GroupRole.alone ? 0 : Theme.space-l;
+        cross-axis-self-alignment: center;
+        padding-left: self.indent;
         padding-top: root.entry.group == GroupRole.head ? Theme.space-xs : 0;
         ToolCard {
+            width: max(root.prose - tool-row.indent, min(self.natural-width, root.room - tool-row.indent));
             entry: root.entry;
             index: root.index;
-            image-room: root.width - Theme.space-xl - 2 * Theme.space-s;
+            image-room: root.room - tool-row.indent - 2 * Theme.space-s;
         }
     }
     if root.entry.kind == EntryKind.info: Selectable {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         text: root.entry.body;
         key: "e\{root.index}:text";
         horizontal-alignment: center;
@@ -572,6 +638,8 @@ export component EntryView inherits VerticalLayout {
         line-height-factor: Theme.line-factor(root.entry.font);
     }
     if root.entry.kind == EntryKind.error: Rectangle {
+        width: root.prose;
+        cross-axis-self-alignment: center;
         border-radius: Theme.radius-m;
         background: Theme.danger-fill;
         HorizontalLayout {
