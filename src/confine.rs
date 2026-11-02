@@ -49,6 +49,16 @@ const SECRETS: &[&str] = &[
     ".claude/backups",
 ];
 
+/// Claude Code's own secrets where `CLAUDE_CONFIG_DIR` puts its folder (`folder`) and
+/// `.claude.json` (`global_config`): the sign-in, MCP servers' environments, and backups of both.
+fn claude_secrets(folder: &Path, global_config: &Path) -> [PathBuf; 3] {
+    [
+        folder.join(".credentials.json"),
+        global_config.to_owned(),
+        folder.join("backups"),
+    ]
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("couldn't confine the window: {0}")]
@@ -70,13 +80,23 @@ pub(crate) enum Confinement {
 /// Confines the calling thread, and what it starts from now on.
 pub(crate) fn confine() -> Result<Confinement, Error> {
     let home = dirs::home_dir().unwrap_or_default();
-    let secrets: Vec<PathBuf> = SECRETS.iter().map(|secret| home.join(secret)).collect();
+    let claude = crate::sessions::config_dir();
+    let mut secrets: Vec<PathBuf> = SECRETS.iter().map(|secret| home.join(secret)).collect();
+    secrets.extend(claude_secrets(
+        &claude,
+        &crate::sessions::global_config_path(),
+    ));
     let mut read: Vec<PathBuf> = ["/usr", "/etc", "/opt", "/bin", "/sbin", "/lib", "/lib64"]
         .iter()
         .chain(&["/proc", "/sys"])
         .map(PathBuf::from)
         .collect();
     read.extend(all_but(&home, &secrets));
+    // The sessions and transcripts the window lists, where `CLAUDE_CONFIG_DIR` keeps them
+    // outside the home folder.
+    if !claude.starts_with(&home) {
+        read.extend(all_but(&claude, &secrets));
+    }
     // Its settings and caches, where `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` put them, as
     // `settings` finds them.
     let write: Vec<PathBuf> = [
@@ -212,6 +232,36 @@ mod tests {
             ["a/b/open", "a/c", "d"].map(PathBuf::from).to_vec()
         );
         std::fs::remove_dir_all(&root).expect("the scratch folder goes");
+    }
+
+    /// A Claude Code folder moved by `CLAUDE_CONFIG_DIR` is read, its sessions and transcripts,
+    /// but not its sign-in, `.claude.json` or backups.
+    #[test]
+    fn a_moved_claude_folder_keeps_its_secrets() {
+        let folder = std::env::temp_dir().join(format!("edualc-claude-{}", std::process::id()));
+        for place in ["projects/-home-x", "sessions", "backups"] {
+            std::fs::create_dir_all(folder.join(place)).expect("a folder");
+        }
+        for file in [".credentials.json", ".claude.json", "settings.json"] {
+            std::fs::write(folder.join(file), "{}").expect("a file");
+        }
+        let secrets = claude_secrets(&folder, &folder.join(".claude.json"));
+        let mut allowed: Vec<PathBuf> = all_but(&folder, &secrets)
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&folder)
+                    .expect("in the folder")
+                    .to_owned()
+            })
+            .collect();
+        allowed.sort();
+        assert_eq!(
+            allowed,
+            ["projects", "sessions", "settings.json"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+        std::fs::remove_dir_all(&folder).expect("the scratch folder goes");
     }
 
     /// Filtered, a thread opens Unix sockets but no network ones.
