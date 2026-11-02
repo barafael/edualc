@@ -190,6 +190,9 @@ component DiffView inherits Rectangle {
 component ImageView inherits HorizontalLayout {
     in property <ShownImage> shown;
     in property <length> room;
+    // Where it came from (a tool call's summary, the file read, say), naming it for assistive
+    // technology; empty for one the user sent.
+    in property <string> origin;
     property <length> shown-width: min(root.room, 480px, root.shown.width-px * 1phx);
     alignment: start;
     if root.shown.state == ImageState.shown: Rectangle {
@@ -202,7 +205,8 @@ component ImageView inherits HorizontalLayout {
             height: parent.height;
             source: root.shown.image;
             accessible-role: image;
-            accessible-label: "Image";
+            accessible-label: (root.origin == "" ? "Image" : "Image from " + root.origin)
+                + ", \{root.shown.width-px} × \{root.shown.height-px} pixels";
         }
     }
     if root.shown.state == ImageState.pending: Rectangle {
@@ -369,6 +373,7 @@ component ToolCard inherits Rectangle {
             for shown in root.entry.images: ImageView {
                 shown: shown;
                 room: root.image-room;
+                origin: root.entry.tool-summary;
             }
         }
     }
