@@ -54,6 +54,7 @@ component TableView inherits HorizontalLayout {
                                 text: cell;
                                 key: "\{root.key}:r\{row-index}c\{column-index}";
                                 default-font-family: root.font;
+                                line-height-factor: Theme.line-factor(root.font);
                             }
                         }
                     }
@@ -87,6 +88,7 @@ export component BlockView inherits VerticalLayout {
         text: root.block.body;
         key: root.key;
         default-font-family: root.font;
+        line-height-factor: Theme.line-factor(root.font);
     }
     // Bold already (see `src/ui/mod.rs`); a size by level.
     if root.block.kind == BlockKind.heading: VerticalLayout {
@@ -95,6 +97,7 @@ export component BlockView inherits VerticalLayout {
             text: root.block.body;
             key: root.key;
             default-font-family: root.font;
+            line-height-factor: Theme.line-factor(root.font);
             default-font-size: 1rem * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
         }
     }
@@ -123,6 +126,7 @@ export component BlockView inherits VerticalLayout {
             key: root.key;
             default-color: Theme.text-secondary;
             default-font-family: root.font;
+            line-height-factor: Theme.line-factor(root.font);
         }
     }
     if root.block.kind == BlockKind.rule: VerticalLayout {
@@ -397,6 +401,7 @@ component UserBubble inherits HorizontalLayout {
                 text: root.entry.body;
                 key: "e\{root.index}:text";
                 default-font-family: root.entry.font;
+                line-height-factor: Theme.line-factor(root.entry.font);
             }
         }
     }
@@ -468,6 +473,7 @@ component Thinking inherits VerticalLayout {
             key: "e\{root.index}:text";
             default-color: Theme.text-tertiary;
             default-font-family: root.entry.font;
+            line-height-factor: Theme.line-factor(root.entry.font);
         }
     }
 }
@@ -517,6 +523,7 @@ export component EntryView inherits VerticalLayout {
         default-color: Theme.text-tertiary;
         default-font-size: 1rem * Theme.small;
         default-font-family: root.entry.font;
+        line-height-factor: Theme.line-factor(root.entry.font);
     }
     if root.entry.kind == EntryKind.error: Rectangle {
         border-radius: Theme.radius-m;
@@ -534,6 +541,7 @@ export component EntryView inherits VerticalLayout {
                 key: "e\{root.index}:text";
                 default-color: Theme.danger-text;
                 default-font-family: root.entry.font;
+                line-height-factor: Theme.line-factor(root.entry.font);
             }
         }
     }

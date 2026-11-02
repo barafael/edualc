@@ -262,6 +262,14 @@ export global Theme {
     out property <float> heading: 1.3;
     out property <float> display: 1.6;
 
+    // The line height factor for a message's prose in `family`: CJK text (set in its Noto Sans
+    // CJK family, see `src/cjk.rs`) is spaced at 1.7 em, as the user decided after the Digital
+    // Agency's guidelines and JLReq's ½–1 em between lines; the factor scales the family's own
+    // line height, 1.448 em. Other text keeps its font's.
+    public pure function line-factor(family: string) -> float {
+        return family == "" ? 1 : 1.7 / 1.448;
+    }
+
     // Corners.
     out property <length> radius-s: 6px;
     out property <length> radius-m: 8px;
