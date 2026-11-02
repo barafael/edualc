@@ -300,8 +300,10 @@ component AgentCount inherits HorizontalLayout {
         tint: Theme.text-tertiary;
         y: (parent.height - self.height) / 2;
     }
-    Caption {
+    Text {
         text: root.agents;
+        font-size: 1rem * Theme.caption;
+        color: Theme.text-tertiary;
         vertical-alignment: center;
         accessible-role: none;
     }
@@ -332,8 +334,11 @@ component RunningRow inherits Pressable {
                 overflow: elide;
                 accessible-role: none;
             }
-            Caption {
+            // A plain Text, as a Caption's look: `accessible-role: none` hides only built-in
+            // elements; on a component's use it makes an unnamed node instead.
+            Text {
                 text: root.entry.detail;
+                font-size: 1rem * Theme.caption;
                 color: root.entry.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
                 overflow: elide;
                 accessible-role: none;
@@ -387,8 +392,10 @@ component EarlierRow inherits Pressable {
             min-width: 0px;
             accessible-role: none;
         }
-        Caption {
+        Text {
             text: root.entry.age;
+            font-size: 1rem * Theme.caption;
+            color: Theme.text-tertiary;
             vertical-alignment: center;
             accessible-role: none;
         }
