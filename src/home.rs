@@ -561,6 +561,158 @@ fn copy_back(
     }
 }
 
+/// Keeps the user's copy of a running sandboxed session's transcript in step with the one it
+/// writes in its home, its ended lines appended as they come, so that what it wrote is in
+/// `~/.claude` even if edualc ends before the session does (a logout ended the daemon before its
+/// copy-back once, and a resume outside the sandbox lost what was only in the home). The copy
+/// as the session ends still follows (see `copy_back_transcript`).
+#[derive(Debug)]
+pub(crate) struct Follower {
+    home: Home,
+    relative: PathBuf,
+    target_path: PathBuf,
+    name: String,
+    id: SessionId,
+    state: Following,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Following {
+    /// Not begun: the user's copy is brought in line with the home's first.
+    Starting,
+    /// The user's copy holds the home's first this many bytes, as written here.
+    At(u64),
+    /// Given up: the user's copy went on otherwise (resumed in a terminal meanwhile), or the
+    /// home's isn't a plain file of this session's.
+    Stopped,
+}
+
+/// What a step of following came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Followed {
+    /// Nothing new, or nothing written yet.
+    Unchanged,
+    /// This many bytes of ended lines went into the user's copy.
+    Copied(u64),
+    Stopped,
+}
+
+impl Follower {
+    /// For session `id` working in `cwd`, which writes its transcript in `home`.
+    pub(crate) fn of(home: Home, cwd: &Path, id: SessionId) -> Self {
+        let relative = Path::new("projects").join(sessions::project_name(cwd));
+        let target_path = sessions::config_dir().join(&relative);
+        Self::between(home, relative, target_path, id)
+    }
+
+    fn between(home: Home, relative: PathBuf, target_path: PathBuf, id: SessionId) -> Self {
+        Self {
+            home,
+            relative,
+            target_path,
+            name: format!("{}.jsonl", id.as_str()),
+            id,
+            state: Following::Starting,
+        }
+    }
+
+    /// Brings what the session wrote since into the user's copy.
+    pub(crate) fn step(&mut self) -> Followed {
+        let followed = match self.state {
+            Following::Stopped => return Followed::Stopped,
+            Following::Starting => self.start(),
+            Following::At(copied) => self.go_on(copied),
+        };
+        match followed {
+            Ok((state, followed)) => {
+                self.state = state;
+                followed
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the transcript isn't followed into ~/.claude any more");
+                self.state = Following::Stopped;
+                Followed::Stopped
+            }
+        }
+    }
+
+    /// The first step: the user's copy made the home's, where it has none or the home's goes
+    /// on from it.
+    fn start(&self) -> Result<(Following, Followed), Error> {
+        match copy_back(&self.home, &self.relative, &self.target_path, &self.id)? {
+            CopyBack::NoneWritten => Ok((Following::Starting, Followed::Unchanged)),
+            CopyBack::Copied | CopyBack::Unchanged => {
+                let users = self.target_path.join(&self.name);
+                let length = std::fs::symlink_metadata(&users).map_err(io(&users))?.len();
+                Ok((Following::At(length), Followed::Copied(length)))
+            }
+            CopyBack::UsersGoesOn | CopyBack::Diverged(_) => {
+                Ok((Following::Stopped, Followed::Stopped))
+            }
+        }
+    }
+
+    /// A later step: the ended lines after the first `copied` bytes appended to the user's copy,
+    /// as long as it is still what was written here.
+    fn go_on(&self, copied: u64) -> Result<(Following, Followed), Error> {
+        let source_path = self.home.path().join(&self.relative).join(&self.name);
+        let Some(mut source) = open_existing(self.home.path(), &self.relative, &self.name)? else {
+            return Ok((Following::Stopped, Followed::Stopped));
+        };
+        let length = source.metadata().map_err(io(&source_path))?.len();
+        if length == copied {
+            return Ok((Following::At(copied), Followed::Unchanged));
+        }
+        if length < copied {
+            // Replaced or cut short: not the transcript this followed.
+            return Ok((Following::Stopped, Followed::Stopped));
+        }
+        let users_path = self.target_path.join(&self.name);
+        let target = open_folder(CWD, &self.target_path)?;
+        let users = rustix::fs::openat(
+            &target,
+            self.name.as_str(),
+            OFlags::WRONLY | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(os(&users_path))?;
+        let mut users = std::fs::File::from(users);
+        if users.metadata().map_err(io(&users_path))?.len() != copied {
+            return Ok((Following::Stopped, Followed::Stopped));
+        }
+        std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(copied))
+            .map_err(io(&source_path))?;
+        let mut lines = BufReader::new(std::io::Read::take(
+            source,
+            TRANSCRIPT_BYTES.saturating_sub(copied),
+        ));
+        let mut ended = Vec::new();
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            lines
+                .read_until(b'\n', &mut line)
+                .map_err(io(&source_path))?;
+            let Some(entry) = line.strip_suffix(b"\n") else {
+                break;
+            };
+            if !is_entry_of(entry, &self.id) {
+                return Ok((Following::Stopped, Followed::Stopped));
+            }
+            ended.extend_from_slice(&line);
+        }
+        if ended.is_empty() {
+            return Ok((Following::At(copied), Followed::Unchanged));
+        }
+        users.write_all(&ended).map_err(io(&users_path))?;
+        let added = u64::try_from(ended.len()).unwrap_or(u64::MAX);
+        Ok((
+            Following::At(copied.saturating_add(added)),
+            Followed::Copied(added),
+        ))
+    }
+}
+
 /// Opens the file `name` in the folder `relative` under `root`, one name at a time and
 /// following no link; none where something on the way is missing. Only a plain file with no
 /// other name, as a sandbox could otherwise hand in, by a link, a file it can't read itself.
@@ -1266,5 +1418,80 @@ mod tests {
             "a link is replaced"
         );
         copying.done();
+    }
+
+    fn append(path: &Path, text: &str) {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("a file to append to");
+        file.write_all(text.as_bytes()).expect("appended");
+    }
+
+    fn follower_of(copying: &Copying) -> Follower {
+        Follower::between(
+            copying.home.clone(),
+            copying.relative.clone(),
+            copying.users.clone(),
+            copying.id.clone(),
+        )
+    }
+
+    /// While the session runs, its ended lines reach the user's copy as they come: from none,
+    /// then line by line, a line still being written left for its end. The following stops
+    /// where the user's copy went on otherwise, and leaves it as it is.
+    #[test]
+    fn the_users_copy_follows_the_running_session() {
+        let copying = Copying::new("follow");
+        let mut follower = follower_of(&copying);
+        assert_eq!(follower.step(), Followed::Unchanged, "nothing written yet");
+        std::fs::write(copying.sandboxed(), entry("a")).expect("a transcript");
+        assert!(matches!(follower.step(), Followed::Copied(_)));
+        assert_eq!(copying.users_text(), entry("a"));
+        append(&copying.sandboxed(), &(entry("b") + "{\"type\":\"us"));
+        assert!(matches!(follower.step(), Followed::Copied(_)));
+        assert_eq!(copying.users_text(), entry("a") + &entry("b"));
+        assert_eq!(
+            follower.step(),
+            Followed::Unchanged,
+            "the unended line waits"
+        );
+        let rest = format!("er\",\"sessionId\":\"{SESSION}\"}}\n");
+        append(&copying.sandboxed(), &rest);
+        assert!(matches!(follower.step(), Followed::Copied(_)));
+        let ended = format!("{{\"type\":\"user\",\"sessionId\":\"{SESSION}\"}}\n");
+        assert_eq!(copying.users_text(), entry("a") + &entry("b") + &ended);
+        append(&copying.users_copy(), &entry("from a terminal"));
+        append(&copying.sandboxed(), &entry("c"));
+        assert_eq!(follower.step(), Followed::Stopped);
+        assert_eq!(follower.step(), Followed::Stopped, "for good");
+        assert!(copying.users_text().ends_with(&entry("from a terminal")));
+        assert_eq!(copying.users_folder(), [Copying::name()]);
+        copying.done();
+    }
+
+    /// A line that isn't the session's, or a transcript replaced by a link, stops the following
+    /// before anything of it reaches the user's copy.
+    #[test]
+    fn what_isnt_the_sessions_stops_the_following() {
+        let copying = Copying::new("follow-stop");
+        let mut follower = follower_of(&copying);
+        std::fs::write(copying.sandboxed(), entry("a")).expect("a transcript");
+        assert!(matches!(follower.step(), Followed::Copied(_)));
+        append(&copying.sandboxed(), "export PATH=/planted:$PATH\n");
+        assert_eq!(follower.step(), Followed::Stopped);
+        assert_eq!(copying.users_text(), entry("a"));
+        let copying_link = Copying::new("follow-link");
+        let mut follower = follower_of(&copying_link);
+        std::fs::write(copying_link.sandboxed(), entry("a")).expect("a transcript");
+        assert!(matches!(follower.step(), Followed::Copied(_)));
+        let outside = copying_link.scratch.join("outside.jsonl");
+        std::fs::write(&outside, entry("a") + &entry("secret")).expect("a file outside");
+        std::fs::remove_file(copying_link.sandboxed()).expect("the transcript goes");
+        std::os::unix::fs::symlink(&outside, copying_link.sandboxed()).expect("a planted link");
+        assert_eq!(follower.step(), Followed::Stopped);
+        assert_eq!(copying_link.users_text(), entry("a"));
+        copying.done();
+        copying_link.done();
     }
 }

@@ -50,6 +50,9 @@ const HELLO: Duration = Duration::from_secs(2);
 const GRACE: Duration = Duration::from_secs(3);
 /// How long a session no window shows may stay quiet before it is ended.
 const QUIET: Duration = Duration::from_secs(60 * 60);
+/// How often a sandboxed session's transcript is followed into the user's copy: a stat of it
+/// when nothing changed.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
 /// Messages queued for a window, requests from it, commands for a session.
 const QUEUE: usize = 1024;
 /// Permission requests kept for a window to come: more unanswered than this is a runaway.
@@ -997,6 +1000,12 @@ impl Session {
         let mut relaying = record
             .as_ref()
             .map(|record| Relay::new(record.name.clone()));
+        // A sandboxed session's transcript, followed into the user's copy as it is written.
+        let mut follower = record
+            .as_ref()
+            .map(|record| home::Follower::of(record.home.clone(), &record.cwd, record.id.clone()));
+        let mut following = tokio::time::interval(FOLLOW_EVERY);
+        following.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut shown = shown;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
@@ -1116,6 +1125,25 @@ impl Session {
                     None => output_open = false,
                 },
                 () = follow(mirror.as_mut()) => {}
+                _ = following.tick(), if follower.is_some() => {
+                    if let Some(mut stepping) = follower.take() {
+                        let stepped = tokio::task::spawn_blocking(move || {
+                            let followed = stepping.step();
+                            (stepping, followed)
+                        })
+                        .await;
+                        follower = match stepped {
+                            Ok((_, home::Followed::Stopped)) => None,
+                            Ok((stepping, home::Followed::Unchanged | home::Followed::Copied(_))) => {
+                                Some(stepping)
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "following a transcript failed");
+                                None
+                            }
+                        };
+                    }
+                }
                 ended = child.wait() => break ended.ok().and_then(|status| status.code()),
                 () = deadline => {
                     if self.phase == Phase::Running {
