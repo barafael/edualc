@@ -161,13 +161,22 @@ component TasksChip inherits Pressable {
             min-width: 0px;
         }
     }
+    // A popup keeps the size it opened with, and tasks end or start while it is open: it takes
+    // the height above the chip, and the card in it fits what is listed now, at its foot by the
+    // chip. A click on the rest closes it, as one outside does.
     tasks-menu := PopupWindow {
         x: 0;
         y: -self.height - Theme.space-xs;
         width: 380px;
-        height: tasks-body.preferred-height;
+        height: max(0px, root.absolute-position.y - Theme.space-m);
         close-policy: close-on-click-outside;
+        TouchArea {
+            clicked => { tasks-menu.close(); }
+        }
         Rectangle {
+            y: parent.height - self.height;
+            height: min(tasks-body.preferred-height, parent.height);
+            clip: true;
             background: Theme.surface;
             border-radius: Theme.radius-m;
             border-width: 1px;
