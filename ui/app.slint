@@ -112,6 +112,17 @@ component SandboxChip inherits Pressable {
                         sandbox-menu.close();
                     }
                 }
+                if Session.sandbox-on: TextButton {
+                    text: Session.sandbox-hardware ? "Close USB and serial ports to Claude here" : "Let Claude use USB and serial ports here";
+                    clicked => {
+                        Session.toggle-sandbox-hardware();
+                        sandbox-menu.close();
+                    }
+                }
+                if Session.sandbox-on && !Session.sandbox-hardware: Caption {
+                    text: "For this folder: debug probes and boards, but also any other USB device you can open, such as a phone.";
+                    wrap: word-wrap;
+                }
                 Caption {
                     text: "Changing it starts Claude Code again; the conversation goes on.";
                     wrap: word-wrap;

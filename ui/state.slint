@@ -57,8 +57,11 @@ export global Session {
     // What the settings ask: the sandbox, and the display let into it.
     in property <bool> sandbox-on;
     in property <bool> sandbox-desktop;
+    // USB devices and serial ports, let in for the folder shown.
+    in property <bool> sandbox-hardware;
     callback toggle-sandbox;
     callback toggle-sandbox-desktop;
+    callback toggle-sandbox-hardware;
     // A session another process runs is shown here, not driven: what runs it, and what
     // can be done about it.
     in property <bool> watching;

@@ -68,6 +68,12 @@ nothing in /run/user.";
 const NOTE_SOCKETS_BUT_DISPLAY: &str = "\
 So is every socket file but the ssh agent's and the Wayland display's: no D-Bus, no container \
 engine (podman, docker), nothing else in /run/user.";
+const NOTE_HARDWARE: &str = "\
+USB devices and the serial ports there were as it started are open to it (debug probes, \
+boards); a port plugged in, or plugged in again, since needs the session started again.";
+const NOTE_NO_HARDWARE: &str = "\
+USB devices and serial ports are closed to it; the user can open them for this folder in \
+edualc's sandbox menu.";
 const NOTE_PRIVILEGES: &str = "Nothing gains privileges (no sudo). The network is open.";
 const NOTE_MESSAGING: &str = "\
 Other Claude Code sessions may message it, but it can't message or answer them, and ListAgents \
@@ -134,6 +140,13 @@ pub(crate) struct Allowances<'a> {
     /// can read the clipboard and the screen; niri's own socket, which starts programs outside
     /// the sandbox, stays closed even so.
     pub(crate) desktop: bool,
+    /// USB devices and the serial ports there are as it starts (`ttyACM*`, `ttyUSB*`), with
+    /// what names them (`/dev/serial`, udev's database): debug probes, boards, serial
+    /// monitors. A port plugged in, or plugged in again (a new device node), needs the session
+    /// started again. Every USB device the user may open is let in, a phone too. `/dev/hidraw*`
+    /// stays closed on purpose, so HID probes (CMSIS-DAP v1) don't work: it is keyboards' and
+    /// security keys' too.
+    pub(crate) hardware: bool,
     /// More to read, as the user's settings name it.
     pub(crate) read: &'a [PathBuf],
     /// More to write.
@@ -260,6 +273,15 @@ impl Policy {
             }
             policy.devices.push(PathBuf::from("/dev/dri"));
         }
+        if allowances.hardware {
+            // USB as a tree, so a probe plugged in later is reached; the ports are files, so
+            // only those there now (see `Allowances::hardware`).
+            policy.devices.push(PathBuf::from("/dev/bus/usb"));
+            policy.devices.extend(serial_ports(Path::new("/dev")));
+            policy
+                .read
+                .extend(["/dev/serial", "/run/udev"].map(PathBuf::from));
+        }
         policy
     }
 
@@ -270,16 +292,28 @@ impl Policy {
             .any(|device| device == Path::new("/dev/dri"))
     }
 
+    /// Whether the user let USB devices and serial ports in (see [`Allowances::hardware`]).
+    fn lets_in_hardware(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| device == Path::new("/dev/bus/usb"))
+    }
+
     /// What a sandboxed Claude is told about its sandbox (`--append-system-prompt`), as far as
     /// the kernel enforced it; nothing where it enforced none.
     pub(crate) fn note_for_claude(&self, enforcement: Enforcement) -> Option<String> {
+        let hardware = if self.lets_in_hardware() {
+            NOTE_HARDWARE
+        } else {
+            NOTE_NO_HARDWARE
+        };
         match enforcement {
             Enforcement::None => None,
             // An older kernel: connecting to socket files, the newest of what is asked, isn't
             // guarded, so the note says nothing of them, nor of the other sessions' sockets.
-            Enforcement::Partial => {
-                Some(format!("{NOTE_FILES} {NOTE_PRIVILEGES}\n\n{NOTE_ENFORCED}"))
-            }
+            Enforcement::Partial => Some(format!(
+                "{NOTE_FILES} {hardware} {NOTE_PRIVILEGES}\n\n{NOTE_ENFORCED}"
+            )),
             Enforcement::Full => {
                 let sockets = if self.lets_in_the_desktop() {
                     NOTE_SOCKETS_BUT_DISPLAY
@@ -287,7 +321,7 @@ impl Policy {
                     NOTE_SOCKETS
                 };
                 Some(format!(
-                    "{NOTE_FILES} {sockets} {NOTE_PRIVILEGES}\n\n{NOTE_MESSAGING}\n\n{NOTE_ENFORCED}"
+                    "{NOTE_FILES} {sockets} {hardware} {NOTE_PRIVILEGES}\n\n{NOTE_MESSAGING}\n\n{NOTE_ENFORCED}"
                 ))
             }
         }
@@ -332,6 +366,21 @@ impl Policy {
             RulesetStatus::NotEnforced => Enforcement::None,
         })
     }
+}
+
+/// The USB serial ports in `dev` now (`ttyACM*`, `ttyUSB*`), as boards and probes show up.
+fn serial_ports(dev: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dev)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("ttyACM") || name.starts_with("ttyUSB"))
+        })
+        .collect()
 }
 
 /// A rule for each of `paths` that exists; one that doesn't is no rule (and needs none). A file
@@ -617,6 +666,7 @@ mod tests {
             },
             Allowances {
                 desktop: false,
+                hardware: false,
                 read: &[],
                 write: &[],
             },
@@ -658,28 +708,85 @@ mod tests {
         let project = std::env::temp_dir().join(format!("edualc-note-{}", std::process::id()));
         let home = project.join("home");
         let session_scratch = project.join("tmp");
-        let note = |desktop, enforcement| {
+        let note_with = |desktop, hardware, enforcement| {
             let own = Own {
                 home: &home,
                 scratch: &session_scratch,
             };
             let allowances = Allowances {
                 desktop,
+                hardware,
                 read: &[],
                 write: &[],
             };
             Policy::for_project(&project, own, allowances).note_for_claude(enforcement)
         };
+        let note = |desktop, enforcement| note_with(desktop, false, enforcement);
         let closed = note(false, Enforcement::Full).expect("a note");
         assert!(closed.contains("$CLAUDE_CONFIG_DIR") && closed.contains("$TMPDIR"));
         assert!(closed.contains("nothing in /run/user") && !closed.contains("Wayland"));
         assert!(closed.contains("can't message or answer them"));
+        assert!(closed.contains("USB devices and serial ports are closed"));
         let with_desktop = note(true, Enforcement::Full).expect("a note");
         assert!(with_desktop.contains("the Wayland display's"));
         assert!(with_desktop.contains("nothing else in /run/user"));
+        let with_hardware = note_with(false, true, Enforcement::Full).expect("a note");
+        assert!(with_hardware.contains("serial ports there were as it started are open"));
         let partial = note(false, Enforcement::Partial).expect("a note");
         assert!(partial.contains("$CLAUDE_CONFIG_DIR") && partial.contains("$TMPDIR"));
         assert!(!partial.contains("socket file") && !partial.contains("can't message"));
         assert!(note(false, Enforcement::None).is_none());
+    }
+
+    /// USB devices and serial ports are let in only when asked: USB as a tree, the ports that
+    /// are there, and what names them, read only.
+    #[test]
+    fn hardware_is_let_in_only_when_asked() {
+        let project = std::env::temp_dir().join(format!("edualc-usb-{}", std::process::id()));
+        let own = Own {
+            home: &project,
+            scratch: &project,
+        };
+        let policy = |hardware| {
+            let allowances = Allowances {
+                desktop: false,
+                hardware,
+                read: &[],
+                write: &[],
+            };
+            Policy::for_project(&project, own, allowances)
+        };
+        let closed = policy(false);
+        assert!(
+            !closed
+                .devices
+                .iter()
+                .any(|device| device.starts_with("/dev/bus"))
+        );
+        assert!(!closed.read.contains(&PathBuf::from("/dev/serial")));
+        let open = policy(true);
+        assert!(open.devices.contains(&PathBuf::from("/dev/bus/usb")));
+        assert!(open.read.contains(&PathBuf::from("/dev/serial")));
+        assert!(open.read.contains(&PathBuf::from("/run/udev")));
+        assert!(
+            !open
+                .write
+                .iter()
+                .any(|path| path.starts_with("/dev/serial"))
+        );
+    }
+
+    /// Only USB serial ports are taken from a device folder, as they are there.
+    #[test]
+    fn serial_ports_are_the_usb_ones_there() {
+        let dev = std::env::temp_dir().join(format!("edualc-dev-{}", std::process::id()));
+        std::fs::create_dir_all(&dev).expect("a scratch folder");
+        for name in ["ttyACM0", "ttyUSB1", "ttyS0", "tty1", "sda"] {
+            std::fs::write(dev.join(name), "").expect("a stand-in device");
+        }
+        let mut ports = serial_ports(&dev);
+        ports.sort();
+        assert_eq!(ports, [dev.join("ttyACM0"), dev.join("ttyUSB1")]);
+        std::fs::remove_dir_all(&dev).expect("the scratch folder goes");
     }
 }

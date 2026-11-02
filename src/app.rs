@@ -283,6 +283,9 @@ pub(crate) enum Action {
     ToggleSandbox,
     /// Lets the sandboxed Claude use the display, or stops it, starting the process again.
     ToggleSandboxDesktop,
+    /// Lets the sandboxed Claude reach USB devices and serial ports in the folder shown, or
+    /// stops it, starting the process again.
+    ToggleSandboxHardware,
     Quit,
 }
 
@@ -322,6 +325,8 @@ pub(crate) struct Status {
 pub(crate) struct SandboxChoice {
     pub(crate) on: bool,
     pub(crate) desktop: bool,
+    /// USB devices and serial ports, for the folder shown.
+    pub(crate) hardware: bool,
 }
 
 /// What keeps Claude Code's process in, as far as this window knows.
@@ -658,6 +663,7 @@ impl App {
                 sandbox_choice: SandboxChoice {
                     on: settings.sandbox,
                     desktop: settings.sandbox_desktop,
+                    hardware: settings.hardware_in(&cwd),
                 },
                 ..Status::default()
             },
@@ -887,6 +893,10 @@ impl App {
                 self.settings.sandbox_desktop = !self.settings.sandbox_desktop;
                 self.sandbox_changed();
             }
+            Action::ToggleSandboxHardware => {
+                self.settings.toggle_hardware(&self.cwd);
+                self.sandbox_changed();
+            }
             Action::ToggleRun(index) => {
                 if !self.open_runs.remove(&index) {
                     self.open_runs.insert(index);
@@ -1085,6 +1095,8 @@ impl App {
         self.trust_gate = TrustGate::Open;
         self.generation = self.generation.next();
         self.log.clear();
+        // The folder may be another than at the last start.
+        self.status.sandbox_choice.hardware = self.settings.hardware_in(&self.cwd);
         if self.status.worktree.is_none() {
             self.status.worktree = sessions::linked_worktree(&self.cwd);
         }
@@ -1095,6 +1107,7 @@ impl App {
             model: self.status.model_choice.clone(),
             sandbox: (self.settings.sandbox && !own_sandbox).then(|| SandboxWish {
                 desktop: self.settings.sandbox_desktop,
+                hardware: self.settings.hardware_in(&self.cwd),
                 read: self.settings.sandbox_read.clone(),
                 write: self.settings.sandbox_write.clone(),
             }),
@@ -1170,6 +1183,7 @@ impl App {
         self.status.sandbox_choice = SandboxChoice {
             on: self.settings.sandbox,
             desktop: self.settings.sandbox_desktop,
+            hardware: self.settings.hardware_in(&self.cwd),
         };
         if let Err(error) = settings::save(&self.settings) {
             tracing::warn!(%error, "couldn't keep the sandbox setting");

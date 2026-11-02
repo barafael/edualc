@@ -1,7 +1,7 @@
 //! What the user set in the window and wants kept between runs: the text zoom, the folders
 //! trusted to run Claude Code in, and how it is sandboxed. Kept in `$XDG_CONFIG_HOME/edualc/settings.json`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,10 @@ pub(crate) struct Settings {
     /// The sandbox lets Claude use the display and the GPU, for testing user interfaces.
     #[serde(default)]
     pub(crate) sandbox_desktop: bool,
+    /// Folders, with what is under them, whose sandbox lets Claude reach USB devices and serial
+    /// ports: debug probes, boards, serial monitors.
+    #[serde(default)]
+    pub(crate) sandbox_hardware: Vec<PathBuf>,
     /// More the sandbox lets Claude read (a toolchain's home, say), and write.
     #[serde(default)]
     pub(crate) sandbox_read: Vec<PathBuf>,
@@ -72,6 +76,7 @@ impl Default for Settings {
             trusted_folders: Vec::new(),
             sandbox: true,
             sandbox_desktop: false,
+            sandbox_hardware: Vec::new(),
             sandbox_read: Vec::new(),
             sandbox_write: Vec::new(),
             composer_height_px: None,
@@ -112,6 +117,25 @@ impl Settings {
 
     pub(crate) fn scale(&self) -> f32 {
         f32::from(self.zoom_percent) / 100.0
+    }
+
+    /// Whether the sandbox lets Claude reach USB devices and serial ports in `folder`: it, or a
+    /// folder it is in, was let.
+    pub(crate) fn hardware_in(&self, folder: &Path) -> bool {
+        folder
+            .ancestors()
+            .any(|place| self.sandbox_hardware.iter().any(|let_in| let_in == place))
+    }
+
+    /// Lets the sandbox reach USB devices and serial ports in `folder`, or stops it: the folder
+    /// and every folder above it it was let in by.
+    pub(crate) fn toggle_hardware(&mut self, folder: &Path) {
+        if self.hardware_in(folder) {
+            self.sandbox_hardware
+                .retain(|let_in| !folder.starts_with(let_in));
+        } else {
+            self.sandbox_hardware.push(folder.to_owned());
+        }
     }
 }
 
@@ -211,6 +235,22 @@ mod tests {
     fn older_files_without_a_zoom_read_as_full_size() {
         let settings: Settings = serde_json::from_str("{}").expect("parses");
         assert_eq!(settings, Settings::default());
+    }
+
+    /// USB and serial ports are let in per folder, with what is under it; turning them off in a
+    /// folder takes back what let them in there, from above too.
+    #[test]
+    fn hardware_is_let_in_per_folder() {
+        let mut settings = Settings::default();
+        let project = Path::new("/home/someone/firmware");
+        let board = project.join("board");
+        assert!(!settings.hardware_in(&board));
+        settings.toggle_hardware(project);
+        assert!(settings.hardware_in(project) && settings.hardware_in(&board));
+        assert!(!settings.hardware_in(Path::new("/home/someone/other")));
+        settings.toggle_hardware(&board);
+        assert!(!settings.hardware_in(&board) && !settings.hardware_in(project));
+        assert!(settings.sandbox_hardware.is_empty());
     }
 
     /// Enter sends unless the file says Ctrl+Enter, as it is written.

@@ -322,6 +322,7 @@ fn sandboxed(
         },
         Allowances {
             desktop: wish.desktop,
+            hardware: wish.hardware,
             read: &read,
             write: &write,
         },

@@ -73,6 +73,8 @@ pub(crate) struct Launch {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SandboxWish {
     pub(crate) desktop: bool,
+    /// USB devices and serial ports, for debug probes and boards.
+    pub(crate) hardware: bool,
     pub(crate) read: Vec<PathBuf>,
     pub(crate) write: Vec<PathBuf>,
 }

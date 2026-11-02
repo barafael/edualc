@@ -29,7 +29,10 @@ other way around.
   project, its git folder, caches, temporary files and Claude Code's own data; no private files, no
   socket but the ssh agent's (no D-Bus, no niri), no signals outside, no `sudo`. What Claude Code
   runs on its own (`settings.json`, hooks, skills, plugins) stays read-only. The header's chip says
-  how far the kernel enforces it and turns it off, or lets the display in for UI tests. The usual
+  how far the kernel enforces it and turns it off, lets the display in for UI tests, or, for the
+  folder shown, USB devices and serial ports for debug probes and boards: every USB device your
+  account may open, a phone too, and the ports there as it starts (one plugged in again needs it
+  started again); HID probes stay out, as hidraw is keyboards' and security keys' too. The usual
   toolchains are readable (cargo's config, not its credentials; nvm, pnpm, uv, mise, pyenv, bun) and
   Go, Maven and Gradle may write their homes; more is let in with `sandbox_read` and
   `sandbox_write` in `~/.config/edualc/settings.json`. The keyring stays out of reach, so a `gh`

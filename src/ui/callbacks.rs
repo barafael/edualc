@@ -122,6 +122,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_trust_folder(actions.on(|| Action::TrustFolder));
     session.on_toggle_sandbox(actions.on(|| Action::ToggleSandbox));
     session.on_toggle_sandbox_desktop(actions.on(|| Action::ToggleSandboxDesktop));
+    session.on_toggle_sandbox_hardware(actions.on(|| Action::ToggleSandboxHardware));
     session.on_show_usage(actions.on(|| Action::ShowUsage));
 
     let usage = window.global::<Usage>();

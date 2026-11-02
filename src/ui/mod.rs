@@ -589,6 +589,7 @@ impl View {
         session.set_sandbox_detail(detail.into());
         session.set_sandbox_on(status.sandbox_choice.on);
         session.set_sandbox_desktop(status.sandbox_choice.desktop);
+        session.set_sandbox_hardware(status.sandbox_choice.hardware);
         // Not yet known isn't warned about: every start would flash the warning.
         session.set_sandboxed(matches!(
             status.sandboxing,
