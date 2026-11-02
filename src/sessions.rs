@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use crate::chat::UserText;
-use crate::external::claude_files::LiveRecord;
+use crate::external::claude_files::{AgentRecord, LiveRecord};
 use crate::external::wire::{self, SessionId, TranscriptCwd, TranscriptLine, UserContent};
 use crate::home::Home;
 use crate::process;
@@ -140,6 +140,8 @@ pub(crate) struct LiveSession {
     pub(crate) kind: LiveKind,
     pub(crate) status: LiveStatus,
     pub(crate) worktree: Option<Worktree>,
+    /// Its subagents running now, as their records tell (see [`running_agents`]).
+    pub(crate) agents: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
@@ -396,18 +398,25 @@ pub(crate) fn live() -> Vec<LiveSession> {
             let started = record.proc_start?;
             let shown = matches!(record.kind, LiveKind::Interactive | LiveKind::Bg)
                 && record.pid != std::process::id();
-            (shown && process::is_running(record.pid, &started)).then(|| LiveSession {
-                pid: record.pid,
-                started,
-                worktree: linked_worktree(&record.cwd),
-                title: find_transcript(&record.cwd, &record.session_id)
-                    .and_then(|transcript| summary(&transcript))
-                    .map(|(title, _)| title),
-                id: record.session_id,
-                cwd: record.cwd,
-                name: record.name,
-                kind: record.kind,
-                status: record.status,
+            (shown && process::is_running(record.pid, &started)).then(|| {
+                let transcript = find_transcript(&record.cwd, &record.session_id);
+                LiveSession {
+                    pid: record.pid,
+                    started,
+                    worktree: linked_worktree(&record.cwd),
+                    title: transcript
+                        .as_deref()
+                        .and_then(summary)
+                        .map(|(title, _)| title),
+                    agents: transcript
+                        .as_deref()
+                        .map_or(0, |transcript| running_agents(transcript, SystemTime::now())),
+                    id: record.session_id,
+                    cwd: record.cwd,
+                    name: record.name,
+                    kind: record.kind,
+                    status: record.status,
+                }
             })
         })
         .collect();
@@ -422,6 +431,44 @@ pub(crate) fn live() -> Vec<LiveSession> {
         (urgency, session.name.clone())
     });
     sessions
+}
+
+/// How long a subagent's transcript may go unwritten and the agent still count as running.
+/// Claude Code marks an agent finished as it ends; one whose end went unsaid (its session was
+/// killed) is no longer counted once it has been quiet this long.
+const AGENT_QUIET: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The subagents of the session whose transcript is `transcript` that run at `now`: those whose
+/// record beside it (`<session>/subagents/agent-<id>.meta.json`) isn't marked finished, and
+/// whose transcript was written within [`AGENT_QUIET`].
+pub(crate) fn running_agents(transcript: &Path, now: SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(transcript.with_extension("").join("subagents")) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry
+                .file_name()
+                .to_str()?
+                .strip_suffix(".meta.json")?
+                .to_owned();
+            Some((
+                entry.path(),
+                entry.path().with_file_name(format!("{name}.jsonl")),
+            ))
+        })
+        .filter(|(record, agent_transcript)| {
+            let finished = read_small(record, RECORD_BYTES)
+                .and_then(|text| serde_json::from_str::<AgentRecord>(&text).ok())
+                .is_some_and(|record| record.finished);
+            let quiet_for = std::fs::metadata(agent_transcript)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|written| now.duration_since(written).ok());
+            !finished && quiet_for.is_some_and(|quiet| quiet < AGENT_QUIET)
+        })
+        .count()
 }
 
 /// A `.git` file or a `HEAD` names a path or a branch.
@@ -626,6 +673,36 @@ mod tests {
             ("w", "feature")
         );
         assert_eq!(linked_worktree(&dir), None);
+        std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
+    }
+
+    /// A session's subagents run while their record isn't marked finished and their transcript
+    /// was written lately; one quiet for long, finished, or without a transcript doesn't count.
+    #[test]
+    fn running_subagents_are_counted_from_their_records() {
+        let dir = std::env::temp_dir().join(format!("edualc-agents-{}", std::process::id()));
+        let subagents = dir.join("s1").join("subagents");
+        std::fs::create_dir_all(&subagents).expect("a scratch directory");
+        let agent = |id: &str, record: &str, transcript: bool| {
+            std::fs::write(subagents.join(format!("agent-{id}.meta.json")), record)
+                .expect("a record");
+            if transcript {
+                std::fs::write(subagents.join(format!("agent-{id}.jsonl")), "{}\n")
+                    .expect("a transcript");
+            }
+        };
+        agent("a1", r#"{"agentType":"Explore","description":"d"}"#, true);
+        agent("a2", r#"{"agentType":"Explore","finished":true}"#, true);
+        agent("a3", r#"{"agentType":"Explore","finished":false}"#, true);
+        agent("a4", r#"{"agentType":"Explore"}"#, false);
+        let session = dir.join("s1.jsonl");
+        let written = std::fs::metadata(subagents.join("agent-a1.jsonl"))
+            .and_then(|metadata| metadata.modified())
+            .expect("a time it was written");
+        assert_eq!(running_agents(&session, written), 2, "a1 and a3");
+        let later = written + AGENT_QUIET + std::time::Duration::from_secs(1);
+        assert_eq!(running_agents(&session, later), 0, "quiet too long");
+        assert_eq!(running_agents(&dir.join("none.jsonl"), written), 0);
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
     }
 

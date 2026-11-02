@@ -202,7 +202,7 @@ enum Acting {
     /// Something for the desktop; only its failure is told.
     Desktop,
     /// Stopping a session elsewhere, to continue it here.
-    Bringing(LiveSession),
+    Bringing(SessionId),
     /// Reading the clipboard's image, for the next message.
     Pasting,
     /// The folder picker, for a folder to be used so.
@@ -1299,7 +1299,7 @@ impl App {
 
     fn acted(&mut self, request: ActId, result: Result<(), ActFailure>) {
         match (self.acting.remove(&request), result) {
-            (Some(Acting::Bringing(session)), result) => self.brought(session, result),
+            (Some(Acting::Bringing(id)), result) => self.brought(&id, result),
             (Some(Acting::Desktop), Err(failure)) => {
                 tracing::warn!(%failure, "the desktop didn't do it");
                 self.chat.error(failure.to_string());

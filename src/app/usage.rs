@@ -7,9 +7,8 @@ use serde_json::Value;
 use super::{Acting, App, LimitUse, Request};
 use crate::claude::Resume;
 use crate::desktop::Running;
-use crate::external::wire::{ContextReport, ControlRequest, LimitKind, UsageReport};
+use crate::external::wire::{ContextReport, ControlRequest, LimitKind, SessionId, UsageReport};
 use crate::ipc::{Act, ActFailure};
-use crate::sessions::LiveSession;
 
 impl App {
     pub(super) fn show_usage(&mut self) {
@@ -84,23 +83,30 @@ impl App {
         let Some(watch) = &self.watch else {
             return;
         };
-        let session = watch.session.clone();
-        self.ask_desktop(
-            Act::StopSession(Running::from(&session)),
-            Acting::Bringing(session),
-        );
+        let stop = Act::StopSession(Running::from(&watch.session));
+        let id = watch.session.id.clone();
+        self.ask_desktop(stop, Acting::Bringing(id));
     }
 
-    /// The session stopped in its window: it continues here, from its whole transcript (it
-    /// may have written more since the view last read it).
-    pub(super) fn brought(&mut self, session: LiveSession, result: Result<(), ActFailure>) {
+    /// Session `id` stopped in its window: it continues here, from its whole transcript (it
+    /// may have written more since the view last read it), unless another was opened
+    /// meanwhile.
+    pub(super) fn brought(&mut self, id: &SessionId, result: Result<(), ActFailure>) {
+        let Some(session) = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.session.clone())
+            .filter(|session| &session.id == id)
+        else {
+            if let Err(error) = result {
+                self.chat
+                    .error(format!("Couldn't bring the session here: {error}"));
+            }
+            return;
+        };
         if let Err(error) = result {
             self.chat
                 .error(format!("Couldn't bring {} here: {error}", session.name));
-            return;
-        }
-        // Another session may have been opened meanwhile.
-        if self.watch.as_ref().map(|watch| &watch.session.id) != Some(&session.id) {
             return;
         }
         self.watch = None;

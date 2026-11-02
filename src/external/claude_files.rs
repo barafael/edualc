@@ -167,6 +167,14 @@ pub(crate) struct McpServer {
     pub(crate) url: Option<String>,
 }
 
+/// What Claude Code keeps beside a subagent's transcript (`subagents/agent-<id>.meta.json`):
+/// `finished` is set once it ends.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AgentRecord {
+    #[serde(default)]
+    pub(crate) finished: bool,
+}
+
 /// A running session's record.
 #[derive(Debug, Deserialize)]
 pub(crate) struct LiveRecord {

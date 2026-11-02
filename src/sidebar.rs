@@ -124,7 +124,7 @@ pub(crate) fn rows(listing: &Listing<'_>) -> Vec<Row> {
                     .worktree
                     .as_ref()
                     .map(|worktree| worktree.name.clone()),
-                agents: 0,
+                agents: session.agents,
                 shown: listing.shown == Some(&session.id),
             }),
     );
@@ -244,6 +244,7 @@ mod tests {
             kind: LiveKind::Interactive,
             status,
             worktree: None,
+            agents: 0,
         }
     }
 
