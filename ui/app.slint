@@ -1761,12 +1761,11 @@ component EditArea inherits Rectangle {
                 selected(index) => { Session.choose-model(index); }
             }
             if Session.tasks.length > 0: TasksChip { }
-            if Session.busy: Rectangle {
-                width: 8px;
-                height: 8px;
+            // As the sidebar shows a session: a hand while Claude waits for the user, a dot
+            // while it works.
+            if Session.busy: LiveDot {
+                state: Prompt.kind != PromptKind.none ? LiveState.waiting : LiveState.busy;
                 y: (parent.height - self.height) / 2;
-                border-radius: 4px;
-                background: Theme.claude;
             }
             if Session.busy: Small {
                 text: Session.status;
