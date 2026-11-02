@@ -793,6 +793,60 @@ component Sidebar inherits Rectangle {
     }
 }
 
+// One answer to Claude's question, with what it means, picked or not: the arrow keys go through
+// them (see PromptBar), so none is a Tab stop of its own.
+component AnswerOption inherits Pressable {
+    in property <bool> multi;
+    in property <string> label;
+    in property <string> description;
+    // The arrow keys are on it, ringed: the hover's colour alone doesn't show on one picked.
+    in property <bool> ringed;
+    tab-stop: false;
+    accessible-label: root.label;
+    accessible-description: root.description;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    HorizontalLayout {
+        padding: Theme.space-s;
+        spacing: Theme.space-s;
+        Icon {
+            source: root.multi
+                ? (root.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
+                : (root.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
+            tint: root.selected ? Theme.accent : Theme.text-tertiary;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.description != "": Small {
+                text: root.description;
+                wrap: word-wrap;
+            }
+        }
+    }
+    if root.ringed: Rectangle {
+        border-radius: parent.border-radius;
+        border-width: 2px;
+        border-color: Theme.accent;
+    }
+}
+
+// A single choice's answer, and one of any number's: their roles for assistive technology, which
+// Slint takes only as constants.
+component RadioAnswer inherits AnswerOption {
+    accessible-role: radio-button;
+}
+
+component CheckAnswer inherits AnswerOption {
+    multi: true;
+    accessible-role: checkbox;
+}
+
 // What Claude waits for: may a tool run, its questions answered, its plan approved. Its buttons
 // take clicks only a moment after a request appears: a click meant for what was under the
 // pointer (another window, as this one opened) must not answer it.
@@ -952,7 +1006,13 @@ component PromptBar inherits Rectangle {
                     for question[q] in Prompt.questions: Pressable {
                         selected: q == root.current;
                         tab-stop: false;
+                        accessible-role: tab;
                         accessible-label: question.header != "" ? question.header : "Question \{q + 1}";
+                        accessible-description: question.answered ? "Answered" : "Not answered yet";
+                        accessible-item-selectable: true;
+                        accessible-item-selected: q == root.current;
+                        accessible-item-index: q;
+                        accessible-item-count: Prompt.questions.length;
                         clicked => { root.current = q; }
                         HorizontalLayout {
                             padding-left: Theme.space-m;
@@ -1012,6 +1072,10 @@ component PromptBar inherits Rectangle {
                                 property <int> grab: root.grab-serial;
                                 horizontal-stretch: 1;
                                 focus-on-click: false;
+                                // A screen reader is on the option the arrow keys are on.
+                                accessible-role: list;
+                                accessible-label: question.question;
+                                accessible-delegate-focus: self.at;
                                 function take() {
                                     if root.grab-pending && q == root.current {
                                         root.grab-pending = false;
@@ -1021,6 +1085,11 @@ component PromptBar inherits Rectangle {
                                 function pick() {
                                     entry.picked = self.at;
                                     Prompt.toggle-option(q, self.at);
+                                }
+                                // Option `o` clicked, or pressed by assistive technology.
+                                function choose(o: int) {
+                                    self.at = o;
+                                    self.pick();
                                 }
                                 // To the question at `to`, the keys with it.
                                 function go(to: int) {
@@ -1066,48 +1135,32 @@ component PromptBar inherits Rectangle {
                                 VerticalLayout {
                                     alignment: start;
                                     spacing: Theme.space-xs;
-                                    for option[o] in question.options: Pressable {
-                                        selected: option.selected;
-                                        highlighted: options.has-focus && o == options.at;
-                                        tab-stop: false;
-                                        changed hovered => {
-                                            if self.hovered {
-                                                entry.pointed = o;
-                                            }
-                                        }
-                                        clicked => {
-                                            options.at = o;
-                                            entry.picked = o;
-                                            Prompt.toggle-option(q, o);
-                                        }
-                                        HorizontalLayout {
-                                            padding: Theme.space-s;
-                                            spacing: Theme.space-s;
-                                            Icon {
-                                                source: question.multi
-                                                    ? (option.selected ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg"))
-                                                    : (option.selected ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg"));
-                                                tint: option.selected ? Theme.accent : Theme.text-tertiary;
-                                            }
-                                            VerticalLayout {
-                                                horizontal-stretch: 1;
-                                                Text {
-                                                    text: option.label;
-                                                    color: Theme.text;
-                                                    wrap: word-wrap;
-                                                }
-                                                if option.description != "": Small {
-                                                    text: option.description;
-                                                    wrap: word-wrap;
+                                    for option[o] in question.options: VerticalLayout {
+                                        if question.multi: CheckAnswer {
+                                            label: option.label;
+                                            description: option.description;
+                                            selected: option.selected;
+                                            highlighted: options.has-focus && o == options.at;
+                                            ringed: options.has-focus && o == options.at;
+                                            changed hovered => {
+                                                if self.hovered {
+                                                    entry.pointed = o;
                                                 }
                                             }
+                                            clicked => { options.choose(o); }
                                         }
-                                        // The option the keys are on, ringed: the hover's
-                                        // colour alone doesn't show on one picked.
-                                        if options.has-focus && o == options.at: Rectangle {
-                                            border-radius: parent.border-radius;
-                                            border-width: 2px;
-                                            border-color: Theme.accent;
+                                        if !question.multi: RadioAnswer {
+                                            label: option.label;
+                                            description: option.description;
+                                            selected: option.selected;
+                                            highlighted: options.has-focus && o == options.at;
+                                            ringed: options.has-focus && o == options.at;
+                                            changed hovered => {
+                                                if self.hovered {
+                                                    entry.pointed = o;
+                                                }
+                                            }
+                                            clicked => { options.choose(o); }
                                         }
                                     }
                                 }
@@ -1289,6 +1342,8 @@ component SendButton inherits Rectangle {
     callback sent;
     accessible-role: button;
     accessible-label: root.stop ? "Stop" : "Send";
+    accessible-enabled: root.ready;
+    accessible-action-default => { if root.ready { root.press(); } }
     width: Theme.button;
     height: Theme.button;
     border-radius: Theme.radius-m;
@@ -1956,8 +2011,11 @@ component TrustBar inherits Rectangle {
                 text: "Open another folder";
                 clicked => { Sessions.browse-project(); }
             }
-            TextButton {
+            // The focus comes here as the question shows, never to "Trust this folder": a stray
+            // Enter starts Claude Code with none of the folder's settings.
+            without := TextButton {
                 text: "Start without its settings";
+                init => { self.focus(); }
                 clicked => { Session.start-without-folder-settings(); }
             }
             TextButton {
@@ -2106,6 +2164,12 @@ export component AppWindow inherits Window {
         }
     }
 
+    // Closes the settings, the focus going back to the writing (it was in the settings).
+    function close-settings() {
+        Preferences.open = false;
+        root.go-to(FocusArea.writing);
+    }
+
     // Hidden for room in a narrow window (Ctrl+B).
     in-out property <bool> sidebar-shown: true;
 
@@ -2129,7 +2193,7 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if event.text == Key.Escape && Preferences.open {
-                Preferences.open = false;
+                root.close-settings();
                 return accept;
             }
             if event.modifiers.control && event.text == "," {
@@ -2415,7 +2479,7 @@ export component AppWindow inherits Window {
                         height: parent.height;
                         background: Theme.dim;
                         TouchArea {
-                            clicked => { Preferences.open = false; }
+                            clicked => { root.close-settings(); }
                         }
                         Rectangle {
                             width: min(parent.width - 2 * Theme.space-xl, 680px);
@@ -2434,7 +2498,7 @@ export component AppWindow inherits Window {
                             settings := SettingsPanel {
                                 width: parent.width;
                                 height: parent.height;
-                                close => { Preferences.open = false; }
+                                close => { root.close-settings(); }
                             }
                         }
                     }

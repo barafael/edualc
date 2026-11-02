@@ -5,15 +5,23 @@ import { FocusArea, MenuItem } from "types.slint";
 import { Focus, Session, TextSelection } from "state.slint";
 
 // A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
-// Only drawn, as the control it is in names what it does. Without an `accessible-role`: Slint
-// 1.19 exposes an element whose component sets `accessible-role: none` on its root as an
-// unnamed node of unknown role, where one without any accessible property isn't exposed.
-export component Icon inherits Image {
+// Only drawn, as the control it is in names what it does. An Image held, not inherited: Slint
+// 1.19 hides an Image from assistive technology only for `accessible-role: none` on the
+// element itself; set on a component's root, it exposes each use as an unnamed node of unknown
+// role, and an Image without it is an unnamed image.
+export component Icon inherits Rectangle {
+    in property <image> source;
     in property <color> tint: Theme.text-secondary;
     width: Theme.icon;
     height: self.width;
-    image-fit: contain;
-    colorize: root.tint;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.source;
+        image-fit: contain;
+        colorize: root.tint;
+        accessible-role: none;
+    }
 }
 
 export component Title inherits Text {
@@ -85,6 +93,7 @@ export component Pressable inherits Rectangle {
     out property <bool> hovered: touch.has-hover;
     callback clicked;
     accessible-role: button;
+    accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     border-radius: Theme.radius-s;
     background: root.selected ? Theme.selected
@@ -202,11 +211,13 @@ export component TextButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    KeyPress {
+    keys := KeyPress {
         enabled: root.enabled;
         ring-radius: root.border-radius;
         pressed => { root.clicked(); }
     }
+    // Focused when asked (`focus()`), as when a question shows.
+    forward-focus: keys;
 }
 
 // Text that can be selected and copied, in the transcript: one element's selection at a time

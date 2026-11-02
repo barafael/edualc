@@ -2,9 +2,9 @@
 // them. Each takes effect at once and is kept in `settings.json`.
 
 import { Theme } from "theme.slint";
-import { HanLanguage, SandboxAccess, SendKey } from "types.slint";
-import { Preferences, Session } from "state.slint";
-import { Caption, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
+import { FocusArea, HanLanguage, SandboxAccess, SendKey } from "types.slint";
+import { Focus, Preferences, Session } from "state.slint";
+import { AreaFence, Caption, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
 
 // One of a setting's choices: its name, what it means, and whether it is the one in use.
 component Choice inherits Pressable {
@@ -13,23 +13,27 @@ component Choice inherits Pressable {
     in property <bool> chosen;
     selected: root.chosen;
     accessible-role: radio-button;
+    accessible-checkable: true;
     accessible-checked: root.chosen;
     accessible-label: root.title;
+    accessible-description: root.detail;
     HorizontalLayout {
         padding: Theme.space-s;
         padding-left: Theme.space-m;
         spacing: Theme.space-s;
+        // Centred on the title's line.
         Icon {
             source: root.chosen ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle.svg");
             tint: root.chosen ? Theme.accent : Theme.text-tertiary;
             width: Theme.icon-small;
-            y: Theme.space-xs;
+            y: Theme.space-s + (title.preferred-height - self.height) / 2;
         }
         VerticalLayout {
             horizontal-stretch: 1;
-            Text {
+            title := Text {
                 text: root.title;
                 color: Theme.text;
+                accessible-role: none;
             }
             Small {
                 text: root.detail;
@@ -45,30 +49,41 @@ component Check inherits Pressable {
     in property <string> detail;
     in property <bool> checked;
     accessible-role: checkbox;
+    accessible-checkable: true;
     accessible-checked: root.checked;
     accessible-label: root.title;
     accessible-description: root.detail;
+    // One that does nothing now (the display without the sandbox, say) is dimmed as a whole.
+    opacity: root.enabled ? 1 : 0.45;
     HorizontalLayout {
         padding: Theme.space-s;
         padding-left: Theme.space-m;
         spacing: Theme.space-s;
+        // Centred on the title's first line.
         Icon {
             source: root.checked ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg");
-            tint: !root.enabled ? Theme.text-tertiary : root.checked ? Theme.accent : Theme.text-secondary;
+            tint: root.checked && root.enabled ? Theme.accent : Theme.text-secondary;
             width: Theme.icon-small;
-            y: Theme.space-xs;
+            y: Theme.space-s + (one-line.preferred-height - self.height) / 2;
         }
         VerticalLayout {
             horizontal-stretch: 1;
             Text {
                 text: root.title;
-                color: root.enabled ? Theme.text : Theme.text-tertiary;
+                color: Theme.text;
+                wrap: word-wrap;
+                accessible-role: none;
             }
             Small {
                 text: root.detail;
                 wrap: word-wrap;
             }
         }
+    }
+    one-line := Text {
+        visible: false;
+        text: " ";
+        accessible-role: none;
     }
 }
 
@@ -119,6 +134,22 @@ component SandboxFolders inherits VerticalLayout {
 export component SettingsPanel inherits Rectangle {
     callback close;
     background: Theme.surface;
+    // The focus comes in as it opens, and Tab goes round within it: what is typed must not go
+    // to the composer it covers.
+    init => {
+        first-fence.focus();
+        Focus.step(true);
+    }
+    first-fence := AreaFence {
+        area: FocusArea.conversation;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                last-fence.focus();
+                Focus.step(false);
+            }
+        }
+    }
     VerticalLayout {
         HorizontalLayout {
             height: Theme.header;
@@ -257,6 +288,16 @@ export component SettingsPanel inherits Rectangle {
                     chosen: Preferences.han-language == HanLanguage.korean;
                     clicked => { Preferences.choose-han-language(HanLanguage.korean); }
                 }
+            }
+        }
+    }
+    last-fence := AreaFence {
+        area: FocusArea.conversation;
+        crossed => {
+            if !Focus.going-round {
+                Focus.going-round = true;
+                first-fence.focus();
+                Focus.step(true);
             }
         }
     }

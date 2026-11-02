@@ -26,6 +26,23 @@ pub(crate) fn parts(plan: &str) -> Vec<PlanPart> {
         .collect()
 }
 
+/// The part's first words, as a name for what is about it (its comment button, read out by a
+/// screen reader): its first line without heading or bullet marks, cut short.
+pub(crate) fn excerpt(plan: &str, part: &PlanPart) -> String {
+    const MAX_CHARS: usize = 60;
+    let first_line = plan
+        .get(part.range.clone())
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let words = first_line
+        .trim_start_matches(['#', '>', '-', '*', '+'])
+        .trim_start();
+    crate::tools::truncate_chars(words, MAX_CHARS)
+}
+
 /// What to tell Claude to revise; empty if nothing was said.
 pub(crate) fn feedback(plan: &str, parts: &[PlanPart], overall: &str) -> String {
     let mut said: Vec<String> = parts
@@ -108,6 +125,22 @@ mod tests {
             }
         }
         parts
+    }
+
+    /// Each part is named by its own first words, without heading or bullet marks, and a long
+    /// one is cut.
+    #[test]
+    fn a_part_is_named_by_its_first_words() {
+        let plan = format!(
+            "# Plan\n\n- {}\n\n2. Migrate the data\n",
+            "word ".repeat(20)
+        );
+        let names: Vec<String> = parts(&plan)
+            .iter()
+            .map(|part| excerpt(&plan, part))
+            .collect();
+        let cut = format!("{}…", "word ".repeat(12));
+        assert_eq!(names, ["Plan", cut.as_str(), "2. Migrate the data"]);
     }
 
     #[test]

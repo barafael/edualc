@@ -122,7 +122,8 @@ enum Act { looking-back, preening, flapping }
 // The heron at the top of the sidebar. It stands still, and about once a minute, for a second
 // or so, it looks over its shoulder, preens or flaps its wings, in turn. In between only a timer
 // waits, so nothing is redrawn for it.
-export component HeronMark inherits Image {
+// Beside the name it draws: only drawn, its Image held rather than inherited (see `Icon`).
+export component HeronMark inherits Rectangle {
     // The act it does next, or is doing.
     property <Act> act: Act.looking-back;
     // The act's frame; -1 while it stands.
@@ -130,17 +131,21 @@ export component HeronMark inherits Image {
     property <int> frames: root.act == Act.looking-back ? 1 : root.act == Act.preening ? 6 : 7;
 
     height: self.width;
-    image-fit: contain;
-    colorize: Theme.claude;
-    // Only drawn, and without an `accessible-role` (see `Icon`).
-    source: root.frame < 0 ? @image-url("../assets/heron.svg")
-        : root.act == Act.looking-back ? @image-url("../assets/heron-looking-back.svg")
-        // Nibbling at its back.
-        : root.act == Act.preening ? (Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-preening-1.svg") : @image-url("../assets/heron-preening-2.svg"))
-        // Wing beats: half up, up, half up, folded.
-        : Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-flapping-half.svg")
-        : Math.mod(root.frame, 4) == 1 ? @image-url("../assets/heron-flapping-up.svg")
-        : @image-url("../assets/heron.svg");
+    Image {
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+        colorize: Theme.claude;
+        accessible-role: none;
+        source: root.frame < 0 ? @image-url("../assets/heron.svg")
+            : root.act == Act.looking-back ? @image-url("../assets/heron-looking-back.svg")
+            // Nibbling at its back.
+            : root.act == Act.preening ? (Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-preening-1.svg") : @image-url("../assets/heron-preening-2.svg"))
+            // Wing beats: half up, up, half up, folded.
+            : Math.mod(root.frame, 2) == 0 ? @image-url("../assets/heron-flapping-half.svg")
+            : Math.mod(root.frame, 4) == 1 ? @image-url("../assets/heron-flapping-up.svg")
+            : @image-url("../assets/heron.svg");
+    }
 
     // The wait before each act differs, so that it doesn't tick like a clock.
     Timer {

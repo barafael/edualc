@@ -11,6 +11,8 @@ import { BlockView } from "transcript.slint";
 // Writing a comment: Ctrl+Enter keeps it, Esc drops the edit.
 component CommentEditor inherits Rectangle {
     in property <string> text;
+    // The part's first words, naming the editor for assistive technology.
+    in property <string> about;
     callback save(string);
     callback cancel;
     property <length> line: one-line.preferred-height;
@@ -43,6 +45,7 @@ component CommentEditor inherits Rectangle {
             color: Theme.text;
             selection-background-color: Theme.selection;
             selection-foreground-color: Theme.selection-text;
+            accessible-label: "Comment on: " + root.about;
             accessible-placeholder-text: "Your comment on this part";
             key-pressed(event) => {
                 if event.text == Key.Return && event.modifiers.control {
@@ -108,7 +111,7 @@ component SectionRow inherits HorizontalLayout {
                 }
                 IconButton {
                     icon: @image-url("@lucide/pencil.svg");
-                    label: "Edit the comment";
+                    label: "Edit the comment on: " + root.section.excerpt;
                     width: 24px;
                     height: 24px;
                     icon-size: Theme.icon-small;
@@ -116,7 +119,7 @@ component SectionRow inherits HorizontalLayout {
                 }
                 IconButton {
                     icon: @image-url("@lucide/trash.svg");
-                    label: "Remove the comment";
+                    label: "Remove the comment on: " + root.section.excerpt;
                     width: 24px;
                     height: 24px;
                     icon-size: Theme.icon-small;
@@ -126,6 +129,7 @@ component SectionRow inherits HorizontalLayout {
         }
         if root.section.editing: CommentEditor {
             text: root.section.comment;
+            about: root.section.excerpt;
             save(text) => { Prompt.set-comment(root.index, text); }
             cancel => { Prompt.cancel-comment(); }
         }
@@ -134,7 +138,7 @@ component SectionRow inherits HorizontalLayout {
         alignment: start;
         IconButton {
             icon: root.section.comment == "" ? @image-url("@lucide/message-square-plus.svg") : @image-url("@lucide/message-square-text.svg");
-            label: root.section.comment == "" ? "Comment on this part" : "Edit the comment";
+            label: (root.section.comment == "" ? "Comment on: " : "Edit the comment on: ") + root.section.excerpt;
             tint: root.section.comment == "" ? Theme.text-faint : Theme.accent;
             clicked => { Prompt.edit-comment(root.index); }
         }

@@ -145,6 +145,8 @@ export struct SideExchange {
 // A part of Claude's plan, and the user's comment on it.
 export struct PlanSection {
     block: MdBlock,
+    // Its first words, naming its buttons for assistive technology.
+    excerpt: string,
     comment: string,
     editing: bool,
 }

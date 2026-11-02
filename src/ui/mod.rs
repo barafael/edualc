@@ -874,7 +874,11 @@ impl View {
                     self.update_answers(picked, other);
                 }
             }
-            AskKind::Plan { parts, editing, .. } => {
+            AskKind::Plan {
+                input,
+                parts,
+                editing,
+            } => {
                 prompt.set_kind(PromptKind::Plan);
                 prompt.set_title(
                     "Claude's plan is ready. Comment on its parts, then approve it or keep planning."
@@ -887,6 +891,7 @@ impl View {
                         .iter()
                         .map(|part| PlanSection {
                             block: md_block(&part.block),
+                            excerpt: crate::plan::excerpt(&input.plan, part).into(),
                             comment: part.comment.as_str().into(),
                             editing: false,
                         })
