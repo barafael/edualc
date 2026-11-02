@@ -92,28 +92,30 @@ export struct Entry {
     hidden: bool,
 }
 
-export struct SessionItem {
-    id: string,
-    title: string,
-    age: string,
-    active: bool,
-    // Some other Claude Code process runs it right now.
-    running: bool,
-    // The worktree it worked in; empty if none.
-    worktree: string,
-}
-
+// How a running session is doing.
 export enum LiveState { idle, busy, waiting, other }
 
-// A session another Claude Code process runs: a terminal, an editor, the background.
-export struct LiveItem {
+// What a row of the sidebar's session list is: a heading over a part of it, a session running
+// now (this window's, another's, a terminal's), or one of this folder's earlier sessions.
+export enum SessionRowKind { heading, running, earlier }
+
+export struct SessionRow {
+    kind: SessionRowKind,
     id: string,
-    name: string,
-    project: string,
+    // The session's title; a heading's text.
+    title: string,
+    // A running session's second line: what it does, its name to message it by, its folder
+    // when another, its worktree. A heading's: how many need their user.
+    detail: string,
+    // How long ago an earlier session was last used.
+    age: string,
     state: LiveState,
     // Shown in the window now.
-    watched: bool,
+    selected: bool,
+    // The worktree it works in; empty if none.
     worktree: string,
+    // Its subagents running now.
+    agents: int,
 }
 
 // The side panel (`/btw`): open, folded away into the header's button, or not there.

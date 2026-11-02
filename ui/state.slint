@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, LiveItem, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionItem, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -125,16 +125,18 @@ export global Composer {
     pure callback break-line(string, int, int) -> LineBreak;
 }
 
-// The sidebar: the sessions of this directory, and the directories to switch to.
+// The sidebar: the sessions running now and this directory's earlier ones, and the
+// directories to switch to.
 export global Sessions {
-    in property <[SessionItem]> items;
+    in property <[SessionRow]> rows;
+    // Said where the list is empty: none yet, or none matching the filter.
+    in property <string> empty;
     in property <[ProjectItem]> projects;
-    // Sessions other Claude Code processes run now, in any directory, and how many of them
-    // wait for their user.
-    in property <[LiveItem]> live;
-    in property <int> needs-you;
-    callback watch(string);
-    // What the list of this directory's sessions is narrowed to.
+    // The sidebar's width as dragged, kept between runs; zero for the default.
+    in-out property <length> chosen-width;
+    // Dragged to a width, in logical pixels; zero gives the default back.
+    callback width-chosen(int);
+    // What the list is narrowed to.
     callback filter-edited(string);
     callback new-session;
     callback open(string);

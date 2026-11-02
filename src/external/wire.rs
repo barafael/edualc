@@ -533,6 +533,16 @@ pub(crate) enum TaskKind {
     Other,
 }
 
+impl TaskKind {
+    /// A subagent of some kind: on this machine, in the cloud, or an agent team's member.
+    pub(crate) fn is_agent(self) -> bool {
+        matches!(
+            self,
+            Self::LocalAgent | Self::RemoteAgent | Self::InProcessTeammate
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Progress {

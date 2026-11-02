@@ -133,7 +133,10 @@ pub(crate) struct LiveSession {
     pub(crate) started: String,
     pub(crate) id: SessionId,
     pub(crate) cwd: PathBuf,
+    /// The name other sessions message it by.
     pub(crate) name: String,
+    /// As its transcript names it; none before it has one.
+    pub(crate) title: Option<String>,
     pub(crate) kind: LiveKind,
     pub(crate) status: LiveStatus,
     pub(crate) worktree: Option<Worktree>,
@@ -397,6 +400,9 @@ pub(crate) fn live() -> Vec<LiveSession> {
                 pid: record.pid,
                 started,
                 worktree: linked_worktree(&record.cwd),
+                title: find_transcript(&record.cwd, &record.session_id)
+                    .and_then(|transcript| summary(&transcript))
+                    .map(|(title, _)| title),
                 id: record.session_id,
                 cwd: record.cwd,
                 name: record.name,

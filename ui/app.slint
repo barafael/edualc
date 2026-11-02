@@ -3,7 +3,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
-import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SideView, TaskKind } from "types.slint";
+import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SessionRow, SessionRowKind, SideView, TaskKind } from "types.slint";
 import { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
@@ -15,21 +15,32 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
-export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveItem, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionItem, SideExchange, SideState, SideView, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
+export { Activity, BlockKind, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
 export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
 // work is another window's to show, and a moving dot here would keep this one drawing.
+// Told by shape, not colour alone (Gruvbox's orange and yellow are close): a hand while it
+// waits for its user, as on a tool's card; a dot while it works; a ring while idle.
 component LiveDot inherits Rectangle {
     in property <LiveState> state;
-    width: 8px;
-    height: 8px;
-    border-radius: 4px;
-    background: root.state == LiveState.waiting ? Theme.warning
-        : root.state == LiveState.busy ? Theme.claude
-        : transparent;
-    border-width: root.state == LiveState.busy || root.state == LiveState.waiting ? 0 : 1.5px;
-    border-color: Theme.text-faint;
+    width: Theme.icon-small;
+    height: Theme.icon-small;
+    if root.state == LiveState.waiting: Icon {
+        source: @image-url("@lucide/hand.svg");
+        width: root.width;
+        tint: Theme.warning-text;
+    }
+    if root.state != LiveState.waiting: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: root.state == LiveState.busy ? Theme.claude : transparent;
+        border-width: root.state == LiveState.busy ? 0 : 1.5px;
+        border-color: Theme.text-faint;
+    }
 }
 
 // What keeps Claude Code in; its menu says what that means and changes it.
@@ -244,15 +255,138 @@ component TasksChip inherits Pressable {
     }
 }
 
+// A heading over a part of the session list: the sessions running now, or this folder's
+// earlier ones, with how many need their user.
+component SessionHeading inherits Rectangle {
+    in property <SessionRow> entry;
+    accessible-role: text;
+    accessible-label: root.entry.detail == "" ? root.entry.title : root.entry.title + ", " + root.entry.detail;
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        padding-top: Theme.space-m;
+        padding-bottom: Theme.space-xs;
+        spacing: Theme.space-s;
+        Text {
+            text: root.entry.title;
+            font-size: 1rem * Theme.small;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            overflow: elide;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            accessible-role: none;
+        }
+        if root.entry.detail != "": Text {
+            text: root.entry.detail;
+            font-size: 1rem * Theme.small;
+            color: Theme.warning-text;
+            accessible-role: none;
+        }
+    }
+}
+
+// A session running now (this window's, another's, a terminal's), on two lines: its title,
+// then what it does, its name to message it by and where it runs; its subagents counted.
+component RunningRow inherits Pressable {
+    in property <SessionRow> entry;
+    height: Theme.row-tall;
+    selected: root.entry.selected;
+    accessible-label: root.entry.title + ", " + root.entry.detail
+        + (root.entry.agents == 1 ? ", 1 agent running" : root.entry.agents > 1 ? ", \{root.entry.agents} agents running" : "");
+    clicked => { Sessions.open(root.entry.id); }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        LiveDot {
+            state: root.entry.state;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            title := Text {
+                text: root.entry.title;
+                color: Theme.text;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Caption {
+                text: root.entry.detail;
+                color: root.entry.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+        if root.entry.agents > 0: HorizontalLayout {
+            spacing: Theme.space-xs;
+            Icon {
+                source: @image-url("@lucide/bot.svg");
+                width: Theme.icon-small;
+                tint: Theme.text-tertiary;
+                y: (parent.height - self.height) / 2;
+            }
+            Caption {
+                text: root.entry.agents;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+    // The whole title, where the row cuts it off.
+    if title.preferred-width > title.width: Tooltip {
+        text: @markdown("\{root.entry.title}");
+    }
+}
+
+// One of this folder's earlier sessions: continued when opened.
+component EarlierRow inherits Pressable {
+    in property <SessionRow> entry;
+    height: Theme.row;
+    selected: root.entry.selected;
+    accessible-label: root.entry.title + ", " + root.entry.age + (root.entry.worktree != "" ? ", in the worktree " + root.entry.worktree : "");
+    clicked => { Sessions.open(root.entry.id); }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        if root.entry.worktree != "": Icon {
+            source: @image-url("@lucide/git-branch.svg");
+            width: Theme.icon-small;
+            tint: Theme.text-tertiary;
+            y: (parent.height - self.height) / 2;
+        }
+        title := Text {
+            text: root.entry.title;
+            color: Theme.text-secondary;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            accessible-role: none;
+        }
+        Caption {
+            text: root.entry.age;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if title.preferred-width > title.width: Tooltip {
+        text: @markdown("\{root.entry.title}");
+    }
+}
+
 // Narrow windows give up the sidebar's width first, then the side panel's; the conversation
-// keeps the rest.
+// keeps the rest. Its right edge sets its width: dragged, or with the arrow keys.
 component Sidebar inherits Rectangle {
-    // 0: this folder's sessions; 1: those running anywhere.
-    property <int> tab: 0;
+    // The widest it is dragged to.
+    property <length> widest: 720px;
     callback hide;
     min-width: 200px;
-    preferred-width: Theme.sidebar;
-    max-width: Theme.sidebar;
+    preferred-width: Sessions.chosen-width > 0 ? Sessions.chosen-width : Theme.sidebar;
+    max-width: self.preferred-width;
     horizontal-stretch: 0;
     background: Theme.surface-raised;
     // Tab goes round within the sidebar.
@@ -411,144 +545,43 @@ component Sidebar inherits Rectangle {
                 }
             }
         }
-        // Two lists, one at a time: this folder's sessions (to continue), and the sessions
-        // running anywhere right now (to follow, or bring here).
-        HorizontalLayout {
-            spacing: Theme.space-xs;
-            for tab[index] in ["This folder", "Running"]: Pressable {
-                height: Theme.chip;
-                horizontal-stretch: 1;
-                selected: root.tab == index;
-                clicked => { root.tab = index; }
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: Theme.space-xs;
-                    Text {
-                        text: index == 1 ? tab + " · \{Sessions.live.length}" : tab;
-                        color: root.tab == index ? Theme.text : Theme.text-secondary;
-                        font-size: 1rem * Theme.small;
-                        font-weight: root.tab == index ? 600 : 400;
-                        vertical-alignment: center;
-                    }
-                    // Some running session waits for its user.
-                    if index == 1 && Sessions.needs-you > 0: Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 4px;
-                        background: Theme.warning;
-                    }
+        // One list: the sessions running now, in any folder (this window's among them; opened,
+        // one is followed, or shown here if this window's daemon runs it), then this folder's
+        // earlier ones (opened, one is continued).
+        // The sidebar's home for the keyboard (Ctrl+K, F6).
+        Field {
+            property <int> wanted: Focus.wanted-serial;
+            placeholder: "Filter sessions";
+            edited(text) => { Sessions.filter-edited(text); }
+            init => { self.take-wanted(); }
+            changed wanted => { self.take-wanted(); }
+            changed has-focus => {
+                if self.has-focus {
+                    Focus.area = FocusArea.sidebar;
+                }
+            }
+            function take-wanted() {
+                if Focus.pending && Focus.wanted == FocusArea.sidebar {
+                    Focus.pending = false;
+                    self.focus();
                 }
             }
         }
-        if root.tab == 0: VerticalLayout {
-            spacing: Theme.space-s;
-            vertical-stretch: 1;
-            Caption {
-                text: "Sessions started in this folder. Click one to continue it.";
-                wrap: word-wrap;
-            }
-            // The sidebar's home for the keyboard (Ctrl+K, F6).
-            Field {
-                property <int> wanted: Focus.wanted-serial;
-                placeholder: "Filter";
-                edited(text) => { Sessions.filter-edited(text); }
-                init => { self.take-wanted(); }
-                changed wanted => { self.take-wanted(); }
-                changed has-focus => {
-                    if self.has-focus {
-                        Focus.area = FocusArea.sidebar;
-                    }
-                }
-                function take-wanted() {
-                    if Focus.pending && Focus.wanted == FocusArea.sidebar {
-                        Focus.pending = false;
-                        self.focus();
-                    }
-                }
-            }
-            if Sessions.items.length == 0: Small {
-                text: "None yet: what you start here is listed here.";
-                wrap: word-wrap;
-            }
-            ListView {
-                vertical-stretch: 1;
-                for session in Sessions.items: Pressable {
-                    height: Theme.row;
-                    selected: session.active;
-                    clicked => { Sessions.open(session.id); }
-                    HorizontalLayout {
-                        padding-left: Theme.space-m;
-                        padding-right: Theme.space-s;
-                        spacing: Theme.space-s;
-                        if session.running: LiveDot {
-                            state: LiveState.busy;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        if session.worktree != "": Icon {
-                            source: @image-url("@lucide/git-branch.svg");
-                            width: Theme.icon-small;
-                            tint: Theme.text-tertiary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: session.title;
-                            color: Theme.text;
-                            overflow: elide;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                            min-width: 0px;
-                        }
-                        Caption {
-                            text: session.age;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
+        if Sessions.empty != "": Small {
+            text: Sessions.empty;
+            wrap: word-wrap;
         }
-        if root.tab == 1: VerticalLayout {
-            spacing: Theme.space-s;
+        ListView {
             vertical-stretch: 1;
-            Caption {
-                text: "Claude Code running in other windows, in any folder. Click one to follow it here.";
-                wrap: word-wrap;
-            }
-            if Sessions.live.length == 0: Small {
-                text: "Nothing is running elsewhere.";
-                wrap: word-wrap;
-            }
-            ListView {
-                vertical-stretch: 1;
-                for session in Sessions.live: Pressable {
-                    height: Theme.row;
-                    selected: session.watched;
-                    clicked => { Sessions.watch(session.id); }
-                    HorizontalLayout {
-                        padding-left: Theme.space-m;
-                        padding-right: Theme.space-s;
-                        spacing: Theme.space-s;
-                        LiveDot {
-                            state: session.state;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: session.name;
-                            color: Theme.text;
-                            overflow: elide;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                            min-width: 0px;
-                        }
-                        if session.state == LiveState.waiting || session.worktree != "" || session.project != "": Caption {
-                            text: session.state == LiveState.waiting ? "needs you"
-                                : session.worktree != "" ? "⎇ " + session.worktree : session.project;
-                            color: session.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
-                            overflow: elide;
-                            vertical-alignment: center;
-                            max-width: Theme.sidebar * 0.45;
-                        }
-                    }
+            for row in Sessions.rows: VerticalLayout {
+                if row.kind == SessionRowKind.heading: SessionHeading {
+                    entry: row;
+                }
+                if row.kind == SessionRowKind.running: RunningRow {
+                    entry: row;
+                }
+                if row.kind == SessionRowKind.earlier: EarlierRow {
+                    entry: row;
                 }
             }
         }
@@ -662,6 +695,56 @@ component Sidebar inherits Rectangle {
             }
         }
     }
+    // The right edge: dragged, it sets the sidebar's width, kept between runs; a double click
+    // gives the default back. Reached with Tab, the arrow keys widen and narrow it.
+    edge := FocusScope {
+        x: root.width - self.width;
+        width: 8px;
+        height: root.height;
+        focus-on-click: false;
+        accessible-role: slider;
+        accessible-label: "Width of the session list";
+        accessible-value: round(root.width / 1px);
+        accessible-value-minimum: round(root.min-width / 1px);
+        accessible-value-maximum: round(root.widest / 1px);
+        accessible-value-step: 32;
+        accessible-action-increment => { root.keep-width(root.width + 32px); }
+        accessible-action-decrement => { root.keep-width(root.width - 32px); }
+        key-pressed(event) => {
+            if event.text == Key.RightArrow {
+                root.keep-width(root.width + 32px);
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                root.keep-width(root.width - 32px);
+                return accept;
+            }
+            return reject;
+        }
+        drag := TouchArea {
+            mouse-cursor: ew-resize;
+            moved => {
+                if self.pressed {
+                    root.drag-width(root.width + self.mouse-x - self.pressed-x);
+                }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                    Sessions.width-chosen(round(Sessions.chosen-width / 1px));
+                }
+            }
+            double-clicked => {
+                Sessions.chosen-width = 0;
+                Sessions.width-chosen(0);
+            }
+        }
+        // A line in the accent while it is hovered, dragged or has the focus.
+        Rectangle {
+            x: parent.width - self.width;
+            width: drag.has-hover || drag.pressed || edge.has-focus ? 3px : 0px;
+            background: Theme.accent;
+        }
+    }
     sidebar-end := AreaFence {
         area: FocusArea.sidebar;
         crossed => {
@@ -671,6 +754,15 @@ component Sidebar inherits Rectangle {
                 Focus.step(true);
             }
         }
+    }
+
+    function drag-width(width: length) {
+        Sessions.chosen-width = max(root.min-width, min(root.widest, width));
+    }
+
+    function keep-width(width: length) {
+        root.drag-width(width);
+        Sessions.width-chosen(round(Sessions.chosen-width / 1px));
     }
 }
 

@@ -35,6 +35,10 @@ pub(crate) struct Settings {
     /// The composer's height as dragged, in logical pixels; fitted to its text if none.
     #[serde(default)]
     pub(crate) composer_height_px: Option<u16>,
+    /// The sidebar's width as dragged, in logical pixels; the default (from the text size) if
+    /// none.
+    #[serde(default)]
+    pub(crate) sidebar_width_px: Option<u16>,
     /// The window's colours (dark or light as the desktop asks).
     #[serde(default)]
     pub(crate) look: Look,
@@ -87,6 +91,7 @@ impl Default for Settings {
             sandbox_read: Vec::new(),
             sandbox_write: Vec::new(),
             composer_height_px: None,
+            sidebar_width_px: None,
             look: Look::default(),
             send_with: SendKey::default(),
             han_text: None,

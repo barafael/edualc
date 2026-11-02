@@ -29,6 +29,8 @@ use crate::plan;
 use crate::sandbox;
 use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
 use crate::settings::{self, Settings, Zoom};
+use crate::sidebar;
+use crate::spawn::MessagingName;
 use crate::trust;
 use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
@@ -258,7 +260,6 @@ pub(crate) enum Action {
         text: String,
     },
     CancelComment,
-    Watch(SessionId),
     ContinueHere,
     GoToWindow,
     AskSide(String),
@@ -288,6 +289,8 @@ pub(crate) enum Action {
     },
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
+    /// The sidebar's width as dragged, in logical pixels; none for the default again.
+    SidebarWidth(Option<u16>),
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
     PasteImage,
     /// An image taken off the next message, by its place.
@@ -586,6 +589,14 @@ impl Redraw {
     }
 }
 
+/// How this window's own session is doing, as the sidebar last listed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnMark {
+    state: LiveStatus,
+    /// Its subagents running now.
+    agents: usize,
+}
+
 /// Lines of stderr kept, to say why the process ended.
 const LOG_LINES: usize = 20;
 /// How often the running sessions are looked at without being told of a change: a process that
@@ -638,8 +649,10 @@ pub(crate) struct App {
     settings: Settings,
     /// The desktop's text size, in logical pixels, which the zoom scales.
     desktop_text_size: f32,
-    /// What the list of this directory's sessions is narrowed to.
+    /// What the list of sessions is narrowed to.
     session_filter: String,
+    /// How the own session was last listed in the sidebar; none while no process runs it here.
+    own_listed: Option<OwnMark>,
     /// The runs of tool calls opened, by their first call; the others are folded.
     open_runs: HashSet<usize>,
     usage: UsagePanel,
@@ -681,6 +694,7 @@ impl App {
         });
         view.set_text_size(desktop_text_size * settings.scale());
         view.set_composer_height(settings.composer_height_px);
+        view.set_sidebar_width(settings.sidebar_width_px);
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
         view.set_han_language(settings.han_language());
@@ -722,6 +736,7 @@ impl App {
             settings,
             desktop_text_size,
             session_filter: String::new(),
+            own_listed: None,
             open_runs: HashSet::new(),
             usage: UsagePanel::default(),
             trust_gate: TrustGate::Open,
@@ -917,7 +932,6 @@ impl App {
             Action::EditComment(section) => self.edit_comment(Some(section)),
             Action::CancelComment => self.edit_comment(None),
             Action::SetComment { section, text } => self.set_comment(section, &text),
-            Action::Watch(id) => self.watch_live(&id),
             Action::ContinueHere => self.continue_here(),
             Action::GoToWindow => self.go_to_window(),
             Action::AskSide(question) => self.ask_side(&question),
@@ -996,6 +1010,12 @@ impl App {
                     tracing::warn!(%error, "couldn't keep the composer's height");
                 }
             }
+            Action::SidebarWidth(width_px) => {
+                self.settings.sidebar_width_px = width_px;
+                if let Err(error) = settings::save(&self.settings) {
+                    tracing::warn!(%error, "couldn't keep the sidebar's width");
+                }
+            }
             Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
             Action::RemoveImage(index) => {
                 if index < self.attached.len() {
@@ -1068,20 +1088,76 @@ impl App {
                 && !self.side.pending();
             self.view.render_side(&self.side, can_ask, can_branch);
         }
-        if redraw.sessions {
-            let watched = self.watch.as_ref().map(|watch| &watch.session.id);
-            let filter = self.session_filter.to_lowercase();
-            let shown: Vec<&SessionInfo> = self
-                .sessions
-                .iter()
-                .filter(|session| {
-                    filter.is_empty() || session.title.to_lowercase().contains(&filter)
-                })
-                .collect();
+        // The own session's row changes with its turns, questions and agents, which no list
+        // update says.
+        let own = self.own_mark();
+        if redraw.sessions || own != self.own_listed {
+            self.own_listed = own;
+            let shown = self
+                .watch
+                .as_ref()
+                .map(|watch| &watch.session.id)
+                .or(self.status.session_id.as_ref());
+            let rows = sidebar::rows(&sidebar::Listing {
+                own: own.and_then(|mark| self.own_session(mark)),
+                live: &self.live,
+                saved: &self.sessions,
+                shown,
+                folder: &self.cwd,
+                filter: &self.session_filter,
+            });
             self.view
-                .render_sessions(&shown, self.status.session_id.as_ref(), &self.live);
-            self.view.render_live(&self.live, watched);
+                .render_sidebar(&rows, !self.session_filter.trim().is_empty());
         }
+    }
+
+    /// How this window's own session is doing, while its process runs here.
+    fn own_mark(&self) -> Option<OwnMark> {
+        if self.watch.is_some() || self.process.is_none() || self.status.session_id.is_none() {
+            return None;
+        }
+        let state = if !self.asks.is_empty() {
+            LiveStatus::Waiting
+        } else if self.status.turns > 0 {
+            LiveStatus::Busy
+        } else {
+            LiveStatus::Idle
+        };
+        let agents = self
+            .status
+            .tasks
+            .running()
+            .filter(|running| running.task.task_type.is_agent() && !running.task.ambient)
+            .count();
+        Some(OwnMark { state, agents })
+    }
+
+    /// This window's own session as the sidebar lists it.
+    fn own_session(&self, mark: OwnMark) -> Option<sidebar::Own<'_>> {
+        let id = self.status.session_id.as_ref()?;
+        let title = self
+            .status
+            .title
+            .as_deref()
+            .or_else(|| {
+                self.sessions
+                    .iter()
+                    .find(|saved| &saved.id == id)
+                    .map(|saved| saved.title.as_str())
+            })
+            .unwrap_or("New session");
+        Some(sidebar::Own {
+            id,
+            title,
+            name: MessagingName::of(id, &self.cwd).to_string(),
+            state: mark.state,
+            worktree: self
+                .status
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.name.as_str()),
+            agents: mark.agents,
+        })
     }
 
     /// Runs `work` on a thread of its own; its result comes back as the event `done` makes.

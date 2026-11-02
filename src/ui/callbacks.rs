@@ -197,7 +197,16 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     let sessions = window.global::<Sessions>();
     sessions.on_new_session(actions.on(|| Action::NewSession));
     sessions.on_open(actions.on_session(Action::OpenSession));
-    sessions.on_watch(actions.on_session(Action::Watch));
+    sessions.on_width_chosen({
+        let actions = actions.clone();
+        // Zero (or what doesn't fit a `u16`) goes back to the default width.
+        move |width_px| {
+            let kept = u16::try_from(width_px)
+                .ok()
+                .filter(|width_px| *width_px > 0);
+            actions.send(Action::SidebarWidth(kept));
+        }
+    });
     sessions.on_open_project(actions.on_text(Action::OpenProject));
     sessions.on_browse_project(actions.on(|| Action::BrowseProject));
     sessions.on_refresh_projects(actions.on(|| Action::ListProjects));

@@ -18,14 +18,12 @@ use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::CjkLanguage;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
-use crate::external::wire::{
-    self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
-};
+use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
 use crate::generated::{
     Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveItem, LiveState, Look, MdBlock,
-    MenuItem, PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind,
-    Question, QuestionOption, SendKey, Session, SessionItem, Sessions, ShownImage, Side,
+    EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, Look, MdBlock, MenuItem,
+    PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
+    QuestionOption, SendKey, Session, SessionRow, SessionRowKind, Sessions, ShownImage, Side,
     SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem, TaskKind, Theme,
     ToolState, Transcript, Usage,
 };
@@ -33,9 +31,10 @@ use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
 use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
-use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{self, LiveStatus, ProjectInfo, Worktree};
 use crate::settings;
-use crate::tools::{self, home_relative, shortened_path};
+use crate::sidebar;
+use crate::tools::{self, shortened_path};
 
 mod callbacks;
 
@@ -1006,58 +1005,24 @@ impl View {
         }
     }
 
-    pub(crate) fn render_sessions(
-        &self,
-        list: &[&SessionInfo],
-        active: Option<&SessionId>,
-        live: &[LiveSession],
-    ) {
-        let items: Vec<SessionItem> = list
-            .iter()
-            .map(|session| SessionItem {
-                id: session.id.as_str().into(),
-                title: session.title.as_str().into(),
-                age: sessions::age(session.modified).into(),
-                active: Some(&session.id) == active,
-                running: live.iter().any(|running| running.id == session.id),
-                worktree: session
-                    .worktree
-                    .as_ref()
-                    .map_or_else(SharedString::new, |worktree| worktree.name.as_str().into()),
-            })
-            .collect();
-        self.window
-            .global::<Sessions>()
-            .set_items(ModelRc::new(VecModel::from(items)));
+    /// The session list (see `sidebar`); `filtered` says why it may be empty.
+    pub(crate) fn render_sidebar(&self, rows: &[sidebar::Row], filtered: bool) {
+        let items: Vec<SessionRow> = rows.iter().map(session_row).collect();
+        let empty = match (items.is_empty(), filtered) {
+            (false, _) => "",
+            (true, true) => "No session matches the filter.",
+            (true, false) => "None yet: what you start here is listed here.",
+        };
+        let sessions = self.window.global::<Sessions>();
+        sessions.set_empty(empty.into());
+        sessions.set_rows(ModelRc::new(VecModel::from(items)));
     }
 
-    pub(crate) fn render_live(&self, live: &[LiveSession], watched: Option<&SessionId>) {
-        let items: Vec<LiveItem> = live
-            .iter()
-            .map(|session| LiveItem {
-                id: session.id.as_str().into(),
-                name: session.name.as_str().into(),
-                project: shown_project(&session.name, &session.cwd).into(),
-                state: match session.status {
-                    LiveStatus::Idle => LiveState::Idle,
-                    LiveStatus::Busy => LiveState::Busy,
-                    LiveStatus::Waiting => LiveState::Waiting,
-                    LiveStatus::Other => LiveState::Other,
-                },
-                watched: Some(&session.id) == watched,
-                worktree: session
-                    .worktree
-                    .as_ref()
-                    .map_or_else(SharedString::new, |worktree| worktree.name.as_str().into()),
-            })
-            .collect();
-        let waiting = live
-            .iter()
-            .filter(|session| session.status == LiveStatus::Waiting)
-            .count();
-        let sessions = self.window.global::<Sessions>();
-        sessions.set_live(ModelRc::new(VecModel::from(items)));
-        sessions.set_needs_you(index_for_slint(waiting));
+    /// The sidebar's width as dragged and kept; the default if none.
+    pub(crate) fn set_sidebar_width(&self, width_px: Option<u16>) {
+        self.window
+            .global::<Sessions>()
+            .set_chosen_width(width_px.map_or(0.0, f32::from));
     }
 
     pub(crate) fn render_projects(&self, projects: &[ProjectInfo]) {
@@ -1300,24 +1265,75 @@ fn menu(items: &[(String, String)]) -> ModelRc<MenuItem> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// A running session's folder, unless its name already says it (names are made from the
-/// folder: `edualc-3f` runs in `edualc`).
-fn shown_project(name: &str, cwd: &Path) -> String {
-    let folder = cwd.file_name().map_or_else(
-        || home_relative(cwd),
-        |folder| folder.to_string_lossy().into_owned(),
-    );
-    let plain = |text: &str| -> String {
-        text.chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|character| character.to_ascii_lowercase())
-            .collect()
-    };
-    if plain(name).starts_with(&plain(&folder)) {
-        String::new()
-    } else {
-        folder
+/// A row of the session list as the sidebar shows it.
+fn session_row(row: &sidebar::Row) -> SessionRow {
+    match row {
+        sidebar::Row::RunningHeading { running, waiting } => SessionRow {
+            kind: SessionRowKind::Heading,
+            title: format!("Running · {running}").into(),
+            detail: match waiting {
+                0 => SharedString::new(),
+                1 => "1 needs you".into(),
+                waiting => format!("{waiting} need you").into(),
+            },
+            ..SessionRow::default()
+        },
+        sidebar::Row::EarlierHeading { folder } => SessionRow {
+            kind: SessionRowKind::Heading,
+            title: format!("Earlier in {folder}").into(),
+            ..SessionRow::default()
+        },
+        sidebar::Row::Running(running) => SessionRow {
+            kind: SessionRowKind::Running,
+            id: running.id.as_str().into(),
+            title: running.title.as_str().into(),
+            detail: running_detail(running).into(),
+            state: match running.state {
+                LiveStatus::Idle => LiveState::Idle,
+                LiveStatus::Busy => LiveState::Busy,
+                LiveStatus::Waiting => LiveState::Waiting,
+                LiveStatus::Other => LiveState::Other,
+            },
+            selected: running.shown,
+            worktree: running.worktree.as_deref().unwrap_or_default().into(),
+            agents: index_for_slint(running.agents),
+            ..SessionRow::default()
+        },
+        sidebar::Row::Earlier(earlier) => SessionRow {
+            kind: SessionRowKind::Earlier,
+            id: earlier.id.as_str().into(),
+            title: earlier.title.as_str().into(),
+            age: sessions::age(earlier.modified).into(),
+            selected: earlier.shown,
+            worktree: earlier.worktree.as_deref().unwrap_or_default().into(),
+            ..SessionRow::default()
+        },
     }
+}
+
+/// A running session's second line: what it does, the name to message it by, the folder it
+/// runs in when another, its worktree.
+fn running_detail(running: &sidebar::Running) -> String {
+    let doing = match running.state {
+        LiveStatus::Waiting => "Needs you",
+        LiveStatus::Busy => "Working",
+        LiveStatus::Idle => "Idle",
+        LiveStatus::Other => "Running",
+    };
+    let worktree = running
+        .worktree
+        .as_ref()
+        .map(|worktree| format!("⎇ {worktree}"));
+    [
+        Some(doing),
+        Some(running.name.as_str()),
+        running.elsewhere.as_deref(),
+        worktree.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<&str>>()
+    .join(" · ")
 }
 
 fn stat(label: &str, value: String, detail: String, fraction: f32) -> StatRow {
@@ -1790,13 +1806,6 @@ mod tests {
         assert!(answered(&[false, false], "neither, build it in CI"));
         assert!(!answered(&[false, false], "  \n"));
         assert!(!answered(&[], ""));
-    }
-
-    #[test]
-    fn a_folder_the_name_repeats_is_left_out() {
-        let cwd = Path::new("/home/u/code/edu_alc");
-        assert_eq!(shown_project("edu-alc-3f", cwd), "");
-        assert_eq!(shown_project("Framework 13 sensors", cwd), "edu_alc");
     }
 
     /// Counted by kind, agents first, each kind once however its tasks are interleaved.

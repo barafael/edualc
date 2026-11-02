@@ -29,6 +29,7 @@ mod relay;
 mod sandbox;
 mod sessions;
 mod settings;
+mod sidebar;
 mod spawn;
 mod tools;
 mod trust;
