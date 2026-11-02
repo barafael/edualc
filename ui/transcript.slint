@@ -103,6 +103,7 @@ export component BlockView inherits VerticalLayout {
         key: root.key;
         label: root.block.lang;
         copyable: true;
+        keeps-lines: true;
         copy => { Clipboard.copy(root.block.raw); }
     }
     if root.block.kind == BlockKind.table: TableView {

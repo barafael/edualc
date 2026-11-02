@@ -1,5 +1,6 @@
 // The shared pieces the window is built from. Each takes its look from `Theme` and `Motion`.
 
+import { ScrollView } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
 import { FocusArea, MenuItem } from "types.slint";
 import { Focus, Session, TextSelection } from "state.slint";
@@ -273,14 +274,22 @@ export component CodeBox inherits Rectangle {
     in property <string> note;
     // Offers a copy button, which calls `copy`.
     in property <bool> copyable;
+    // Keeps code's lines whole: one wider than the box scrolls sideways, as a wide table does
+    // (a Markdown code block). Otherwise the text wraps (a tool's input or output).
+    in property <bool> keeps-lines;
     callback copy;
+    // Fluent's horizontal scroll bar lies over the bottom of what it scrolls.
+    property <length> scroll-bar: 14px;
+    property <length> copy-size: 24px;
     background: Theme.code;
     border-radius: Theme.radius-m;
     VerticalLayout {
         padding: Theme.space-m;
-        padding-top: root.label != "" || root.copyable ? Theme.space-xs : Theme.space-m;
+        padding-top: root.label != "" ? Theme.space-xs : Theme.space-m;
+        // Without a label, the copy button stands in the top right corner, beside the text.
+        padding-right: root.label == "" && root.copyable ? Theme.space-m + root.copy-size : Theme.space-m;
         spacing: Theme.space-xs;
-        if root.label != "" || root.copyable: HorizontalLayout {
+        if root.label != "": HorizontalLayout {
             Caption {
                 text: root.label;
                 vertical-alignment: center;
@@ -289,22 +298,47 @@ export component CodeBox inherits Rectangle {
             if root.copyable: IconButton {
                 icon: @image-url("@lucide/copy.svg");
                 label: "Copy";
-                width: 24px;
-                height: 24px;
+                width: root.copy-size;
+                height: root.copy-size;
                 icon-size: Theme.icon-small;
                 clicked => { root.copy(); }
             }
         }
-        Selectable {
+        if !root.keeps-lines: Selectable {
             text: root.body;
             key: root.key;
             default-color: root.ink;
             default-font-family: Theme.mono;
             default-font-size: 1rem * Theme.code-size;
         }
+        if root.keeps-lines: lines := ScrollView {
+            property <bool> overflowing: code.preferred-width > self.visible-width;
+            height: code.preferred-height + (self.overflowing ? root.scroll-bar : 0px);
+            vertical-scrollbar-policy: always-off;
+            content-width: max(self.visible-width, code.preferred-width);
+            content-height: code.preferred-height;
+            code := Selectable {
+                width: lines.content-width;
+                text: root.body;
+                key: root.key;
+                default-color: root.ink;
+                default-font-family: Theme.mono;
+                default-font-size: 1rem * Theme.code-size;
+            }
+        }
         if root.note != "": Caption {
             text: root.note;
         }
+    }
+    if root.label == "" && root.copyable: IconButton {
+        x: parent.width - self.width - Theme.space-s;
+        y: Theme.space-s;
+        icon: @image-url("@lucide/copy.svg");
+        label: "Copy";
+        width: root.copy-size;
+        height: root.copy-size;
+        icon-size: Theme.icon-small;
+        clicked => { root.copy(); }
     }
 }
 

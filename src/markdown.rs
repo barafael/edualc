@@ -135,7 +135,10 @@ fn split(src: &str, items: bool) -> Vec<(Part, Range<usize>)> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
     let mut out = Vec::new();
+    // Where each task list item's `[ ]` or `[x]` is, and whether it is checked.
+    let mut markers: Vec<(Range<usize>, bool)> = Vec::new();
     let mut depth = 0usize;
     // Where the open top-level block started; code and tables are pushed at their end.
     let mut open = 0..0;
@@ -266,6 +269,7 @@ fn split(src: &str, items: bool) -> Vec<(Part, Range<usize>)> {
                     table.count(&text);
                 }
             }
+            Event::TaskListMarker(checked) => markers.push((range, checked)),
             Event::Rule if depth == 0 => out.push((Part::Shown(Block::Rule), range)),
             Event::Html(_) | Event::InlineHtml(_) if depth == 0 => {
                 out.push((Part::Shown(Block::Text(source())), range));
@@ -277,11 +281,45 @@ fn split(src: &str, items: bool) -> Vec<(Part, Range<usize>)> {
             | Event::DisplayMath(_)
             | Event::FootnoteReference(_)
             | Event::SoftBreak
-            | Event::HardBreak
-            | Event::TaskListMarker(_) => {}
+            | Event::HardBreak => {}
+        }
+    }
+    if !markers.is_empty() {
+        for (part, range) in &mut out {
+            if let Part::List(source) | Part::Shown(Block::Text(source)) = part
+                && let Some(boxed) = with_task_boxes(src, range, &markers)
+            {
+                *source = boxed;
+            }
         }
     }
     out
+}
+
+/// The source in `range` with each task marker in it (`[ ]`, `[x]`) as the box it stands for,
+/// since Slint's own Markdown knows no task lists and would show the brackets; none if `range`
+/// holds no marker.
+fn with_task_boxes(
+    src: &str,
+    range: &Range<usize>,
+    markers: &[(Range<usize>, bool)],
+) -> Option<String> {
+    let inside: Vec<&(Range<usize>, bool)> = markers
+        .iter()
+        .filter(|(marker, _)| range.start <= marker.start && marker.end <= range.end)
+        .collect();
+    if inside.is_empty() {
+        return None;
+    }
+    let mut boxed = String::with_capacity(range.len());
+    let mut at = range.start;
+    for (marker, checked) in inside {
+        boxed.push_str(src.get(at..marker.start)?);
+        boxed.push(if *checked { '☑' } else { '☐' });
+        at = marker.end;
+    }
+    boxed.push_str(src.get(at..range.end)?);
+    Some(boxed)
 }
 
 /// A table as far as it is parsed.
@@ -502,6 +540,35 @@ mod tests {
             ]
         );
         assert_eq!(drawn_lines(alone), ["Alone."]);
+    }
+
+    /// Task list items show boxes, checked or not, not the brackets they are written with; a
+    /// bracket elsewhere stays as written.
+    #[test]
+    fn task_list_items_show_boxes() {
+        let src = "Steps:\n\n- [ ] a task\n- [x] a done task\n- [X] also done\n- a [ ] in the text";
+        let blocks = blocks(src);
+        let [Block::Text(run)] = blocks.as_slice() else {
+            panic!("one run, not {blocks:?}");
+        };
+        assert_eq!(
+            drawn_lines(run),
+            [
+                "Steps:",
+                "• ☐ a task",
+                "• ☑ a done task",
+                "• ☑ also done",
+                "• a [ ] in the text"
+            ]
+        );
+        // In a plan, the item is shown with its box and quoted back as written.
+        let plan = "- [x] Add the handle";
+        let sections = sections(plan);
+        let [(Block::Text(shown), range)] = sections.as_slice() else {
+            panic!("one item, not {sections:?}");
+        };
+        assert_eq!(shown, "- ☑ Add the handle");
+        assert_eq!(plan.get(range.clone()), Some("- [x] Add the handle"));
     }
 
     /// In a run, text Slint refuses would turn all of it into plain text, its joins included.
