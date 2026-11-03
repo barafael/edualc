@@ -1343,7 +1343,7 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
         ),
         Sandboxing::Landlock(Enforcement::None) => (
             "Not sandboxed",
-            "This kernel has no Landlock: Claude Code runs with all your rights.",
+            "This kernel has no Landlock: Claude Code has all your rights.",
         ),
         Sandboxing::ClaudeCodes => (
             "Claude Code's sandbox",
@@ -1351,7 +1351,8 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
              window's would break it, so it stays off. Claude Code's file tools, hooks and MCP \
              servers run with all your rights.",
         ),
-        Sandboxing::Off => ("Not sandboxed", "Claude Code runs with all your rights."),
+        // Short enough for one line under the sidebar's chip at its default width.
+        Sandboxing::Off => ("Not sandboxed", "Claude Code has all your rights."),
         Sandboxing::Pending => (
             "Sandbox: starting",
             "How far this kernel enforces the sandbox is known once Claude Code runs.",
