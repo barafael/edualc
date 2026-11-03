@@ -20,10 +20,11 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::OFlags;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator as _;
 
+use crate::app::{Mode, PermissionMode};
 use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::external::mcp::{
     Block, JsonRpc, Line, Permission, Request, SendArguments, ToolCall, Turn,
@@ -121,6 +122,22 @@ pub(crate) struct Relay {
     asked: HashMap<String, String>,
     /// By tool use id: what the user allowed it to send.
     allowed: HashMap<String, SendArguments>,
+    /// The permission mode the session last said it is in.
+    mode: Option<Mode>,
+    /// Whether it ever said it runs with permissions bypassed: it can then, and Claude Code
+    /// counts its plan mode as bypassing too.
+    bypass_available: bool,
+}
+
+/// A session's permission class, which Claude Code (2.1.316) tells sessions apart by when one
+/// messages another: a receiver holds a message from another class, and, running with
+/// permissions bypassed, one that names none. One a host can't approve in (edualc's daemon)
+/// never gets it. Its envelope names the class as Claude Code's own sessions do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum Class {
+    Prompting,
+    Bypass,
 }
 
 /// Whether the user is asked about each message a sandboxed session sends.
@@ -303,18 +320,21 @@ const NAME_CHARS: usize = 64;
 const ENVELOPE: &str = "cross-session-message";
 
 /// The message as Claude Code's own sessions post one (2.1.316), for the recipient to show who
-/// sent it and answer it: the envelope, with the sender's inbox (`from`) and name, then the
-/// text. Claude Code reads an envelope back only in exactly the form it writes one, attributes
-/// in this order and the text escaped as [`escaped`] does; anything else reaches the session as
-/// plain text. It says nothing of the user's approval, which a message can't carry.
-fn envelope(from: Option<&str>, name: &MessagingName, text: &str) -> String {
+/// sent it and answer it: the envelope, with the sender's inbox (`from`), name and permission
+/// class (`from-mode`, see [`Class`]), then the text. Claude Code reads an envelope back only in
+/// exactly the form it writes one, attributes in this order and the text escaped as [`escaped`]
+/// does; anything else reaches the session as plain text. It says nothing of the user's
+/// approval, which a message can't carry.
+fn envelope(from: Option<&str>, name: &MessagingName, class: Option<Class>, text: &str) -> String {
     let from = from.map(|from| format!(" from=\"{from}\""));
     let name =
         (name.as_str().chars().count() <= NAME_CHARS).then(|| format!(" from-name=\"{name}\""));
+    let class = class.map(|class| format!(" from-mode=\"{}\"", <&str>::from(class)));
     format!(
-        "<{ENVELOPE}{}{}>\n{}\n</{ENVELOPE}>",
+        "<{ENVELOPE}{}{}{}>\n{}\n</{ENVELOPE}>",
         from.unwrap_or_default(),
         name.unwrap_or_default(),
+        class.unwrap_or_default(),
         escaped(text)
     )
 }
@@ -392,7 +412,12 @@ pub(crate) struct Work {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Job {
-    Send(SendArguments),
+    /// A message, and the class its sender was in when it sent it (none for a mode this
+    /// window doesn't know).
+    Send {
+        arguments: SendArguments,
+        class: Option<Class>,
+    },
     List,
 }
 
@@ -472,6 +497,8 @@ impl Relay {
             consent,
             asked: HashMap::new(),
             allowed: HashMap::new(),
+            mode: None,
+            bypass_available: false,
         }
     }
 
@@ -479,9 +506,43 @@ impl Relay {
         &self.sender
     }
 
-    /// A line the process wrote: its requests to the server are answered here, and its
-    /// permission requests for sending noted on their way to the window.
+    /// The session's class as it last said its mode, as Claude Code reckons it (2.1.316): a
+    /// session bypasses permissions in that mode, and in plan mode where it can; none for a
+    /// mode this window doesn't know.
+    fn class(&self) -> Option<Class> {
+        match self.mode.as_ref()? {
+            Mode::Known(PermissionMode::BypassPermissions) => Some(Class::Bypass),
+            Mode::Known(PermissionMode::Plan) if self.bypass_available => Some(Class::Bypass),
+            Mode::Known(
+                PermissionMode::Default
+                | PermissionMode::AcceptEdits
+                | PermissionMode::Plan
+                | PermissionMode::Auto,
+            ) => Some(Class::Prompting),
+            Mode::Unknown(_) => None,
+        }
+    }
+
+    /// A message to carry out, in the class the session is in now.
+    fn sending(&self, arguments: SendArguments) -> Job {
+        Job::Send {
+            arguments,
+            class: self.class(),
+        }
+    }
+
+    /// A line the process wrote: its reports of its mode noted, its requests to the server
+    /// answered here, and its permission requests for sending noted on their way to the window.
     pub(crate) fn process_said(&mut self, line: &str) -> FromProcess {
+        if line.contains("\"permissionMode\"")
+            && let Ok(Line::System {
+                permission_mode: Some(mode),
+            }) = serde_json::from_str(line)
+        {
+            self.bypass_available |= mode == Mode::Known(PermissionMode::BypassPermissions);
+            self.mode = Some(mode);
+            return FromProcess::PassOn;
+        }
         // Most lines are Claude's text, read no further.
         if !line.contains("\"control_request\"") {
             return FromProcess::PassOn;
@@ -563,7 +624,7 @@ impl Relay {
                 FromProcess::PassOn
             }
             (Consult::Call { reply, arguments }, true) => FromProcess::Work(Work {
-                job: Job::Send(arguments),
+                job: self.sending(arguments),
                 reply,
             }),
             (Consult::Call { reply, .. }, false) => {
@@ -663,7 +724,7 @@ impl Relay {
                     .and_then(|tool_use| self.allowed.remove(&tool_use));
                 if allowed.as_ref() == Some(&asked) || self.consent == Consent::NotAsked {
                     FromProcess::Work(Work {
-                        job: Job::Send(asked),
+                        job: self.sending(asked),
                         reply,
                     })
                 } else {
@@ -742,19 +803,20 @@ pub(crate) fn carry_out(places: &Places, sender: &MessagingName, job: &Job) -> O
                 })
                 .collect(),
         ),
-        Job::Send(arguments) => match send(places, sender, arguments) {
+        Job::Send { arguments, class } => match send(places, sender, arguments, *class) {
             Ok(to) => Outcome::Sent(to),
             Err(refusal) => Outcome::Refused(refusal),
         },
     }
 }
 
-/// Posts `arguments.message`, in the envelope that names its sender (see [`envelope`]), into
-/// the inbox of the session it names.
+/// Posts `arguments.message`, in the envelope that names its sender and the sender's `class`
+/// (see [`envelope`]), into the inbox of the session it names.
 fn send(
     places: &Places,
     sender: &MessagingName,
     arguments: &SendArguments,
+    class: Option<Class>,
 ) -> Result<String, Refusal> {
     if arguments.message.chars().count() > MESSAGE_CHARS {
         return Err(Refusal::TooLong);
@@ -788,7 +850,7 @@ fn send(
     post(
         &record.messaging_socket_path,
         &token,
-        &envelope(from.as_deref(), sender, &arguments.message),
+        &envelope(from.as_deref(), sender, class, &arguments.message),
     )
     .map_err(|source| Refusal::Post {
         name: name.clone(),
@@ -888,7 +950,7 @@ fn open_folder(path: &Path) -> Option<OwnedFd> {
     rustix::fs::open(
         path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
+        rustix::fs::Mode::empty(),
     )
     .ok()
 }
@@ -1005,7 +1067,13 @@ mod tests {
             message: "hello".to_owned(),
         };
         match decided(&mut relay, &call("m1", "t1", &input), false) {
-            FromProcess::Work(work) => assert_eq!(work.job, Job::Send(sent)),
+            FromProcess::Work(work) => assert_eq!(
+                work.job,
+                Job::Send {
+                    arguments: sent,
+                    class: None
+                }
+            ),
             other @ (FromProcess::PassOn | FromProcess::Answer(_) | FromProcess::Consult(_)) => {
                 panic!("not carried out: {other:?}");
             }
@@ -1247,16 +1315,19 @@ mod tests {
     }
 
     /// An allowed message reaches the inbox of the session named, after its token, in Claude
-    /// Code's envelope: the sender's inbox to answer at, its name, the text.
+    /// Code's envelope: the sender's inbox to answer at, its name, its class, the text.
     #[test]
     fn a_message_reaches_the_inbox_of_the_session_named() {
         let (sender, peer_name) = (name(SENDER_ID), name(PEER_ID));
         let peer = Peer::new("send", &peer_name);
         let (own_socket, _own_inbox) = peer.beside(&sender);
-        let job = Job::Send(SendArguments {
-            to: peer_name.to_string(),
-            message: "hello".to_owned(),
-        });
+        let job = Job::Send {
+            arguments: SendArguments {
+                to: peer_name.to_string(),
+                message: "hello".to_owned(),
+            },
+            class: Some(Class::Bypass),
+        };
         let outcome = carry_out(&peer.places, &sender, &job);
         assert!(
             matches!(&outcome, Outcome::Sent(to) if to == peer_name.as_str()),
@@ -1269,8 +1340,8 @@ mod tests {
             message.pointer("/message/content").and_then(Value::as_str),
             Some(
                 format!(
-                    "<cross-session-message from=\"{own_address}\" from-name=\"{sender}\">\
-                     \nhello\n</cross-session-message>"
+                    "<cross-session-message from=\"{own_address}\" from-name=\"{sender}\" \
+                     from-mode=\"bypass\">\nhello\n</cross-session-message>"
                 )
                 .as_str()
             )
@@ -1306,7 +1377,7 @@ mod tests {
     }
 
     /// The envelope is Claude Code's to the byte, as a session reads one back: the inbox to
-    /// answer at, the name, then the text on lines of its own.
+    /// answer at, the name, the class, then the text on lines of its own.
     #[test]
     fn a_message_goes_in_claude_codes_envelope() {
         let sender = name(SENDER_ID);
@@ -1314,16 +1385,63 @@ mod tests {
             envelope(
                 Some("uds:/run/user/1000/cc-socks/42.sock"),
                 &sender,
+                Some(Class::Prompting),
                 "hi\nthere"
             ),
             format!(
                 "<cross-session-message from=\"uds:/run/user/1000/cc-socks/42.sock\" \
-                 from-name=\"{sender}\">\nhi\nthere\n</cross-session-message>"
+                 from-name=\"{sender}\" from-mode=\"prompting\">\nhi\nthere\n\
+                 </cross-session-message>"
             )
         );
         assert_eq!(
-            envelope(None, &sender, ""),
+            envelope(None, &sender, None, ""),
             format!("<cross-session-message from-name=\"{sender}\">\n\n</cross-session-message>")
+        );
+    }
+
+    /// A message says the class its session was in as it sent it, as Claude Code reckons the
+    /// class from the mode the session last reported: bypass in that mode, and in plan mode
+    /// once it could bypass; none before a report or for a mode this window doesn't know.
+    #[test]
+    fn a_message_says_its_senders_class() {
+        let mut relay = Relay::new(name(SENDER_ID), Consent::NotAsked);
+        let input = json!({"to": "peer-07", "message": "hello"});
+        let sent_in = |relay: &mut Relay, report: Option<&str>| {
+            if let Some(mode) = report {
+                let line = json!({"type": "system", "subtype": "status", "status": null,
+                    "permissionMode": mode});
+                assert_eq!(relay.process_said(&line.to_string()), FromProcess::PassOn);
+            }
+            match relay.process_said(&call("m", "t", &input)) {
+                FromProcess::Work(Work {
+                    job: Job::Send { class, .. },
+                    ..
+                }) => class,
+                other @ (FromProcess::PassOn
+                | FromProcess::Answer(_)
+                | FromProcess::Consult(_)
+                | FromProcess::Work(_)) => panic!("not sent: {other:?}"),
+            }
+        };
+        assert_eq!(sent_in(&mut relay, None), None, "nothing reported yet");
+        for (mode, class) in [
+            ("plan", Some(Class::Prompting)),
+            ("acceptEdits", Some(Class::Prompting)),
+            ("bypassPermissions", Some(Class::Bypass)),
+            ("plan", Some(Class::Bypass)),
+            ("default", Some(Class::Prompting)),
+            ("someNewMode", None),
+        ] {
+            assert_eq!(sent_in(&mut relay, Some(mode)), class, "{mode}");
+        }
+        let init = json!({"type": "system", "subtype": "init", "session_id": SENDER_ID,
+            "permissionMode": "auto", "tools": ["Bash"]});
+        assert_eq!(relay.process_said(&init.to_string()), FromProcess::PassOn);
+        assert_eq!(
+            sent_in(&mut relay, None),
+            Some(Class::Prompting),
+            "as a turn's start says"
         );
     }
 
@@ -1381,10 +1499,13 @@ mod tests {
         let peer_name = name(PEER_ID);
         let peer = Peer::new("refuse", &peer_name);
         let send = |places: &Places, sender: &MessagingName, to: &str| {
-            let job = Job::Send(SendArguments {
-                to: to.to_owned(),
-                message: "hello".to_owned(),
-            });
+            let job = Job::Send {
+                arguments: SendArguments {
+                    to: to.to_owned(),
+                    message: "hello".to_owned(),
+                },
+                class: None,
+            };
             carry_out(places, sender, &job)
         };
         let sender = name(SENDER_ID);
@@ -1404,10 +1525,13 @@ mod tests {
             send(&elsewhere, &sender, peer_name.as_str()),
             Outcome::Refused(Refusal::Inbox(_))
         ));
-        let long = Job::Send(SendArguments {
-            to: peer_name.to_string(),
-            message: "x".repeat(MESSAGE_CHARS + 1),
-        });
+        let long = Job::Send {
+            arguments: SendArguments {
+                to: peer_name.to_string(),
+                message: "x".repeat(MESSAGE_CHARS + 1),
+            },
+            class: None,
+        };
         assert!(matches!(
             carry_out(&peer.places, &sender, &long),
             Outcome::Refused(Refusal::TooLong)

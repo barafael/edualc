@@ -6,6 +6,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::app::Mode;
+
 /// A line either side writes, in the fields the relay reads.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -16,6 +18,12 @@ pub(crate) enum Line {
     },
     ControlResponse {
         response: Response,
+    },
+    /// The session's own reports: at the start of each turn (`init`), and as it changes
+    /// (`status`), they say its permission mode.
+    System {
+        #[serde(default, rename = "permissionMode")]
+        permission_mode: Option<Mode>,
     },
     #[serde(other)]
     Other,
