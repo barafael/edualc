@@ -2,9 +2,11 @@
 //! permissions, sessions, MCP servers) and is spoken to in stream-json, as the Agent SDKs
 //! speak to it; this window shows what it does and asks what it asks.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use slint::ComponentHandle;
+
+use folder::{Folder, FolderError};
 
 mod app;
 mod appearance;
@@ -77,43 +79,70 @@ struct Args {
     #[arg(short, long)]
     model: Option<String>,
     /// The permission mode to start in.
-    #[arg(long = "permission-mode", value_name = "MODE", value_parser = permission_mode)]
+    #[arg(long = "permission-mode", value_name = "MODE", value_parser = permission_modes())]
     mode: Option<app::PermissionMode>,
     /// A session to continue, by its id.
     #[arg(short, long, value_name = "SESSION", value_parser = session_id)]
     resume: Option<SessionId>,
     /// The folder to work in; where edualc was started, if none.
-    dir: Option<PathBuf>,
+    #[arg(value_parser = folder)]
+    dir: Option<Folder>,
     /// A first prompt.
     prompt: Option<String>,
 }
 
-/// A permission mode by the name Claude Code gives it, the modes listed where it isn't one.
-fn permission_mode(name: &str) -> Result<app::PermissionMode, String> {
-    name.parse().map_err(|error: strum::ParseError| {
-        let modes: Vec<&str> = <app::PermissionMode as strum::IntoEnumIterator>::iter()
-            .map(<&str>::from)
-            .collect();
-        format!("{error}: one of {}", modes.join(", "))
+/// The permission modes by the names Claude Code gives them, each with what it lets through, so
+/// help lists them and a wrong one is told the right ones.
+fn permission_modes() -> impl clap::builder::TypedValueParser<Value = app::PermissionMode> {
+    use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser as _};
+    PossibleValuesParser::new(
+        <app::PermissionMode as strum::IntoEnumIterator>::iter()
+            .map(|mode| PossibleValue::new(<&'static str>::from(mode)).help(mode.description())),
+    )
+    .try_map(|name| name.parse::<app::PermissionMode>())
+}
+
+/// Why the folder named on the command line isn't worked in.
+#[derive(Debug, thiserror::Error)]
+enum DirError {
+    #[error(transparent)]
+    Folder(#[from] FolderError),
+    /// No folder by that name, nor a path: `claude` takes its prompt first, and this may be one.
+    #[error("{source}. A first prompt comes after the folder, as in: edualc . \"{prompt}\"")]
+    Prompt {
+        prompt: String,
+        #[source]
+        source: FolderError,
+    },
+}
+
+/// The folder a command line names, relative to where edualc was started.
+fn folder(text: &str) -> Result<Folder, DirError> {
+    Folder::at(PathBuf::from(text)).map_err(|error| match error {
+        FolderError::Missing(_) if !text.contains('/') => DirError::Prompt {
+            prompt: text.to_owned(),
+            source: error,
+        },
+        FolderError::Missing(_) | FolderError::NotAFolder(_) | FolderError::Unreadable { .. } => {
+            DirError::Folder(error)
+        }
     })
+}
+
+/// Where edualc was started, or the home folder where that is gone.
+fn here() -> Result<Folder, FolderError> {
+    Folder::at(
+        std::env::current_dir()
+            .ok()
+            .or_else(dirs::home_dir)
+            .unwrap_or_default(),
+    )
 }
 
 /// A session's id, as Claude Code writes one; anything else is refused before it reaches
 /// claude's command line.
 fn session_id(id: &str) -> Result<SessionId, String> {
     SessionId::try_from(id.to_owned()).map_err(|error| error.to_string())
-}
-
-impl Args {
-    /// The working directory: as given, or where this was started.
-    fn working_directory(&self) -> PathBuf {
-        let path = self
-            .dir
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-        path.canonicalize().unwrap_or(path)
-    }
 }
 
 /// Set once the window was started again with its D-Bus proxies.
@@ -169,12 +198,20 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     }
 
     // Help and the version are printed here, and wrong arguments said, before anything starts.
-    let args = <Args as clap::Parser>::parse();
-    let cwd = args.working_directory();
-    if !Path::new(&cwd).is_dir() {
-        eprintln!("not a directory: {}", cwd.display());
-        std::process::exit(2);
-    }
+    let Args {
+        model,
+        mode,
+        resume,
+        dir,
+        prompt,
+    } = clap::Parser::parse();
+    let cwd = match dir.map_or_else(here, Ok) {
+        Ok(folder) => folder.into_path(),
+        Err(error) => {
+            eprintln!("edualc: {error}");
+            return Ok(std::process::ExitCode::from(2));
+        }
+    };
 
     // In this order: the daemon is reached (and started) and the desktop asked while the window
     // is free; then it is confined, and all it makes after keeps that.
@@ -213,15 +250,8 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
-    let mut app = app::App::new(
-        window.clone_strong(),
-        events,
-        link,
-        desktop,
-        cwd,
-        args.model,
-    );
-    app.begin(hosted, args.resume, args.mode, args.prompt.as_deref());
+    let mut app = app::App::new(window.clone_strong(), events, link, desktop, cwd, model);
+    app.begin(hosted, resume, mode, prompt.as_deref());
     slint::spawn_local(app.run(received)).expect("the event loop is set up");
     window.show()?;
     slint::run_event_loop_until_quit()?;
@@ -268,7 +298,10 @@ mod tests {
         assert_eq!(parsed.mode, Some(app::PermissionMode::Plan));
         assert_eq!(parsed.model.as_deref(), Some("haiku"));
         assert_eq!(parsed.resume, SessionId::try_from(id.to_owned()).ok());
-        assert_eq!(parsed.dir, Some(PathBuf::from("/tmp")));
+        assert_eq!(
+            parsed.dir.map(Folder::into_path),
+            PathBuf::from("/tmp").canonicalize().ok()
+        );
         assert_eq!(parsed.prompt.as_deref(), Some("hello"));
         assert!(args("--resume").is_err());
         // Ids end up on claude's command line: one that reads as an option is refused.
@@ -280,5 +313,49 @@ mod tests {
         let joined = args("--model=opus --permission-mode=acceptEdits").expect("valid arguments");
         assert_eq!(joined.model.as_deref(), Some("opus"));
         assert_eq!(joined.mode, Some(app::PermissionMode::AcceptEdits));
+    }
+
+    /// A folder that can't be worked in is said as the folder list says it; a lone word that
+    /// names none may be a prompt, given first as `claude` takes it, and is told where it goes.
+    #[test]
+    fn a_wrong_folder_is_said_before_anything_starts() {
+        let said = |argument: &str| {
+            Args::try_parse_from(["edualc", argument])
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+                .expect_err(argument)
+        };
+        let prompt = said("explain this repository");
+        assert!(
+            prompt.contains("There is no folder explain this repository")
+                && prompt.contains("edualc . \"explain this repository\""),
+            "{prompt}"
+        );
+        let missing = said("/no/such/edualc/folder");
+        assert!(
+            missing.contains("There is no folder /no/such/edualc/folder")
+                && !missing.contains("prompt"),
+            "{missing}"
+        );
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        assert!(
+            said(manifest).contains(&format!("{manifest} is a file, not a folder")),
+            "{manifest}"
+        );
+    }
+
+    /// Help lists every permission mode by the name Claude Code takes, with what it lets through.
+    #[test]
+    fn help_lists_the_permission_modes() {
+        let help = Args::command().render_long_help().to_string();
+        for mode in <app::PermissionMode as strum::IntoEnumIterator>::iter() {
+            let name: &str = mode.into();
+            let listed = help.lines().any(|line| {
+                line.trim_start()
+                    .strip_prefix(&format!("- {name}:"))
+                    .is_some_and(|rest| rest.trim() == mode.description())
+            });
+            assert!(listed, "{name} in\n{help}");
+        }
     }
 }
