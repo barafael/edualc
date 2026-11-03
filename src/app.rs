@@ -199,8 +199,12 @@ enum TrustGate {
 /// What a request to the daemon was for.
 #[derive(Debug)]
 enum Acting {
-    /// Something for the desktop; only its failure is told.
+    /// Something for the desktop the user asked for; only its failure is told.
     Desktop,
+    /// A notification about a session elsewhere, which the user didn't ask for: its failure is
+    /// only logged, not put in the conversation (a desktop without a notification service
+    /// would have an error there for each).
+    Notifying,
     /// Stopping a session elsewhere, to continue it here.
     Bringing(SessionId),
     /// Reading the clipboard's image, for the next message.
@@ -1332,8 +1336,15 @@ impl App {
                 tracing::warn!(%failure, "the desktop didn't do it");
                 self.chat.error(failure.to_string());
             }
+            (Some(Acting::Notifying), Err(failure)) => {
+                tracing::warn!(%failure, "couldn't notify");
+            }
             // A paste is answered as `Pasted`, a folder picked as `Picked`.
-            (Some(Acting::Desktop | Acting::Pasting | Acting::Picking(_)), Ok(())) | (None, _) => {}
+            (
+                Some(Acting::Desktop | Acting::Notifying | Acting::Pasting | Acting::Picking(_)),
+                Ok(()),
+            )
+            | (None, _) => {}
             (Some(Acting::Pasting | Acting::Picking(_)), Err(failure)) => {
                 self.chat.error(failure.to_string());
             }
@@ -1871,7 +1882,7 @@ impl App {
                 self.notified.insert(session.id.clone(), now);
                 let summary = format!("{} needs you", session.name);
                 let body = session.cwd.display().to_string();
-                self.ask_desktop(Act::Notify { summary, body }, Acting::Desktop);
+                self.ask_desktop(Act::Notify { summary, body }, Acting::Notifying);
             }
         }
         if let Some(watch) = self.watch.as_mut()
