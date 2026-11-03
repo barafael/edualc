@@ -511,6 +511,8 @@ component Sidebar inherits Rectangle {
         }
         // The working directory; a click offers the others Claude Code was used in.
         project-button := Pressable {
+            accessible-label: "Folder \{Session.project}";
+            accessible-description: "\{Session.cwd}. Opens the folders to work in instead.";
             clicked => {
                 Sessions.refresh-projects();
                 projects.show();
@@ -560,7 +562,10 @@ component Sidebar inherits Rectangle {
                     spacing: Theme.space-s;
                     HorizontalLayout {
                         spacing: Theme.space-s;
+                        // The keys go here as the list opens: a path typed at once is taken,
+                        // and Tab leads on to the recent folders.
                         path := Field {
+                            init => { self.focus(); }
                             horizontal-stretch: 1;
                             placeholder: "Path to a folder";
                             accepted(text) => {
@@ -582,6 +587,8 @@ component Sidebar inherits Rectangle {
                     ListView {
                         for project in Sessions.projects: Pressable {
                             height: Theme.row-tall;
+                            accessible-label: project.name;
+                            accessible-description: "\{project.path}, \{project.age}";
                             clicked => {
                                 Sessions.open-project(project.path);
                                 projects.close();
@@ -599,7 +606,7 @@ component Sidebar inherits Rectangle {
                                         overflow: elide;
                                     }
                                     Caption {
-                                        text: project.path;
+                                        text: project.shown;
                                         overflow: elide;
                                     }
                                 }

@@ -1078,6 +1078,7 @@ impl View {
             .iter()
             .map(|project| ProjectItem {
                 path: project.path.to_string_lossy().as_ref().into(),
+                shown: shortened_path(&project.path, 56).into(),
                 name: sessions::folder_name(&project.path).into(),
                 age: sessions::age(project.modified).into(),
             })

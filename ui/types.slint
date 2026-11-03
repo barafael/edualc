@@ -159,7 +159,11 @@ export struct PlanSection {
 }
 
 export struct ProjectItem {
+    // The folder to open.
     path: string,
+    // Its path as shown: from `~`, and shortened in the middle, where two folders of one name
+    // still differ.
+    shown: string,
     name: string,
     age: string,
 }
