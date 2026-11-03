@@ -147,6 +147,11 @@ component SectionRow inherits HorizontalLayout {
 
 export component PlanReview inherits Rectangle {
     background: Theme.surface;
+    // Over the conversation: clicks and the wheel stay here, not passed on to the conversation
+    // behind.
+    TouchArea {
+        scroll-event(event) => { return accept; }
+    }
     VerticalLayout {
         HorizontalLayout {
             height: 56px;

@@ -2357,6 +2357,11 @@ export component AppWindow inherits Window {
                             }
                         }
                         key-pressed(event) => {
+                            // Covered by the usage details, the settings or the plan, it doesn't
+                            // move behind them.
+                            if Usage.open || Preferences.open || (Prompt.kind == PromptKind.plan && Prompt.reviewing) {
+                                return reject;
+                            }
                             if event.text == Key.DownArrow {
                                 self.scroll-by(4rem);
                                 return accept;
@@ -2515,8 +2520,11 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                         background: Theme.dim;
+                        // The wheel stops here too: a TouchArea passes it on, and over the dimmed
+                        // conversation or the panel's heading the conversation behind scrolled.
                         TouchArea {
                             clicked => { Usage.close(); }
+                            scroll-event(event) => { return accept; }
                         }
                         // Three quarters of the area's height, not sized from its list: a list
                         // sizing what sizes it is measured again and again.
@@ -2548,8 +2556,10 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                         background: Theme.dim;
+                        // The wheel stops here too, as over the usage details.
                         TouchArea {
                             clicked => { root.close-settings(); }
+                            scroll-event(event) => { return accept; }
                         }
                         Rectangle {
                             width: min(parent.width - 2 * Theme.space-xl, 680px);
@@ -2686,6 +2696,10 @@ export component AppWindow inherits Window {
             background: Theme.card;
             drop-shadow-blur: 24px;
             drop-shadow-color: Theme.shadow;
+            // Clicks and the wheel stay with it, not passed on to the conversation behind.
+            TouchArea {
+                scroll-event(event) => { return accept; }
+            }
             // Tab goes round within it.
             tall-start := AreaFence {
                 area: FocusArea.writing;
