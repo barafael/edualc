@@ -68,6 +68,14 @@ pub(crate) struct Running {
     pub(crate) shown: bool,
 }
 
+impl Running {
+    /// The name to show beside its title: none where the title is that name, as for a session
+    /// that has no title yet, or one the user titled as it is named.
+    pub(crate) fn name_beside_title(&self) -> Option<&str> {
+        (self.title != self.name).then_some(self.name.as_str())
+    }
+}
+
 /// A session of this folder that no process runs: continued when opened.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Earlier {
@@ -382,6 +390,25 @@ mod tests {
                 "> From the folder's list"
             ]
         );
+    }
+
+    /// A session that goes by its name has it once, as its title; one with a title of its own
+    /// shows its name beside it, to message it by.
+    #[test]
+    fn a_name_shows_once() {
+        let saved = [saved(1, "From the folder's list")];
+        let live = [
+            live(1, "beep-2a", "/code/beep", Idle),
+            live(2, "beep-7d", "/code/beep", Idle),
+        ];
+        let beside: Vec<Option<String>> = rows(&listing(None, &live, &saved, ""))
+            .iter()
+            .filter_map(|row| match row {
+                Row::Running(running) => Some(running.name_beside_title().map(str::to_owned)),
+                Row::RunningHeading { .. } | Row::EarlierHeading { .. } | Row::Earlier(_) => None,
+            })
+            .collect();
+        assert_eq!(beside, [None, Some("beep-2a".to_owned())]);
     }
 
     #[test]

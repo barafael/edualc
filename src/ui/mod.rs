@@ -1370,8 +1370,8 @@ fn session_row(row: &sidebar::Row) -> SessionRow {
     }
 }
 
-/// A running session's second line: what it does, the name to message it by, the folder it
-/// runs in when another, its worktree.
+/// A running session's second line: what it does, the name to message it by unless its title
+/// is that name, the folder it runs in when another, its worktree.
 fn running_detail(running: &sidebar::Running) -> String {
     let doing = match running.state {
         LiveStatus::Waiting => "Needs you",
@@ -1385,7 +1385,7 @@ fn running_detail(running: &sidebar::Running) -> String {
         .map(|worktree| format!("⎇ {worktree}"));
     [
         Some(doing),
-        Some(running.name.as_str()),
+        running.name_beside_title(),
         running.elsewhere.as_deref(),
         worktree.as_deref(),
     ]
