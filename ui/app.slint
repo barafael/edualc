@@ -550,7 +550,16 @@ component Sidebar inherits Rectangle {
             width: 440px;
             height: 460px;
             close-policy: close-on-click-outside;
-            Rectangle {
+            folders := Rectangle {
+                // Why the folder last asked for didn't open (made anew, so empty, each time the
+                // list opens): the list stays open, the path still in its field to correct.
+                property <string> problem;
+                function open(path: string) {
+                    self.problem = Sessions.open-project(path);
+                    if self.problem == "" {
+                        projects.close();
+                    }
+                }
                 background: Theme.surface;
                 border-radius: Theme.radius-l;
                 border-width: 1px;
@@ -568,10 +577,7 @@ component Sidebar inherits Rectangle {
                             init => { self.focus(); }
                             horizontal-stretch: 1;
                             placeholder: "Path to a folder";
-                            accepted(text) => {
-                                Sessions.open-project(text);
-                                projects.close();
-                            }
+                            accepted(text) => { folders.open(text); }
                         }
                         TextButton {
                             text: "Browse…";
@@ -581,6 +587,12 @@ component Sidebar inherits Rectangle {
                             }
                         }
                     }
+                    if folders.problem != "": Text {
+                        text: folders.problem;
+                        color: Theme.danger-text;
+                        font-size: 1rem * Theme.small;
+                        wrap: word-wrap;
+                    }
                     Caption {
                         text: "Recent";
                     }
@@ -589,10 +601,8 @@ component Sidebar inherits Rectangle {
                             height: Theme.row-tall;
                             accessible-label: project.name;
                             accessible-description: "\{project.path}, \{project.age}";
-                            clicked => {
-                                Sessions.open-project(project.path);
-                                projects.close();
-                            }
+                            // A recent folder may be gone since: said as for a typed one.
+                            clicked => { folders.open(project.path); }
                             HorizontalLayout {
                                 padding-left: Theme.space-s;
                                 padding-right: Theme.space-s;

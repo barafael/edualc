@@ -23,7 +23,11 @@ impl App {
             return;
         };
         let Some(opener_index) = index.checked_sub(1) else {
-            self.open_project(&worktree.path.to_string_lossy());
+            // A worktree may be gone since it was read.
+            match crate::folder::Folder::at(worktree.path) {
+                Ok(folder) => self.open_project(folder),
+                Err(problem) => self.chat.error(problem.to_string()),
+            }
             return;
         };
         let Some(&opener) = self.openers.get(opener_index) else {

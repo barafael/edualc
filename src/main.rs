@@ -17,6 +17,7 @@ mod daemon;
 mod decode;
 mod desktop;
 mod external;
+mod folder;
 mod grouping;
 mod home;
 mod ipc;

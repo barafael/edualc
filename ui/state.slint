@@ -148,7 +148,8 @@ export global Sessions {
     callback filter-edited(string);
     callback new-session;
     callback open(string);
-    callback open-project(string);
+    // Turns to the folder a path names; answers why it can't, or nothing when it does.
+    callback open-project(string) -> string;
     callback browse-project;
     callback refresh-projects;
 }

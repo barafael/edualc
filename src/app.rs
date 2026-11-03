@@ -19,6 +19,7 @@ use crate::external::wire::{
     self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
     ToolInput, ToolName, ToolUseId, TranscriptLine,
 };
+use crate::folder::Folder;
 use crate::generated::AppWindow;
 use crate::ipc::{
     Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Runs,
@@ -222,7 +223,7 @@ pub(crate) enum Action {
     Interrupt,
     NewSession,
     OpenSession(SessionId),
-    OpenProject(String),
+    OpenProject(Folder),
     BrowseProject,
     ListProjects,
     ChooseModel(usize),
@@ -870,7 +871,10 @@ impl App {
             Event::Acted { request, result } => self.acted(request, result),
             Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
                 (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
-                    self.open_project(&folder.to_string_lossy());
+                    match Folder::at(folder) {
+                        Ok(folder) => self.open_project(folder),
+                        Err(problem) => self.chat.error(problem.to_string()),
+                    }
                 }
                 (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
                     let folders = self.settings.sandbox_folders(access);
@@ -931,7 +935,7 @@ impl App {
             Action::Interrupt => self.interrupt(),
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
-            Action::OpenProject(path) => self.open_project(&path),
+            Action::OpenProject(folder) => self.open_project(folder),
             Action::BrowseProject => self.pick_folder(FolderUse::Project),
             // The relay is told as the sandboxed process starts (`SandboxWish`).
             Action::ToggleMessagesUnasked => {
@@ -1917,27 +1921,8 @@ impl App {
     }
 
     /// Switches to another working directory, with a fresh session in it.
-    fn open_project(&mut self, path: &str) {
-        let path = match path.trim().strip_prefix('~') {
-            Some(rest) => dirs::home_dir()
-                .unwrap_or_default()
-                .join(rest.trim_start_matches('/')),
-            None => PathBuf::from(path.trim()),
-        };
-        let path = match path.canonicalize() {
-            Ok(path) if path.is_dir() => path,
-            Ok(path) => {
-                self.chat
-                    .error(format!("{} isn't a folder", path.display()));
-                return;
-            }
-            Err(error) => {
-                self.chat
-                    .error(format!("Couldn't open {}: {error}", path.display()));
-                return;
-            }
-        };
-        self.cwd = path;
+    fn open_project(&mut self, folder: Folder) {
+        self.cwd = folder.into_path();
         self.sessions.clear();
         self.load_sessions();
         self.new_session();
