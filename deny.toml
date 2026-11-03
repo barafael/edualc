@@ -46,5 +46,6 @@ highlight = "all"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Slint at a pinned commit until 1.19 is released (see Cargo.toml).
-allow-git = ["https://github.com/slint-ui/slint"]
+# Slint at a pinned commit of the user's fork, which carries fixes not yet upstream (see
+# Cargo.toml).
+allow-git = ["https://github.com/slint-ui/slint", "https://github.com/felintusun/slint"]
