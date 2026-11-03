@@ -21,7 +21,7 @@ path = "src/main.rs"
 # text sets a quarter em where ideographs meet Latin letters (branch `text-language`).
 # Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
 # widgets, so Qt would only add a dependency (and, at this revision, garbled italics).
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg"] }
+slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

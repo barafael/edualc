@@ -93,6 +93,7 @@ impl View {
             window.global::<Theme>().set_sans(family.into());
         }
         if let Some(family) = fonts.mono {
+            set_monospace(&family);
             window.global::<Theme>().set_mono(family.into());
         }
         let entries = ModelRc::new(VecModel::<Entry>::default());
@@ -1108,6 +1109,17 @@ impl View {
             })
             .collect();
         vec_model(&self.commands).set_vec(items);
+    }
+}
+
+/// Sets Markdown's inline `code` in `family`, as code blocks are. Slint draws it in the generic
+/// monospace family, which an application maps in Slint's font collection (as its maintainers
+/// advise, slint-ui/slint#12953); fontconfig's monospace is another font.
+fn set_monospace(family: &str) {
+    use slint::fontique_012::fontique::GenericFamily;
+    let mut collection = slint::fontique_012::shared_collection();
+    if let Some(id) = collection.family_id(family) {
+        collection.set_generic_families(GenericFamily::Monospace, std::iter::once(id));
     }
 }
 
