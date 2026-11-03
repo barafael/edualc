@@ -13,14 +13,14 @@ name = "edualc"
 path = "src/main.rs"
 
 [dependencies]
-# Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
-# `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
-# on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
-# the latest). These are the patches b33p's fork carries. Go back to crates.io once 1.19 is out.
-# On top, from the user's fork (its `edualc` branch merges them), kept there for now: a loose
-# Markdown list's text on its bullet's line (once slint-ui/slint#14665), `line-height-factor` on
-# `StyledText` again (once #14666), and a `language` property, with which Japanese and Chinese
-# text sets a quarter em where ideographs meet Latin letters (branch `text-language`).
+# Slint from branch `slint/integration-branch` of barafael/slint: upstream master (2026-11-13),
+# which has selecting text in a `StyledText` (slint-ui/slint#13985) and the Qt backend drawing
+# emoji itself (#14449), plus the open pull requests b33p and edualc build on; the branch's
+# `integration.sh` lists them and rebuilds it. For edualc: room around inline code inside its
+# background (#14721), and branch `edualc-text`: a loose Markdown list's text on its bullet's
+# line, `line-height-factor` on `StyledText` again, and a `language` property, with which
+# Japanese and Chinese text sets a quarter em where ideographs meet Latin letters (no pull
+# requests: #14665 and #14666 were closed in favour of fixing the causes upstream).
 # Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
 # widgets, so Qt would only add a dependency (and, at this revision, garbled italics). Its
 # features differ for the browser demo, below.
@@ -60,7 +60,7 @@ zeroize = "1.9"
 
 # What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
+slint = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
 # Opens links in the browser.
 open = "5"
 # The desktop's own folder picker, through its portal on Linux.
@@ -86,13 +86,13 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 # The browser demo (`web/`): the window, drawn with WebGL into the page's canvas, with a scripted
 # daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
+slint = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
 # The browser's clock and random numbers, for timestamps and ids.
 jiff = { version = "0.2.38", features = ["js"] }
 uuid = { version = "1.29", default-features = false, features = ["js"] }
 
 [build-dependencies]
-slint-build = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0" }
+slint-build = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced", version = "1.19.0" }
 # The icons (Lucide), written out for the UI as `@image-url("@lucide/<name>.svg")`.
 lucide-static-svg = "1.55"
 
