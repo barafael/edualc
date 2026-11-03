@@ -19,7 +19,7 @@ optdepends=(
   'noto-fonts-cjk: Japanese, Chinese and Korean text'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('c0b4fa5b53bd0b86f447c3804f49579147c73716e177813399a7cb57ead75bc7')
+sha256sums=('0b7e56163d0ec0b8b818e66fbdc01f2c4180557b648172014ede1cef7f627862')
 
 prepare() {
   cd "$pkgname-$pkgver"
