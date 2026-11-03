@@ -680,10 +680,10 @@ pub(crate) struct App {
     trust_gate: TrustGate,
     /// Folders the daemon found trusted in the terminal: starting there again asks nothing.
     accepted_in_terminal: HashSet<PathBuf>,
-    /// The sandbox changed while something was under way, which starting the process again
-    /// would interrupt (a question waiting for its answers, say): it starts again once nothing
-    /// is.
-    sandbox_waits: bool,
+    /// The process is to start again, as the sandbox changed or a sandboxed session's sign-in
+    /// ran out, while something was under way that starting it again would interrupt (a
+    /// question waiting for its answers, say): it starts again once nothing is.
+    restart_waits: bool,
     /// The line to the daemon, which runs Claude Code and does what the desktop is asked.
     link: Link,
     /// What the daemon was asked to do, by request, for what its answer means.
@@ -766,7 +766,7 @@ impl App {
             usage: UsagePanel::default(),
             trust_gate: TrustGate::Open,
             accepted_in_terminal: HashSet::new(),
-            sandbox_waits: false,
+            restart_waits: false,
             link,
             acting: HashMap::new(),
             last_act: ActId::default(),
@@ -842,7 +842,7 @@ impl App {
             if flow.is_break() {
                 break;
             }
-            if self.sandbox_waits && !self.under_way() {
+            if self.restart_waits && !self.under_way() {
                 self.restart();
             }
             self.render();
@@ -1415,13 +1415,13 @@ impl App {
             tracing::warn!(%error, "couldn't keep the sandbox setting");
         }
         if self.process.is_some() && self.under_way() {
-            if !self.sandbox_waits {
+            if !self.restart_waits {
                 self.chat.info(
                     "The sandbox changes once Claude is done here: Claude Code starts again then, \
                      and the conversation goes on.",
                 );
             }
-            self.sandbox_waits = true;
+            self.restart_waits = true;
         } else if self.process.is_some() {
             self.restart();
         } else {
@@ -1439,8 +1439,20 @@ impl App {
     fn stop(&mut self) {
         self.process = None;
         self.trust_gate = TrustGate::Open;
-        self.sandbox_waits = false;
+        self.restart_waits = false;
         self.forget_process();
+    }
+
+    /// A sandboxed session's sign-in ran out: it gets the user's once, as Claude Code starts,
+    /// and can't renew it inside the sandbox (see `spawn`). So it starts again, with the
+    /// sign-in there is now, once nothing is under way, and the conversation goes on.
+    fn sign_in_ran_out(&mut self) {
+        self.chat.info(
+            "This session runs in the sandbox, which gets your sign-in once, as Claude Code \
+             starts, and that sign-in has run out. Claude Code starts again with your current \
+             sign-in once nothing is under way here; then send your message again.",
+        );
+        self.restart_waits = true;
     }
 
     /// Starts the process again under the settings as they are now, continuing the session.

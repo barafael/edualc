@@ -642,6 +642,17 @@ pub(crate) struct TurnResult {
     pub(crate) total_cost_usd: Option<f64>,
     #[serde(default, rename = "modelUsage")]
     pub(crate) model_usage: HashMap<String, ModelUsage>,
+    /// The HTTP status of the API's answer a failed turn ended on.
+    #[serde(default)]
+    api_error_status: Option<u16>,
+}
+
+impl TurnResult {
+    /// Whether the turn failed because the API refused the session's sign-in (401), after
+    /// Claude Code's retries.
+    pub(crate) fn sign_in_refused(&self) -> bool {
+        self.is_error && self.api_error_status == Some(401)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1432,6 +1443,34 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A turn that ended on the API refusing the session's sign-in, as Claude Code 2.1.316 ends
+    /// one (recorded 2026-11-02 with an invalid token), is told apart from other failures and
+    /// from a turn that went well.
+    #[test]
+    fn a_refused_sign_in_is_told_apart() {
+        let result = |line: Value| match serde_json::from_value(line) {
+            Ok(Message::Result(result)) => result,
+            other => panic!("a result, not {other:?}"),
+        };
+        let refused = result(json!({
+            "type": "result", "subtype": "success", "is_error": true,
+            "result": "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+            "terminal_reason": "api_error", "api_error_status": 401, "duration_api_ms": 0,
+            "total_cost_usd": 0, "modelUsage": {}, "permission_denials": [],
+        }));
+        assert!(refused.sign_in_refused());
+        let overloaded = result(json!({
+            "type": "result", "subtype": "success", "is_error": true,
+            "result": "API Error: 529 Overloaded", "api_error_status": 529,
+        }));
+        assert!(!overloaded.sign_in_refused());
+        let done = result(json!({
+            "type": "result", "subtype": "success", "is_error": false, "result": "ok",
+            "total_cost_usd": 0.001,
+        }));
+        assert!(!done.sign_in_refused());
+    }
 
     /// User-role lines as Claude Code 2.1.316 sends them with `--replay-user-messages`
     /// (recorded on the bench): another session's message is told apart from the window's own

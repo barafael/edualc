@@ -314,6 +314,10 @@ impl App {
                 _ => "The turn failed.".to_owned(),
             };
             self.chat.error(text);
+            if result.sign_in_refused() && matches!(self.status.sandboxing, Sandboxing::Landlock(_))
+            {
+                self.sign_in_ran_out();
+            }
         }
         // A new session gets its file and its title as it goes, and maybe a worktree.
         self.load_sessions();
