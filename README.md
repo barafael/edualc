@@ -153,10 +153,32 @@ in the sidebar looks over its shoulder, preens or flaps its wings, in turn, for 
 (`assets/heron-looking-back.svg`, `heron-preening-*.svg`, `heron-flapping-*.svg`). It is also
 the app's icon (`assets/edualc.svg`, on Gruvbox's light background).
 
+## Installing
+
+edualc runs Claude Code, so `claude` must be on the PATH (Anthropic's installer, npm, or the AUR's
+`claude-code`), signed in. It needs Linux on Wayland; its sandbox wants a kernel with Landlock.
+
+Each [release](https://github.com/felintusun/edualc/releases) has, for x86_64 and aarch64:
+
+- a `.deb` (Debian 12 and later, Ubuntu 24.04 and later): `sudo apt install ./edualc_*.deb`
+- an `.rpm` (Fedora, AlmaLinux 10 and the like): `sudo dnf install ./edualc-*.rpm`
+- a tarball with the binary, its desktop entry and its icon, for any distribution with at least
+  Debian 12's glibc
+
+`SHA256SUMS` beside them checks the downloads. On Arch, `dist/aur/edualc` builds the release and
+`dist/aur/edualc-git` the main branch: `makepkg -si` in either folder. The packages recommend
+`xdg-dbus-proxy` (the window's filtered D-Bus: screen readers, light or dark) and `wl-clipboard`
+(pasting images); Fira Sans and Fira Code are used where installed.
+
+A release is a tag: `v` and the version in `Cargo.toml`, pushed, builds the packages
+(`.github/workflows/release.yml`), installs and starts each on Debian, Ubuntu, Fedora and
+AlmaLinux, and drafts the release for a person to publish.
+
 ## Running
 
 ```sh
-cargo run --release -- [--model MODEL] [--permission-mode MODE] [--resume SESSION] [DIR] [PROMPT]
+edualc [--model MODEL] [--permission-mode MODE] [--resume SESSION] [DIR] [PROMPT]
+cargo run --release -- [the same]
 ```
 
 `DIR` defaults to the current directory. `CLAUDE_BIN` names another `claude`, and `RUST_LOG=edualc=debug`

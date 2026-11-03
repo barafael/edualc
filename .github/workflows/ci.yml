@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Actions are pinned to commits (the tag in each comment). Every job only reads the repository.
+permissions: {}
+
+# a newer push to the same branch or pull request supersedes a running check
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The toolchain the gates run with; release.yml builds with the same. Pinned here rather than
+  # in a rust-toolchain.toml, which would have every local build fetch it too.
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+      - run: cargo "+$RUST_TOOLCHAIN" fmt --check
+
+  # On the runner itself, not in a container: the sandbox's tests confine child processes with
+  # Landlock and seccomp, which a container's own seccomp profile may refuse. They need nothing
+  # of a desktop.
+  check:
+    name: Clippy and tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # fontconfig's headers for Slint's text, and pkg-config to find them
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev pkg-config
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # what clippy cannot see (lint/rules), and the rules' own examples
+      - run: cargo install --locked ast-grep@0.51.1
+      - run: ast-grep test
+      - run: ast-grep scan
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+
+  # RustSec's advisories, as cargo audit reads them, run as is rather than through an action
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit
+
+  # zizmor audits these workflows. The action installs a hash-pinned zizmor wheel (nothing
+  # compiled), annotates pull requests instead of uploading to the Security tab (which would
+  # need write access), and uses the read-only job token for the online audits.
+  zizmor:
+    name: Workflow security (zizmor)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          annotations: true
+          persona: auditor

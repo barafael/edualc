@@ -1,0 +1,60 @@
+# Maintainer: Felin Tusun <16455996+felintusun@users.noreply.github.com>
+
+pkgname=edualc-git
+_name=edualc
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock (main branch)'
+arch=(x86_64 aarch64)
+url='https://github.com/felintusun/edualc'
+license=(GPL-3.0-or-later)
+# fontconfig is linked; Wayland, xkbcommon and EGL (libglvnd) are opened at start
+depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd)
+makedepends=(cargo git)
+optdepends=(
+  'claude-code: the Claude Code CLI that edualc runs (or Anthropic installer: claude on the PATH)'
+  'xdg-dbus-proxy: the window'"'"'s filtered D-Bus, for screen readers and the light or dark setting'
+  'wl-clipboard: pasting images'
+  'ttf-fira-sans: the interface font (otherwise the desktop'"'"'s sans)'
+  'ttf-fira-code: the code font (otherwise the desktop'"'"'s monospace)'
+  'noto-fonts-cjk: Japanese, Chinese and Korean text'
+)
+provides=("$_name")
+conflicts=("$_name")
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_name"
+  local version
+  version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+  printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen
+}
+
+package() {
+  cd "$_name"
+  install -Dm755 target/release/edualc -t "$pkgdir/usr/bin"
+  install -Dm644 assets/edualc.desktop -t "$pkgdir/usr/share/applications"
+  install -Dm644 assets/edualc.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 THIRD_PARTY_LICENSES.md -t "$pkgdir/usr/share/licenses/$pkgname"
+}

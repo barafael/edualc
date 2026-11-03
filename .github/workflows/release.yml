@@ -1,0 +1,177 @@
+name: Release
+
+# A tag v<version> builds the release for x86_64 and aarch64: a tarball, a .deb and an .rpm
+# each. Once every package has installed and started on the distributions below, a draft
+# release holds them and their checksums; a person publishes it. Run by hand, it is a dry run:
+# the same packages, kept as the run's artifacts, and no release.
+#
+# Built in Debian 12: a binary needs at least the glibc it was linked against, and Debian 12's
+# is older than that of any distribution whose kernel has the Landlock edualc's sandbox uses.
+#
+# Actions and images are pinned to digests (the tag in each comment). No build cache: a release
+# is built from nothing but the tagged tree.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+# one run per tag or branch at a time; a second waits rather than cancelling a release halfway
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # the toolchain CI gates with (ci.yml)
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  package:
+    name: Package (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: docker.io/library/debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880
+    # all of Slint, from nothing, with thin LTO
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      # git for the checkout, a C toolchain and fontconfig's headers for the build, dpkg-shlibdeps
+      # for the .deb's library dependencies
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git \
+            build-essential pkg-config libfontconfig-dev dpkg-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          # the tag names the version the packages say they are
+          if [ "$EVENT" = push ] && [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG, but edualc is $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
+      - run: cargo build --release --locked
+      # The packages and the PKGBUILDs name these libraries, and those winit opens as it starts
+      # (Wayland, xkbcommon, EGL); a new one must be added there too.
+      - name: Check the linked libraries
+        run: |
+          readelf -d target/release/edualc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' > needed
+          cat needed
+          if grep -vxE 'libfontconfig\.so\.1|libgcc_s\.so\.1|libm\.so\.6|libc\.so\.6|ld-linux-(x86-64|aarch64)\.so\.[12]' needed; then
+            echo "edualc links a library the packages don't name"; exit 1
+          fi
+      - run: cargo deb --no-build
+      - run: cargo generate-rpm
+      - name: Gather the packages
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="edualc-$VERSION-$ARCH-linux"
+          mkdir -p "out/$name"
+          cp target/release/edualc assets/edualc.desktop assets/edualc.svg \
+            README.md LICENSE THIRD_PARTY_LICENSES.md "out/$name/"
+          tar -C out -czf "out/$name.tar.gz" "$name"
+          rm -r "out/$name"
+          cp target/debian/*.deb target/generate-rpm/*.rpm out/
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  # Each package installed as its distribution installs it, then started; the tarball's binary
+  # started as unpacked. Without a display, it says its version and how to call it, which loads
+  # every library it links.
+  smoke:
+    name: Start on ${{ matrix.distro }} (${{ matrix.arch }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        distro: [debian-12, ubuntu-24.04, fedora-43, almalinux-10]
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - distro: debian-12
+            image: docker.io/library/debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880
+            kind: deb
+          - distro: ubuntu-24.04
+            image: docker.io/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+            kind: deb
+          - distro: fedora-43
+            image: docker.io/library/fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+            kind: rpm
+          - distro: almalinux-10
+            image: docker.io/library/almalinux:10@sha256:5a4b41a427c9717be8f4ac2a32aa22efbae5f9124fbcb79a6765394f312acfe8
+            kind: rpm
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: packages
+      - if: matrix.kind == 'deb'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ./packages/*.deb
+      - if: matrix.kind == 'rpm'
+        run: dnf install -y --setopt=install_weak_deps=False ./packages/*.rpm
+      - run: edualc --version
+      - run: edualc --help
+      - run: |
+          mkdir unpacked
+          tar -C unpacked -xzf packages/*.tar.gz
+          unpacked/*/edualc --version
+
+  release:
+    name: Draft the release
+    if: github.event_name == 'push'
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # creates the draft release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: packages-*
+          path: packages
+          merge-multiple: true
+      - working-directory: packages
+        run: sha256sum -- * > SHA256SUMS
+      - env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" --draft --verify-tag \
+            --title "edualc ${TAG#v}" --generate-notes packages/*
