@@ -140,6 +140,17 @@ disallowed_types = "deny"
 lto = "thin"
 strip = true
 
+# The browser demo (`.github/workflows/pages.yml`): every byte is downloaded before the window
+# shows, so it is built for size, whole.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+# wasm-bindgen reads which wasm features are on from a section stripping removes; it drops the
+# names itself (`--remove-name-section`).
+strip = false
+
 # `cargo deb --no-build`, after a release build (see .github/workflows/release.yml). fontconfig is
 # linked, and dpkg-shlibdeps finds it; winit opens Wayland, xkbcommon and EGL as it starts.
 # Claude Code itself is no package anywhere, so it is named in the README, not here.

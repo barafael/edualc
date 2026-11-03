@@ -2,21 +2,24 @@
 //! one directory per working directory, named after its path with every character other than
 //! letters and digits made a `-`; running ones as `~/.claude/sessions/<pid>.json`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde::Deserialize;
+use web_time::SystemTime;
 
 use crate::chat::UserText;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::external::claude_files::{AgentRecord, LiveRecord};
 use crate::external::wire::{
     self, MessageOrigin, SessionId, TranscriptCwd, TranscriptLine, UserContent,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::home::Home;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::process;
 
 /// A session's two words, an adjective and a noun picked by its id, so the same each time it
@@ -421,6 +424,7 @@ pub(crate) fn locate(cwd: &Path, id: &SessionId) -> PathBuf {
 }
 
 /// The transcripts in a directory, newest first.
+#[cfg(not(target_arch = "wasm32"))]
 fn transcripts(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -455,6 +459,7 @@ fn transcripts(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
 /// used) are left out.
 /// The working directory's sessions, newest first. Those in `known` whose transcript hasn't
 /// changed since are taken as they are, not read again.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<SessionInfo> {
     let mut known: HashMap<SessionId, SessionInfo> = known
         .into_iter()
@@ -491,6 +496,7 @@ pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<Ses
 }
 
 /// Every working directory Claude Code was used in that still exists, most recent first.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn projects() -> Vec<ProjectInfo> {
     let mut projects: Vec<_> = all_projects_dirs()
         .iter()
@@ -515,6 +521,7 @@ pub(crate) fn projects() -> Vec<ProjectInfo> {
 }
 
 /// The sessions Claude Code processes are running now, other than our own (`claude -p`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn live() -> Vec<LiveSession> {
     let dir = config_dir().join("sessions");
     let entries = match std::fs::read_dir(&dir) {
@@ -585,6 +592,7 @@ const AGENT_QUIET: std::time::Duration = std::time::Duration::from_secs(30 * 60)
 /// The subagents of the session whose transcript is `transcript` that run at `now`: those whose
 /// record beside it (`<session>/subagents/agent-<id>.meta.json`) isn't marked finished, and
 /// whose transcript was written within [`AGENT_QUIET`].
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn running_agents(transcript: &Path, now: SystemTime) -> usize {
     let Ok(entries) = std::fs::read_dir(transcript.with_extension("").join("subagents")) else {
         return 0;
@@ -639,7 +647,42 @@ fn read_small(path: &Path, limit: u64) -> Option<String> {
     Some(text)
 }
 
+/// The demo project's sessions, in the browser demo (see `web::demo`), newest first.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn list(cwd: &Path, limit: usize, _known: Vec<SessionInfo>) -> Vec<SessionInfo> {
+    let mut sessions = crate::web::demo::saved(cwd);
+    sessions.truncate(limit);
+    sessions
+}
+
+/// The demo's folders, in the browser demo.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn projects() -> Vec<ProjectInfo> {
+    crate::web::demo::projects()
+}
+
+/// The demo's sessions "running in other terminals", in the browser demo.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn live() -> Vec<LiveSession> {
+    crate::web::demo::running()
+}
+
+/// The whole lines of one of the demo's transcripts from `offset` on, in the browser demo,
+/// and the offset after the last; they are built into the page whole.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
+    let text = crate::web::demo::transcript(path)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let rest = usize::try_from(offset)
+        .ok()
+        .and_then(|at| text.get(at..))
+        .unwrap_or_default();
+    let lines = rest.lines().filter_map(parse_line).collect();
+    Ok((lines, u64::try_from(text.len()).unwrap_or(u64::MAX)))
+}
+
 /// The whole lines of a transcript from `offset` on, and the offset after the last.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
     if !std::fs::metadata(path)?.is_file() {
         return Err(std::io::Error::other("not a regular file"));
@@ -863,6 +906,34 @@ mod tests {
         );
         assert_eq!(project_part(Path::new("/home/someone/文档")), "project");
         assert_eq!(project_part(Path::new("/")), "project");
+    }
+
+    /// The browser demo's transcripts (`web/demo`) read as Claude Code's: every line parses, and
+    /// each has the title the demo's sidebar lists it by.
+    #[test]
+    fn the_browser_demos_transcripts_read_as_transcripts() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/demo");
+        let transcripts: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("the demo's folder")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect();
+        assert_eq!(transcripts.len(), 11, "{transcripts:?}");
+        for path in transcripts {
+            let text = std::fs::read_to_string(&path).expect("a transcript");
+            let lines: Vec<TranscriptLine> = text.lines().filter_map(parse_line).collect();
+            assert_eq!(lines.len(), text.lines().count(), "{}", path.display());
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| matches!(line, TranscriptLine::AiTitle { .. })),
+                "{}",
+                path.display()
+            );
+        }
     }
 
     #[test]

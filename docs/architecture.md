@@ -4,10 +4,12 @@
 
 | | |
 |---|---|
+| `src/start.rs` | how the program starts on Linux: its command line, the daemon reached, the window confined |
 | `src/claude.rs` | a session's process as the window sees it: what it is started with, what its lines mean, the handle that writes to it |
 | `src/daemon.rs`, `src/spawn.rs` | the daemon (`edualc --daemon`): runs `claude` (sandboxed) for the windows, and does what the desktop is asked; actors with sans-io cores |
 | `src/confine.rs`, `src/buses.rs` | the window's own confinement (Landlock, a seccomp socket filter), and the filtering D-Bus proxies it gets in place of the session bus |
-| `src/ipc.rs`, `src/link.rs` | the daemon's private socket, its checks and bounded messages (postcard), and the window's line to it |
+| `src/ipc.rs`, `src/ipc/socket.rs`, `src/link.rs` | the messages between the window and the daemon, the daemon's private socket with its checks and bounded frames (postcard), and the window's line to it |
+| `src/decode.rs`, `src/decode/helper.rs` | images made safe to show and send, and the confined process that decodes them |
 | `src/external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, and niri's IPC; they take keys they don't know, as each release adds some |
 | `src/app.rs` | `App`, the one owner of all state; UI callbacks, process output, timers and background work reach it as `Event`s on one channel |
 | `src/app/protocol.rs` | what the process says, taken into the state |
@@ -25,7 +27,24 @@
 | `src/appearance.rs`, `src/settings.rs` | fonts, the desktop's text size, the kept zoom |
 | `src/ui/` | the Slint models kept in line with the state, and the callbacks |
 | `ui/*.slint` | the window |
+| `src/web/`, `web/` | the browser demo: the daemon as a script, the demo project's sessions, and the page with its fonts |
 | `assets/` | the heron (standing, its idle poses, and three wing beats for its flight), the app's icon and its desktop entry |
+
+## The browser demo
+
+The same window builds for `wasm32-unknown-unknown` and runs in a page
+(`.github/workflows/pages.yml` publishes it to GitHub Pages). What only Linux has, the daemon,
+its sandbox and sockets and processes, is left out of that build (`#[cfg(not(target_arch =
+"wasm32"))]`), and the window's few ties to it get browser versions in `src/web/`, behind the
+same interfaces: `link` leads to a script in the page (`src/web/daemon.rs`) that answers as
+`claude -p` would, from scenarios a word in the prompt picks (`src/web/scenarios.rs`); `watcher`
+never fires; images are decoded where they are shown, the page being the sandbox; background
+work is done at once, as a page has no threads. `sessions` reads the demo project's
+transcripts (`web/demo/`, as Claude Code writes them) in place of `~/.claude`. Everything else,
+`App`, the chat, Markdown, tool cards, plan review and the view, is the code that runs on Linux.
+
+`cargo clippy --target wasm32-unknown-unknown -- -D warnings -A dead_code` checks that build
+(CI does); dead code is allowed there, as what only the daemon calls goes unused.
 
 The window doesn't run Claude Code itself: the first window starts `edualc --daemon`, which runs
 the `claude` processes and does what the desktop is asked (opening editors, notifications,

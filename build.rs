@@ -12,7 +12,12 @@ fn main() {
     let config = slint_build::CompilerConfiguration::new()
         .with_style("fluent".into())
         .with_library_paths(HashMap::from([("lucide".to_owned(), icons.clone())]));
-    let input = manifest.join("ui/app.slint");
+    // The browser demo's window brings its fonts along (see `web/demo.slint`).
+    let input = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        manifest.join("web/demo.slint")
+    } else {
+        manifest.join("ui/app.slint")
+    };
     let dependencies = slint_build::compile_with_output_path(&input, out.join("window.rs"), config)
         .unwrap_or_else(|error| panic!("failed to compile {}: {error}", input.display()));
     for path in dependencies {

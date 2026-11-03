@@ -40,8 +40,13 @@ pub(crate) fn fonts() -> Fonts {
 /// The desktop's text size in logical pixels: GNOME's (and GTK's) interface font and text
 /// scaling, or KDE's general font, or 11pt.
 pub(crate) fn desktop_text_size() -> f32 {
-    gnome_points().or_else(kde_points).unwrap_or(DEFAULT_POINTS) * PIXELS_PER_POINT
+    gnome_points()
+        .or_else(kde_points)
+        .map_or(DEFAULT_TEXT_SIZE, |points| points * PIXELS_PER_POINT)
 }
+
+/// The text size where no desktop says one (the browser demo's), in logical pixels.
+pub(crate) const DEFAULT_TEXT_SIZE: f32 = DEFAULT_POINTS * PIXELS_PER_POINT;
 
 /// What `program` prints, if it is there and succeeds.
 fn ask(program: Program, args: &[&str]) -> Option<String> {

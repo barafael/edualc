@@ -21,7 +21,7 @@ impl App {
         }
         match output {
             Output::Message(message) => {
-                self.heard = std::time::Instant::now();
+                self.heard = web_time::Instant::now();
                 if matches!(self.status.doing, Doing::Silent(_)) {
                     self.status.doing = Doing::Working;
                 }

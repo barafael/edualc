@@ -711,7 +711,7 @@ pub(crate) struct App {
     images: images::Images,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
-    notified: HashMap<SessionId, std::time::Instant>,
+    notified: HashMap<SessionId, web_time::Instant>,
     watch: Option<Watch>,
     /// The subagent whose conversation the side panel follows.
     peek: Option<Peek>,
@@ -750,7 +750,7 @@ pub(crate) struct App {
     /// Runs while a command's output is followed (see `Event::PollOutput`).
     polling: slint::Timer,
     /// When the process last said something.
-    heard: std::time::Instant,
+    heard: web_time::Instant,
     redraw: Redraw,
 }
 
@@ -830,7 +830,7 @@ impl App {
             tick: slint::Timer::default(),
             listen: slint::Timer::default(),
             polling: slint::Timer::default(),
-            heard: std::time::Instant::now(),
+            heard: web_time::Instant::now(),
             redraw: Redraw::default(),
         }
     }
@@ -1858,7 +1858,7 @@ impl App {
     /// Looks every little while whether Claude Code has gone quiet (see `listen`), from a turn's
     /// start on; what it said last counts from now.
     fn start_listening(&mut self) {
-        self.heard = std::time::Instant::now();
+        self.heard = web_time::Instant::now();
         if self.listen.running() {
             return;
         }
@@ -1956,7 +1956,7 @@ impl App {
                 && was.is_some_and(|was| was != LiveStatus::Waiting);
             // A session flipping between waiting and working doesn't make a notification each
             // time.
-            let now = std::time::Instant::now();
+            let now = web_time::Instant::now();
             let recently = self
                 .notified
                 .get(&session.id)
@@ -2686,6 +2686,20 @@ impl Desktop {
                 text_size,
             }
         })
+    }
+
+    /// The browser demo's: nothing to open a folder in, the theme's own fonts (built into the
+    /// page), and text of the size most desktops have.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn in_the_browser() -> Self {
+        Self {
+            openers: Vec::new(),
+            fonts: crate::appearance::Fonts {
+                sans: None,
+                mono: None,
+            },
+            text_size: crate::appearance::DEFAULT_TEXT_SIZE,
+        }
     }
 }
 

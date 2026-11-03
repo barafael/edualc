@@ -1,0 +1,68 @@
+name: Demo
+
+# Builds the browser demo (the window itself, compiled to wasm, with a scripted Claude on a
+# demo project; see src/web) and publishes it with GitHub Pages. Pages is set to deploy from
+# GitHub Actions (Settings, Pages, Source).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Actions are pinned to commits (the tag in each comment). Only the deploy job may publish to
+# Pages.
+permissions: {}
+
+# one publish at a time; a newer push waits rather than cutting a deploy short
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # as ci.yml and release.yml
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  build:
+    name: Build the demo
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The wasm-bindgen CLI must be the version of the wasm-bindgen crate in Cargo.lock.
+      - run: |
+          version=$(cargo metadata --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install --locked wasm-bindgen-cli --version "$version"
+      - name: Build the site
+        run: |
+          cargo build --locked --profile web --target wasm32-unknown-unknown
+          wasm-bindgen --target web --no-typescript --remove-name-section --out-dir site \
+            --out-name edualc target/wasm32-unknown-unknown/web/edualc.wasm
+          # the fonts built into the window are Fira, whose licence goes with them
+          cp web/index.html assets/edualc.svg web/fonts/*-OFL.txt site/
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: Publish to Pages
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write # deploy-pages publishes the built site
+      id-token: write # and proves to Pages, over OIDC, that this workflow asks
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
