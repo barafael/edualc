@@ -269,11 +269,12 @@ export global Theme {
     out property <float> display: 1.6;
 
     // Line heights, as the user chose after the typography research: a message's prose at
-    // 1.5 em; CJK prose (set in its Noto Sans CJK family, see `src/cjk.rs`) at 1.75 em, the
-    // Digital Agency's style for lines past 40 characters, after JLReq's gap of about 1 em
-    // there; code at 1.4 em. Slint's `line-height-factor` scales the font's own line height:
-    // Fira Sans's 1.2 em, Noto Sans CJK's 1.448, Fira Code's 1.231. Every line of a block
-    // keeps its pitch, whatever font draws a character in it.
+    // 1.5 em; CJK prose (set in its Noto Sans CJK family, see `src/cjk.rs`) at 1.75 em, within
+    // JLReq's gap of ½ to 1 em between lines, one em or near it for lines past 35 characters
+    // (the Digital Agency asks for at least 1.5); code at 1.4 em. Slint's `line-height-factor`
+    // scales the font's own line height: Fira Sans's 1.2 em, Noto Sans CJK's 1.448, Fira
+    // Code's 1.231. Every line of a block keeps its pitch, whatever font draws a character in
+    // it.
     public pure function line-factor(family: string) -> float {
         return family == "" ? 1.5 / 1.2 : 1.75 / 1.448;
     }
