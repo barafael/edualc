@@ -13,6 +13,10 @@ use crate::external::wire::{
 };
 use crate::tools;
 
+/// How Claude Code 2.1.316 begins the result of a tool call the user denied, with or without
+/// saying what to do instead (as read in saved transcripts).
+const REJECTED: &str = "The user doesn't want to proceed with this tool use.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolState {
     /// Its input is still arriving.
@@ -733,8 +737,12 @@ impl Chat {
             return;
         };
         tool.output = tools::result_text(content);
+        // A saved session has no answer of the window's to tell a denied call by, only the
+        // text Claude Code gave Claude for it.
+        let rejected = tool.output.starts_with(REJECTED);
         tool.state = match (failed, tool.state) {
             (true, ToolState::Denied) => ToolState::Denied,
+            (true, _) if rejected => ToolState::Denied,
             (true, _) => ToolState::Failed,
             (false, _) => ToolState::Done,
         };
@@ -1136,6 +1144,56 @@ mod tests {
         .collect();
         let saved = Chat::from_transcript(&lines);
         assert_eq!(peers(&saved), [(Some("b".to_owned()), "hi".to_owned())]);
+    }
+
+    /// In a saved session, a call the user denied shows as denied, as it did live, and one
+    /// that failed as failed: only the text Claude Code gave Claude tells them apart there.
+    #[test]
+    fn a_saved_denied_call_shows_denied() {
+        let call = |id: &str| {
+            json!({ "type": "assistant", "message": { "id": format!("m{id}"), "content": [
+                { "type": "tool_use", "id": id, "name": "Bash", "input": { "command": "rm -r x" } },
+            ] } })
+        };
+        let result = |id: &str, text: &str| {
+            json!({ "type": "user", "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": id, "content": text, "is_error": true },
+            ] } })
+        };
+        let lines: Vec<TranscriptLine> = [
+            call("t1"),
+            result(
+                "t1",
+                "The user doesn't want to proceed with this tool use. The tool use was rejected \
+                 (eg. if it was a file edit, the new_string was NOT written to the file). STOP \
+                 what you are doing and wait for the user to tell you how to proceed.",
+            ),
+            call("t2"),
+            result(
+                "t2",
+                "Exit code 1\nrm: cannot remove 'x': No such file or directory",
+            ),
+        ]
+        .into_iter()
+        .map(|line| serde_json::from_value(line).expect("a transcript line"))
+        .collect();
+        let chat = Chat::from_transcript(&lines);
+        let states: Vec<ToolState> = chat
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.body {
+                Body::Tool { tool, .. } => Some(tool.state),
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Shell { .. }
+                | Body::Image(_)
+                | Body::Peer { .. }
+                | Body::Info(_)
+                | Body::Error(_) => None,
+            })
+            .collect();
+        assert_eq!(states, [ToolState::Denied, ToolState::Failed]);
     }
 
     /// Saved `!` rows: the terminal's, with no exit code, are commands that ended; edualc's,
