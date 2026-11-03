@@ -139,6 +139,28 @@ fn here() -> Result<Folder, FolderError> {
     )
 }
 
+/// Why edualc doesn't start where its command line points.
+#[derive(Debug, thiserror::Error)]
+enum WhereError {
+    #[error(transparent)]
+    Folder(#[from] FolderError),
+    #[error("There is no session {0}")]
+    NoSession(SessionId),
+}
+
+/// The folder to work in: as named; else, continuing a session, the one it was started in
+/// (`claude --resume` goes on in whatever folder it is started from, its tools working there);
+/// else where edualc was started. A session to continue that no transcript has is refused.
+fn working_folder(dir: Option<Folder>, resume: Option<&SessionId>) -> Result<Folder, WhereError> {
+    let saved = resume.map(|id| (id, sessions::saved(id)));
+    Ok(match (dir, saved) {
+        (_, Some((id, sessions::Saved::Nowhere))) => return Err(WhereError::NoSession(id.clone())),
+        (Some(folder), _) => folder,
+        (None, Some((_, sessions::Saved::StartedIn(started)))) => Folder::at(started)?,
+        (None, Some((_, sessions::Saved::Unplaced)) | None) => here()?,
+    })
+}
+
 /// A session's id, as Claude Code writes one; anything else is refused before it reaches
 /// claude's command line.
 fn session_id(id: &str) -> Result<SessionId, String> {
@@ -205,7 +227,7 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         dir,
         prompt,
     } = clap::Parser::parse();
-    let cwd = match dir.map_or_else(here, Ok) {
+    let cwd = match working_folder(dir, resume.as_ref()) {
         Ok(folder) => folder.into_path(),
         Err(error) => {
             eprintln!("edualc: {error}");

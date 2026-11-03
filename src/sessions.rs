@@ -239,15 +239,44 @@ pub(crate) fn transcript_path(cwd: &Path, id: &SessionId) -> PathBuf {
 /// from the user's home goes on in the sandboxed one when resumed there.
 pub(crate) fn find_transcript(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
     let name = format!("{}.jsonl", id.as_str());
-    newest(project_dirs(cwd).into_iter().map(|dir| dir.join(&name))).or_else(|| {
-        newest(
-            all_projects_dirs()
-                .iter()
-                .flat_map(|projects| std::fs::read_dir(projects).into_iter().flatten())
-                .filter_map(Result::ok)
-                .map(|entry| entry.path().join(&name)),
-        )
-    })
+    newest(project_dirs(cwd).into_iter().map(|dir| dir.join(&name)))
+        .or_else(|| transcript_in_any(&all_projects_dirs(), id))
+}
+
+/// Session `id`'s transcript in any project of the folders of projects `homes`; the newest,
+/// if more than one has it.
+fn transcript_in_any(homes: &[PathBuf], id: &SessionId) -> Option<PathBuf> {
+    let name = format!("{}.jsonl", id.as_str());
+    newest(
+        homes
+            .iter()
+            .flat_map(|projects| std::fs::read_dir(projects).into_iter().flatten())
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join(&name)),
+    )
+}
+
+/// What the transcripts say of a session to continue.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Saved {
+    /// No home keeps a transcript of it.
+    Nowhere,
+    /// The folder it was started in: where it goes on, as the sidebar opens it there.
+    StartedIn(PathBuf),
+    /// Its transcript names no folder in its first lines.
+    Unplaced,
+}
+
+/// Session `id` as its transcript says, whichever home and project keep it.
+pub(crate) fn saved(id: &SessionId) -> Saved {
+    saved_in(&all_projects_dirs(), id)
+}
+
+fn saved_in(homes: &[PathBuf], id: &SessionId) -> Saved {
+    match transcript_in_any(homes, id) {
+        None => Saved::Nowhere,
+        Some(transcript) => recorded_cwd(&transcript).map_or(Saved::Unplaced, Saved::StartedIn),
+    }
 }
 
 /// The Claude Code home a session's process writes its transcripts in.
@@ -801,6 +830,39 @@ mod tests {
             "its folder's first, if newer elsewhere"
         );
         std::fs::remove_dir_all(&projects).expect("the scratch folder goes");
+    }
+
+    /// A session to continue is found in whichever home keeps it, and goes on in the folder it
+    /// was started in, not one its later turns ran in; one no home has, isn't.
+    #[test]
+    fn a_session_goes_on_where_it_was_started() {
+        let scratch = std::env::temp_dir().join(format!("edualc-started-{}", std::process::id()));
+        let (users, sandboxed) = (scratch.join("users"), scratch.join("sandboxed"));
+        let id =
+            SessionId::try_from("5d6e7f80-91a2-4b3c-8d4e-5f60718293a4".to_owned()).expect("an id");
+        let transcript = sandboxed.join("-w-app").join(format!("{id}.jsonl"));
+        std::fs::create_dir_all(transcript.parent().expect("a folder")).expect("a project");
+        std::fs::create_dir_all(&users).expect("a home");
+        let line = |cwd: &str| json!({ "type": "user", "cwd": cwd, "sessionId": id.as_str() });
+        std::fs::write(
+            &transcript,
+            format!("{}\n{}\n", line("/w/app"), line("/somewhere/else")),
+        )
+        .expect("a transcript");
+        let homes = [users.clone(), sandboxed];
+        assert_eq!(
+            saved_in(&homes, &id),
+            Saved::StartedIn(PathBuf::from("/w/app"))
+        );
+        let unknown =
+            SessionId::try_from("00000000-1111-4222-8333-444444444444".to_owned()).expect("an id");
+        assert_eq!(saved_in(&homes, &unknown), Saved::Nowhere);
+        let unplaced = users.join("-w-lib").join(format!("{unknown}.jsonl"));
+        std::fs::create_dir_all(unplaced.parent().expect("a folder")).expect("a project");
+        std::fs::write(&unplaced, format!("{}\n", json!({ "type": "summary" })))
+            .expect("a transcript");
+        assert_eq!(saved_in(&homes, &unknown), Saved::Unplaced);
+        std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 
     #[test]
