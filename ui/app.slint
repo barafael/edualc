@@ -978,8 +978,8 @@ component PromptBar inherits Rectangle {
                     Text {
                         text: Prompt.summary;
                         color: Theme.text;
-                        font-family: Theme.mono;
-                        font-size: 1rem * Theme.code-size;
+                        font-family: Prompt.summary-prose ? Theme.sans : Theme.mono;
+                        font-size: Prompt.summary-prose ? 1rem : 1rem * Theme.code-size;
                         wrap: word-wrap;
                     }
                 }

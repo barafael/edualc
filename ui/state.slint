@@ -171,6 +171,9 @@ export global Prompt {
     in property <PromptKind> kind;
     in property <string> title;
     in property <string> summary;
+    // The summary is words (a message to another session, an agent's task), not code: set as
+    // prose, as on the tool's card.
+    in property <bool> summary-prose;
     in property <string> detail;
     // E.g. "Always allow Bash(npm test)"; empty if the CLI suggests nothing to remember.
     in property <string> always-label;

@@ -955,7 +955,11 @@ impl View {
                 suggestions,
                 description,
             } => {
-                let (title, summary) = tool_prompt(ask, cwd);
+                let ToolPrompt {
+                    title,
+                    summary,
+                    summary_reads_as,
+                } = tool_prompt(ask, cwd);
                 // The description often only repeats what the title or summary say.
                 let repeats =
                     title.contains(description.as_str()) || summary.contains(description.as_str());
@@ -963,6 +967,7 @@ impl View {
                 prompt.set_kind(PromptKind::Tool);
                 prompt.set_title(title.into());
                 prompt.set_summary(summary.into());
+                prompt.set_summary_prose(summary_reads_as == tools::Writing::Prose);
                 prompt.set_detail(detail.into());
                 // Only a rule the window can say in full is offered, and none for a message to
                 // another session: the user allows each (see `relay`).
@@ -1181,10 +1186,17 @@ fn clip(output: &str) -> (String, String) {
 }
 
 /// What the bar asks about a tool call, and what it shows of it.
-fn tool_prompt(ask: &Ask, cwd: &Path) -> (String, String) {
+struct ToolPrompt {
+    title: String,
+    summary: String,
+    /// Words (a message to another session, an agent's task) or code, as on the tool's card.
+    summary_reads_as: tools::Writing,
+}
+
+fn tool_prompt(ask: &Ask, cwd: &Path) -> ToolPrompt {
     let view = tools::describe(&ask.tool, &ask.input, cwd, tools::Depth::Headline);
     let field = |key: &str| tools::str_field(&ask.input, key).to_owned();
-    if ask.tool == ToolName::Bash {
+    let (title, summary) = if ask.tool == ToolName::Bash {
         // Claude can ask for a command to run outside Claude Code's own sandbox.
         let outside =
             ask.input.get("dangerouslyDisableSandbox") == Some(&serde_json::Value::Bool(true));
@@ -1193,28 +1205,33 @@ fn tool_prompt(ask: &Ask, cwd: &Path) -> (String, String) {
         } else {
             "Allow Claude to run this command?"
         };
-        return (title.into(), field("command"));
-    }
-    if ask.tool == ToolName::RelaySendMessage {
-        return (
+        (title.into(), field("command"))
+    } else if ask.tool == ToolName::RelaySendMessage {
+        (
             format!("Allow Claude to send this message to {}?", field("to")),
             field("message"),
-        );
-    }
-    match ask.tool.kind() {
-        ToolKind::Edit | ToolKind::Write => (
-            format!("Allow Claude to edit {}?", view.summary),
-            String::new(),
-        ),
-        ToolKind::Web if ask.tool == ToolName::WebFetch => {
-            ("Allow Claude to fetch this page?".into(), field("url"))
+        )
+    } else {
+        match ask.tool.kind() {
+            ToolKind::Edit | ToolKind::Write => (
+                format!("Allow Claude to edit {}?", view.summary),
+                String::new(),
+            ),
+            ToolKind::Web if ask.tool == ToolName::WebFetch => {
+                ("Allow Claude to fetch this page?".into(), field("url"))
+            }
+            ToolKind::Read
+            | ToolKind::Command
+            | ToolKind::Search
+            | ToolKind::Web
+            | ToolKind::Agent
+            | ToolKind::Other => (format!("Allow Claude to use {}?", view.title), view.summary),
         }
-        ToolKind::Read
-        | ToolKind::Command
-        | ToolKind::Search
-        | ToolKind::Web
-        | ToolKind::Agent
-        | ToolKind::Other => (format!("Allow Claude to use {}?", view.title), view.summary),
+    };
+    ToolPrompt {
+        title,
+        summary,
+        summary_reads_as: view.summary_reads_as,
     }
 }
 
@@ -1848,6 +1865,34 @@ mod tests {
         assert!(answered(&[false, false], "neither, build it in CI"));
         assert!(!answered(&[false, false], "  \n"));
         assert!(!answered(&[], ""));
+    }
+
+    /// The bar shows a message to another session as the words it is, and a command as code,
+    /// as their cards do.
+    #[test]
+    fn the_bar_sets_a_message_as_prose_and_a_command_as_code() {
+        let asked = |tool: ToolName, input: serde_json::Value| {
+            let ask = Ask {
+                request: wire::RequestId::from("r1".to_owned()),
+                tool_use: None,
+                tool,
+                input,
+                kind: AskKind::Tool {
+                    suggestions: Vec::new(),
+                    description: String::new(),
+                },
+            };
+            tool_prompt(&ask, Path::new("/work"))
+        };
+        let message = asked(
+            ToolName::RelaySendMessage,
+            serde_json::json!({"to": "peer-07", "message": "Second note."}),
+        );
+        assert_eq!(message.summary, "Second note.");
+        assert_eq!(message.summary_reads_as, tools::Writing::Prose);
+        let command = asked(ToolName::Bash, serde_json::json!({"command": "ls -l"}));
+        assert_eq!(command.summary, "ls -l");
+        assert_eq!(command.summary_reads_as, tools::Writing::Code);
     }
 
     /// Counted by kind, agents first, each kind once however its tasks are interleaved.
