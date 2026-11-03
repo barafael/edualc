@@ -95,7 +95,8 @@ component SandboxFolders inherits VerticalLayout {
     in property <[string]> folders;
     in property <SandboxAccess> access;
     spacing: Theme.space-xs;
-    padding-left: Theme.space-m;
+    // In line with the text of the sandbox's other options (`Check`), past their boxes.
+    padding-left: Theme.space-m + Theme.icon-small + Theme.space-s;
     Text {
         text: root.title;
         color: Theme.text;
