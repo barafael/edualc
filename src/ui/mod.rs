@@ -16,17 +16,17 @@ use crate::app::{
     UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
-use crate::cjk::CjkLanguage;
+use crate::cjk::{CjkLanguage, CjkText, Standing};
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
 use crate::generated::{
-    Activity, AppWindow, BlockKind, CommandItem, Composer, ComposerSize, DiffKind, DiffLine, Entry,
-    EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, Look, MdBlock, MenuItem,
-    PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt, PromptKind, Question,
-    QuestionOption, SendKey, Session, SessionRow, SessionRowKind, Sessions, ShownImage, Side,
-    SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem, TaskKind, Theme,
-    ToolState, Transcript, Usage,
+    Activity, AppWindow, BlockKind, Cjk, CjkChars, CommandItem, Composer, ComposerSize, DiffKind,
+    DiffLine, Entry, EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, Look,
+    MdBlock, MenuItem, PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt,
+    PromptKind, Question, QuestionOption, SendKey, Session, SessionRow, SessionRowKind, Sessions,
+    ShownImage, Side, SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem,
+    TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -420,14 +420,14 @@ impl View {
             };
             match &entry.body {
                 // The blocks model changes in place; the row itself stays, unless the text
-                // grew into CJK (its first kana, say), which sets its family.
+                // grew into CJK (its first kana, say), which sets its language.
                 Body::Assistant(text) => {
                     self.sync_blocks(index, text);
-                    let family = self.family(text);
+                    let cjk = cjk(text, self.han);
                     if let Some(mut row) = rows.row_data(index)
-                        && row.font != family
+                        && row.cjk != cjk
                     {
-                        row.font = family;
+                        row.cjk = cjk;
                         rows.set_row_data(index, row);
                     }
                 }
@@ -448,11 +448,6 @@ impl View {
                 }
             }
         }
-    }
-
-    /// The family a message's prose is set in (see `family`).
-    fn family(&self, text: &str) -> SharedString {
-        family(text, self.han)
     }
 
     fn row(&mut self, index: usize, entry: &chat::Entry, cwd: &Path) -> Entry {
@@ -483,11 +478,11 @@ impl View {
             Body::User(text) => {
                 row.kind = EntryKind::User;
                 row.body = markdown::plain(text);
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
             }
             Body::Assistant(text) => {
                 row.kind = EntryKind::Assistant;
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
                 row.blocks = self.sync_blocks(index, text);
             }
             Body::Thinking { text, expanded } => {
@@ -496,25 +491,25 @@ impl View {
                     row.body = markdown::plain(text);
                 }
                 row.expanded = *expanded;
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
             }
             // Sessions write Markdown to each other, as they do to the user.
             Body::Peer { from, text } => {
                 row.kind = EntryKind::Peer;
                 row.body = markdown::styled(text);
                 row.sender = from.as_deref().unwrap_or("another session").into();
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
             }
             // Notes come from slash commands, which use Markdown (`sonnet`).
             Body::Info(text) => {
                 row.kind = EntryKind::Info;
                 row.body = markdown::styled(text);
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
             }
             Body::Error(text) => {
                 row.kind = EntryKind::Error;
                 row.body = markdown::plain(text);
-                row.font = self.family(text);
+                row.cjk = cjk(text, self.han);
             }
             Body::Tool { tool, expanded } => {
                 let depth = card_depth(*expanded, row.hidden);
@@ -1116,12 +1111,20 @@ impl View {
     }
 }
 
-/// The family prose is set in: CJK text in the CJK family of its language (see `cjk`), other
-/// text in the window's (empty).
-fn family(text: &str, han: CjkLanguage) -> SharedString {
-    CjkLanguage::of_text(text, han)
-        .map_or("", CjkLanguage::family)
-        .into()
+/// A text's CJK characters (see `cjk`), for the window to set the text by them.
+fn cjk(text: &str, han: CjkLanguage) -> CjkChars {
+    CjkText::of(text, han).map_or_else(CjkChars::default, |cjk| CjkChars {
+        language: match cjk.language {
+            CjkLanguage::Japanese => Cjk::Japanese,
+            CjkLanguage::SimplifiedChinese => Cjk::SimplifiedChinese,
+            CjkLanguage::TraditionalChinese => Cjk::TraditionalChinese,
+            CjkLanguage::Korean => Cjk::Korean,
+        },
+        main: match cjk.standing {
+            Standing::Main => true,
+            Standing::Guest => false,
+        },
+    })
 }
 
 /// A Markdown block for the window; its prose in the family of its own text, as a paragraph's
@@ -1131,14 +1134,14 @@ fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
         Block::Text(source) => MdBlock {
             kind: BlockKind::Text,
             body: markdown::styled(source),
-            font: family(source, han),
+            cjk: cjk(source, han),
             ..MdBlock::default()
         },
         Block::Heading(level, source) => MdBlock {
             kind: BlockKind::Heading,
             body: markdown::styled(&format!("**{source}**")),
             level: i32::from(*level),
-            font: family(source, han),
+            cjk: cjk(source, han),
             ..MdBlock::default()
         },
         Block::Code { lang, code } => MdBlock {
@@ -1151,7 +1154,7 @@ fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
         Block::Quote(source) => MdBlock {
             kind: BlockKind::Quote,
             body: markdown::styled(source),
-            font: family(source, han),
+            cjk: cjk(source, han),
             ..MdBlock::default()
         },
         Block::Table(table) => {
@@ -1181,7 +1184,7 @@ fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
                 .collect();
             MdBlock {
                 kind: BlockKind::Table,
-                font: family(&table.source, han),
+                cjk: cjk(&table.source, han),
                 raw: table.source.as_str().into(),
                 rows: ModelRc::new(VecModel::from(rows)),
                 column_stretch: ModelRc::new(VecModel::from(column_stretch)),

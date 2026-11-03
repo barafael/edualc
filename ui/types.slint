@@ -4,6 +4,18 @@
 // links, lists) is inside `body`, parsed by Slint.
 export enum BlockKind { text, heading, code, quote, table, rule }
 
+// The language of a text's CJK characters (see `src/cjk.rs`), for their glyph shapes and
+// spacing; none in a text without any.
+export enum Cjk { none, japanese, simplified-chinese, traditional-chinese, korean }
+
+// A text's CJK characters: their language, and whether they are its main script, which sets
+// the whole text in their family and line height (see `Theme.cjk-family`); else they are
+// guests in a text that keeps its own.
+export struct CjkChars {
+    language: Cjk,
+    main: bool,
+}
+
 export struct TableRow {
     cells: [styled-text],
 }
@@ -11,9 +23,8 @@ export struct TableRow {
 export struct MdBlock {
     kind: BlockKind,
     body: styled-text,
-    // The family its prose is set in, by its own text's script (see `src/cjk.rs`); empty for
-    // the window's.
-    font: string,
+    // The CJK characters of its prose, by its own text.
+    cjk: CjkChars,
     // The code's language, from its fence.
     lang: string,
     // A heading's level, 1 to 6.
@@ -66,9 +77,8 @@ export struct Entry {
     body: styled-text,
     // Who sent another session's message, by the name it gave.
     sender: string,
-    // The family its prose is set in, for the glyph shapes of its CJK characters (see
-    // `src/cjk.rs`); empty for the window's.
-    font: string,
+    // The CJK characters of its prose.
+    cjk: CjkChars,
     // Assistant text; a plan to approve.
     blocks: [MdBlock],
     tool-title: string,

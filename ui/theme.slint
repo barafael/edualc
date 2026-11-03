@@ -5,6 +5,7 @@
 // keeps those floors on every surface. Elements use these, never literal values.
 
 import { Palette } from "std-widgets.slint";
+import { Cjk, CjkChars } from "types.slint";
 
 export global Motion {
     // Hover and press feedback.
@@ -268,19 +269,40 @@ export global Theme {
     out property <float> heading: 1.3;
     out property <float> display: 1.6;
 
+    // The family a text is set in for its CJK characters: where they are its main script, the
+    // Noto Sans CJK of their language, which draws their glyph shapes and whose own Latin was
+    // made to sit with them (the user's choice); empty, for the window's, otherwise.
+    public pure function cjk-family(cjk: CjkChars) -> string {
+        return !cjk.main ? ""
+            : cjk.language == Cjk.japanese ? "Noto Sans CJK JP"
+            : cjk.language == Cjk.simplified-chinese ? "Noto Sans CJK SC"
+            : cjk.language == Cjk.traditional-chinese ? "Noto Sans CJK TC"
+            : cjk.language == Cjk.korean ? "Noto Sans CJK KR"
+            : "";
+    }
+    // The BCP 47 tag of its CJK characters' language, for Slint's `language`, main script or
+    // guests: the fallback fonts and glyph shapes follow it, and Japanese and Chinese set a
+    // quarter em where ideographs meet Latin letters or digits (JLReq 3.2.6).
+    public pure function language-tag(cjk: CjkChars) -> string {
+        return cjk.language == Cjk.japanese ? "ja"
+            : cjk.language == Cjk.simplified-chinese ? "zh-Hans"
+            : cjk.language == Cjk.traditional-chinese ? "zh-Hant"
+            : cjk.language == Cjk.korean ? "ko"
+            : "";
+    }
+
     // Line heights, as the user chose after the typography research: a message's prose at
-    // 1.5 em; CJK prose (set in its Noto Sans CJK family, see `src/cjk.rs`) at 1.75 em, within
-    // JLReq's gap of ½ to 1 em between lines, one em or near it for lines past 35 characters
-    // (the Digital Agency asks for at least 1.5); code at 1.4 em. Slint's `line-height-factor`
-    // scales the font's own line height: Fira Sans's 1.2 em, Noto Sans CJK's 1.448, Fira
-    // Code's 1.231. Every line of a block keeps its pitch, whatever font draws a character in
-    // it.
-    public pure function line-factor(family: string) -> float {
-        return family == "" ? 1.5 / 1.2 : 1.75 / 1.448;
+    // 1.5 em; CJK prose (where it is the main script) at 1.75 em, within JLReq's gap of ½ to
+    // 1 em between lines, one em or near it for lines past 35 characters (the Digital Agency
+    // asks for at least 1.5); code at 1.4 em. Slint's `line-height-factor` scales the font's
+    // own line height: Fira Sans's 1.2 em, Noto Sans CJK's 1.448, Fira Code's 1.231. Every
+    // line of a block keeps its pitch, whatever font draws a character in it.
+    public pure function line-factor(cjk: CjkChars) -> float {
+        return cjk.main ? 1.75 / 1.448 : 1.5 / 1.2;
     }
     // Headings and table cells, a little tighter: their lines are few and short.
-    public pure function tight-line-factor(family: string) -> float {
-        return family == "" ? 1.3 / 1.2 : 1.5 / 1.448;
+    public pure function tight-line-factor(cjk: CjkChars) -> float {
+        return cjk.main ? 1.5 / 1.448 : 1.3 / 1.2;
     }
     out property <float> code-line-factor: 1.4 / 1.231;
 

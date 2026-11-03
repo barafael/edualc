@@ -1,9 +1,10 @@
 //! Which language a text's CJK characters are in, for the glyph shapes they take: Chinese,
 //! Japanese and Korean share the Han characters in Unicode but draw many of them differently,
 //! and a font left to choose picks one for all (here Korean, for Japanese text too). As the
-//! user's Japanese typing app does on the web, a text is set in the CJK family of its language:
-//! kana make it Japanese, Hangul Korean, and Han characters alone take the language the user
-//! chose (see `Settings::han_language`).
+//! user's Japanese typing app does on the web, a text is set in the CJK family of its language
+//! (`Theme.cjk-family`), and tagged with it for its spacing: kana make it Japanese, Hangul
+//! Korean, and Han characters alone take the language the user chose (see
+//! `Settings::han_language`).
 
 use serde::{Deserialize, Serialize};
 
@@ -16,26 +17,66 @@ pub(crate) enum CjkLanguage {
     Korean,
 }
 
-impl CjkLanguage {
-    /// The language of the CJK characters in `text`: Japanese with kana in it, Korean with
-    /// Hangul, `han` with Han characters alone; none without any.
-    pub(crate) fn of_text(text: &str, han: Self) -> Option<Self> {
-        let mut has_hangul = false;
-        let mut has_han = false;
-        for character in text.chars() {
-            if is_kana(character) {
-                return Some(Self::Japanese);
-            }
-            has_hangul |= is_hangul(character);
-            has_han |= is_han(character);
-        }
-        if has_hangul {
-            Some(Self::Korean)
-        } else {
-            has_han.then_some(han)
-        }
-    }
+/// The CJK characters of a text: their language, and how they stand in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CjkText {
+    pub(crate) language: CjkLanguage,
+    pub(crate) standing: Standing,
+}
 
+/// Whether CJK is a text's main script, which sets the whole text in its family and line
+/// height, or its characters are guests in another script's text, which keeps its own: a
+/// guest doesn't change the setting (JLReq).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    Main,
+    Guest,
+}
+
+impl CjkText {
+    /// The CJK characters in `text`, if it has any: Japanese with kana among them, Korean
+    /// with Hangul, `han` with Han characters alone. They are the main script with at least
+    /// half as many as other letters (a CJK character carries about what a short word does),
+    /// and guests with fewer, as in an English text that quotes a word. Code, between
+    /// backticks, doesn't count.
+    pub(crate) fn of(text: &str, han: CjkLanguage) -> Option<Self> {
+        let mut has_kana = false;
+        let mut has_hangul = false;
+        let mut cjk_characters = 0_usize;
+        let mut other_letters = 0_usize;
+        for character in outside_code(text) {
+            if is_kana(character) {
+                has_kana = true;
+                cjk_characters += 1;
+            } else if is_hangul(character) {
+                has_hangul = true;
+                cjk_characters += 1;
+            } else if is_han(character) {
+                cjk_characters += 1;
+            } else if character.is_alphabetic() {
+                other_letters += 1;
+            }
+        }
+        if cjk_characters == 0 {
+            return None;
+        }
+        let language = if has_kana {
+            CjkLanguage::Japanese
+        } else if has_hangul {
+            CjkLanguage::Korean
+        } else {
+            han
+        };
+        let standing = if cjk_characters * 2 < other_letters {
+            Standing::Guest
+        } else {
+            Standing::Main
+        };
+        Some(Self { language, standing })
+    }
+}
+
+impl CjkLanguage {
     /// The CJK language a locale ("ja_JP.UTF-8", "zh_TW") names, if it names one.
     pub(crate) fn of_locale(locale: &str) -> Option<Self> {
         let locale = locale.to_ascii_lowercase().replace('-', "_");
@@ -62,16 +103,20 @@ impl CjkLanguage {
             .find(|value| !value.is_empty())
             .and_then(|locale| Self::of_locale(&locale))
     }
+}
 
-    /// The family of Noto Sans CJK that draws this language's glyph shapes.
-    pub(crate) fn family(self) -> &'static str {
-        match self {
-            Self::Japanese => "Noto Sans CJK JP",
-            Self::SimplifiedChinese => "Noto Sans CJK SC",
-            Self::TraditionalChinese => "Noto Sans CJK TC",
-            Self::Korean => "Noto Sans CJK KR",
+/// The characters of `text` outside code, which Markdown sets between runs of backticks.
+fn outside_code(text: &str) -> impl Iterator<Item = char> + '_ {
+    let mut in_code = false;
+    let mut after_backtick = false;
+    text.chars().filter(move |&character| {
+        let backtick = character == '`';
+        if backtick && !after_backtick {
+            in_code = !in_code;
         }
-    }
+        after_backtick = backtick;
+        !backtick && !in_code
+    })
 }
 
 /// Hiragana, katakana (also half-width) and their extensions: only Japanese writes them.
@@ -118,21 +163,49 @@ mod tests {
     #[test]
     fn a_texts_language_comes_from_its_script() {
         let han = CjkLanguage::TraditionalChinese;
+        let language = |text| CjkText::of(text, han).map(|cjk| cjk.language);
         assert_eq!(
-            CjkLanguage::of_text("このテストは CI でだけ失敗します", han),
+            language("このテストは CI でだけ失敗します"),
             Some(CjkLanguage::Japanese)
         );
+        assert_eq!(language("ﾃｽﾄ"), Some(CjkLanguage::Japanese));
         assert_eq!(
-            CjkLanguage::of_text("ﾃｽﾄ", han),
-            Some(CjkLanguage::Japanese)
-        );
-        assert_eq!(
-            CjkLanguage::of_text("테스트가 실패합니다 (失敗)", han),
+            language("테스트가 실패합니다 (失敗)"),
             Some(CjkLanguage::Korean)
         );
-        assert_eq!(CjkLanguage::of_text("測試失敗", han), Some(han));
-        assert_eq!(CjkLanguage::of_text("cargo test fails", han), None);
-        assert_eq!(CjkLanguage::of_text("「」。、", han), None);
+        assert_eq!(language("測試失敗"), Some(han));
+        // A guest keeps its language, for its glyph shapes.
+        assert_eq!(
+            language("The word テスト means test, as you may know"),
+            Some(CjkLanguage::Japanese)
+        );
+        assert_eq!(language("cargo test fails"), None);
+        assert_eq!(language("「」。、"), None);
+    }
+
+    /// An English text quoting a CJK word keeps its own setting; a Japanese one is set as
+    /// Japanese however much code it holds.
+    #[test]
+    fn cjk_is_the_main_script_by_its_share_of_letters_outside_code() {
+        let han = CjkLanguage::SimplifiedChinese;
+        let standing = |text| CjkText::of(text, han).map(|cjk| cjk.standing);
+        assert_eq!(
+            standing("Use the 漢字 field for names"),
+            Some(Standing::Guest)
+        );
+        // Half as many CJK characters as other letters is where they become the main script.
+        assert_eq!(standing("漢字漢字漢 abcdefghijk"), Some(Standing::Guest));
+        assert_eq!(standing("漢字漢字漢字 abcdefghijkl"), Some(Standing::Main));
+        assert_eq!(
+            standing("`cargo test --workspace` を実行すると `src/main.rs` のテストが失敗します"),
+            Some(Standing::Main)
+        );
+        assert_eq!(
+            standing(
+                "テストが失敗します:\n```rust\nfn main() { println!(\"hello world, this is long\"); }\n```"
+            ),
+            Some(Standing::Main)
+        );
     }
 
     #[test]

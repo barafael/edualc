@@ -2,7 +2,7 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
-import { FocusArea, MenuItem } from "types.slint";
+import { CjkChars, FocusArea, MenuItem } from "types.slint";
 import { Focus, Session, TextSelection } from "state.slint";
 
 // A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
@@ -234,6 +234,10 @@ export component TextButton inherits Rectangle {
 // its longest word.
 component SelectableText inherits StyledText {
     in property <string> key;
+    // Its text's CJK characters, which set its family and language (see `Theme`).
+    in property <CjkChars> cjk;
+    default-font-family: Theme.cjk-family(self.cjk);
+    language: Theme.language-tag(self.cjk);
     selectable: true;
     default-color: Theme.text;
     link-color: Theme.link;
