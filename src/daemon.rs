@@ -29,18 +29,18 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::buses::{self, Buses};
+use crate::buses;
 use crate::claude::{Conversation, Launch};
 use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Deframer, FolderUse, FromDaemon, Generation, Hosted, HostedId,
-    LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
+    self, Act, ActFailure, ActId, Buses, Deframer, FolderUse, FromDaemon, Generation, Hosted,
+    HostedId, LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
 };
 use crate::mirror::{self, Mirror};
 use crate::relay::{self, FromProcess, Relay, Work};
-use crate::{home, spawn, trust};
+use crate::{home, sessions, spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -1234,12 +1234,12 @@ impl Session {
 enum ToReplies {
     /// Session `from`, outside the sandbox, sent a message to `to`.
     Wrote {
-        from: spawn::MessagingName,
+        from: sessions::MessagingName,
         to: String,
     },
     /// Whether sandboxed session `sender` may answer `to` without the user being asked.
     MayAnswer {
-        sender: spawn::MessagingName,
+        sender: sessions::MessagingName,
         to: String,
         answer: tokio::sync::oneshot::Sender<bool>,
     },
@@ -1267,7 +1267,7 @@ async fn keep_replies(mut requests: mpsc::Receiver<ToReplies>) {
 /// the keeper can't tell.
 async fn may_answer(
     replies: &mpsc::Sender<ToReplies>,
-    sender: spawn::MessagingName,
+    sender: sessions::MessagingName,
     to: String,
 ) -> bool {
     let (answer, answered) = tokio::sync::oneshot::channel();
@@ -1911,7 +1911,7 @@ mod tests {
             scratch: None,
             record: None,
             diverged: None,
-            name: spawn::MessagingName::of(
+            name: sessions::MessagingName::of(
                 &SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
                     .expect("a session id"),
                 std::path::Path::new("/tmp"),

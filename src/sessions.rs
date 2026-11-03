@@ -15,6 +15,7 @@ use crate::external::claude_files::{AgentRecord, LiveRecord};
 use crate::external::wire::{
     self, MessageOrigin, SessionId, TranscriptCwd, TranscriptLine, UserContent,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use crate::home::Home;
 use crate::process;
 
@@ -42,6 +43,55 @@ impl PetName {
     /// Whether `text` holds the two words, as each name edualc gave the session has.
     fn is_in(&self, text: &str) -> bool {
         text.contains(self.0.as_str())
+    }
+}
+
+/// The name other Claude Code sessions message a session's process by (`--name`): an adjective
+/// and a noun picked by the session's id, so the same each time it runs, then its project. The
+/// CLI's own name comes from the process id, and changes as the session is started again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
+pub(crate) struct MessagingName(String);
+
+impl MessagingName {
+    /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
+    /// and two digits, all but the folder picked by the id.
+    pub(crate) fn of(id: &SessionId, cwd: &Path) -> Self {
+        Self(format!(
+            "{}-{}-{:02}",
+            PetName::of(id),
+            project_part(cwd),
+            id_number(id, 16) % 100
+        ))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The most of the folder's name a session's name takes.
+const PROJECT_PART_CHARS: usize = 20;
+
+/// The folder's name as a session's name takes it, as Claude Code writes its own names
+/// (`claude_but_sane` as `claude-but-sane`): lowercase letters and digits, the rest a dash, at
+/// most [`PROJECT_PART_CHARS`]. "project" for a folder with no such letters.
+fn project_part(cwd: &Path) -> String {
+    let folder = cwd
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut part = String::new();
+    for character in folder.chars() {
+        if character.is_ascii_alphanumeric() {
+            part.push(character);
+        } else if !part.is_empty() && !part.ends_with('-') {
+            part.push('-');
+        }
+    }
+    let part: String = part.chars().take(PROJECT_PART_CHARS).collect();
+    match part.trim_end_matches('-') {
+        "" => "project".to_owned(),
+        trimmed => trimmed.to_owned(),
     }
 }
 
@@ -216,7 +266,7 @@ fn project_dir(cwd: &Path) -> PathBuf {
 fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
     let name = project_name(cwd);
     std::iter::once(projects_dir())
-        .chain(Home::of(cwd).map(|home| home.projects()))
+        .chain(sandboxed_projects(cwd))
         .map(|projects| projects.join(&name))
         .collect()
 }
@@ -224,8 +274,31 @@ fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
 /// Every folder of transcripts' folders: the user's own home's and every sandboxed home's.
 fn all_projects_dirs() -> Vec<PathBuf> {
     std::iter::once(projects_dir())
-        .chain(Home::all().iter().map(Home::projects))
+        .chain(all_sandboxed_projects())
         .collect()
+}
+
+/// The folder of transcripts' folders in the home of `cwd`'s sandboxed sessions.
+#[cfg(not(target_arch = "wasm32"))]
+fn sandboxed_projects(cwd: &Path) -> Option<PathBuf> {
+    Home::of(cwd).map(|home| home.projects())
+}
+
+/// Every sandboxed home's folder of transcripts' folders.
+#[cfg(not(target_arch = "wasm32"))]
+fn all_sandboxed_projects() -> Vec<PathBuf> {
+    Home::all().iter().map(Home::projects).collect()
+}
+
+/// The browser demo has no sandbox, and so no sandboxed homes.
+#[cfg(target_arch = "wasm32")]
+fn sandboxed_projects(_cwd: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn all_sandboxed_projects() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
@@ -294,7 +367,7 @@ pub(crate) enum ClaudeHome {
 pub(crate) fn written_transcript(home: ClaudeHome, cwd: &Path, id: &SessionId) -> PathBuf {
     let projects = match home {
         ClaudeHome::Users => None,
-        ClaudeHome::Sandboxed => Home::of(cwd).map(|home| home.projects()),
+        ClaudeHome::Sandboxed => sandboxed_projects(cwd),
     }
     .unwrap_or_else(projects_dir);
     transcript_in(&projects, cwd, id)
@@ -736,6 +809,61 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A session keeps its name however often it is started: an adjective and a noun from its
+    /// id, its project, then two digits from its id; other ids get other names, but for rare
+    /// collisions.
+    #[test]
+    fn a_session_is_named_by_its_project_and_id() {
+        let id = |text: &str| SessionId::try_from(text.to_owned()).expect("a session id");
+        let project = Path::new("/home/someone/code/claude_but_sane");
+        let session = "d1ba2743-c47a-4446-aefc-d4594dbc045d";
+        let name = MessagingName::of(&id(session), project);
+        assert_eq!(
+            name,
+            MessagingName::of(&id(session), project),
+            "started again"
+        );
+        let mut parts = name.0.splitn(3, '-');
+        let (Some(adjective), Some(noun), Some(rest)) = (parts.next(), parts.next(), parts.next())
+        else {
+            panic!("two words first in {name}");
+        };
+        let words = petname::Petnames::small();
+        assert!(words.adjectives.contains(&adjective), "{name}");
+        assert!(words.nouns.contains(&noun), "{name}");
+        let number = rest
+            .strip_prefix("claude-but-sane-")
+            .expect("named after its project");
+        assert!(
+            number.len() == 2 && number.chars().all(|digit| digit.is_ascii_digit()),
+            "{name}"
+        );
+        let names: std::collections::HashSet<MessagingName> = (0..200)
+            .map(|_| MessagingName::of(&SessionId::new_random(), project))
+            .collect();
+        assert!(names.len() > 195, "only {} names of 200", names.len());
+    }
+
+    /// A project's part of the name is its folder's, as Claude Code writes its own names, and
+    /// short; a folder with no Latin letters or digits is "project".
+    #[test]
+    fn a_project_is_named_after_its_folder() {
+        assert_eq!(
+            project_part(Path::new("/code/claude_but_sane")),
+            "claude-but-sane"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/My Project.v2")),
+            "my-project-v2"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/a-very-long-project-name-indeed")),
+            "a-very-long-project"
+        );
+        assert_eq!(project_part(Path::new("/home/someone/文档")), "project");
+        assert_eq!(project_part(Path::new("/")), "project");
+    }
 
     #[test]
     fn project_dirs_are_named_like_claude_code_names_them() {

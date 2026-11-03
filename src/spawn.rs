@@ -14,7 +14,8 @@ use crate::claude::{Conversation, FolderConfiguration, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, CopyBack, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
-use crate::{mirror, process, relay, sessions};
+use crate::sessions::MessagingName;
+use crate::{mirror, process, relay};
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
 /// child would take them as its own and think itself nested.
@@ -54,55 +55,6 @@ pub(crate) enum Error {
         "processes {0:?} started with the pipe meant for the session's sign-in, so it wasn't handed over; start the session again"
     )]
     SignInPipeShared(Vec<u32>),
-}
-
-/// The name other Claude Code sessions message a session's process by (`--name`): an adjective
-/// and a noun picked by the session's id, so the same each time it runs, then its project. The
-/// CLI's own name comes from the process id, and changes as the session is started again.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-pub(crate) struct MessagingName(String);
-
-impl MessagingName {
-    /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
-    /// and two digits, all but the folder picked by the id.
-    pub(crate) fn of(id: &SessionId, cwd: &Path) -> Self {
-        Self(format!(
-            "{}-{}-{:02}",
-            sessions::PetName::of(id),
-            project_part(cwd),
-            sessions::id_number(id, 16) % 100
-        ))
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// The most of the folder's name a session's name takes.
-const PROJECT_PART_CHARS: usize = 20;
-
-/// The folder's name as a session's name takes it, as Claude Code writes its own names
-/// (`claude_but_sane` as `claude-but-sane`): lowercase letters and digits, the rest a dash, at
-/// most [`PROJECT_PART_CHARS`]. "project" for a folder with no such letters.
-fn project_part(cwd: &Path) -> String {
-    let folder = cwd
-        .file_name()
-        .map(|name| name.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let mut part = String::new();
-    for character in folder.chars() {
-        if character.is_ascii_alphanumeric() {
-            part.push(character);
-        } else if !part.is_empty() && !part.ends_with('-') {
-            part.push('-');
-        }
-    }
-    let part: String = part.chars().take(PROJECT_PART_CHARS).collect();
-    match part.trim_end_matches('-') {
-        "" => "project".to_owned(),
-        trimmed => trimmed.to_owned(),
-    }
 }
 
 /// A started process, its pipes still in it, and how far it is sandboxed. Dropped, it is
@@ -197,11 +149,6 @@ impl SignIn {
     }
 }
 
-/// The `claude` to run: `$CLAUDE_BIN` as the daemon was started with, or the one on `PATH`.
-pub(crate) fn program() -> std::ffi::OsString {
-    std::env::var_os("CLAUDE_BIN").unwrap_or_else(|| "claude".into())
-}
-
 /// Starts the process; `runtime` is the daemon's, which the process's pipes and exit are waited
 /// on with.
 pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawned, Error> {
@@ -211,7 +158,7 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
         .ok()
         .filter(|cwd| cwd.is_dir())
         .ok_or_else(|| Error::NoFolder(launch.cwd.clone()))?;
-    let mut command = Command::new(program());
+    let mut command = Command::new(crate::claude::program());
     command.args([
         "-p",
         "--input-format",
@@ -450,60 +397,5 @@ mod tests {
         assert!(model_name("--dangerously-skip-permissions").is_err());
         assert!(model_name("haiku; rm -rf ~").is_err());
         assert!(model_name("").is_err());
-    }
-
-    /// A session keeps its name however often it is started: an adjective and a noun from its
-    /// id, its project, then two digits from its id; other ids get other names, but for rare
-    /// collisions.
-    #[test]
-    fn a_session_is_named_by_its_project_and_id() {
-        let id = |text: &str| SessionId::try_from(text.to_owned()).expect("a session id");
-        let project = Path::new("/home/someone/code/claude_but_sane");
-        let session = "d1ba2743-c47a-4446-aefc-d4594dbc045d";
-        let name = MessagingName::of(&id(session), project);
-        assert_eq!(
-            name,
-            MessagingName::of(&id(session), project),
-            "started again"
-        );
-        let mut parts = name.0.splitn(3, '-');
-        let (Some(adjective), Some(noun), Some(rest)) = (parts.next(), parts.next(), parts.next())
-        else {
-            panic!("two words first in {name}");
-        };
-        let words = petname::Petnames::small();
-        assert!(words.adjectives.contains(&adjective), "{name}");
-        assert!(words.nouns.contains(&noun), "{name}");
-        let number = rest
-            .strip_prefix("claude-but-sane-")
-            .expect("named after its project");
-        assert!(
-            number.len() == 2 && number.chars().all(|digit| digit.is_ascii_digit()),
-            "{name}"
-        );
-        let names: std::collections::HashSet<MessagingName> = (0..200)
-            .map(|_| MessagingName::of(&SessionId::new_random(), project))
-            .collect();
-        assert!(names.len() > 195, "only {} names of 200", names.len());
-    }
-
-    /// A project's part of the name is its folder's, as Claude Code writes its own names, and
-    /// short; a folder with no Latin letters or digits is "project".
-    #[test]
-    fn a_project_is_named_after_its_folder() {
-        assert_eq!(
-            project_part(Path::new("/code/claude_but_sane")),
-            "claude-but-sane"
-        );
-        assert_eq!(
-            project_part(Path::new("/code/My Project.v2")),
-            "my-project-v2"
-        );
-        assert_eq!(
-            project_part(Path::new("/code/a-very-long-project-name-indeed")),
-            "a-very-long-project"
-        );
-        assert_eq!(project_part(Path::new("/home/someone/文档")), "project");
-        assert_eq!(project_part(Path::new("/")), "project");
     }
 }

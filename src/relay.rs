@@ -29,7 +29,7 @@ use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::external::mcp::{
     Block, JsonRpc, Line, Permission, Request, SendArguments, ToolCall, Turn,
 };
-use crate::spawn::MessagingName;
+use crate::sessions::MessagingName;
 use crate::{mirror, process, sessions};
 
 /// The server's name, as `initialize` registers it and tools are named after it.

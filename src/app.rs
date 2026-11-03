@@ -28,14 +28,16 @@ use crate::ipc::{
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
-use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{
+    self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
+};
 use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
-use crate::spawn::MessagingName;
 use crate::trust;
 use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
 
+#[cfg_attr(target_arch = "wasm32", path = "web/images.rs")]
 mod images;
 mod peek;
 mod protocol;
@@ -1260,6 +1262,7 @@ impl App {
     }
 
     /// Runs `work` on a thread of its own; its result comes back as the event `done` makes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn in_background<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> T + Send + 'static,
@@ -1271,6 +1274,16 @@ impl App {
                 tracing::debug!("the window closed before background work finished");
             }
         });
+    }
+
+    /// Runs `work` now, in the browser demo, which has no threads (and whose work reads only
+    /// what is built into the page); its result comes back as the event `done` makes, after
+    /// what is handled now.
+    #[cfg(target_arch = "wasm32")]
+    fn in_background<T>(&self, work: impl FnOnce() -> T, done: impl FnOnce(T) -> Event) {
+        if self.events.try_send(done(work())).is_err() {
+            tracing::debug!("the window closed before background work finished");
+        }
     }
 
     /// Starts a process in the working directory once it is trusted: here, or in the terminal,

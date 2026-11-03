@@ -16,6 +16,11 @@ use crate::ipc::{Generation, HostedId, StartFailure, ToDaemon};
 use crate::link::{self, Link};
 use crate::sandbox::Enforcement;
 
+/// The `claude` to run: `$CLAUDE_BIN` as the daemon was started with, or the one on `PATH`.
+pub(crate) fn program() -> std::ffi::OsString {
+    std::env::var_os("CLAUDE_BIN").unwrap_or_else(|| "claude".into())
+}
+
 /// What the process says, or the daemon about it.
 #[derive(Debug)]
 pub(crate) enum Output {

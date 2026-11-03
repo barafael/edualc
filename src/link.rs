@@ -12,12 +12,11 @@ use std::time::{Duration, Instant};
 use async_channel::Sender;
 
 use crate::app::Event;
-use crate::buses::Buses;
 use crate::claude::Output;
 use crate::decode;
 use crate::ipc::{
-    self, ActId, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL,
-    PasteFailure, Pasted, Stream, ToDaemon,
+    self, ActId, Assembler, Buses, Channel, Deframer, Folder, FromDaemon, Generation, Hosted,
+    PROTOCOL, PasteFailure, Pasted, Stream, ToDaemon,
 };
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
