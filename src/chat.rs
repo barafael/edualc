@@ -859,8 +859,8 @@ fn unescaped(text: &str) -> String {
     out
 }
 
-/// Slash command output is meant for a terminal.
-fn strip_ansi(text: &str) -> String {
+/// Slash command output, and a command's, is meant for a terminal.
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(character) = chars.next() {

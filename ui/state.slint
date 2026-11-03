@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, StatSection, TaskItem } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, StatSection, TaskItem, TaskKind } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -207,21 +207,27 @@ export global Prompt {
     callback approve-plan(string, bool, string);
 }
 
-// Side questions (`/btw`): answered with the conversation's context, never part of it.
-// A subagent followed in the side panel, read only: the chip's list of what runs opens it.
+// A task followed in the side panel, read only: the chip's list of what runs opens it. A
+// subagent's conversation, or what a background command prints.
 export global Peek {
     in property <bool> open;
+    in property <TaskKind> kind;
     // What it was started for, and its kind ("Agent · Explore").
     in property <string> title;
     in property <string> detail;
     // It still runs; else it ended, and what is shown is all it did.
     in property <bool> running;
     in property <[PeekStep]> steps;
+    // A command's: the lines it printed, as far as Claude Code tells (the end of them), and
+    // what is said of that (only the end of it; why there is none).
+    in property <[string]> output;
+    in property <string> note;
     // Follow the task with this id.
     callback follow(string);
     callback close;
 }
 
+// Side questions (`/btw`): answered with the conversation's context, never part of it.
 export global Side {
     in property <SideView> view;
     in property <[SideExchange]> exchanges;

@@ -1,19 +1,31 @@
-//! Peeking into a subagent: what it was asked, what it says and each tool it calls, read from
-//! the transcript Claude Code keeps for it beside the session's
-//! (`<session>/subagents/agent-<task id>.jsonl`) and followed as it grows. Read only; the
-//! side panel shows it.
+//! Peeking into a task, read only, in the side panel. A subagent: what it was asked, what it
+//! says and each tool it calls, read from the transcript Claude Code keeps for it beside the
+//! session's (`<session>/subagents/agent-<task id>.jsonl`) and followed as it grows. A
+//! background command: the end of what it printed, asked of Claude Code every little while as
+//! it runs and once after.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use crate::external::wire::{ContentBlock, TaskId, TranscriptLine, UserContent};
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::chat::strip_ansi;
+use crate::external::wire::{
+    ContentBlock, ControlRequest, TaskId, TaskKind, TaskOutput, TranscriptLine, UserContent,
+};
 use crate::sessions;
 use crate::tools::{self, Depth};
 use crate::watcher::Watched;
 
-use super::{App, Event, Refresh, Sandboxing};
+use super::{App, Event, Refresh, Request, Sandboxing};
+
+/// How often a followed command's output is asked for while it runs.
+const POLL_OUTPUT: Duration = Duration::from_secs(1);
 
 impl App {
-    /// Shows subagent `task`'s conversation in the side panel, followed as it goes.
+    /// Shows task `task` in the side panel, followed as it goes: a subagent's conversation, or
+    /// what a command prints.
     pub(super) fn open_peek(&mut self, task: TaskId) {
         let Some(running) = self
             .status
@@ -24,27 +36,136 @@ impl App {
             return;
         };
         let title = running.task.description.clone();
+        let kind = running.task.task_type;
         let agent = running.task.subagent_type.clone();
-        let Some(id) = self.status.session_id.as_ref() else {
-            return;
+        let view = match Followed::of(kind) {
+            Some(Followed::Conversation) => {
+                let Some(path) = self.subagent_transcript(&task) else {
+                    return;
+                };
+                PeekView::Conversation(Conversation::new(agent, path))
+            }
+            Some(Followed::Output) => PeekView::Output(CommandOutput::default()),
+            None => return,
         };
-        // Beside the session's transcript in the home its process writes in: the user's own
-        // follows a sandboxed session's transcript, but not its subagents'.
+        self.close_peek();
+        self.peek = Some(Peek {
+            task,
+            title,
+            kind,
+            view,
+        });
+        self.redraw.peek = true;
+        let following = self
+            .conversation()
+            .map(|conversation| conversation.path.clone())
+            .and_then(|path| self.follow_peek(&path));
+        if let Some(conversation) = self.conversation() {
+            conversation.following = following;
+            self.read_peek();
+        } else {
+            self.start_polling();
+            self.poll_output();
+        }
+    }
+
+    /// Where subagent `task` of the session shown keeps its transcript: beside the session's in
+    /// the home its process writes in, as the user's own follows a sandboxed session's
+    /// transcript but not its subagents'.
+    fn subagent_transcript(&self, task: &TaskId) -> Option<PathBuf> {
+        let id = self.status.session_id.as_ref()?;
         let home = match self.status.sandboxing {
             Sandboxing::Landlock(_) => sessions::ClaudeHome::Sandboxed,
             Sandboxing::Pending | Sandboxing::Off | Sandboxing::ClaudeCodes => {
                 sessions::ClaudeHome::Users
             }
         };
-        let session = sessions::written_transcript(home, &self.cwd, id);
-        let path = transcript_of(&session, &task);
-        self.close_peek();
-        let mut peek = Peek::new(task, title, path);
-        peek.agent = agent;
-        peek.following = self.follow_peek(&peek.path);
-        self.peek = Some(peek);
-        self.redraw.peek = true;
-        self.read_peek();
+        Some(transcript_of(
+            &sessions::written_transcript(home, &self.cwd, id),
+            task,
+        ))
+    }
+
+    /// The subagent's conversation peeked into, if one is.
+    fn conversation(&mut self) -> Option<&mut Conversation> {
+        match self.peek.as_mut().map(|peek| &mut peek.view) {
+            Some(PeekView::Conversation(conversation)) => Some(conversation),
+            Some(PeekView::Output(_)) | None => None,
+        }
+    }
+
+    /// The command's output peeked into, if one is.
+    fn output(&mut self) -> Option<&mut CommandOutput> {
+        match self.peek.as_mut().map(|peek| &mut peek.view) {
+            Some(PeekView::Output(output)) => Some(output),
+            Some(PeekView::Conversation(_)) | None => None,
+        }
+    }
+
+    fn start_polling(&self) {
+        if self.polling.running() {
+            return;
+        }
+        let events = self.events.clone();
+        self.polling
+            .start(slint::TimerMode::Repeated, POLL_OUTPUT, move || {
+                if events.try_send(Event::PollOutput).is_err() {
+                    tracing::debug!("polling after the window closed");
+                }
+            });
+    }
+
+    /// Asks Claude Code for the followed command's output, unless the last question is still
+    /// out; stops polling once there is nothing more to ask.
+    pub(super) fn poll_output(&mut self) {
+        let task = self.peek.as_ref().map(|peek| peek.task.clone());
+        let running = task.as_ref().is_some_and(|task| {
+            self.status
+                .tasks
+                .running()
+                .any(|running| &running.task.task_id == task)
+        });
+        let ask = self
+            .output()
+            .is_some_and(|output| output.ask(running))
+            .then_some(task)
+            .flatten();
+        if let Some(task) = ask {
+            let request = ControlRequest::GetTaskOutput {
+                task_id: task.clone(),
+            };
+            if !self.request(&request, Request::TaskOutput(task))
+                && let Some(output) = self.output()
+            {
+                output.give_up();
+            }
+        }
+        if self.output().is_none_or(|output| output.finished()) {
+            self.polling.stop();
+        }
+    }
+
+    /// What Claude Code says the command printed, or why it doesn't.
+    pub(super) fn output_told(&mut self, task: &TaskId, answer: Result<Value, String>) {
+        if self.peek.as_ref().is_none_or(|peek| &peek.task != task) {
+            return;
+        }
+        let Some(output) = self.output() else {
+            return;
+        };
+        let changed = match answer.map(|value| TaskOutput::deserialize(&value)) {
+            Ok(Ok(told)) => output.told(&told),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "a command's output that doesn't parse");
+                output.give_up();
+                false
+            }
+            Err(refusal) => {
+                output.refused(refusal);
+                true
+            }
+        };
+        self.redraw.peek |= changed;
     }
 
     /// Watches the subagent's transcript, or until it is written, the nearest folder that will
@@ -64,28 +185,30 @@ impl App {
 
     /// Whether `watched` is the peek's watch.
     pub(super) fn peeks_at(&self, watched: Watched) -> bool {
-        self.peek
-            .as_ref()
-            .and_then(|peek| peek.following)
-            .is_some_and(|following| following.watched() == watched)
+        match self.peek.as_ref().map(|peek| &peek.view) {
+            Some(PeekView::Conversation(conversation)) => conversation
+                .following
+                .is_some_and(|following| following.watched() == watched),
+            Some(PeekView::Output(_)) | None => false,
+        }
     }
 
     /// The subagent's transcript, or its folder, changed.
     pub(super) fn peek_changed(&mut self) {
-        let Some(peek) = self.peek.as_ref() else {
+        let Some(conversation) = self.conversation() else {
             return;
         };
         // Watching a folder until the transcript is there: from now on the transcript.
-        if let Some(Following::Folder(watched)) = peek.following
-            && peek.path.is_file()
+        if let Some(Following::Folder(watched)) = conversation.following
+            && conversation.path.is_file()
         {
-            let path = peek.path.clone();
+            let path = conversation.path.clone();
             if let Some(watcher) = &self.watcher {
                 watcher.forget(watched);
             }
             let following = self.follow_peek(&path);
-            if let Some(peek) = self.peek.as_mut() {
-                peek.following = following;
+            if let Some(conversation) = self.conversation() {
+                conversation.following = following;
             }
         }
         self.read_peek();
@@ -96,10 +219,17 @@ impl App {
         let Some(peek) = self.peek.as_mut() else {
             return;
         };
-        let grown =
-            std::fs::metadata(&peek.path).is_ok_and(|metadata| metadata.len() > peek.offset);
-        if grown && peek.reading.wanted() {
-            let (task, path, from) = (peek.task.clone(), peek.path.clone(), peek.offset);
+        let PeekView::Conversation(conversation) = &mut peek.view else {
+            return;
+        };
+        let grown = std::fs::metadata(&conversation.path)
+            .is_ok_and(|metadata| metadata.len() > conversation.offset);
+        if grown && conversation.reading.wanted() {
+            let (task, path, from) = (
+                peek.task.clone(),
+                conversation.path.clone(),
+                conversation.offset,
+            );
             self.in_background(
                 move || sessions::read_from(&path, from),
                 move |result| Event::PeekGrew { task, result },
@@ -113,14 +243,17 @@ impl App {
         result: std::io::Result<(Vec<TranscriptLine>, u64)>,
     ) {
         let cwd = self.cwd.clone();
-        let Some(peek) = self.peek.as_mut().filter(|peek| &peek.task == task) else {
+        if self.peek.as_ref().is_none_or(|peek| &peek.task != task) {
+            return;
+        }
+        let Some(conversation) = self.conversation() else {
             return;
         };
-        let again = peek.reading.done();
+        let again = conversation.reading.done();
         match result {
             Ok((lines, offset)) => {
-                peek.offset = offset;
-                peek.take(&lines, &cwd);
+                conversation.offset = offset;
+                conversation.take(&lines, &cwd);
                 self.redraw.peek = true;
             }
             Err(error) => tracing::debug!(%error, "couldn't read on in a subagent's transcript"),
@@ -132,8 +265,11 @@ impl App {
 
     /// Stops peeking.
     pub(super) fn close_peek(&mut self) {
+        self.polling.stop();
         if let Some(peek) = self.peek.take() {
-            if let (Some(watcher), Some(following)) = (&self.watcher, peek.following) {
+            if let PeekView::Conversation(conversation) = peek.view
+                && let (Some(watcher), Some(following)) = (&self.watcher, conversation.following)
+            {
                 watcher.forget(following.watched());
             }
             self.redraw.peek = true;
@@ -163,12 +299,49 @@ const MAX_STEPS: usize = 400;
 /// The most characters of what it says shown per step.
 const MAX_SAID_CHARS: usize = 600;
 
-/// The subagent peeked into, and how far its transcript was read.
+/// How a task's work is followed, for the kinds whose work can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Followed {
+    /// Its conversation, from its transcript: a subagent on this machine.
+    Conversation,
+    /// What it prints, asked of Claude Code: a background command.
+    Output,
+}
+
+impl Followed {
+    pub(crate) fn of(kind: TaskKind) -> Option<Self> {
+        match kind {
+            TaskKind::LocalAgent => Some(Self::Conversation),
+            TaskKind::LocalBash => Some(Self::Output),
+            TaskKind::RemoteAgent
+            | TaskKind::InProcessTeammate
+            | TaskKind::LocalWorkflow
+            | TaskKind::MonitorMcp
+            | TaskKind::MonitorWs
+            | TaskKind::Other => None,
+        }
+    }
+}
+
+/// The task peeked into.
 #[derive(Debug)]
 pub(crate) struct Peek {
     pub(crate) task: TaskId,
     /// What it was started for.
     pub(crate) title: String,
+    pub(crate) kind: TaskKind,
+    pub(crate) view: PeekView,
+}
+
+#[derive(Debug)]
+pub(crate) enum PeekView {
+    Conversation(Conversation),
+    Output(CommandOutput),
+}
+
+/// A subagent's conversation, and how far its transcript was read.
+#[derive(Debug)]
+pub(crate) struct Conversation {
     /// Its kind ("Explore"), kept for after it ended.
     pub(crate) agent: Option<String>,
     /// Its transcript; it may not be written yet.
@@ -177,6 +350,90 @@ pub(crate) struct Peek {
     reading: Refresh,
     following: Option<Following>,
     pub(crate) steps: Vec<Step>,
+}
+
+/// What a background command printed, as Claude Code last told it.
+#[derive(Debug, Default)]
+pub(crate) struct CommandOutput {
+    /// The end of it, escape sequences taken out.
+    pub(crate) text: String,
+    /// The size of all it printed, of which `text` is only the end if `truncated`.
+    pub(crate) total_bytes: u64,
+    pub(crate) truncated: bool,
+    asking: Asking,
+}
+
+/// Asking for a command's output: again once each answer is in while it runs, and a last time
+/// after it ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Asking {
+    /// No question out: the next poll asks.
+    #[default]
+    Due,
+    /// A question out, asked while it ran.
+    Asked,
+    /// The last question out, asked after it ended.
+    AskedLast,
+    /// Nothing more to ask: the answer after its end is in, or there is no process to ask.
+    Done,
+    /// Claude Code doesn't tell it, in its words.
+    Refused(String),
+}
+
+impl CommandOutput {
+    /// At a poll, the command `running` or ended: whether to ask for its output now.
+    fn ask(&mut self, running: bool) -> bool {
+        match self.asking {
+            Asking::Due => {
+                self.asking = if running {
+                    Asking::Asked
+                } else {
+                    Asking::AskedLast
+                };
+                true
+            }
+            Asking::Asked | Asking::AskedLast | Asking::Done | Asking::Refused(_) => false,
+        }
+    }
+
+    /// Takes Claude Code's answer: whether what is shown changed.
+    fn told(&mut self, told: &TaskOutput) -> bool {
+        self.asking = match std::mem::take(&mut self.asking) {
+            Asking::Asked => Asking::Due,
+            Asking::AskedLast => Asking::Done,
+            unasked @ (Asking::Due | Asking::Done | Asking::Refused(_)) => unasked,
+        };
+        let changed = told.total_bytes != self.total_bytes || told.truncated != self.truncated;
+        if changed {
+            self.text = strip_ansi(&told.output);
+            self.total_bytes = told.total_bytes;
+            self.truncated = told.truncated;
+        }
+        changed
+    }
+
+    fn refused(&mut self, refusal: String) {
+        self.asking = Asking::Refused(refusal);
+    }
+
+    /// No process to ask any more: what was told last stays.
+    fn give_up(&mut self) {
+        if !self.finished() {
+            self.asking = Asking::Done;
+        }
+    }
+
+    fn finished(&self) -> bool {
+        matches!(self.asking, Asking::Done | Asking::Refused(_))
+    }
+
+    /// Why Claude Code doesn't tell it, if it refused.
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        match &self.asking {
+            Asking::Refused(refusal) => Some(refusal),
+            Asking::Due | Asking::Asked | Asking::AskedLast | Asking::Done => None,
+        }
+    }
 }
 
 /// A step of the subagent's.
@@ -196,12 +453,10 @@ pub(crate) enum StepKind {
     Called,
 }
 
-impl Peek {
-    pub(crate) fn new(task: TaskId, title: String, path: PathBuf) -> Self {
+impl Conversation {
+    fn new(agent: Option<String>, path: PathBuf) -> Self {
         Self {
-            task,
-            title,
-            agent: None,
+            agent,
             path,
             offset: 0,
             reading: Refresh::default(),
@@ -310,14 +565,10 @@ mod tests {
             line(json!({ "type": "user", "isMeta": true,
                 "message": { "role": "user", "content": "<system-reminder>x</system-reminder>" } })),
         ];
-        let mut peek = Peek::new(
-            TaskId::from("a1".to_owned()),
-            "Find the parser".to_owned(),
-            PathBuf::new(),
-        );
-        peek.take(&lines, cwd);
-        let [asked, said, called] = peek.steps.as_slice() else {
-            panic!("three steps: {:?}", peek.steps);
+        let mut conversation = Conversation::new(None, PathBuf::new());
+        conversation.take(&lines, cwd);
+        let [asked, said, called] = conversation.steps.as_slice() else {
+            panic!("three steps: {:?}", conversation.steps);
         };
         assert_eq!(asked.kind, StepKind::Asked);
         assert_eq!(
@@ -341,10 +592,78 @@ mod tests {
                 ] } }))
         };
         let lines: Vec<TranscriptLine> = (0..MAX_STEPS + 5).map(|n| said(n.to_string())).collect();
-        let mut peek = Peek::new(TaskId::from("a1".to_owned()), String::new(), PathBuf::new());
-        peek.take(&lines, Path::new("/"));
-        assert_eq!(peek.steps.len(), MAX_STEPS);
-        assert_eq!(peek.steps.first().map(|step| step.text.as_str()), Some("5"));
+        let mut conversation = Conversation::new(None, PathBuf::new());
+        conversation.take(&lines, Path::new("/"));
+        assert_eq!(conversation.steps.len(), MAX_STEPS);
+        assert_eq!(
+            conversation.steps.first().map(|step| step.text.as_str()),
+            Some("5")
+        );
+    }
+
+    fn told(output: &str, total_bytes: u64, truncated: bool) -> TaskOutput {
+        serde_json::from_value(json!({
+            "output": output, "total_bytes": total_bytes, "truncated": truncated,
+        }))
+        .expect("an answer")
+    }
+
+    /// A running command's output is asked for again once each answer is in, never twice at
+    /// once; after it ended, once more, and then no more.
+    #[test]
+    fn a_commands_output_is_asked_for_one_answer_at_a_time() {
+        let mut output = CommandOutput::default();
+        assert!(output.ask(true), "the first poll asks");
+        assert!(!output.ask(true), "not again while the question is out");
+        assert!(output.told(&told("\u{1b}[32mok\u{1b}[0m\n", 12, false)));
+        assert_eq!(output.text, "ok\n", "escape sequences taken out");
+        assert!(output.ask(true), "the answer is in: the next poll asks");
+        assert!(
+            !output.told(&told("\u{1b}[32mok\u{1b}[0m\n", 12, false)),
+            "nothing more printed: nothing to show anew"
+        );
+        assert!(output.ask(true));
+        assert!(output.told(&told("ok\nmore\n", 8, false)));
+        assert!(output.ask(false), "it ended: asked a last time");
+        assert!(!output.ask(false));
+        assert!(!output.finished(), "until that answer is in");
+        output.told(&told("ok\nmore\ndone\n", 13, false));
+        assert!(output.finished());
+        assert!(!output.ask(false), "nothing more to ask");
+        assert_eq!(output.text, "ok\nmore\ndone\n");
+    }
+
+    /// It ending while a question is out still gets it a last question once that is answered.
+    #[test]
+    fn a_command_ending_meanwhile_is_asked_once_more() {
+        let mut output = CommandOutput::default();
+        assert!(output.ask(true));
+        output.told(&told("half", 4, false));
+        assert!(!output.finished());
+        assert!(output.ask(false), "the poll after its end asks");
+        output.told(&told("whole", 5, false));
+        assert!(output.finished());
+    }
+
+    /// A refusal ends the asking, and says why; without a process, what was told stays.
+    #[test]
+    fn a_refused_or_unanswerable_output_is_asked_no_more() {
+        let mut output = CommandOutput::default();
+        assert!(output.ask(true));
+        output.refused("no such shell task".to_owned());
+        assert_eq!(output.refusal(), Some("no such shell task"));
+        assert!(output.finished() && !output.ask(true));
+        output.give_up();
+        assert_eq!(output.refusal(), Some("no such shell task"), "kept");
+        let mut gone = CommandOutput::default();
+        assert!(gone.ask(true));
+        gone.told(&told("last words", 10, true));
+        gone.give_up();
+        assert!(gone.finished() && !gone.ask(true));
+        assert_eq!(
+            (gone.text.as_str(), gone.truncated, gone.refusal()),
+            ("last words", true, None)
+        );
     }
 
     /// The transcript sits in the session's folder of subagents, named by the task.

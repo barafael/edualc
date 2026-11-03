@@ -534,6 +534,17 @@ pub(crate) struct TaskUsage {
     pub(crate) duration_ms: u64,
 }
 
+/// What `GetTaskOutput` answers: the end of what the command printed, escape sequences and all.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct TaskOutput {
+    pub(crate) output: String,
+    /// The size of all it printed.
+    pub(crate) total_bytes: u64,
+    /// `output` is only the end of it.
+    #[serde(default)]
+    pub(crate) truncated: bool,
+}
+
 /// What changed about a task.
 #[derive(Debug, Deserialize)]
 pub(crate) struct TaskPatch {
@@ -1354,6 +1365,11 @@ pub(crate) enum ControlRequest {
     StopTask {
         task_id: TaskId,
     },
+    /// The end of what a background command printed (its last 8 KiB), as the terminal's
+    /// `/tasks` shows it; asked while it runs, and once after.
+    GetTaskOutput {
+        task_id: TaskId,
+    },
     SetModel {
         model: String,
     },
@@ -1837,6 +1853,17 @@ mod tests {
             })
             .get("request"),
             Some(&json!({ "subtype": "stop_task", "task_id": "a1b2" }))
+        );
+        let request = ControlRequest::GetTaskOutput {
+            task_id: TaskId::from("b3p6".to_owned()),
+        };
+        assert_eq!(
+            encoded(&Input::ControlRequest {
+                request_id: &id,
+                request: &request,
+            })
+            .get("request"),
+            Some(&json!({ "subtype": "get_task_output", "task_id": "b3p6" }))
         );
         let offered = json!({ "type": "addRules", "rules": [], "behavior": "allow" });
         let allow = PermissionResult::Allow {

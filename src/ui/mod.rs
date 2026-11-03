@@ -11,8 +11,9 @@ use slint::{
 use strum::IntoEnumIterator;
 
 use crate::app::{
-    Answer, Ask, AskKind, Doing, LimitUse, Mode, PermissionMode, Place, Running, Sandboxing,
-    SideChat, SideView, Status, Tasks, UsagePanel, Watch,
+    Answer, Ask, AskKind, CommandOutput, Conversation, Doing, Followed, LimitUse, Mode, Peek,
+    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, Status, Tasks,
+    UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::CjkLanguage;
@@ -776,7 +777,7 @@ impl View {
     }
 
     /// The subagent followed in the side panel, if one is, and whether it still runs.
-    pub(crate) fn render_peek(&self, peek: Option<&crate::app::Peek>, tasks: &Tasks) {
+    pub(crate) fn render_peek(&self, peek: Option<&Peek>, tasks: &Tasks) {
         let global = self.window.global::<crate::generated::Peek>();
         let Some(peek) = peek else {
             global.set_open(false);
@@ -787,11 +788,25 @@ impl View {
             .running()
             .any(|running| running.task.task_id == peek.task);
         global.set_open(true);
+        global.set_kind(task_kind(peek.kind));
         global.set_title(peek.title.as_str().into());
-        global.set_detail(peek_detail(peek.agent.as_deref()).into());
+        global.set_detail(peek_detail(peek).into());
         global.set_running(running);
-        let steps: Vec<PeekStep> = peek.steps.iter().map(peek_step).collect();
+        let (steps, lines, note): (Vec<PeekStep>, Vec<SharedString>, String) = match &peek.view {
+            PeekView::Conversation(conversation) => (
+                conversation.steps.iter().map(peek_step).collect(),
+                Vec::new(),
+                String::new(),
+            ),
+            PeekView::Output(output) => (
+                Vec::new(),
+                output.text.lines().map(SharedString::from).collect(),
+                output_note(output),
+            ),
+        };
         global.set_steps(ModelRc::new(VecModel::from(steps)));
+        global.set_output(ModelRc::new(VecModel::from(lines)));
+        global.set_note(note.into());
     }
 
     /// The model and mode menus, and which of each is in use.
@@ -1780,15 +1795,41 @@ fn task_item(running: Running<'_>) -> TaskItem {
         detail: detail.into(),
         used: used.unwrap_or_default().into(),
         now: now.unwrap_or_default().into(),
-        peekable: task.task_type == wire::TaskKind::LocalAgent,
+        peekable: Followed::of(task.task_type).is_some(),
     }
 }
 
-/// "Agent · Explore", as the chip's list names a subagent.
-fn peek_detail(agent: Option<&str>) -> String {
-    match agent {
-        Some(agent) => format!("Agent · {agent}"),
-        None => "Agent".to_owned(),
+/// "Agent · Explore", as the chip's list names a subagent; "Shell command".
+fn peek_detail(peek: &Peek) -> String {
+    match &peek.view {
+        PeekView::Conversation(Conversation {
+            agent: Some(agent), ..
+        }) => format!("Agent · {agent}"),
+        PeekView::Conversation(_) => "Agent".to_owned(),
+        PeekView::Output(_) => "Shell command".to_owned(),
+    }
+}
+
+/// What the side panel says of a command's output beside it: why there is none, or that it is
+/// only the end.
+fn output_note(output: &CommandOutput) -> String {
+    match output.refusal() {
+        Some(refusal) => format!("Claude Code doesn't show what it printed: {refusal}"),
+        None if output.truncated => format!(
+            "Only the end of the {} it printed",
+            bytes_text(output.total_bytes)
+        ),
+        None => String::new(),
+    }
+}
+
+/// "9 KB", "1.2 MB": the size of a command's output, which is shown whole below 8 KB.
+fn bytes_text(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * KB;
+    match bytes {
+        ..MB => format!("{} KB", bytes.div_ceil(KB)),
+        MB.. => format!("{}.{} MB", bytes / MB, (bytes % MB) * 10 / MB),
     }
 }
 
@@ -1960,7 +2001,12 @@ mod tests {
         let unnamed = task_item(running(&command, Place::Background));
         assert_eq!(unnamed.title, "Shell command");
         assert_eq!(unnamed.detail, "Shell command");
-        assert!(!unnamed.peekable, "only a subagent has a conversation");
+        assert!(unnamed.peekable, "what it prints is followed");
+        let monitor = task("monitor_mcp", None, "Watch the build");
+        assert!(
+            !task_item(running(&monitor, Place::Background)).peekable,
+            "neither a conversation here nor output to ask for"
+        );
     }
 
     /// What a task used reads briefly and leaves out what is none; what it does now is its

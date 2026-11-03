@@ -368,6 +368,7 @@ impl App {
             }
             // The task's end comes as its notification.
             (Request::Interrupt | Request::StopTask(_), Ok(_)) => {}
+            (Request::TaskOutput(task), outcome) => self.output_told(&task, outcome),
             (Request::Side(index), outcome) => self.side_answered(index, outcome),
             (Request::Usage, outcome) => self.usage_answered(outcome),
             (Request::ContextUsage, outcome) => self.context_answered(outcome),

@@ -43,7 +43,7 @@ mod tasks;
 mod usage;
 mod worktree;
 
-pub(crate) use peek::{Peek, Step, StepKind};
+pub(crate) use peek::{CommandOutput, Conversation, Followed, Peek, PeekView, Step, StepKind};
 pub(crate) use side::{Answer, SideChat, SideView};
 pub(crate) use tasks::{Place, Running, TaskProgress, Tasks};
 
@@ -174,6 +174,8 @@ pub(crate) enum Event {
     Tick,
     /// Every little while during a turn: whether Claude Code has gone quiet.
     Listen,
+    /// Every second while a command is followed: what it printed since.
+    PollOutput,
 }
 
 /// Where a start stands on its folder's trust.
@@ -522,6 +524,8 @@ pub(crate) enum Request {
     Mode(PermissionMode),
     Interrupt,
     StopTask(wire::TaskId),
+    /// What the command followed in the side panel printed.
+    TaskOutput(wire::TaskId),
     /// A side question, by its place in the side chat.
     Side(usize),
     Usage,
@@ -692,6 +696,8 @@ pub(crate) struct App {
     tick: slint::Timer,
     /// Runs while a turn is under way (see `Event::Listen`).
     listen: slint::Timer,
+    /// Runs while a command's output is followed (see `Event::PollOutput`).
+    polling: slint::Timer,
     /// When the process last said something.
     heard: std::time::Instant,
     redraw: Redraw,
@@ -772,6 +778,7 @@ impl App {
             last_act: ActId::default(),
             tick: slint::Timer::default(),
             listen: slint::Timer::default(),
+            polling: slint::Timer::default(),
             heard: std::time::Instant::now(),
             redraw: Redraw::default(),
         }
@@ -913,6 +920,7 @@ impl App {
             Event::Changed(watched) => self.changed(watched),
             Event::Tick => self.tick(),
             Event::Listen => self.listen(),
+            Event::PollOutput => self.poll_output(),
         }
         ControlFlow::Continue(())
     }
