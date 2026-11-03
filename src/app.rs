@@ -186,10 +186,12 @@ enum TrustGate {
     #[default]
     Open,
     /// The daemon reads whether the terminal's dialog trusted the folder (the window can't,
-    /// see `trust`); the start, with what it was to resume, waits for its answer.
+    /// see `trust`); the start, with what it was to resume, waits for its answer, and so does
+    /// a prompt sent meanwhile (the command line's first, or an early Enter).
     Checking {
         request: ActId,
         resume: Option<Resume>,
+        held: Option<String>,
     },
     /// The user is asked to trust the folder, shown what its configuration would run; the
     /// start waits for them.
@@ -197,6 +199,52 @@ enum TrustGate {
         resume: Option<Resume>,
         runs: Vec<Runs>,
     },
+}
+
+/// Where the daemon's answer on the folder's trust leaves a start held back.
+#[derive(Debug, PartialEq)]
+enum TrustAnswer {
+    /// Trusted in the terminal: the start goes ahead, and then the prompt held for it.
+    Trusted {
+        resume: Option<Resume>,
+        held: Option<String>,
+    },
+    /// The user is asked now; a prompt held waits in the composer for them to send again.
+    Asked,
+    /// An answer for a start since dropped or replaced: nothing changes.
+    Stale,
+}
+
+impl TrustGate {
+    /// A prompt sent before the start: held to go once the folder is found trusted, if its
+    /// trust is still being read; the user, once asked, sends it themselves.
+    fn hold(&mut self, prompt: &str) {
+        if let Self::Checking { held, .. } = self {
+            *held = Some(prompt.to_owned());
+        }
+    }
+
+    /// The daemon's answer to `request`: the gate opens, asks the user, or stays as it is.
+    fn answered(&mut self, request: ActId, accepted: bool, runs: Vec<Runs>) -> TrustAnswer {
+        match std::mem::take(self) {
+            Self::Checking {
+                request: asked,
+                resume,
+                held,
+            } if asked == request => {
+                if accepted {
+                    TrustAnswer::Trusted { resume, held }
+                } else {
+                    *self = Self::Asking { resume, runs };
+                    TrustAnswer::Asked
+                }
+            }
+            kept @ (Self::Open | Self::Checking { .. } | Self::Asking { .. }) => {
+                *self = kept;
+                TrustAnswer::Stale
+            }
+        }
+    }
 }
 
 /// What a request to the daemon was for.
@@ -1248,7 +1296,11 @@ impl App {
             },
         };
         self.trust_gate = if link::send(&self.link, check).is_ok() {
-            TrustGate::Checking { request, resume }
+            TrustGate::Checking {
+                request,
+                resume,
+                held: None,
+            }
         } else {
             TrustGate::Asking {
                 resume,
@@ -1260,25 +1312,19 @@ impl App {
         };
     }
 
-    /// The daemon's answer on the folder's trust: the start held back goes ahead, or the user is
-    /// asked, shown what the folder would run. An answer for a start since dropped or replaced
-    /// is no longer waited for.
+    /// The daemon's answer on the folder's trust: the start held back goes ahead, with a prompt
+    /// sent meanwhile, or the user is asked, shown what the folder would run. An answer for a
+    /// start since dropped or replaced is no longer waited for.
     fn trust_read(&mut self, request: ActId, accepted: bool, runs: Vec<Runs>) {
-        let resume = match std::mem::take(&mut self.trust_gate) {
-            TrustGate::Checking {
-                request: asked,
-                resume,
-            } if asked == request => resume,
-            kept @ (TrustGate::Open | TrustGate::Checking { .. } | TrustGate::Asking { .. }) => {
-                self.trust_gate = kept;
-                return;
+        match self.trust_gate.answered(request, accepted, runs) {
+            TrustAnswer::Trusted { resume, held } => {
+                self.accepted_in_terminal.insert(self.cwd.clone());
+                self.launch(resume, FolderConfiguration::Read);
+                if let Some(prompt) = held {
+                    self.send(&prompt);
+                }
             }
-        };
-        if accepted {
-            self.accepted_in_terminal.insert(self.cwd.clone());
-            self.launch(resume, FolderConfiguration::Read);
-        } else {
-            self.trust_gate = TrustGate::Asking { resume, runs };
+            TrustAnswer::Asked | TrustAnswer::Stale => {}
         }
     }
 
@@ -1962,7 +2008,7 @@ impl App {
         }
         // Nothing runs before the folder is trusted: the prompt waits in the composer.
         if !matches!(self.trust_gate, TrustGate::Open) {
-            self.put_draft(text);
+            self.wait_for_trust(text);
             return;
         }
         self.put_draft("");
@@ -1988,7 +2034,7 @@ impl App {
         // A process starts if none runs; while one can't yet (its folder's trust is still read,
         // or asked about), the prompt waits in the composer.
         if !self.ensure_process() {
-            self.put_draft(text);
+            self.wait_for_trust(text);
             return;
         }
         let images = std::mem::take(&mut self.attached);
@@ -2153,6 +2199,13 @@ impl App {
     fn put_draft(&mut self, text: &str) {
         self.view.set_draft(text);
         self.draft_edited(text);
+    }
+
+    /// A prompt sent before the process could start: shown in the composer, and sent once the
+    /// folder is found trusted in the terminal (see `TrustGate::hold`).
+    fn wait_for_trust(&mut self, text: &str) {
+        self.put_draft(text);
+        self.trust_gate.hold(text);
     }
 
     /// The `>_` button: `!` put in front of the draft, or taken away.
@@ -2653,6 +2706,55 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prompt sent while the folder's trust is read (the command line's first prompt is
+    /// always sent then) goes once the terminal is found to trust it; once the user is asked,
+    /// it waits for them; the answer to an older check changes nothing.
+    #[test]
+    fn a_prompt_sent_while_trust_is_read_goes_once_trusted() {
+        let first = ActId::default();
+        let checking = || TrustGate::Checking {
+            request: first,
+            resume: None,
+            held: None,
+        };
+
+        let mut gate = checking();
+        gate.hold("edit the notes");
+        assert_eq!(
+            gate.answered(first, true, Vec::new()),
+            TrustAnswer::Trusted {
+                resume: None,
+                held: Some("edit the notes".to_owned())
+            }
+        );
+        assert!(matches!(gate, TrustGate::Open));
+
+        let mut gate = checking();
+        assert_eq!(
+            gate.answered(first, true, Vec::new()),
+            TrustAnswer::Trusted {
+                resume: None,
+                held: None
+            }
+        );
+
+        let mut gate = checking();
+        gate.hold("edit the notes");
+        assert_eq!(gate.answered(first, false, Vec::new()), TrustAnswer::Asked);
+        gate.hold("sent again before deciding");
+        assert!(matches!(gate, TrustGate::Asking { .. }));
+
+        let mut gate = checking();
+        gate.hold("edit the notes");
+        assert_eq!(
+            gate.answered(first.next(), true, Vec::new()),
+            TrustAnswer::Stale
+        );
+        assert!(
+            matches!(&gate, TrustGate::Checking { held: Some(held), .. } if held == "edit the notes")
+        );
+    }
 
     /// A shell command starts with `!`, or the `！` a Japanese or Chinese input method types; a
     /// Markdown image doesn't run. `／` opens commands as `/` does.
