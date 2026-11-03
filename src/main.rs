@@ -66,56 +66,45 @@ mod ui;
 
 use external::wire::SessionId;
 
-const USAGE: &str =
-    "usage: edualc [--model MODEL] [--permission-mode MODE] [--resume SESSION] [DIR] [PROMPT]";
-
-/// What the command line asks for, as `claude`'s own would: where, which model, a session to
-/// continue, and a first prompt.
-#[derive(Debug, Default)]
+/// A native desktop window for Claude Code.
+///
+/// Its arguments read as `claude`'s own: where to work, which model, a session to continue, and
+/// a first prompt. It needs `claude` (Claude Code) on the PATH.
+#[derive(Debug, clap::Parser)]
+#[command(name = "edualc", version, about)]
 struct Args {
-    dir: Option<PathBuf>,
+    /// The model, as `claude --model` takes it (an alias such as `sonnet`, or a full name).
+    #[arg(short, long)]
     model: Option<String>,
+    /// The permission mode to start in.
+    #[arg(long = "permission-mode", value_name = "MODE", value_parser = permission_mode)]
     mode: Option<app::PermissionMode>,
+    /// A session to continue, by its id.
+    #[arg(short, long, value_name = "SESSION", value_parser = session_id)]
     resume: Option<SessionId>,
+    /// The folder to work in; where edualc was started, if none.
+    dir: Option<PathBuf>,
+    /// A first prompt.
     prompt: Option<String>,
 }
 
-impl Args {
-    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
-        let mut parsed = Args::default();
-        let mut positional = Vec::new();
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-m" | "--model" => {
-                    parsed.model = Some(args.next().ok_or("--model needs a model")?);
-                }
-                "--permission-mode" => {
-                    let name = args.next().ok_or("--permission-mode needs a mode")?;
-                    let mode = name.parse().map_err(|error| {
-                        format!("unknown permission mode {name}: {error}\n{USAGE}")
-                    })?;
-                    parsed.mode = Some(mode);
-                }
-                "-r" | "--resume" => {
-                    let id = args.next().ok_or("--resume needs a session id")?;
-                    let id =
-                        SessionId::try_from(id).map_err(|error| format!("{error}\n{USAGE}"))?;
-                    parsed.resume = Some(id);
-                }
-                "-h" | "--help" => return Err(USAGE.to_owned()),
-                _ if arg.starts_with('-') => return Err(format!("unknown option {arg}\n{USAGE}")),
-                _ => positional.push(arg),
-            }
-        }
-        let mut positional = positional.into_iter();
-        parsed.dir = positional.next().map(PathBuf::from);
-        parsed.prompt = positional.next();
-        if positional.next().is_some() {
-            return Err(USAGE.to_owned());
-        }
-        Ok(parsed)
-    }
+/// A permission mode by the name Claude Code gives it, the modes listed where it isn't one.
+fn permission_mode(name: &str) -> Result<app::PermissionMode, String> {
+    name.parse().map_err(|error: strum::ParseError| {
+        let modes: Vec<&str> = <app::PermissionMode as strum::IntoEnumIterator>::iter()
+            .map(<&str>::from)
+            .collect();
+        format!("{error}: one of {}", modes.join(", "))
+    })
+}
 
+/// A session's id, as Claude Code writes one; anything else is refused before it reaches
+/// claude's command line.
+fn session_id(id: &str) -> Result<SessionId, String> {
+    SessionId::try_from(id.to_owned()).map_err(|error| error.to_string())
+}
+
+impl Args {
     /// The working directory: as given, or where this was started.
     fn working_directory(&self) -> PathBuf {
         let path = self
@@ -179,13 +168,8 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         return Ok(decode::run(job));
     }
 
-    let args = match Args::parse(std::env::args().skip(1)) {
-        Ok(args) => args,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(2);
-        }
-    };
+    // Help and the version are printed here, and wrong arguments said, before anything starts.
+    let args = <Args as clap::Parser>::parse();
     let cwd = args.working_directory();
     if !Path::new(&cwd).is_dir() {
         eprintln!("not a directory: {}", cwd.display());
@@ -246,10 +230,32 @@ fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
 
 #[cfg(test)]
 mod tests {
+    use clap::{CommandFactory as _, Parser as _};
+
     use super::*;
 
-    fn args(line: &str) -> Result<Args, String> {
-        Args::parse(line.split_whitespace().map(str::to_owned))
+    fn args(line: &str) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("edualc").chain(line.split_whitespace()))
+    }
+
+    /// The command line as clap checks it in debug builds: no clashing names or broken values.
+    #[test]
+    fn the_command_line_holds_together() {
+        Args::command().debug_assert();
+    }
+
+    /// Help and the version are asked for as anywhere, wherever they stand: shown, and nothing
+    /// else done.
+    #[test]
+    fn help_and_version_are_asked_for() {
+        for line in ["--help", "-h", "--model haiku --help"] {
+            let shown = args(line).map(|_| ()).map_err(|error| error.kind());
+            assert_eq!(shown, Err(clap::error::ErrorKind::DisplayHelp), "{line}");
+        }
+        for line in ["--version", "-V", "/tmp --version"] {
+            let shown = args(line).map(|_| ()).map_err(|error| error.kind());
+            assert_eq!(shown, Err(clap::error::ErrorKind::DisplayVersion), "{line}");
+        }
     }
 
     #[test]
@@ -270,5 +276,9 @@ mod tests {
         assert!(args("--resume ../../etc/x").is_err());
         assert!(args("--bogus").is_err());
         assert!(args("--permission-mode sometimes").is_err());
+        assert!(args("/tmp hello extra").is_err());
+        let joined = args("--model=opus --permission-mode=acceptEdits").expect("valid arguments");
+        assert_eq!(joined.model.as_deref(), Some("opus"));
+        assert_eq!(joined.mode, Some(app::PermissionMode::AcceptEdits));
     }
 }
