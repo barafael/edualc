@@ -57,7 +57,12 @@ jobs:
       - run: ast-grep test
       - run: ast-grep scan
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      # The image decoder's tests confine a helper as edualc starts it, with nothing open but the
+      # standard streams; it refuses to run with more. A step here inherits one more descriptor,
+      # so the tests run with everything past the standard streams closed.
+      - run: >-
+          python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX"));
+          os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
 
   deny:
     name: cargo deny
