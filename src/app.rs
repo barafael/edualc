@@ -333,6 +333,8 @@ pub(crate) enum Action {
     Zoom(Zoom),
     /// The other look (Gruvbox or plain).
     SwitchLook,
+    /// Code's colours changed: the look, or the desktop's dark or light.
+    RecolourCode,
     /// The key that sends the draft, as chosen in the settings.
     SendWith(settings::SendKey),
     /// The language of text in Han characters alone, as chosen in the settings.
@@ -1085,6 +1087,12 @@ impl App {
                 if let Err(error) = settings::save(&self.settings) {
                     tracing::warn!(%error, "couldn't keep the look");
                 }
+            }
+            Action::RecolourCode => {
+                self.view.recolour_code();
+                // Messages already drawn, and the side panel's answers, are drawn again in them.
+                self.chat.touch_all();
+                self.redraw.side = true;
             }
             Action::SendWith(key) => {
                 self.settings.send_with = key;

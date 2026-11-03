@@ -8,13 +8,15 @@
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 [advisories]
-# Unmaintained, with no maintained release to move to, all inside Slint at its pinned revision.
-# Each goes when Slint moves past it; until then a new advisory still fails the check.
+# Unmaintained, with no maintained release to move to: inside Slint at its pinned revision, each
+# goes when Slint moves past it; bincode goes when syntect leaves it. Until then a new advisory
+# still fails the check.
 ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser, unmaintained: Slint's winit backend reads fonts with it" },
   { id = "RUSTSEC-2026-0370", reason = "zvariant, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1, unmaintained and called complete by its authors: syntect reads its bundled grammars with it" },
 ]
 
 [licenses]

@@ -21,6 +21,7 @@ mod desktop;
 mod external;
 mod folder;
 mod grouping;
+mod highlight;
 mod home;
 mod ipc;
 mod link;

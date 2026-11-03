@@ -2,7 +2,7 @@
 // the middle; side questions on the right.
 
 import { ListView } from "std-widgets.slint";
-import { Look, Motion, Theme } from "theme.slint";
+import { Look, Motion, SyntaxColours, Theme } from "theme.slint";
 import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SessionRow, SessionRowKind, SideView, TaskKind } from "types.slint";
 import { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
@@ -14,7 +14,7 @@ import { SettingsPanel } from "settings.slint";
 import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
-export { Look, Motion, Theme } from "theme.slint";
+export { Look, Motion, SyntaxColours, Theme } from "theme.slint";
 export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
 export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
@@ -2187,6 +2187,10 @@ export component AppWindow inherits Window {
 
     property <int> focus-serial: Composer.focus-serial;
     changed focus-serial => { composer.focus-end(); }
+
+    // Rust colours code with these, into the text it builds: told when they change.
+    property <SyntaxColours> syntax-colours: Theme.syntax;
+    changed syntax-colours => { Session.syntax-colours-changed(); }
 
     // The most Claude's prompt may take: half the window. Kept as the window is resized, not
     // bound, as a binding would loop through the layout the prompt is part of.
