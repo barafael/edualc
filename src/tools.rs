@@ -56,7 +56,8 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
         ..ToolView::default()
     };
     match name {
-        ToolName::Bash => {
+        // A Monitor runs a command too, in the background, and says what it watches for.
+        ToolName::Bash | ToolName::Monitor => {
             let command = field("command");
             view.summary = first_line(command);
             if command.contains('\n') || command.chars().count() > 90 {
@@ -69,7 +70,9 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
                     format!("# {}\n{}", field("description"), view.detail)
                 };
             }
-            if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
+            if *name == ToolName::Bash
+                && input.get("run_in_background").and_then(Value::as_bool) == Some(true)
+            {
                 view.title = "Bash (background)".into();
             }
         }
@@ -225,7 +228,6 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
         }
         ToolName::BashOutput
         | ToolName::KillShell
-        | ToolName::Monitor
         | ToolName::NotebookRead
         | ToolName::Ls
         | ToolName::Other(_) => {
@@ -477,6 +479,24 @@ mod tests {
         let view = describe(&ToolName::Bash, &input, Path::new("/"), Depth::Full);
         assert_eq!(view.summary, "cd x …");
         assert_eq!(view.detail, "# Build\ncd x\nmake");
+    }
+
+    /// A Monitor's card reads as its command, as Claude Code 2.1.316 sends it, not as its
+    /// input's JSON; it isn't titled as a background Bash.
+    #[test]
+    fn a_monitor_reads_as_its_command() {
+        let input = json!({
+            "command": "for i in $(seq 1 60); do echo beat $i; sleep 2; done",
+            "description": "Heartbeat lines every two seconds",
+            "run_in_background": true,
+        });
+        let view = describe(&ToolName::Monitor, &input, Path::new("/"), Depth::Full);
+        assert_eq!(view.title, "Monitor");
+        assert_eq!(
+            view.summary,
+            "for i in $(seq 1 60); do echo beat $i; sleep 2; done"
+        );
+        assert_eq!(view.detail, "# Heartbeat lines every two seconds");
     }
 
     #[test]
