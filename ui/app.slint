@@ -2404,6 +2404,21 @@ export component AppWindow inherits Window {
                         }
                         property <int> scroll-to-end-serial: Transcript.scroll-to-end-serial;
                         changed scroll-to-end-serial => { self.go-to-end(); }
+                        // A transcript just opened: the list measures its rows only as it builds
+                        // them, so the end moves with each frame's estimate, and the text would
+                        // jump about as it is followed. It shows once its height holds still.
+                        property <bool> settling;
+                        property <duration> opened-at;
+                        property <duration> changed-at;
+                        opacity: self.settling ? 0 : 1;
+                        property <int> opened-serial: Transcript.opened-serial;
+                        changed opened-serial => {
+                            self.settling = true;
+                            self.opened-at = animation-tick();
+                            self.changed-at = animation-tick();
+                            opening-timer.running = true;
+                            self.go-to-end();
+                        }
                         // Only the user's own scrolling decides; content growing (streamed
                         // text, rows being measured) moves the viewport too.
                         scrolled => {
@@ -2414,6 +2429,9 @@ export component AppWindow inherits Window {
                         // change `content-height` again within the same pass, which Slint gives
                         // up on after ten rounds; the move waits for the pass to end instead.
                         changed content-height => {
+                            if self.settling {
+                                self.changed-at = animation-tick();
+                            }
                             if self.follow {
                                 follow-timer.running = true;
                                 end-timer.running = true;
@@ -2446,6 +2464,22 @@ export component AppWindow inherits Window {
                         triggered => {
                             self.running = false;
                             transcript.follow = transcript.at-end();
+                        }
+                    }
+                    // Shows an opened transcript, at its end, once its height has held still for
+                    // a while; after a moment and a half in any case.
+                    opening-timer := Timer {
+                        interval: 30ms;
+                        running: false;
+                        triggered => {
+                            if animation-tick() - transcript.changed-at < 100ms && animation-tick() - transcript.opened-at < 1500ms {
+                                return;
+                            }
+                            self.running = false;
+                            if transcript.follow {
+                                transcript.content-y = min(0px, transcript.visible-height - transcript.content-height);
+                            }
+                            transcript.settling = false;
                         }
                     }
                     // Following the end as the content grows, once the pass that grew it is over.

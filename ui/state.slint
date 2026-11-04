@@ -160,6 +160,8 @@ export global Transcript {
     in property <[Entry]> entries;
     // Bumped to go to the end, whether or not it was being followed.
     in property <int> scroll-to-end-serial;
+    // Bumped when a session's transcript is shown: it goes to the end, hidden until it settles.
+    in property <int> opened-serial;
     callback toggle(int);
     // Opens or folds the run of tool calls whose first call is at this place.
     callback toggle-group(int);

@@ -343,6 +343,13 @@ impl View {
         transcript.set_scroll_to_end_serial(transcript.get_scroll_to_end_serial().wrapping_add(1));
     }
 
+    /// A session's transcript was loaded: shown at its end once the list has measured its way
+    /// there, not on the way.
+    pub(crate) fn open_at_end(&self) {
+        let transcript = self.window.global::<Transcript>();
+        transcript.set_opened_serial(transcript.get_opened_serial().wrapping_add(1));
+    }
+
     /// Brings the transcript in line with `chat`, touching only what `changes` name.
     /// Brings the transcript in line with `chat`: the rows `changes` name, and those whose place
     /// in a run of tool calls changed (`open_runs` holds the runs opened, by their first call).

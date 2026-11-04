@@ -1756,7 +1756,7 @@ impl App {
         match result {
             Ok((chat, offset)) => {
                 self.chat = chat;
-                self.view.scroll_to_end();
+                self.view.open_at_end();
                 if let Some(watch) = watching {
                     watch.watched = watch_transcript(self.watcher.as_ref(), &path);
                     watch.path = path;
