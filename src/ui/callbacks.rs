@@ -124,6 +124,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_continue_here(actions.on(|| Action::ContinueHere));
     session.on_go_to_window(actions.on(|| Action::GoToWindow));
     session.on_bring_here(actions.on(|| Action::BringHere));
+    session.on_try_sign_in_again(actions.on(|| Action::TrySignInAgain));
+    session.on_dismiss_sign_in(actions.on(|| Action::DismissSignIn));
     session.on_trust_folder(actions.on(|| Action::TrustFolder));
     session.on_start_without_folder_settings(actions.on(|| Action::StartWithoutFolderSettings));
     session.on_toggle_sandbox(actions.on(|| Action::ToggleSandbox));

@@ -3,7 +3,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, Theme } from "theme.slint";
-import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SessionRow, SessionRowKind, SideView, TaskKind } from "types.slint";
+import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, PromptKind, SendKey, SessionRow, SessionRowKind, SideView, SignInState, TaskKind } from "types.slint";
 import { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
 import { EntryView } from "transcript.slint";
@@ -15,7 +15,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, Theme } from "theme.slint";
-export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
+export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
 export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -754,7 +754,8 @@ component Sidebar inherits Rectangle {
                 padding: Theme.space-m;
                 spacing: Theme.space-xs;
                 Caption {
-                    text: "Signed in";
+                    text: Session.sign-in == SignInState.signed-in ? "Signed in"
+                        : Session.sign-in == SignInState.signed-out ? "Not signed in" : "Account";
                 }
                 for line in [
                     { label: "Email", value: Session.email },
@@ -2096,6 +2097,75 @@ component TrustBar inherits Rectangle {
     }
 }
 
+// How to sign in: Claude Code behind a pipe can't, though it tells the user to run `/login`. It
+// reads the sign-in as it starts, so trying again starts it again.
+component SignInBar inherits Rectangle {
+    property <string> command: "claude auth login";
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.warning;
+    background: Theme.card;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/log-in.svg");
+                tint: Theme.warning-text;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "Sign in to Claude Code";
+                color: Theme.text;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        Small {
+            text: "Run this in a terminal and follow its steps, then try again. Claude Code starts again with your sign-in, and a message that failed is sent again.";
+            wrap: word-wrap;
+        }
+        Rectangle {
+            background: Theme.code;
+            border-radius: Theme.radius-m;
+            HorizontalLayout {
+                padding-left: Theme.space-m;
+                padding-right: Theme.space-xs;
+                spacing: Theme.space-s;
+                Text {
+                    text: root.command;
+                    color: Theme.text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: @image-url("@lucide/copy.svg");
+                    label: "Copy the command";
+                    clicked => { Clipboard.copy(root.command); }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            alignment: end;
+            TextButton {
+                text: "Not now";
+                clicked => { Session.dismiss-sign-in(); }
+            }
+            TextButton {
+                text: "Try again";
+                primary: true;
+                clicked => { Session.try-sign-in-again(); }
+            }
+        }
+    }
+}
+
 // Bringing it here stops it in its window, so it asks first.
 component WatchBar inherits Rectangle {
     property <bool> confirming;
@@ -2658,7 +2728,7 @@ export component AppWindow inherits Window {
                 // What Claude asks and the commands matching the draft, in the transcript's
                 // column above the composer. Placed (`x`), so that their width, taken from the
                 // space there is, doesn't size that space in turn.
-                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust: Rectangle {
+                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust || Session.shows-sign-in: Rectangle {
                     height: dock.preferred-height;
                     // Centered, as wide as the transcript's code and tables may be: a
                     // permission prompt shows commands and diffs.
@@ -2676,6 +2746,7 @@ export component AppWindow inherits Window {
                         if Composer.commands.length > 0: CommandList { }
                         if Session.watching: WatchBar { }
                         if Session.needs-trust && !Session.watching: TrustBar { }
+                        if Session.shows-sign-in && !Session.watching: SignInBar { }
                     }
                 }
                 // The text box, edge to edge (see `EditArea`); a watched session is only read, and

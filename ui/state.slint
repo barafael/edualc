@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, StatSection, TaskItem, TaskKind } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -51,6 +51,12 @@ export global Session {
     callback choose-model(int);
     callback choose-mode(int);
     callback interrupt;
+    in property <SignInState> sign-in;
+    // How to sign in is shown: the CLI behind a pipe has no `/login`.
+    in property <bool> shows-sign-in;
+    // Signed in elsewhere: starts Claude Code again, and sends what failed for want of it.
+    callback try-sign-in-again;
+    callback dismiss-sign-in;
     // The folder isn't trusted yet: Claude Code waits to start in it.
     in property <bool> needs-trust;
     // What the folder's own configuration would run or set there, a line each, plain text.

@@ -12,8 +12,8 @@ use strum::IntoEnumIterator;
 
 use crate::app::{
     Answer, Ask, AskKind, CommandOutput, Conversation, Doing, Followed, LimitUse, Mode, Peek,
-    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, Status, Tasks,
-    UsagePanel, Watch,
+    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, SignIn, Status,
+    Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
@@ -25,8 +25,8 @@ use crate::generated::{
     DiffLine, Entry, EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, Look,
     MdBlock, MenuItem, PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt,
     PromptKind, Question, QuestionOption, SendKey, Session, SessionRow, SessionRowKind, Sessions,
-    ShownImage, Side, SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem,
-    TaskKind, Theme, ToolState, Transcript, Usage,
+    ShownImage, Side, SideExchange, SideState, SignInState, StatRow, StatSection, StepKind,
+    TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -655,6 +655,12 @@ impl View {
         let project = sessions::folder_name(cwd);
         session.set_project(project.into());
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
+        session.set_sign_in(match status.sign_in {
+            SignIn::SignedIn => SignInState::SignedIn,
+            SignIn::Refused { .. } | SignIn::Renewing => SignInState::SignedOut,
+            SignIn::Unknown | SignIn::Asked => SignInState::Unknown,
+        });
+        session.set_shows_sign_in(status.sign_in.waits_for_user());
         session.set_needs_trust(asking.is_some());
         let runs: Vec<String> = asking.unwrap_or_default().iter().map(run_line).collect();
         session.set_trust_runs(strings(&runs));

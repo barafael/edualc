@@ -34,6 +34,9 @@ The README has the short version; this is every feature, as the window has it.
   apart, not hosts). If your Claude Code settings turn on its own
   sandbox (bubblewrap, for its commands), that one is kept and this one stays off: the two don't
   stack.
+- **Signing in.** `claude -p` has no `/login`, though it tells you to run it. When a turn fails for
+  want of a sign-in, or on `/login`, the window shows `claude auth login` to run in a terminal; "Try
+  again" starts Claude Code again and sends the failed message again.
 - **Trust before running.** `claude -p` skips the terminal's trust dialog, and a folder's hooks and
   settings run as it starts; a folder neither the terminal nor this window trusted asks first,
   listing what its `.claude/settings.json`, `settings.local.json` and `.mcp.json` would run or

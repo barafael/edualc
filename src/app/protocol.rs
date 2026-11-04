@@ -3,13 +3,13 @@
 
 use serde::Deserialize;
 
-use super::{App, Doing, LimitUse, Mode, Request, Sandboxing, TaskProgress};
+use super::{App, Doing, LimitUse, Mode, Request, Sandboxing, SignIn, TaskProgress};
 use crate::chat::{Origin, UserText};
 use crate::claude::Output;
 use crate::external::wire::{
-    self, Activity, CommandInfo, ContentBlock, ControlRequest, ControlResponse, IncomingRequest,
-    Initialized, Message, Progress, RateLimits, ResultKind, Sender, StreamEvent, System,
-    TurnResult, UserContent,
+    self, Activity, AssistantError, CommandInfo, ContentBlock, ControlRequest, ControlResponse,
+    IncomingRequest, Initialized, Message, Progress, RateLimits, ResultKind, Sender, StreamEvent,
+    System, TurnResult, UserContent,
 };
 use crate::ipc::Generation;
 
@@ -78,9 +78,16 @@ impl App {
                     self.stream_activity(&event);
                 }
             }
+            // "Please run /login", which Claude Code offers no way to do behind a pipe: the turn's
+            // result brings up what does work (see `result`).
+            Message::Assistant {
+                error: Some(AssistantError::AuthenticationFailed),
+                ..
+            } => self.turn_refused_sign_in = true,
             Message::Assistant {
                 message,
                 parent_tool_use_id,
+                ..
             } => {
                 self.chat
                     .assistant_message(&message, parent_tool_use_id.as_ref(), Origin::Live);
@@ -295,6 +302,7 @@ impl App {
         // says so; one that failed so on its own (an API error after the retries) is told.
         let stop_asked = std::mem::take(&mut self.status.stop_asked);
         let stopped = stop_asked && result.subtype == ResultKind::ErrorDuringExecution;
+        let refused_sign_in = std::mem::take(&mut self.turn_refused_sign_in);
         // However the turn says it ended, what runs beside it went on.
         if stop_asked {
             self.tasks_after_stop();
@@ -313,11 +321,22 @@ impl App {
                 _ if !errors.is_empty() => errors.join("\n"),
                 _ => "The turn failed.".to_owned(),
             };
-            self.chat.error(text);
-            if result.sign_in_refused() && matches!(self.status.sandboxing, Sandboxing::Landlock(_))
-            {
-                self.sign_in_ran_out();
+            if refused_sign_in || result.sign_in_refused() {
+                let renewable = result.sign_in_refused()
+                    && matches!(self.status.sandboxing, Sandboxing::Landlock(_));
+                self.status.sign_in = self
+                    .status
+                    .sign_in
+                    .after_refusal(renewable, self.last_prompt.take());
+                if self.status.sign_in == SignIn::Renewing {
+                    self.chat.error(text);
+                    self.sign_in_ran_out();
+                }
+            } else {
+                self.chat.error(text);
             }
+        } else if result.reached_a_model() {
+            self.status.sign_in = SignIn::SignedIn;
         }
         // A new session gets its file and its title as it goes, and maybe a worktree.
         self.load_sessions();
@@ -413,8 +432,16 @@ impl App {
                 .into(),
             argument_hint: "[question]".into(),
         });
+        commands.push(CommandInfo {
+            name: "login".into(),
+            description: "Sign in to Claude Code".into(),
+            argument_hint: String::new(),
+        });
         commands.sort_by(|left, right| left.name.cmp(&right.name));
         self.status.commands = commands;
+        if !initialized.account.email.is_empty() && self.status.sign_in == SignIn::Unknown {
+            self.status.sign_in = SignIn::SignedIn;
+        }
         self.status.account = initialized.account;
         self.status.version = initialized.claude_code_version;
         // The plan's limits at once, not only after the first turn reports them; it asks the
