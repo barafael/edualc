@@ -66,7 +66,8 @@ component SandboxChip inherits Pressable {
                 : Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
             tint: Session.sandbox-pending ? Theme.text-tertiary : Session.sandboxed ? Theme.info : Theme.warning-text;
             width: Theme.icon-small;
-            y: root.explains ? Theme.space-xs : (parent.height - self.height) / 2;
+            // On the first line where an explanation follows, else in the middle with the label.
+            y: root.explains && !Session.sandboxed ? Theme.space-xs : (parent.height - self.height) / 2;
         }
         VerticalLayout {
             alignment: center;
@@ -735,9 +736,10 @@ component Sidebar inherits Rectangle {
             }
         }
     }
+    // Above the row its button is on, from the sidebar's left margin, as the sandbox's menu.
     account := PopupWindow {
-        x: root.width - self.width - Theme.space-s;
-        y: root.height - self.height - Theme.row * 3;
+        x: Theme.space-m;
+        y: info-button.absolute-position.y - root.absolute-position.y - self.height - Theme.space-xs;
         width: 300px;
         height: details.preferred-height;
         close-policy: close-on-click-outside;
@@ -1630,7 +1632,8 @@ component EditArea inherits Rectangle {
                 y: (parent.height - self.height) / 2;
             }
             Small {
-                text: "Shell command: Enter runs it in Claude Code's sandbox, beside the conversation. Claude sees it, and what it printed, with your next message.";
+                text: (Session.sandboxed ? "Shell command: Enter runs it in the sandbox, beside the conversation." : "Shell command: Enter runs it beside the conversation, not sandboxed.")
+                    + " Claude sees it, and what it printed, with your next message.";
                 color: Theme.text-secondary;
                 wrap: word-wrap;
                 horizontal-stretch: 1;
@@ -2450,7 +2453,7 @@ export component AppWindow inherits Window {
                             padding-top: position == 0 ? Theme.space-xl : Theme.space-s;
                             padding-bottom: position == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
                             EntryView {
-                                width: min(transcript.visible-width - 2 * Theme.column-margin, Theme.wide-measure);
+                                width: transcript.visible-width - 2 * Theme.column-margin;
                                 entry: entry;
                                 index: entry.index;
                             }

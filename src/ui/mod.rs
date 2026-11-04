@@ -701,7 +701,7 @@ impl View {
         let account = &status.account;
         session.set_email(account.email.as_str().into());
         session.set_organization(account.organization.as_str().into());
-        session.set_provider(account.api_provider.as_str().into());
+        session.set_provider(provider_name(&account.api_provider).into());
         session.set_version(status.version.as_str().into());
         session.set_worktree_name(
             worktree
@@ -756,6 +756,8 @@ impl View {
                     .filter_map(|(title, period)| Some(period_section(title, period.as_ref()?))),
             );
         }
+        // A tab with nothing behind it says nothing.
+        sections.retain(|section| section.rows.row_count() > 0 || !section.note.is_empty());
         usage.set_sections(ModelRc::new(VecModel::from(sections)));
     }
 
@@ -1455,6 +1457,18 @@ fn stat(label: &str, value: String, detail: String, fraction: f32) -> StatRow {
         value: value.into(),
         detail: detail.into(),
         fraction,
+    }
+}
+
+/// Who answers, for people: Claude Code names them by its own ids, and one this window doesn't
+/// know stays as written.
+fn provider_name(provider: &str) -> &str {
+    match provider {
+        "firstParty" => "Anthropic",
+        "bedrock" => "Amazon Bedrock",
+        "vertex" => "Google Vertex AI",
+        "foundry" => "Microsoft Foundry",
+        other => other,
     }
 }
 

@@ -742,7 +742,7 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
         .map(|id| PetName::of(&id));
     let custom = custom.filter(|title| !own_name.as_ref().is_some_and(|name| name.is_in(title)));
     if let Some(title) = custom.or(generated).or(summary) {
-        return Some((title, worktree));
+        return Some((title_line(&title).to_owned(), worktree));
     }
     // The first prompt; or, for a session another one started by writing to it, that message,
     // whose turn can fill more than the head before the user writes anything.
@@ -762,7 +762,20 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
             }) => prompt_text(&message.content),
             Ok(_) | Err(_) => None,
         })
-        .map(|prompt| (crate::tools::truncate_chars(prompt.trim(), 80), worktree))
+        .map(|prompt| {
+            (
+                crate::tools::truncate_chars(title_line(&prompt), 80),
+                worktree,
+            )
+        })
+}
+
+/// The first line with text in it: a title is shown on one line, in a row of its height.
+fn title_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
 }
 
 /// A title from another session's message: who sent it and what it says, as far as known.
@@ -1118,6 +1131,25 @@ mod tests {
     /// A session another session started by writing to it is titled by that message, and so
     /// listed, though the user's first prompt comes later than the head that is read; a
     /// session the user started keeps its prompt, whatever reached it after.
+    #[test]
+    fn a_title_is_one_line() {
+        let dir = std::env::temp_dir().join(format!("edualc-one-line-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490483.jsonl");
+        let title_of = |line: serde_json::Value| {
+            std::fs::write(&path, format!("{line}\n")).expect("a transcript");
+            summary(&path).map(|(title, _)| title)
+        };
+        let prompt = json!({
+            "type": "user",
+            "message": { "role": "user", "content": "\n  Check the kitchen\nThen move on to the hall" },
+        });
+        assert_eq!(title_of(prompt).as_deref(), Some("Check the kitchen"));
+        let titled = json!({ "type": "custom-title", "customTitle": "Two\nlines" });
+        assert_eq!(title_of(titled).as_deref(), Some("Two"));
+        std::fs::remove_dir_all(&dir).expect("cleaned up");
+    }
+
     #[test]
     fn a_session_another_started_is_titled_by_its_message() {
         let dir = std::env::temp_dir().join(format!("edualc-peer-titles-{}", std::process::id()));

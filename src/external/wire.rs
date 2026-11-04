@@ -415,9 +415,15 @@ impl UserLine {
                 name: name.as_deref(),
                 body: body.as_deref(),
             },
-            (Some(MessageOrigin::Other) | None, true) => Sender::Replayed,
-            (Some(MessageOrigin::Other) | None, false) => Sender::Session,
+            // A `!` command's rows come marked as replays, but nothing else shows them.
+            (Some(MessageOrigin::Other) | None, true) if !self.is_shell_row() => Sender::Replayed,
+            (Some(MessageOrigin::Other) | None, _) => Sender::Session,
         }
+    }
+
+    /// A `!` command's echo or what it printed, as Claude Code 2.1.316 writes them.
+    fn is_shell_row(&self) -> bool {
+        matches!(&self.message.content, UserContent::Text(text) if text.starts_with("<bash-"))
     }
 }
 
@@ -788,11 +794,13 @@ pub(crate) struct Account {
 /// The answer to `get_usage` (the CLI's `/usage`), as far as the window shows it.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UsageReport {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) session: SessionUsage,
-    #[serde(default)]
+    /// Null in a sandboxed session, whose sign-in may not ask for them (Claude Code 2.1.316).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) rate_limits: RateLimitReport,
-    #[serde(default)]
+    /// Null where nobody is signed in (Claude Code 2.1.316).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) behaviors: Behaviors,
 }
 
@@ -1084,6 +1092,13 @@ pub(crate) struct QuestionOption {
 /// Reads a field's value and drops it, so that it isn't kept as an unknown field either.
 fn dropped<'de, D: serde::Deserializer<'de>, T: Default>(deserializer: D) -> Result<T, D::Error> {
     serde::de::IgnoredAny::deserialize(deserializer).map(|_| T::default())
+}
+
+/// A field given as null reads as one left out, which `#[serde(default)]` alone doesn't cover.
+fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// ExitPlanMode's input, given back with the plan as the user annotated it.
@@ -1488,6 +1503,26 @@ mod tests {
         assert!(!done.sign_in_refused());
     }
 
+    /// `get_usage` as Claude Code 2.1.316 answers it in a sandboxed session and with nobody
+    /// signed in: null where the numbers can't be had, unlike a field left out.
+    #[test]
+    fn usage_given_as_null_reads_as_no_usage() {
+        let report: UsageReport = serde_json::from_value(json!({
+            "session": null,
+            "rate_limits": null,
+            "behaviors": null,
+        }))
+        .expect("nothing known yet is no error");
+        assert!(report.rate_limits.limits.is_empty());
+        assert!(report.behaviors.day.is_none());
+
+        let report: UsageReport = serde_json::from_value(json!({
+            "rate_limits": { "limits": [{ "kind": "session", "percent": 8.0, "resets_at": null, "scope": null }] },
+        }))
+        .expect("a report");
+        assert_eq!(report.rate_limits.limits.len(), 1);
+    }
+
     /// User-role lines as Claude Code 2.1.316 sends them with `--replay-user-messages`
     /// (recorded on the bench): another session's message is told apart from the window's own
     /// echoed back, and from Claude Code's own tool results.
@@ -1539,6 +1574,18 @@ mod tests {
             "origin": { "kind": "task-notification" },
         }));
         assert_eq!(notice.sender(), Sender::Replayed);
+        for shell_row in [
+            "<bash-input>echo hi</bash-input>",
+            "<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr><bash-exit-code>0</bash-exit-code>",
+        ] {
+            let row = user_line(json!({
+                "type": "user",
+                "message": { "role": "user", "content": shell_row },
+                "parent_tool_use_id": null,
+                "isReplay": true,
+            }));
+            assert_eq!(row.sender(), Sender::Session, "{shell_row}");
+        }
         let result = user_line(json!({
             "type": "user",
             "message": { "role": "user", "content": [
