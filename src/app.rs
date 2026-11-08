@@ -28,9 +28,7 @@ use crate::ipc::{
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
-use crate::sessions::{
-    self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
-};
+use crate::sessions::{LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree};
 use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
 use crate::trust;
@@ -653,8 +651,8 @@ pub(crate) enum Request {
 #[derive(Debug)]
 pub(crate) struct Watch {
     pub(crate) session: LiveSession,
-    /// Where its transcript is; corrected by the first read, which looks for it.
-    path: PathBuf,
+    /// Where its transcript is; found by the first read, which looks for it.
+    place: ipc::Place,
     /// How far the transcript has been read.
     offset: u64,
     reading: Refresh,
@@ -793,6 +791,8 @@ pub(crate) struct App {
     side: SideChat,
     /// What a worktree can be opened in here, as the menu lists them after "this window".
     openers: Vec<desktop::Opener>,
+    /// Claude Code's own sandbox is on in its settings: edualc's stays off.
+    claude_codes_sandbox: bool,
     settings: Settings,
     /// The desktop's text size, in logical pixels, which the zoom scales.
     desktop_text_size: f32,
@@ -842,10 +842,12 @@ impl App {
     ) -> Self {
         let Desktop {
             openers,
+            claude_codes_sandbox,
+            finds_windows,
             fonts,
             text_size: desktop_text_size,
         } = desktop_found;
-        let mut view = View::new(window, &openers, fonts);
+        let mut view = View::new(window, &openers, fonts, finds_windows);
         let (settings, settings_problem) = match settings {
             Ok(settings) => (settings, None),
             Err(problem) => {
@@ -896,6 +898,7 @@ impl App {
             records: None,
             side: SideChat::default(),
             openers,
+            claude_codes_sandbox,
             settings,
             desktop_text_size,
             session_filter: String::new(),
@@ -1498,7 +1501,7 @@ impl App {
         if self.status.worktree.is_none() {
             self.read_linked_worktree(self.cwd.clone(), false);
         }
-        let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
+        let own_sandbox = self.settings.sandbox && self.claude_codes_sandbox;
         let launch = Launch {
             cwd: self.cwd.clone(),
             conversation: Resume::conversation(resume),
@@ -1956,7 +1959,7 @@ impl App {
                 self.view.open_at_end();
                 if let Some(watch) = watching {
                     watch.watched = watched;
-                    watch.path = path;
+                    watch.place = ipc::Place::Path(path);
                     watch.offset = offset;
                     if watch.reading.done() {
                         self.read_on();
@@ -1967,7 +1970,7 @@ impl App {
                 // Not written yet, perhaps: it is watched for, and read once it is.
                 if let Some(watch) = watching {
                     watch.watched = watched;
-                    watch.path = path;
+                    watch.place = ipc::Place::Path(path);
                     watch.reading = Refresh::Idle;
                 }
                 self.chat
@@ -2018,7 +2021,10 @@ impl App {
         self.load_session(session.id.clone(), session.cwd.clone());
         self.forget_watch();
         self.watch = Some(Watch {
-            path: sessions::transcript_path(&session.cwd, &session.id),
+            place: ipc::Place::Session {
+                cwd: session.cwd.clone(),
+                id: session.id.clone(),
+            },
             session,
             offset: 0,
             reading: Refresh::Reading,
@@ -2120,8 +2126,7 @@ impl App {
             return;
         };
         if watch.reading.wanted() {
-            let (id, path, from) = (watch.session.id.clone(), watch.path.clone(), watch.offset);
-            let place = ipc::Place::Path(path);
+            let (id, place, from) = (watch.session.id.clone(), watch.place.clone(), watch.offset);
             self.read(Read::Transcript { place, from }, move |answer, lines| {
                 let ipc::Answer::Transcript { read, .. } = answer else {
                     return None;
@@ -2876,6 +2881,10 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
 #[derive(Debug)]
 pub(crate) struct Desktop {
     openers: Vec<desktop::Opener>,
+    /// Claude Code's own sandbox is on in its settings, as the daemon read them.
+    claude_codes_sandbox: bool,
+    /// Other programs' windows can be found, as the daemon says.
+    finds_windows: bool,
     fonts: crate::appearance::Fonts,
     /// In logical pixels.
     text_size: f32,
@@ -2883,13 +2892,15 @@ pub(crate) struct Desktop {
 
 impl Desktop {
     /// Asks several programs at once, before the first frame.
-    /// `openers` as the daemon found them.
-    pub(crate) fn find(openers: Vec<desktop::Opener>) -> Self {
+    /// Besides what the daemon told.
+    pub(crate) fn find(greeting: &link::Greeting) -> Self {
         std::thread::scope(|scope| {
             let fonts = scope.spawn(crate::appearance::fonts);
             let text_size = crate::appearance::desktop_text_size();
             Self {
-                openers,
+                openers: greeting.openers.clone(),
+                claude_codes_sandbox: greeting.claude_codes_sandbox,
+                finds_windows: greeting.finds_windows,
                 fonts: joined(fonts),
                 text_size,
             }

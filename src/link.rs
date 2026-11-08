@@ -90,6 +90,10 @@ pub(crate) struct Greeting {
     pub(crate) settings: Result<Settings, String>,
     /// What folders open in, besides the window.
     pub(crate) openers: Vec<Opener>,
+    /// Claude Code's own sandbox is on in its settings.
+    pub(crate) claude_codes_sandbox: bool,
+    /// Other programs' windows can be found.
+    pub(crate) finds_windows: bool,
 }
 
 /// Connects to the daemon, starting it if none runs: before the window is confined, which the
@@ -137,6 +141,8 @@ async fn greet(stream: std::os::unix::net::UnixStream) -> Result<(Socket, Buses,
         settings,
         openers,
         live,
+        claude_codes_sandbox,
+        finds_windows,
     } = greeting
     else {
         return Err(Error::Version);
@@ -152,6 +158,8 @@ async fn greet(stream: std::os::unix::net::UnixStream) -> Result<(Socket, Buses,
         live,
         settings,
         openers,
+        claude_codes_sandbox,
+        finds_windows,
     };
     Ok((socket, buses, greeting))
 }

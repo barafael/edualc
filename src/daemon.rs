@@ -187,21 +187,25 @@ async fn window(
     });
     let mut socket = match greeted.await {
         Ok(Ok((mut socket, ToDaemon::Hello { protocol }))) => {
-            let (settings, openers, live) = tokio::task::spawn_blocking(|| {
-                (
-                    settings::load().map_err(|error| error.to_string()),
-                    desktop::openers(),
-                    sessions::live(),
-                )
-            })
-            .await
-            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
+            let (settings, openers, live, claude_codes_sandbox) =
+                tokio::task::spawn_blocking(|| {
+                    (
+                        settings::load().map_err(|error| error.to_string()),
+                        desktop::openers(),
+                        sessions::live(),
+                        crate::sandbox::claude_codes_own_is_on(),
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new(), false));
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
                 buses,
                 settings,
                 openers,
                 live,
+                claude_codes_sandbox,
+                finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
             };
             if let Err(error) = ws::send(&mut socket, &answer).await {
                 tracing::warn!(%error, "a window left as it came");

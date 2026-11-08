@@ -198,7 +198,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         greeting,
         ..
     } = connected;
-    let desktop = app::Desktop::find(greeting.openers);
+    let desktop = app::Desktop::find(&greeting);
     match confine::confine() {
         Ok(confinement) => tracing::info!(?confinement, "the window is confined"),
         Err(error) => {
