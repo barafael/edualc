@@ -11,9 +11,10 @@ Claude Code to your project.
 
 ![A conversation: Claude explains why GPS noise inflates the elevation gain, its edits and commands folded into one line, and the result in a table](docs/screenshots/fixed.webp)
 
-**[Try it in your browser](https://felintusun.github.io/edualc/)**: the window itself, compiled to
-WebAssembly, on a demo project. Claude is played by a script there, so nothing you type leaves
-the page.
+**Also in a browser.** `edualcd`, edualc's daemon, is a Dioxus fullstack server too: it serves
+the same window as a page, drawn from the same code, for when you'd rather have it in a tab
+(see [Use](#use)). `edualcd --demo` serves it on a demo project with Claude played by a script,
+for trying it out: nothing runs there.
 
 ## What it does differently
 
@@ -70,7 +71,18 @@ edualc [DIR] [PROMPT]
 edualc --resume SESSION
 ```
 
-`edualc --help` lists the rest. Settings live in `~/.config/edualc/settings.json`; to let the
+`edualc --help` lists the rest.
+
+The window in a browser:
+
+```sh
+edualcd --listen 127.0.0.1:7878
+```
+
+It prints the page's address with a token (`http://127.0.0.1:7878/#token=…`); add `&dir=/path`
+to open a folder other than your home. Only a page with the token gets through, but keep it on
+the loopback: the line isn't encrypted. The page and the window share the daemon, its sessions
+and the settings. `edualcd --demo` serves the demo instead, which needs no token. Settings live in `~/.config/edualc/settings.json`; to let the
 sandbox read or write more folders, add them to `sandbox_read` or `sandbox_write` there.
 
 ## Known limits
@@ -80,12 +92,17 @@ sandbox read or write more folders, add them to `sandbox_read` or `sandbox_write
   with your current sign-in, and you send that message again.
 - Finding another session's window needs niri.
 - `@` file mentions aren't there yet, and images are pasted, not dropped in.
+- In the page, what is asked of the desktop (pasting an image, picking a folder, opening one in
+  an editor) happens on the machine edualcd runs on, and paths aren't shortened to `~`.
 - Slint comes from a fork at an unreleased commit, until the features edualc needs are released.
 
 ## Building
 
-`cargo build --release`. How the code is laid out, and how a release is made, is in
-[docs/architecture.md](docs/architecture.md).
+`cargo build --release` builds the window. edualcd and its page are built by Dioxus's CLI:
+`dx bundle -p edualc-server --platform web --fullstack --release`, whose `server` and `public/`
+go beside the window as `edualcd` and `public/` (the window starts `edualcd` beside itself;
+`cargo edualcd` builds the daemon alone, without the page). How the code is laid out, and how a
+release is made, is in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
