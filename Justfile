@@ -26,7 +26,7 @@ lint:
 # Clippy on the browser demo's build, where what only the daemon calls is unused.
 [group('check')]
 lint-wasm:
-    cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings -A dead_code
+    cargo clippy --locked -p edualc-core -p edualc --target wasm32-unknown-unknown -- -D warnings -A dead_code
 
 # The image decoder's confined helper refuses to start with file descriptors open past the
 # standard streams, so the tests run with the others closed.
@@ -125,7 +125,7 @@ demo site="target/site":
     if $locked != $installed {
         error make { msg: $"wasm-bindgen ($installed) installed, ($locked) locked: cargo install --locked wasm-bindgen-cli --version ($locked)" }
     }
-    cargo build --locked --profile web --target wasm32-unknown-unknown
+    cargo build --locked -p edualc --profile web --target wasm32-unknown-unknown
     wasm-bindgen --target web --no-typescript --remove-name-section --out-dir {{site}} --out-name edualc target/wasm32-unknown-unknown/web/edualc.wasm
     cp web/index.html ...(glob web/fonts/*-OFL.txt) {{site}}
     cp assets/io.github.felintusun.edualc.svg $"{{site}}/edualc.svg"

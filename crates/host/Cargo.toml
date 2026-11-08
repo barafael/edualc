@@ -1,0 +1,43 @@
+[package]
+name = "edualc-host"
+description = "edualc's daemon: runs Claude Code (and agy) for the windows, reads its files for them, does what the desktop is asked"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+edualc-core.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rustix.workspace = true
+tokio.workspace = true
+postcard.workspace = true
+dirs.workspace = true
+uuid.workspace = true
+jiff = { version = "0.2.38", features = ["serde"] }
+# An agy session's inbox token, cleared from memory once dropped.
+zeroize = "1.9"
+# An agy session's inbox (see `agy`), as Claude Code's own: its key file is named by the SHA-256
+# of the inbox's path, its token is random, and a peer's token is compared in constant time.
+sha2 = "0.10"
+getrandom = { version = "0.3", features = ["std"] }
+subtle = "2.6"
+# An agy session's adapter's command line.
+clap.workspace = true
+base64 = "0.23"
+strum = { version = "0.27", features = ["derive"] }
+# Opens links in the browser.
+open = "5"
+# The desktop's own folder picker, through its portal on Linux.
+rfd = "0.17"
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

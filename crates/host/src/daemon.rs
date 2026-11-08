@@ -1,0 +1,1762 @@
+//! The daemon (`edualc --daemon`): runs Claude Code's processes for the windows, and does for
+//! them what they ask of the desktop (opening editors, notifying, stopping sessions that run
+//! elsewhere). One per user, started by the first window, gone a while after the last window
+//! and session are. Sessions outlive the window that started them: closing it leaves them
+//! running, and a window opened later attaches to them.
+//!
+//! Its parts are actors in the manner of "More Actors with Tokio": each is its data, run by an
+//! event loop that is given its channels and gives its data back, and spawned by its caller.
+//! Their logic is sans-io (each says what is to be done; its loop does it), and their channels
+//! make no cycle:
+//!
+//! ```text
+//! socket ─▶ Connection (a window) ─▶ Hub (the sessions) ─▶ Session ─▶ a window's outbox ─▶ socket
+//!                │                        └──────────── Hosted (the list) ─────────▶ outboxes
+//!                └──────────────────── Done (what the desktop did) ────────────────▶ outbox
+//! ```
+//!
+//! The hub learns that a session ended as its task does, not by a message back. A window
+//! hanging up detaches its sessions, which run on; one left alone and quiet for [`QUIET`] ends,
+//! its input closing. When no window and no session are left for [`IDLE`], the daemon ends.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::ChildStdin;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
+use tokio::time::Instant;
+
+use crate::claude::{Conversation, Launch};
+use crate::decode::{self, Refusal};
+use crate::desktop;
+use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
+use crate::ipc::{
+    self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
+    PasteFailure, StartFailure, Stream, ToDaemon,
+};
+use crate::{files, sessions, settings, spawn, trust};
+
+/// How long the daemon waits, with no window and no session, before it ends.
+const IDLE: Duration = Duration::from_secs(5);
+/// How long a window has to say hello.
+const HELLO: Duration = Duration::from_secs(2);
+/// How long a process whose input closed gets to end before it is killed.
+const GRACE: Duration = Duration::from_secs(3);
+/// How long a session no window shows may stay quiet before it is ended.
+const QUIET: Duration = Duration::from_secs(60 * 60);
+/// Messages queued for a window, requests from it, commands for a session.
+const QUEUE: usize = 1024;
+/// Permission requests kept for a window to come: more unanswered than this is a runaway.
+const MAX_PENDING: usize = 64;
+/// How long the clipboard's owner gets to hand over what it holds.
+const CLIPBOARD: Duration = Duration::from_secs(5);
+/// The most of the clipboard's list of types read: a few dozen names.
+const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
+
+/// Runs the daemon; it returns as it ends.
+pub fn run() -> std::process::ExitCode {
+    // Closed to the user's other processes: its memory, and the descriptors it holds (the
+    // claude processes' and the image decoder's pipes). Windows check it by user, not program.
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        tracing::warn!(%error, "the daemon stays open to the user's other processes");
+    }
+    let folder = match ipc::Folder::open() {
+        Ok(folder) => folder,
+        Err(error) => {
+            tracing::error!(%error, "no private place for the daemon");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let listener = match ipc::Listener::bind(&folder) {
+        Ok(Some(listener)) => listener,
+        Ok(None) => {
+            tracing::info!("another daemon runs");
+            return std::process::ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            tracing::error!(%error, "couldn't listen");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!(%error, "no runtime");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(serve(listener)) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!(%error, "the daemon failed");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Takes windows as they connect, until no window and no session is left for [`IDLE`].
+async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
+    let (listener, _lock) = listener.into_tokio()?;
+    let (hub, requests) = mpsc::channel(QUEUE);
+    let (running, mut sessions) = watch::channel(0usize);
+    let hub_task = tokio::spawn(Hub::default().event_loop(
+        requests,
+        running,
+        tokio::runtime::Handle::current(),
+    ));
+    let mut windows = JoinSet::new();
+    let mut last_window = WindowId::default();
+    let mut quiet_since = Some(Instant::now());
+    loop {
+        let idle = async {
+            match quiet_since {
+                Some(since) => tokio::time::sleep_until(since + IDLE).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
+                Ok(channel) => {
+                    last_window = last_window.next();
+                    windows.spawn(window(channel, last_window, hub.clone()));
+                    quiet_since = None;
+                }
+                Err(error) => tracing::warn!(%error, "refused a connection"),
+            },
+            Some(ended) = windows.join_next() => {
+                if let Err(error) = ended {
+                    tracing::error!(%error, "a window's connection failed");
+                }
+            },
+            changed = sessions.changed() => {
+                // As a window asked it to shut down, its sessions ended.
+                if changed.is_err() {
+                    tracing::info!("the hub ended: ending");
+                    break;
+                }
+            },
+            () = idle => {
+                tracing::info!("no window and no session for a while: ending");
+                break;
+            },
+        }
+        let quiet = windows.is_empty() && *sessions.borrow() == 0;
+        quiet_since = match (quiet, quiet_since) {
+            (true, None) => Some(Instant::now()),
+            (true, since @ Some(_)) => since,
+            (false, _) => None,
+        };
+    }
+    // The hub's requests close; it ends its sessions, and is awaited.
+    drop(hub);
+    if let Err(error) = hub_task.await {
+        tracing::error!(%error, "the hub failed");
+    }
+    Ok(())
+}
+
+/// A window's connection: hello, then its requests to its [`Connection`], and what the hub,
+/// sessions and the desktop say back, until it hangs up.
+async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHub>) {
+    let (mut reading, mut writing) = channel.split();
+    let mut deframer = Deframer::default();
+    let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
+    match hello.await {
+        Ok(Ok(ToDaemon::Hello { protocol })) => {
+            let (settings, openers, live) = tokio::task::spawn_blocking(|| {
+                (
+                    settings::load().map_err(|error| error.to_string()),
+                    desktop::openers(),
+                    sessions::live(),
+                )
+            })
+            .await
+            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
+            let answer = FromDaemon::Hello {
+                protocol: ipc::PROTOCOL,
+                settings,
+                openers,
+                live,
+                finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
+            };
+            if let Err(error) = ipc::send(&mut writing, &answer).await {
+                tracing::warn!(%error, "a window left as it came");
+                return;
+            }
+            if protocol != ipc::PROTOCOL {
+                tracing::warn!(protocol, "a window of another version");
+                return;
+            }
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+            tracing::warn!("a connection that didn't say hello");
+            return;
+        }
+    }
+    let (requests, received) = mpsc::channel(QUEUE);
+    let (outbox, answers) = mpsc::channel(QUEUE);
+    // The socket's two directions: pumps, not actors.
+    let reader = tokio::spawn(async move {
+        loop {
+            match ipc::recv::<ToDaemon>(&mut reading, &mut deframer).await {
+                Ok(request) => {
+                    if requests.send(request).await.is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    tracing::info!(%error, "a window hung up");
+                    return;
+                }
+            }
+        }
+    });
+    let writer = tokio::spawn(write(writing, answers));
+    let connection = Connection::new(id).event_loop(received, outbox, hub).await;
+    tracing::info!(window = ?connection.id, "a window's connection ended");
+    reader.abort();
+    if let Err(error) = writer.await {
+        tracing::debug!(%error, "the writer ended");
+    }
+}
+
+/// Writes what is queued for a window, until everything that could queue more is gone.
+async fn write(mut writing: ipc::Writing, mut answers: mpsc::Receiver<FromDaemon>) {
+    while let Some(answer) = answers.recv().await {
+        if let Err(error) = ipc::send(&mut writing, &answer).await {
+            tracing::info!(%error, "a window stopped listening");
+            return;
+        }
+    }
+}
+
+/// What a window's requests come to.
+#[derive(Debug, PartialEq, Eq)]
+enum Effect {
+    /// For the hub.
+    Hub(Ask),
+    /// For the desktop, answered to the window.
+    Act {
+        request: ActId,
+        act: Act,
+    },
+    /// What was asked can't be done; the window is told.
+    Refuse {
+        key: Generation,
+        failure: StartFailure,
+    },
+    /// For the files, answered to the window.
+    Read {
+        request: ActId,
+        read: ipc::Read,
+    },
+    Save(crate::settings::Settings),
+    /// For the window's watches.
+    Watch(files::Order),
+}
+
+/// What a window asks of the hub, by its keys.
+#[derive(Debug, PartialEq, Eq)]
+enum Ask {
+    Start {
+        key: Generation,
+        launch: Launch,
+    },
+    Line {
+        key: Generation,
+        line: String,
+    },
+    End {
+        key: Generation,
+    },
+    Attach {
+        key: Generation,
+        hosted: HostedId,
+    },
+    Detach {
+        key: Generation,
+    },
+    Identify {
+        key: Generation,
+        session: SessionId,
+    },
+    /// Every session ends, and then the daemon.
+    ShutDown,
+}
+
+/// The daemon's id for a window's connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct WindowId(u64);
+
+impl WindowId {
+    fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+/// A window: the keys it shows sessions under, and the line it is sending each in pieces.
+#[derive(Debug, PartialEq, Eq)]
+struct Connection {
+    id: WindowId,
+    keys: BTreeMap<Generation, String>,
+}
+
+impl Connection {
+    fn new(id: WindowId) -> Self {
+        Self {
+            id,
+            keys: BTreeMap::new(),
+        }
+    }
+
+    async fn event_loop(
+        mut self,
+        mut requests: mpsc::Receiver<ToDaemon>,
+        outbox: mpsc::Sender<FromDaemon>,
+        hub: mpsc::Sender<ToHub>,
+    ) -> Self {
+        let window = self.id;
+        if hub
+            .send(ToHub::Joined {
+                window,
+                outbox: outbox.clone(),
+            })
+            .await
+            .is_err()
+        {
+            return self;
+        }
+        let (watching, watch_orders) = mpsc::channel(QUEUE);
+        tokio::spawn(files::watch(watch_orders, outbox.clone()));
+        while let Some(request) = requests.recv().await {
+            for effect in self.handle(request) {
+                match effect {
+                    Effect::Read { request, read } => {
+                        tokio::spawn(files::answer(request, read, outbox.clone()));
+                    }
+                    Effect::Save(settings) => {
+                        tokio::spawn(files::save(settings));
+                    }
+                    Effect::Watch(order) => {
+                        if watching.send(order).await.is_err() {
+                            tracing::debug!("a window's watches ended");
+                        }
+                    }
+                    Effect::Hub(ask) => {
+                        let outbox = outbox.clone();
+                        if hub
+                            .send(ToHub::Asked {
+                                window,
+                                ask,
+                                outbox,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return self;
+                        }
+                    }
+                    Effect::Act { request, act } => {
+                        let outbox = outbox.clone();
+                        tokio::spawn(act_for(request, act, outbox));
+                    }
+                    Effect::Refuse { key, failure } => {
+                        tell(&outbox, FromDaemon::Failed { key, failure }).await;
+                    }
+                }
+            }
+        }
+        // The window hung up: its sessions run on, shown nowhere.
+        if hub.send(ToHub::Left { window }).await.is_err() {
+            tracing::debug!("the hub was gone as a window left");
+        }
+        self
+    }
+
+    /// What a request comes to (sans-io).
+    fn handle(&mut self, request: ToDaemon) -> Vec<Effect> {
+        match request {
+            ToDaemon::Start { key, .. } | ToDaemon::Attach { key, .. }
+                if self.keys.contains_key(&key) =>
+            {
+                vec![Effect::Refuse {
+                    key,
+                    failure: StartFailure::KeyInUse,
+                }]
+            }
+            ToDaemon::Start { key, launch } => {
+                self.keys.insert(key, String::new());
+                vec![Effect::Hub(Ask::Start { key, launch })]
+            }
+            ToDaemon::Attach { key, hosted } => {
+                self.keys.insert(key, String::new());
+                vec![Effect::Hub(Ask::Attach { key, hosted })]
+            }
+            ToDaemon::Input { key, text, last } => {
+                let Some(line) = self.keys.get_mut(&key) else {
+                    return Vec::new();
+                };
+                if line.len() + text.len() > ipc::MAX_LINE {
+                    line.clear();
+                    return vec![Effect::Refuse {
+                        key,
+                        failure: StartFailure::LineTooLong,
+                    }];
+                }
+                line.push_str(&text);
+                if last {
+                    let line = std::mem::take(line);
+                    vec![Effect::Hub(Ask::Line { key, line })]
+                } else {
+                    Vec::new()
+                }
+            }
+            ToDaemon::End { key } => match self.keys.remove(&key) {
+                Some(_) => vec![Effect::Hub(Ask::End { key })],
+                None => Vec::new(),
+            },
+            ToDaemon::Detach { key } => match self.keys.remove(&key) {
+                Some(_) => vec![Effect::Hub(Ask::Detach { key })],
+                None => Vec::new(),
+            },
+            ToDaemon::Identify { key, session } if self.keys.contains_key(&key) => {
+                vec![Effect::Hub(Ask::Identify { key, session })]
+            }
+            // A second hello, or a key not in use.
+            ToDaemon::Hello { .. } | ToDaemon::Identify { .. } => Vec::new(),
+            ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
+            ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
+            ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
+            ToDaemon::SaveSettings(settings) => vec![Effect::Save(settings)],
+            ToDaemon::Watch { watched, target } => {
+                vec![Effect::Watch(files::Order::Watch(watched, target))]
+            }
+            ToDaemon::Unwatch(watched) => vec![Effect::Watch(files::Order::Unwatch(watched))],
+        }
+    }
+}
+
+/// Does what the desktop is asked, on a thread of its own (it may take a while), and tells the
+/// window.
+async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
+    if act == Act::PickFolder {
+        let picked = tokio::task::spawn_blocking(move || {
+            rfd::FileDialog::new()
+                .set_title("Open a folder")
+                .pick_folder()
+        })
+        .await;
+        let folder = picked.unwrap_or_else(|error| {
+            tracing::error!(%error, "the folder picker failed");
+            None
+        });
+        tell(&outbox, FromDaemon::Picked { request, folder }).await;
+        return;
+    }
+    if act == Act::PasteImage {
+        let pasted = paste_image().await;
+        tell_pasted(&outbox, request, &pasted).await;
+        return;
+    }
+    if let Act::CheckTrust { folder } = act {
+        // What the folder would run is read only for one that isn't trusted: it is asked about.
+        let read = tokio::task::spawn_blocking(move || {
+            let accepted = trust::accepted_in_terminal(&folder);
+            let runs = if accepted {
+                Vec::new()
+            } else {
+                trust::what_runs(&folder)
+            };
+            (accepted, runs)
+        })
+        .await;
+        let (accepted, runs) = read.unwrap_or_else(|error| {
+            tracing::error!(%error, "reading the folder's trust failed");
+            (false, Vec::new())
+        });
+        tell(
+            &outbox,
+            FromDaemon::Trusted {
+                request,
+                accepted,
+                runs,
+            },
+        )
+        .await;
+        return;
+    }
+    let done = tokio::task::spawn_blocking(move || perform(act)).await;
+    let result = done.unwrap_or_else(|error| {
+        tracing::error!(%error, "doing what the desktop was asked failed");
+        Err(ActFailure::Crashed)
+    });
+    tell(&outbox, FromDaemon::Done { request, result }).await;
+}
+
+/// The clipboard's image, read with `wl-paste` and decoded in the confined helper (see
+/// `decode`).
+async fn paste_image() -> ipc::Pasted {
+    let listed = clipboard(&["--list-types"], MAX_CLIPBOARD_TYPES_BYTES).await?;
+    let format = String::from_utf8_lossy(&listed)
+        .lines()
+        .find_map(|line| line.trim().parse::<decode::Format>().ok())
+        .ok_or(PasteFailure::NoImage)?;
+    let limit = decode::MAX_INPUT_BYTES + 1;
+    let bytes = clipboard(&["--no-newline", "--type", format.as_ref()], limit).await?;
+    if bytes.len() > decode::MAX_INPUT_BYTES {
+        return Err(PasteFailure::Refused(Refusal::TooManyBytes));
+    }
+    decode::decode(&bytes).await.map_err(|error| match error {
+        decode::Error::Refused(refusal) => PasteFailure::Refused(refusal),
+        error @ (decode::Error::Start(_)
+        | decode::Error::NoPipes
+        | decode::Error::Hand(_)
+        | decode::Error::Read(_)
+        | decode::Error::Slow
+        | decode::Error::Failed(_)
+        | decode::Error::TooMuch
+        | decode::Error::Unreadable(_)
+        | decode::Error::Malformed) => PasteFailure::Decoder(error.to_string()),
+    })
+}
+
+/// What `wl-paste` gives with `args`, up to `limit` bytes (reading stops there).
+async fn clipboard(args: &[&str], limit: usize) -> Result<Vec<u8>, PasteFailure> {
+    let failed = |error: std::io::Error| PasteFailure::Clipboard(error.to_string());
+    let mut child = tokio::process::Command::new("wl-paste")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(failed)?;
+    let Some(output) = child.stdout.take() else {
+        return Err(PasteFailure::Clipboard("wl-paste has no output".to_owned()));
+    };
+    let reading = async {
+        let mut bytes = Vec::new();
+        let cap = u64::try_from(limit).unwrap_or(u64::MAX);
+        output
+            .take(cap)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(failed)?;
+        if bytes.len() >= limit {
+            // The caller refuses it; what is left isn't waited for (the child is killed as it
+            // is dropped).
+            return Ok(bytes);
+        }
+        let status = child.wait().await.map_err(failed)?;
+        // It fails when the clipboard is empty, or holds nothing of the type asked.
+        if status.success() {
+            Ok(bytes)
+        } else {
+            Err(PasteFailure::NoImage)
+        }
+    };
+    tokio::time::timeout(CLIPBOARD, reading)
+        .await
+        .map_err(|_elapsed| {
+            PasteFailure::Clipboard("the clipboard's owner didn't hand it over in time".to_owned())
+        })?
+}
+
+/// The pasted image to a window, in pieces that fit messages.
+async fn tell_pasted(outbox: &mpsc::Sender<FromDaemon>, request: ActId, pasted: &ipc::Pasted) {
+    let encoded = match postcard::to_stdvec(pasted) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            tracing::error!(%error, "couldn't encode a pasted image");
+            return;
+        }
+    };
+    let mut pieces = encoded.chunks(ipc::MAX_CHUNK).peekable();
+    while let Some(piece) = pieces.next() {
+        let last = pieces.peek().is_none();
+        let piece = piece.to_vec();
+        tell(
+            outbox,
+            FromDaemon::Pasted {
+                request,
+                piece,
+                last,
+            },
+        )
+        .await;
+    }
+}
+
+/// Tells a window something; a window gone isn't told.
+async fn tell(outbox: &mpsc::Sender<FromDaemon>, message: FromDaemon) {
+    if outbox.send(message).await.is_err() {
+        tracing::debug!("a window gone");
+    }
+}
+
+/// Does what the desktop is asked (it may take a while: a session stopping elsewhere).
+fn perform(act: Act) -> Result<(), ActFailure> {
+    match act {
+        Act::OpenIn { opener, folder } => {
+            if !spawn::is_folder(&folder) {
+                return Err(ActFailure::NotAFolder(folder));
+            }
+            desktop::open_in(opener, &folder)?;
+        }
+        Act::Notify { summary, body } => desktop::notify(&summary, &body)?,
+        Act::OpenUrl(link) => {
+            // Claude writes the links: a file or another app's scheme could run what it wrote.
+            let web = ["https://", "http://", "mailto:"].iter().any(|scheme| {
+                link.get(..scheme.len())
+                    .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+            });
+            if !web {
+                return Err(ActFailure::NotAWebLink(link));
+            }
+            open::that_detached(&link).map_err(|error| ActFailure::Open {
+                reason: error.to_string(),
+                link,
+            })?;
+        }
+        Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
+        Act::StopSession(running) => desktop::stop_session(&running)?,
+        // Answered as `Picked`, `Pasted` and `Trusted`, in `act_for`.
+        Act::PickFolder | Act::PasteImage | Act::CheckTrust { .. } => {}
+    }
+    Ok(())
+}
+
+/// What the hub is told.
+#[derive(Debug)]
+enum ToHub {
+    /// A window connected: it hears the list of sessions from now on.
+    Joined {
+        window: WindowId,
+        outbox: mpsc::Sender<FromDaemon>,
+    },
+    Asked {
+        window: WindowId,
+        ask: Ask,
+        outbox: mpsc::Sender<FromDaemon>,
+    },
+    /// A window hung up: its sessions run on, shown nowhere.
+    Left { window: WindowId },
+}
+
+/// A session as the hub keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Kept {
+    cwd: PathBuf,
+    session: Option<SessionId>,
+    /// The window and key it is shown under.
+    shown: Option<(WindowId, Generation)>,
+}
+
+/// The sessions the daemon runs, and which window shows each.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Hub {
+    sessions: BTreeMap<HostedId, Kept>,
+    last: HostedId,
+}
+
+/// What the hub's own decisions come to.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// A new session, as `id`, shown under the window's key.
+    Start { id: HostedId, launch: Launch },
+    /// To a session.
+    Tell { id: HostedId, command: Order },
+    /// Something the window is told.
+    Answer(FromDaemon),
+    /// The list changed: every window hears it.
+    Changed,
+    /// Every window is told, and the hub ends, its sessions with it.
+    ShutDown,
+}
+
+/// What the hub tells a session (`Attach` carries the outbox, added by the loop).
+#[derive(Debug, PartialEq, Eq)]
+enum Order {
+    Line(String),
+    Attach { key: Generation },
+    Detach,
+    End,
+}
+
+impl Hub {
+    async fn event_loop(
+        mut self,
+        mut requests: mpsc::Receiver<ToHub>,
+        running: watch::Sender<usize>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
+        let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
+        let mut tasks = JoinSet::new();
+        // A window asked to shut down: the loop ends, and below, every session with it.
+        let mut shutting_down = false;
+        loop {
+            let steps = tokio::select! {
+                request = requests.recv() => match request {
+                    Some(ToHub::Joined { window, outbox }) => {
+                        let list = FromDaemon::Hosted(self.list());
+                        tell(&outbox, list).await;
+                        windows.insert(window, outbox);
+                        Vec::new()
+                    }
+                    Some(ToHub::Asked { window, ask, outbox }) => {
+                        let steps = self.handle(window, ask);
+                        let mut rest = Vec::new();
+                        for step in steps {
+                            match step {
+                                Step::Start { id, launch } => {
+                                    let (order, commands) = mpsc::channel(QUEUE);
+                                    orders.insert(id, order);
+                                    let key = self.key_of(id);
+                                    let shown = key.map(|key| (key, outbox.clone()));
+                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
+                                }
+                                Step::Tell { id, command: Order::Attach { key } } => {
+                                    send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
+                                }
+                                Step::Answer(answer) => tell(&outbox, answer).await,
+                                other @ (Step::Tell { .. } | Step::Changed | Step::ShutDown) => rest.push(other),
+                            }
+                        }
+                        rest
+                    }
+                    Some(ToHub::Left { window }) => {
+                        windows.remove(&window);
+                        self.left(window)
+                    }
+                    // The daemon ends: the sessions' orders close, and each ends.
+                    None => break,
+                },
+                Some(ended) = tasks.join_next() => {
+                    match ended {
+                        Ok(session) => {
+                            orders.remove(&session.id);
+                            self.ended(session.id)
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "a session failed");
+                            Vec::new()
+                        }
+                    }
+                },
+            };
+            for step in steps {
+                match step {
+                    Step::Tell { id, command } => {
+                        let command = match command {
+                            Order::Line(line) => Command::Line(line),
+                            Order::Detach => Command::Detach,
+                            Order::End => {
+                                // Its orders closing ends it.
+                                orders.remove(&id);
+                                continue;
+                            }
+                            Order::Attach { .. } => continue,
+                        };
+                        send(&orders, id, command).await;
+                    }
+                    Step::Changed => {
+                        let list = self.list();
+                        for outbox in windows.values() {
+                            tell(outbox, FromDaemon::Hosted(list.clone())).await;
+                        }
+                    }
+                    Step::ShutDown => {
+                        tracing::info!(
+                            sessions = self.sessions.len(),
+                            "shutting down, as a window asked"
+                        );
+                        for outbox in windows.values() {
+                            tell(outbox, FromDaemon::ShuttingDown).await;
+                        }
+                        shutting_down = true;
+                    }
+                    Step::Start { .. } | Step::Answer(_) => {}
+                }
+            }
+            running.send_replace(self.sessions.len());
+            if shutting_down {
+                break;
+            }
+        }
+        orders.clear();
+        while tasks.join_next().await.is_some() {}
+        self
+    }
+
+    fn key_of(&self, id: HostedId) -> Option<Generation> {
+        self.sessions
+            .get(&id)
+            .and_then(|kept| kept.shown)
+            .map(|(_, key)| key)
+    }
+
+    /// The session a window shows under `key`.
+    fn shown_as(&self, window: WindowId, key: Generation) -> Option<HostedId> {
+        self.sessions
+            .iter()
+            .find(|(_, kept)| kept.shown == Some((window, key)))
+            .map(|(id, _)| *id)
+    }
+
+    /// What a window's ask comes to (sans-io).
+    fn handle(&mut self, window: WindowId, ask: Ask) -> Vec<Step> {
+        match ask {
+            Ask::Start { key, launch } => {
+                self.last = self.last.next();
+                let id = self.last;
+                self.sessions.insert(
+                    id,
+                    Kept {
+                        cwd: launch.cwd.clone(),
+                        // A new session or a copy is listed once it has a transcript to
+                        // open, as its window identifies it (`Identify`).
+                        session: match &launch.conversation {
+                            Conversation::Continue(session) => Some(session.clone()),
+                            Conversation::New(_) | Conversation::Fork { .. } => None,
+                        },
+                        shown: Some((window, key)),
+                    },
+                );
+                vec![Step::Start { id, launch }, Step::Changed]
+            }
+            Ask::Line { key, line } => match self.shown_as(window, key) {
+                Some(id) => vec![Step::Tell {
+                    id,
+                    command: Order::Line(line),
+                }],
+                None => Vec::new(),
+            },
+            Ask::End { key } => match self.shown_as(window, key) {
+                Some(id) => vec![Step::Tell {
+                    id,
+                    command: Order::End,
+                }],
+                None => Vec::new(),
+            },
+            Ask::Detach { key } => match self.shown_as(window, key) {
+                Some(id) => {
+                    if let Some(kept) = self.sessions.get_mut(&id) {
+                        kept.shown = None;
+                    }
+                    vec![
+                        Step::Tell {
+                            id,
+                            command: Order::Detach,
+                        },
+                        Step::Changed,
+                    ]
+                }
+                None => Vec::new(),
+            },
+            Ask::Attach { key, hosted } => match self.sessions.get_mut(&hosted) {
+                Some(kept) if kept.shown.is_none() => {
+                    kept.shown = Some((window, key));
+                    vec![
+                        Step::Tell {
+                            id: hosted,
+                            command: Order::Attach { key },
+                        },
+                        Step::Changed,
+                    ]
+                }
+                Some(_) | None => vec![Step::Answer(FromDaemon::Failed {
+                    key,
+                    failure: StartFailure::NotHosted,
+                })],
+            },
+            Ask::ShutDown => vec![Step::ShutDown],
+            Ask::Identify { key, session } => match self.shown_as(window, key) {
+                Some(id) => {
+                    if let Some(kept) = self.sessions.get_mut(&id) {
+                        kept.session = Some(session);
+                    }
+                    vec![Step::Changed]
+                }
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// A window hung up: what it showed is shown nowhere, and runs on.
+    fn left(&mut self, window: WindowId) -> Vec<Step> {
+        let mut steps = Vec::new();
+        for (id, kept) in &mut self.sessions {
+            if kept.shown.is_some_and(|(shown_in, _)| shown_in == window) {
+                kept.shown = None;
+                steps.push(Step::Tell {
+                    id: *id,
+                    command: Order::Detach,
+                });
+            }
+        }
+        if !steps.is_empty() {
+            steps.push(Step::Changed);
+        }
+        steps
+    }
+
+    fn ended(&mut self, id: HostedId) -> Vec<Step> {
+        if self.sessions.remove(&id).is_some() {
+            vec![Step::Changed]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn list(&self) -> Vec<Hosted> {
+        self.sessions
+            .iter()
+            .map(|(id, kept)| Hosted {
+                id: *id,
+                session: kept.session.clone(),
+                cwd: kept.cwd.clone(),
+                attached: kept.shown.is_some(),
+            })
+            .collect()
+    }
+}
+
+async fn send(orders: &BTreeMap<HostedId, mpsc::Sender<Command>>, id: HostedId, command: Command) {
+    if let Some(order) = orders.get(&id)
+        && order.send(command).await.is_err()
+    {
+        tracing::debug!(?id, "an order for a session that ended");
+    }
+}
+
+/// Starts a session's process and runs it, telling the window it is shown in.
+async fn host(
+    id: HostedId,
+    launch: Launch,
+    runtime: tokio::runtime::Handle,
+    commands: mpsc::Receiver<Command>,
+    shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+) -> Session {
+    let session = Session::new(id);
+    let spawned = tokio::task::spawn_blocking(move || spawn::spawn(&launch, &runtime)).await;
+    let failure = match spawned {
+        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown).await,
+        Ok(Err(error)) => StartFailure::from(error),
+        Err(error) => {
+            tracing::error!(%error, "starting a session failed");
+            StartFailure::Crashed
+        }
+    };
+    if let Some((key, outbox)) = shown {
+        tell(&outbox, FromDaemon::Failed { key, failure }).await;
+    }
+    session
+}
+
+/// What a session's loop is told.
+#[derive(Debug)]
+enum Command {
+    Line(String),
+    /// Shown in a window from now on, under its key.
+    Attach {
+        key: Generation,
+        outbox: mpsc::Sender<FromDaemon>,
+    },
+    Detach,
+}
+
+/// Where a session's process is in its life (sans-io: the event loop says what happened and
+/// when, and is told what to do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Running,
+    /// Its input closed at this time; it is killed if it hasn't ended a while after.
+    Closing(Instant),
+    Killed,
+}
+
+/// A session's process, as the daemon runs it.
+#[derive(Debug, PartialEq, Eq)]
+struct Session {
+    id: HostedId,
+    phase: Phase,
+    /// What it asked the user and wasn't answered: asked again of a window that attaches.
+    pending: Pending,
+    lines_in: u64,
+    /// Since when no window shows it.
+    alone_since: Option<Instant>,
+    /// When it last said or was told something.
+    active: Instant,
+}
+
+impl Session {
+    fn new(id: HostedId) -> Self {
+        Self {
+            id,
+            phase: Phase::Running,
+            pending: Pending::default(),
+            lines_in: 0,
+            alone_since: None,
+            active: Instant::now(),
+        }
+    }
+
+    /// The input closed: the process is to end.
+    fn input_closed(&mut self, now: Instant) {
+        if self.phase == Phase::Running {
+            self.phase = Phase::Closing(now);
+        }
+    }
+
+    /// When the process is to be killed, if it is to be.
+    fn kill_at(&self) -> Option<Instant> {
+        match self.phase {
+            Phase::Closing(since) => Some(since + GRACE),
+            Phase::Running | Phase::Killed => None,
+        }
+    }
+
+    /// When, alone and quiet, it is to be ended.
+    fn quiet_end_at(&self) -> Option<Instant> {
+        let alone = self.alone_since?;
+        (self.phase == Phase::Running).then(|| alone.max(self.active) + QUIET)
+    }
+
+    /// Lines to the process's input, its output to the window that shows it, and its end, until
+    /// it ends.
+    async fn event_loop(
+        mut self,
+        spawned: spawn::Spawned,
+        mut commands: mpsc::Receiver<Command>,
+        shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+    ) -> Self {
+        let spawn::Spawned { mut child } = spawned;
+        let Some(pid) = child.id() else {
+            return self;
+        };
+        let mut shown = shown;
+        if shown.is_none() {
+            self.alone_since = Some(Instant::now());
+        }
+        if let Some((key, outbox)) = &shown {
+            tell(
+                outbox,
+                FromDaemon::Started {
+                    key: *key,
+                    pid,
+                    turns: 0,
+                },
+            )
+            .await;
+        }
+        let mut stdin = child.stdin.take();
+        let (lines, mut output) = mpsc::channel(QUEUE);
+        let pumps = [
+            child
+                .stdout
+                .take()
+                .map(|out| tokio::spawn(pump(out, Stream::Out, lines.clone()))),
+            child
+                .stderr
+                .take()
+                .map(|err| tokio::spawn(pump(err, Stream::Err, lines.clone()))),
+        ];
+        drop(lines);
+        let mut commands_open = true;
+        let mut output_open = true;
+        let code = loop {
+            let deadline = self
+                .kill_at()
+                .or_else(|| self.quiet_end_at())
+                .map(tokio::time::sleep_until);
+            let deadline = async {
+                match deadline {
+                    Some(sleep) => sleep.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                command = commands.recv(), if commands_open && self.phase == Phase::Running => match command {
+                    Some(Command::Line(line)) => {
+                        self.lines_in += 1;
+                        self.active = Instant::now();
+                        self.pending.answered(&line);
+                        if let Some(writing) = stdin.as_mut()
+                            && write_line(writing, &line).await.is_err()
+                        {
+                            tracing::debug!(id = ?self.id, "claude's input closed");
+                        }
+                    }
+                    Some(Command::Attach { key, outbox }) => {
+                        self.alone_since = None;
+                        let turns = self.pending.turns;
+                        tell(&outbox, FromDaemon::Started { key, pid, turns }).await;
+                        // What it asked meanwhile, asked again.
+                        for line in self.pending.lines() {
+                            send_line(&outbox, key, Stream::Out, line).await;
+                        }
+                        shown = Some((key, outbox));
+                    }
+                    Some(Command::Detach) => {
+                        shown = None;
+                        self.alone_since = Some(Instant::now());
+                    }
+                    None => {
+                        commands_open = false;
+                        stdin = None;
+                        self.input_closed(Instant::now());
+                    }
+                },
+                line = output.recv(), if output_open => match line {
+                    Some((stream, line)) => {
+                        self.active = Instant::now();
+                        if stream == Stream::Out {
+                            self.pending.said(&line);
+                        }
+                        if let Some((key, outbox)) = &shown {
+                            send_line(outbox, *key, stream, &line).await;
+                        }
+                    }
+                    None => output_open = false,
+                },
+                ended = child.wait() => break ended.ok().and_then(|status| status.code()),
+                () = deadline => {
+                    if self.phase == Phase::Running {
+                        // Alone and quiet for long: ended as a closed input ends it.
+                        stdin = None;
+                        self.input_closed(Instant::now());
+                    } else {
+                        self.phase = Phase::Killed;
+                        if let Err(error) = child.start_kill() {
+                            tracing::warn!(%error, id = ?self.id, "couldn't kill claude");
+                        }
+                    }
+                }
+            }
+        };
+        // What it wrote goes out before its end is told.
+        for pump in pumps.into_iter().flatten() {
+            if let Err(error) = pump.await {
+                tracing::debug!(%error, "an output pump failed");
+            }
+        }
+        while let Some((stream, line)) = output.recv().await {
+            if let Some((key, outbox)) = &shown {
+                send_line(outbox, *key, stream, &line).await;
+            }
+        }
+        if let Some((key, outbox)) = &shown {
+            tell(outbox, FromDaemon::Ended { key: *key, code }).await;
+        }
+        self
+    }
+}
+
+/// What a window attaching is told again (sans-io): how many turns are under way, the
+/// process's latest `init` (its session, model and mode), what runs in the background, then the
+/// permission requests it asked and nothing answered yet. Only the messages' kind and request
+/// id are read, the rest is passed on as it is.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Pending {
+    init: Option<String>,
+    /// The latest list of background tasks: each one names them all.
+    tasks: Option<String>,
+    /// What was said about each task begun in this turn and not yet ended: a foreground one is
+    /// in no list of background tasks.
+    open_tasks: BTreeMap<TaskId, Vec<String>>,
+    /// How far each running task got, as last said; a background one runs on after its turn.
+    progress: BTreeMap<TaskId, String>,
+    asked: BTreeMap<String, String>,
+    /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
+    /// counts them, for one that attaches meanwhile.
+    turns: usize,
+}
+
+impl Pending {
+    /// A line the process wrote.
+    fn said(&mut self, line: &str) {
+        let Ok(peek) = serde_json::from_str::<ControlPeek>(line) else {
+            return;
+        };
+        match (peek.kind, peek.subtype, peek.request_id) {
+            (PeekedKind::System, Some(PeekedSubtype::Init), _) => {
+                self.init = Some(line.to_owned());
+            }
+            (PeekedKind::System, Some(PeekedSubtype::BackgroundTasksChanged), _) => {
+                self.tasks = Some(line.to_owned());
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskStarted), _) => {
+                if let Some(task) = peek.task_id
+                    && self.open_tasks.len() < MAX_PENDING
+                {
+                    self.open_tasks.insert(task, vec![line.to_owned()]);
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskUpdated), _) => {
+                if let Some(said) = peek.task_id.and_then(|task| self.open_tasks.get_mut(&task))
+                    && said.len() < MAX_PENDING
+                {
+                    said.push(line.to_owned());
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskNotification), _) => {
+                if let Some(task) = peek.task_id {
+                    self.open_tasks.remove(&task);
+                    self.progress.remove(&task);
+                }
+            }
+            (PeekedKind::System, Some(PeekedSubtype::TaskProgress), _) => {
+                if let Some(task) = peek.task_id
+                    && (self.progress.len() < MAX_PENDING || self.progress.contains_key(&task))
+                {
+                    self.progress.insert(task, line.to_owned());
+                }
+            }
+            (PeekedKind::ControlRequest, _, Some(id)) if self.asked.len() < MAX_PENDING => {
+                self.asked.insert(id, line.to_owned());
+            }
+            (PeekedKind::ControlCancelRequest, _, Some(id)) => {
+                self.asked.remove(&id);
+            }
+            (PeekedKind::Result, _, _) => {
+                self.turns = self.turns.saturating_sub(1);
+                // No foreground task outlives its turn, and the list names those that run on.
+                self.open_tasks.clear();
+            }
+            _ => {}
+        }
+    }
+
+    /// A line the window wrote to the process.
+    fn answered(&mut self, line: &str) {
+        let Ok(peek) = serde_json::from_str::<ControlPeek>(line) else {
+            return;
+        };
+        match peek.kind {
+            PeekedKind::ControlResponse => {
+                if let Some(id) = peek.response.and_then(|response| response.request_id) {
+                    self.asked.remove(&id);
+                }
+            }
+            PeekedKind::User => self.turns = self.turns.saturating_add(1),
+            PeekedKind::System
+            | PeekedKind::ControlRequest
+            | PeekedKind::ControlCancelRequest
+            | PeekedKind::Result
+            | PeekedKind::Other => {}
+        }
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &String> {
+        self.init
+            .iter()
+            .chain(self.tasks.iter())
+            .chain(self.open_tasks.values().flatten())
+            .chain(self.progress.values())
+            .chain(self.asked.values())
+    }
+}
+
+async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+    stdin.flush().await
+}
+
+/// A process's output, line by line (split sans-io), to its session.
+async fn pump(
+    mut output: impl tokio::io::AsyncRead + Unpin,
+    stream: Stream,
+    lines: mpsc::Sender<(Stream, String)>,
+) {
+    let mut splitter = LineSplitter::default();
+    let mut bytes = vec![0u8; 64 * 1024];
+    loop {
+        let read = match output.read(&mut bytes).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        let Some(read) = bytes.get(..read) else {
+            break;
+        };
+        for line in splitter.push(read) {
+            if lines.send((stream, line)).await.is_err() {
+                return;
+            }
+        }
+    }
+    if let Some(line) = splitter.finish()
+        && lines.send((stream, line)).await.is_err()
+    {
+        tracing::debug!("a session gone");
+    }
+}
+
+/// A line to a window, in pieces that fit messages.
+async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: Stream, line: &str) {
+    let mut pieces = ipc::chunks(line).peekable();
+    while let Some(text) = pieces.next() {
+        let last = pieces.peek().is_none();
+        let piece = FromDaemon::Output {
+            key,
+            stream,
+            text: text.to_owned(),
+            last,
+        };
+        if outbox.send(piece).await.is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claude::FolderConfiguration;
+
+    fn launch() -> Launch {
+        Launch {
+            backend: crate::claude::Backend::Claude,
+            cwd: PathBuf::from("/tmp"),
+            conversation: Conversation::New(
+                SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
+                    .expect("a session id"),
+            ),
+            model: None,
+            folder_configuration: FolderConfiguration::Read,
+        }
+    }
+
+    fn piece(key: Generation, text: &str, last: bool) -> ToDaemon {
+        ToDaemon::Input {
+            key,
+            text: text.to_owned(),
+            last,
+        }
+    }
+
+    /// Pieces of a line make one line, for a key in use; a key used twice is refused.
+    #[test]
+    fn a_connection_works_out_what_requests_come_to() {
+        let key = Generation::default().next();
+        let unused_key = key.next();
+        let mut connection = Connection::new(WindowId(1));
+        assert_eq!(
+            connection.handle(ToDaemon::Start {
+                key,
+                launch: launch()
+            }),
+            vec![Effect::Hub(Ask::Start {
+                key,
+                launch: launch()
+            })]
+        );
+        assert_eq!(
+            connection.handle(ToDaemon::Attach {
+                key,
+                hosted: HostedId::default().next()
+            }),
+            vec![Effect::Refuse {
+                key,
+                failure: StartFailure::KeyInUse
+            }]
+        );
+        assert!(connection.handle(piece(key, "{\"a\":", false)).is_empty());
+        assert_eq!(
+            connection.handle(piece(key, "1}", true)),
+            vec![Effect::Hub(Ask::Line {
+                key,
+                line: "{\"a\":1}".to_owned()
+            })]
+        );
+        assert!(
+            connection.handle(piece(unused_key, "x", true)).is_empty(),
+            "no key, no line"
+        );
+        assert_eq!(
+            connection.handle(ToDaemon::Detach { key }),
+            vec![Effect::Hub(Ask::Detach { key })]
+        );
+        assert!(
+            connection.handle(ToDaemon::End { key }).is_empty(),
+            "let go once"
+        );
+    }
+
+    /// A window leaving lets its sessions run on, shown nowhere; another window attaches to
+    /// one, but not to one shown already.
+    #[test]
+    fn the_hub_keeps_sessions_past_their_window() {
+        let (first_window, second_window) = (WindowId(1), WindowId(2));
+        let first_key = Generation::default().next();
+        let second_key = first_key.next();
+        let mut hub = Hub::default();
+        let started = hub.handle(
+            first_window,
+            Ask::Start {
+                key: first_key,
+                launch: launch(),
+            },
+        );
+        let Some(&Step::Start { id: hosted, .. }) = started.first() else {
+            panic!("no session started: {started:?}");
+        };
+        assert_eq!(hub.shown_as(first_window, first_key), Some(hosted));
+        assert_eq!(
+            hub.handle(
+                second_window,
+                Ask::Attach {
+                    key: second_key,
+                    hosted
+                }
+            ),
+            vec![Step::Answer(FromDaemon::Failed {
+                key: second_key,
+                failure: StartFailure::NotHosted
+            })],
+            "shown in the first window"
+        );
+        assert_eq!(
+            hub.left(first_window),
+            vec![
+                Step::Tell {
+                    id: hosted,
+                    command: Order::Detach
+                },
+                Step::Changed
+            ]
+        );
+        assert!(hub.list().iter().all(|listed| !listed.attached));
+        assert_eq!(
+            hub.handle(
+                second_window,
+                Ask::Attach {
+                    key: second_key,
+                    hosted
+                }
+            ),
+            vec![
+                Step::Tell {
+                    id: hosted,
+                    command: Order::Attach { key: second_key }
+                },
+                Step::Changed
+            ]
+        );
+        let session = SessionId::try_from("ee79c043-bfa7-44c0-82b6-509839a05c22".to_owned())
+            .expect("a session id");
+        assert_eq!(
+            hub.handle(
+                second_window,
+                Ask::Identify {
+                    key: second_key,
+                    session: session.clone()
+                }
+            ),
+            vec![Step::Changed]
+        );
+        assert_eq!(
+            hub.list().first().and_then(|listed| listed.session.clone()),
+            Some(session)
+        );
+        assert_eq!(
+            hub.handle(second_window, Ask::End { key: second_key }),
+            vec![Step::Tell {
+                id: hosted,
+                command: Order::End
+            }]
+        );
+        assert_eq!(hub.ended(hosted), vec![Step::Changed]);
+        assert!(hub.list().is_empty());
+    }
+
+    #[test]
+    fn the_latest_init_is_told_first() {
+        let mut pending = Pending::default();
+        let first = r#"{"type":"system","subtype":"init","session_id":"a","model":"m1"}"#;
+        let later = r#"{"type":"system","subtype":"init","session_id":"a","model":"m2"}"#;
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        pending.said(first);
+        pending.said(asked);
+        pending.said(later);
+        pending.said(r#"{"type":"system","subtype":"status","status":"requesting"}"#);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [later, asked]);
+    }
+
+    /// A window attaching meanwhile learns what runs in the background from the latest list,
+    /// which names all of it; an emptied list is told too, as nothing running.
+    #[test]
+    fn the_latest_background_tasks_are_told_after_the_init() {
+        let mut pending = Pending::default();
+        let init = r#"{"type":"system","subtype":"init","session_id":"a","model":"m"}"#;
+        let two = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_type":"local_agent","description":"a"},{"task_type":"local_bash","description":"b"}]}"#;
+        let one = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_type":"local_bash","description":"b"}]}"#;
+        let none = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        pending.said(two);
+        pending.said(init);
+        pending.said(asked);
+        pending.said(one);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, one, asked]);
+        pending.said(none);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, none, asked]);
+    }
+
+    /// A task begun and not yet ended is told again, all that was said about it, in order and
+    /// after the background list: a foreground one is in no list. Its end, or the turn's, drops
+    /// it.
+    #[test]
+    fn open_tasks_are_told_until_they_end() {
+        let mut pending = Pending::default();
+        let init = r#"{"type":"system","subtype":"init","session_id":"a","model":"m"}"#;
+        let list = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        let started = |id: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"task_started","task_id":"{id}","is_backgrounded":false,"task_type":"local_agent","description":"d"}}"#
+            )
+        };
+        let (agent, other) = (started("a1"), started("a2"));
+        let moved = r#"{"type":"system","subtype":"task_updated","task_id":"a1","patch":{"is_backgrounded":true}}"#;
+        let ended = r#"{"type":"system","subtype":"task_notification","task_id":"a2","status":"completed"}"#;
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        for line in [init, list, &agent, &other, asked, moved] {
+            pending.said(line);
+        }
+        assert_eq!(
+            pending.lines().collect::<Vec<_>>(),
+            [init, list, &agent, moved, &other, asked]
+        );
+        pending.said(ended);
+        assert_eq!(
+            pending.lines().collect::<Vec<_>>(),
+            [init, list, &agent, moved, asked]
+        );
+        pending.said(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [init, list, asked]);
+    }
+
+    /// Only a task's latest progress is told again, past the turn's end (a background task runs
+    /// on), until the task ends.
+    #[test]
+    fn a_tasks_latest_progress_is_told_until_it_ends() {
+        let mut pending = Pending::default();
+        let progress = |tokens: u32| {
+            format!(
+                r#"{{"type":"system","subtype":"task_progress","task_id":"a1","description":"d","usage":{{"total_tokens":{tokens},"tool_uses":1,"duration_ms":5}}}}"#
+            )
+        };
+        let (early, late) = (progress(10), progress(20));
+        pending.said(&early);
+        pending.said(&late);
+        pending.said(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [&late]);
+        pending.said(r#"{"type":"system","subtype":"task_notification","task_id":"a1","status":"completed"}"#);
+        assert_eq!(pending.lines().count(), 0);
+    }
+
+    /// Turns are counted as the window counts them: one for each prompt written, one fewer for
+    /// each result; a `!` command, a control request or a replayed row starts none.
+    #[test]
+    fn turns_under_way_are_counted_for_a_window_attaching() {
+        let mut pending = Pending::default();
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Hi"},"parent_tool_use_id":null,"session_id":"default"}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false}"#;
+        pending.answered(prompt);
+        pending.answered(prompt);
+        pending.answered(r#"{"type":"bash_command","command":"ls","uuid":"x"}"#);
+        pending.answered(
+            r#"{"type":"control_request","request_id":"gui_1","request":{"subtype":"interrupt"}}"#,
+        );
+        pending.said(r#"{"type":"user","message":{"role":"user","content":"<bash-input>ls</bash-input>"},"isReplay":true}"#);
+        assert_eq!(pending.turns, 2);
+        pending.said(result);
+        assert_eq!(pending.turns, 1);
+        pending.said(result);
+        pending.said(result);
+        assert_eq!(pending.turns, 0, "never below none");
+    }
+
+    #[test]
+    fn what_was_asked_and_not_answered_is_kept() {
+        let mut pending = Pending::default();
+        let asked =
+            r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool"}}"#;
+        pending.said(asked);
+        pending.said(r#"{"type":"control_request","request_id":"r2","request":{}}"#);
+        pending.said(r#"{"type":"control_cancel_request","request_id":"r2"}"#);
+        pending.said("not json");
+        assert_eq!(pending.lines().collect::<Vec<_>>(), [asked]);
+        pending.answered(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"r1"}}"#,
+        );
+        assert_eq!(pending.lines().count(), 0);
+    }
+
+    /// A window joining hears the list of sessions before anything else: its handshake reads
+    /// the list right after the hello, to attach to a session the daemon runs rather than start
+    /// it a second time.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_window_joining_hears_the_list_first() {
+        let (hub, requests) = mpsc::channel(8);
+        let (running, _sessions) = watch::channel(0usize);
+        let hub_task = tokio::spawn(Hub::default().event_loop(
+            requests,
+            running,
+            tokio::runtime::Handle::current(),
+        ));
+        let (outbox, mut told) = mpsc::channel(8);
+        hub.send(ToHub::Joined {
+            window: WindowId(1),
+            outbox,
+        })
+        .await
+        .expect("the hub listens");
+        assert_eq!(told.recv().await, Some(FromDaemon::Hosted(Vec::new())));
+        drop(hub);
+        hub_task.await.expect("the hub ends");
+    }
+
+    /// A window asking to shut down: every window hears it, and the hub ends though windows
+    /// are still connected, which ends the daemon (`serve` hears the hub's end).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_shutdown_tells_every_window_and_ends_the_hub() {
+        let (hub, requests) = mpsc::channel(8);
+        let (running, mut sessions) = watch::channel(0usize);
+        let hub_task = tokio::spawn(Hub::default().event_loop(
+            requests,
+            running,
+            tokio::runtime::Handle::current(),
+        ));
+        let mut heard = Vec::new();
+        for window in [WindowId(1), WindowId(2)] {
+            let (outbox, mut told) = mpsc::channel(8);
+            hub.send(ToHub::Joined {
+                window,
+                outbox: outbox.clone(),
+            })
+            .await
+            .expect("the hub listens");
+            assert_eq!(told.recv().await, Some(FromDaemon::Hosted(Vec::new())));
+            heard.push((outbox, told));
+        }
+        let asking = heard
+            .first()
+            .map(|(outbox, _)| outbox.clone())
+            .expect("a window");
+        hub.send(ToHub::Asked {
+            window: WindowId(1),
+            ask: Ask::ShutDown,
+            outbox: asking,
+        })
+        .await
+        .expect("the hub listens");
+        for (_, told) in &mut heard {
+            assert_eq!(told.recv().await, Some(FromDaemon::ShuttingDown));
+        }
+        hub_task.await.expect("the hub ends of itself");
+        // The last count it sent comes first, then its end, which `serve` stops on.
+        while sessions.changed().await.is_ok() {}
+        drop(hub);
+    }
+
+    /// A window's shutdown goes to the hub as it is.
+    #[test]
+    fn a_window_asks_the_hub_to_shut_down() {
+        let mut connection = Connection::new(WindowId(1));
+        assert_eq!(
+            connection.handle(ToDaemon::ShutDown),
+            [Effect::Hub(Ask::ShutDown)]
+        );
+    }
+
+    #[test]
+    fn a_session_ends_a_grace_after_its_input_closed_or_long_alone() {
+        let mut session = Session::new(HostedId::default().next());
+        assert_eq!(session.kill_at(), None);
+        assert_eq!(
+            session.quiet_end_at(),
+            None,
+            "shown, it is never ended for quiet"
+        );
+        let now = Instant::now();
+        session.alone_since = Some(now);
+        session.active = now;
+        assert_eq!(session.quiet_end_at(), Some(now + QUIET));
+        session.input_closed(now);
+        assert_eq!(session.kill_at(), Some(now + GRACE));
+        session.input_closed(now + GRACE);
+        assert_eq!(
+            session.kill_at(),
+            Some(now + GRACE),
+            "the first close counts"
+        );
+    }
+
+    fn cat() -> spawn::Spawned {
+        let mut command = tokio::process::Command::new("cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        spawn::Spawned {
+            child: command.spawn().expect("cat runs"),
+        }
+    }
+
+    /// A process through the actor, shown nowhere at first: what it asked is asked again of the
+    /// window that attaches, and its end is told there.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_asks_again_what_a_window_missed() {
+        let (orders, commands) = mpsc::channel(8);
+        let (outbox, mut answers) = mpsc::channel(32);
+        let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
+        let key = Generation::default().next();
+        orders
+            .send(Command::Line(asked.to_owned()))
+            .await
+            .expect("queued");
+        // `cat` says it back, as claude would ask; then a window attaches.
+        let attach = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            orders
+                .send(Command::Attach { key, outbox })
+                .await
+                .expect("queued");
+            orders
+                .send(Command::Line("bye".to_owned()))
+                .await
+                .expect("queued");
+        });
+        let session = Session::new(HostedId::default().next())
+            .event_loop(cat(), commands, None)
+            .await;
+        attach.await.expect("the attaching task");
+        assert_eq!(session.lines_in, 2);
+        let mut told = Vec::new();
+        while let Some(answer) = answers.recv().await {
+            told.push(answer);
+        }
+        assert!(
+            matches!(told.first(), Some(FromDaemon::Started { key: started, .. }) if *started == key)
+        );
+        assert!(told.iter().any(|answer| matches!(
+            answer,
+            FromDaemon::Output { key: shown, stream: Stream::Out, text, last: true }
+                if *shown == key && text == asked
+        )));
+        assert!(matches!(
+            told.last(),
+            Some(FromDaemon::Ended { key: ended, code: Some(0) }) if *ended == key
+        ));
+    }
+}

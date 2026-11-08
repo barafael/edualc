@@ -108,7 +108,7 @@ def "main write-kept" []: nothing -> nothing {
 # then writes the release's PKGBUILD.
 def "main release-checksum" []: nothing -> nothing {
     at-root
-    let package = open Cargo.toml | get package
+    let package = open Cargo.toml | get workspace.package | insert name "edualc"
     let releases = open dist/releases.json
     if ($releases | first | get version) != $package.version {
         error make { msg: $"dist/releases.json doesn't start with ($package.version)" }
