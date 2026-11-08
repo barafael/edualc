@@ -591,7 +591,7 @@ fn Folders(onclose: EventHandler<()>) -> Element {
 
 /// A limit's use: its label, its bar, and the share.
 #[component]
-fn UsageBar(label: &'static str, used: f32) -> Element {
+fn UsageBar(#[props(into)] label: String, used: f32) -> Element {
     let share = (used.clamp(0.0, 1.0) * 100.0).round();
     rsx! {
         div { class: "usage-bar",

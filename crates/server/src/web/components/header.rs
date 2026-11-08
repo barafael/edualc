@@ -7,7 +7,7 @@ use edualc_core::app::Action;
 use edualc_core::present::model::SideView;
 
 use crate::web::View;
-use crate::web::widgets::{Icon, IconButton};
+use crate::web::widgets::{Icon, IconButton, Lucide};
 
 /// The worktree's button's id, which its menu gives the focus back to.
 const WORKTREE: &str = "worktree-button";
@@ -26,7 +26,7 @@ pub fn Header(sidebar_shown: bool, ontoggle: EventHandler<()>) -> Element {
             // Hidden, the sidebar is brought back from here; shown, it has its own button.
             if !sidebar_shown {
                 IconButton {
-                    icon: "panel-left-open",
+                    icon: Lucide::PanelLeftOpen,
                     label: "Show the sessions (Ctrl+B)",
                     onclick: move |_| ontoggle.call(()),
                 }
@@ -37,8 +37,7 @@ pub fn Header(sidebar_shown: bool, ontoggle: EventHandler<()>) -> Element {
             }
             // In the sidebar's foot while that shows; here while it is hidden.
             if !sidebar_shown {
-                // TODO: sidebar::SandboxChip, sidebar::TasksChip
-                span { class: "chip-slot" }
+                super::sidebar::SandboxChip {}
             }
             // Side questions: labelled, as a bare question mark reads as help.
             button {
@@ -46,7 +45,7 @@ pub fn Header(sidebar_shown: bool, ontoggle: EventHandler<()>) -> Element {
                 class: if side_lit { "lit" },
                 "aria-label": if side_shown { "Fold the side questions away" } else { "Side questions (/btw)" },
                 onclick: move |_| view.act(Action::ToggleSide),
-                Icon { name: "message-circle-dashed", class: "small" }
+                Icon { icon: Lucide::MessageCircleDashed, class: "small" }
                 span { class: "header-btw-text", "btw" }
                 // An answer came while folded away.
                 if side.unseen {
@@ -84,12 +83,12 @@ fn Worktree() -> Element {
                         open.set(true);
                     }
                 },
-                Icon { name: "git-branch", class: "small worktree-icon" }
+                Icon { icon: Lucide::GitBranch, class: "small worktree-icon" }
                 span { class: "worktree-name", "{session.worktree_name}" }
                 if branch_differs {
                     span { class: "caption", "{session.worktree_branch}" }
                 }
-                Icon { name: "chevron-down", class: "small" }
+                Icon { icon: Lucide::ChevronDown, class: "small" }
             }
             if open() {
                 div { class: "menu-backdrop", onclick: move |_| open.set(false) }

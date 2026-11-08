@@ -36,7 +36,10 @@ pub fn Window() -> Element {
     rsx! {
         div { class: "layout",
             if sidebar_shown() {
-                sidebar::Sidebar { onhide: move |()| sidebar_shown.set(false) }
+                sidebar::Sidebar {
+                    onhide: move |()| sidebar_shown.set(false),
+                    onsettings: move |()| use_context::<panels::SettingsOpen>().open(view),
+                }
             }
             div { class: "column",
                 header::Header {

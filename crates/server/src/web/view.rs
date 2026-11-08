@@ -233,6 +233,7 @@ pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {
 }
 
 /// Puts `text` on the browser's clipboard.
+#[cfg_attr(not(feature = "web"), allow(clippy::needless_pass_by_value))]
 pub fn copy(text: String) {
     #[cfg(feature = "web")]
     if let Some(window) = web_sys::window() {

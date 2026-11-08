@@ -15,7 +15,7 @@ use edualc_core::present::model::{
 
 use crate::web::View;
 use crate::web::view::image_url;
-use crate::web::widgets::{Icon, IconButton, Meter};
+use crate::web::widgets::{Icon, IconButton, Lucide, Meter};
 
 const STYLE: Asset = asset!("/assets/composer.css");
 /// The text box's id, for focusing it and reading its caret.
@@ -240,19 +240,23 @@ pub fn Composer() -> Element {
         ("Run a shell command (start with !)", "")
     };
     let (tall_icon, tall_label) = if size_now == ComposerSize::Tall {
-        ("minimize-2", "Make the message box small again")
+        (Lucide::Minimize2, "Make the message box small again")
     } else {
-        ("maximize-2", "Make the message box taller")
+        (Lucide::Maximize2, "Make the message box taller")
     };
     let (full_icon, full_label) = if size_now == ComposerSize::Full {
-        ("shrink", "Show the conversation again")
+        (Lucide::Shrink, "Show the conversation again")
     } else {
         (
-            "expand",
+            Lucide::Expand,
             "Give the message the whole column, to see all of a long paste",
         )
     };
-    let send_icon = if stop { "square" } else { "arrow-up" };
+    let send_icon = if stop {
+        Lucide::Square
+    } else {
+        Lucide::ArrowUp
+    };
     let model_index = page.model_index;
     let mode_index = page.mode_index;
 
@@ -407,7 +411,7 @@ pub fn Composer() -> Element {
                                 }
                                 div { class: "image-chip-side",
                                     IconButton {
-                                        icon: "x",
+                                        icon: Lucide::X,
                                         label: "Take this image off the message",
                                         class: "chip-remove",
                                         onclick: move |_| view.act(Action::RemoveImage(index)),
@@ -421,7 +425,7 @@ pub fn Composer() -> Element {
                 // What a shell command does, said while the draft is one, before Enter runs it.
                 if composer.shell {
                     div { class: "composer-shell",
-                        Icon { name: "square-terminal", class: "small" }
+                        Icon { icon: Lucide::SquareTerminal, class: "small" }
                         span {
                             if session.sandboxed {
                                 "Shell command: Enter runs it in the sandbox, beside the conversation."
@@ -496,7 +500,7 @@ pub fn Composer() -> Element {
                         heading: "Model",
                         items: session.models.clone(),
                         chosen: model_index,
-                        icon: "sparkle",
+                        icon: Lucide::Sparkle,
                         class: "model-menu",
                         onchoose: move |index: usize| {
                             if let Ok(index) = i32::try_from(index) {
@@ -507,14 +511,13 @@ pub fn Composer() -> Element {
                         },
                     }
                     if !session.tasks.is_empty() {
-                        // TODO: sidebar::TasksChip
-                        span { class: "chip-slot" }
+                        super::sidebar::TasksChip {}
                     }
                     // As the sidebar shows a session: a hand while Claude waits for the user, a
                     // dot while it works.
                     if session.busy {
                         if waiting {
-                            Icon { name: "hand", class: "small live-waiting" }
+                            Icon { icon: Lucide::Hand, class: "small live-waiting" }
                         } else {
                             span { class: "live-dot", "aria-hidden": "true" }
                         }
@@ -532,7 +535,7 @@ pub fn Composer() -> Element {
                         }
                     }
                     IconButton {
-                        icon: "square-terminal",
+                        icon: Lucide::SquareTerminal,
                         label: shell_label,
                         class: shell_tint,
                         onclick: move |_| view.act(Action::ToggleShell),
@@ -553,7 +556,7 @@ pub fn Composer() -> Element {
                     // stays Send, and Stop is here.
                     if session.busy && !text.is_empty() {
                         IconButton {
-                            icon: "square",
+                            icon: Lucide::Square,
                             label: "Stop",
                             class: "tint-danger",
                             onclick: move |_| view.act(Action::Interrupt),
@@ -574,7 +577,7 @@ pub fn Composer() -> Element {
                                 dom::focus_end("");
                             }
                         },
-                        Icon { name: send_icon }
+                        Icon { icon: send_icon }
                     }
                 }
             }
@@ -600,14 +603,14 @@ pub fn Composer() -> Element {
 
 /// The permission mode's icon and colour, by how much it lets through: ask, edits, plan, auto,
 /// bypass.
-fn mode_look(mode: PermissionKind) -> (&'static str, &'static str) {
+fn mode_look(mode: PermissionKind) -> (Lucide, &'static str) {
     match mode {
-        PermissionKind::AcceptEdits => ("file-pen-line", "tint-warning"),
-        PermissionKind::Plan => ("map", "tint-link"),
-        PermissionKind::Auto => ("zap", "tint-info"),
-        PermissionKind::Bypass => ("shield-alert", "tint-danger"),
-        PermissionKind::Unknown => ("shield-question-mark", ""),
-        PermissionKind::Default => ("shield-check", ""),
+        PermissionKind::AcceptEdits => (Lucide::FilePenLine, "tint-warning"),
+        PermissionKind::Plan => (Lucide::Map, "tint-link"),
+        PermissionKind::Auto => (Lucide::Zap, "tint-info"),
+        PermissionKind::Bypass => (Lucide::ShieldAlert, "tint-danger"),
+        PermissionKind::Unknown => (Lucide::ShieldQuestionMark, ""),
+        PermissionKind::Default => (Lucide::ShieldCheck, ""),
     }
 }
 
@@ -617,12 +620,12 @@ fn mode_look(mode: PermissionKind) -> (&'static str, &'static str) {
 /// narrow, the mode's shows only its icon (its name is still told).
 #[component]
 fn MenuButton(
-    heading: &'static str,
+    #[props(into)] heading: String,
     items: Vec<MenuItem>,
     chosen: i32,
-    icon: &'static str,
-    #[props(default)] tint: &'static str,
-    class: &'static str,
+    icon: Lucide,
+    #[props(default, into)] tint: String,
+    #[props(into)] class: String,
     onchoose: EventHandler<usize>,
 ) -> Element {
     let mut open = use_signal(|| false);
@@ -697,16 +700,16 @@ fn MenuButton(
                 },
                 onkeydown,
                 onblur: move |_| open.set(false),
-                Icon { name: icon, class: "small" }
+                Icon { icon: icon, class: "small" }
                 span { class: "menu-current", "{current}" }
-                Icon { name: "chevron-up", class: "small menu-chevron" }
+                Icon { icon: Lucide::ChevronUp, class: "small menu-chevron" }
             }
             if open() {
                 div {
                     id: list.clone(),
                     class: "composer-menu",
                     role: "listbox",
-                    "aria-label": heading,
+                    "aria-label": "{heading}",
                     div { class: "composer-menu-heading caption", "aria-hidden": "true", "{heading}" }
                     for (index, item) in items.iter().enumerate() {
                         div {
@@ -727,7 +730,7 @@ fn MenuButton(
                                     div { class: "composer-choice-description", "{item.description}" }
                                 }
                             }
-                            Icon { name: "check", class: "small composer-check" }
+                            Icon { icon: Lucide::Check, class: "small composer-check" }
                         }
                     }
                 }
