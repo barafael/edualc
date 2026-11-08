@@ -21,7 +21,7 @@ use edualc_core::settings;
 
 use crate::web::View;
 use crate::web::text::Blocks;
-use crate::web::widgets::{Button, Icon, IconButton, Meter};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter};
 
 const STYLE: Asset = asset!("/assets/panels.css");
 
@@ -120,7 +120,7 @@ pub fn SidePanel() -> Element {
         document::Stylesheet { href: STYLE }
         aside { class: "side side-panel", "aria-labelledby": "side-title",
             div { class: "panel-head",
-                Icon { name: "message-circle-question-mark", class: "claude" }
+                Icon { icon: Lucide::MessageCircleQuestionMark, class: "claude" }
                 div { class: "panel-heading",
                     h2 { id: "side-title", class: "panel-title", "By the way" }
                     div { class: "caption elide",
@@ -128,12 +128,12 @@ pub fn SidePanel() -> Element {
                     }
                 }
                 IconButton {
-                    icon: "panel-right-close",
+                    icon: Lucide::PanelRightClose,
                     label: "Fold away (it waits in the header)",
                     onclick: move |_| view.act(Action::ToggleSide),
                 }
                 IconButton {
-                    icon: "x",
+                    icon: Lucide::X,
                     label: "Dismiss the side questions",
                     onclick: move |_| view.act(Action::DismissSide),
                 }
@@ -179,13 +179,13 @@ pub fn SidePanel() -> Element {
                 // One above the other: side by side, they don't fit a narrow panel.
                 div { class: "side-actions",
                     Button {
-                        icon: "corner-down-left",
+                        icon: Lucide::CornerDownLeft,
                         disabled: !side.has_answers,
                         onclick: move |_| view.act(Action::SideToConversation),
                         "Use in the conversation"
                     }
                     Button {
-                        icon: "git-branch",
+                        icon: Lucide::GitBranch,
                         disabled: !side.can_branch,
                         onclick: move |_| view.act(Action::BranchSide),
                         "Branch into a session"
@@ -214,7 +214,7 @@ fn Exchange(index: usize, exchange: SideExchange) -> Element {
                     div { class: "answer",
                         Blocks { blocks: exchange.answer }
                         IconButton {
-                            icon: "copy",
+                            icon: Lucide::Copy,
                             label: "Copy the answer",
                             class: "copy-answer",
                             onclick: move |_| view.act(Action::CopySide(index)),
@@ -250,22 +250,22 @@ pub fn PeekPanel() -> Element {
     let conversation = peek.kind == TaskKind::Agent;
     let mut list = use_signal(|| None::<MountedEvent>);
     let (icon, close) = if conversation {
-        ("bot", "Stop following this agent")
+        (Lucide::Bot, "Stop following this agent")
     } else {
-        ("square-terminal", "Stop following this command")
+        (Lucide::SquareTerminal, "Stop following this command")
     };
     let state = if peek.running { "running" } else { "ended" };
     rsx! {
         document::Stylesheet { href: STYLE }
         aside { class: "side peek-panel", "aria-labelledby": "peek-title",
             div { class: "panel-head",
-                Icon { name: icon, class: "claude" }
+                Icon { icon, class: "claude" }
                 div { class: "panel-heading",
                     h2 { id: "peek-title", class: "panel-title elide", "{peek.title}" }
                     div { class: "caption elide", "{peek.detail} · {state}" }
                 }
                 IconButton {
-                    icon: "x",
+                    icon: Lucide::X,
                     label: close,
                     onclick: move |_| view.act(Action::ClosePeek),
                 }
@@ -379,7 +379,7 @@ fn UsagePanel() -> Element {
                 "aria-busy": "{usage.loading}",
                 onmounted: move |event| focus(Some(event)),
                 div { class: "overlay-head",
-                    Icon { name: "gauge", class: "claude large" }
+                    Icon { icon: Lucide::Gauge, class: "claude large" }
                     div { class: "panel-heading",
                         h2 { id: "usage-title", class: "overlay-title", "Usage" }
                         div { class: "caption",
@@ -391,13 +391,13 @@ fn UsagePanel() -> Element {
                         }
                     }
                     IconButton {
-                        icon: "refresh-cw",
+                        icon: Lucide::RefreshCw,
                         label: "Ask again",
                         disabled: usage.loading,
                         onclick: move |_| view.act(Action::ShowUsage),
                     }
                     IconButton {
-                        icon: "x",
+                        icon: Lucide::X,
                         label: "Back to the conversation (Esc)",
                         onclick: move |_| close(),
                     }
@@ -582,7 +582,7 @@ fn SettingsPanel() -> Element {
                     onfocus: move |_| focus(last.read().clone()),
                 }
                 div { class: "overlay-head",
-                    Icon { name: "settings", class: "claude large" }
+                    Icon { icon: Lucide::Settings, class: "claude large" }
                     div { class: "panel-heading",
                         h2 { id: "settings-title", class: "overlay-title", "Settings" }
                         div { class: "caption",
@@ -598,7 +598,7 @@ fn SettingsPanel() -> Element {
                             focus(Some(event));
                         },
                         onclick: move |_| settings_open.close(view),
-                        Icon { name: "x" }
+                        Icon { icon: Lucide::X }
                     }
                 }
                 div { class: "settings-scroll",
@@ -731,7 +731,11 @@ fn Choice(
     onclick: EventHandler,
     #[props(default)] onmounted: Option<EventHandler<MountedEvent>>,
 ) -> Element {
-    let icon = if chosen { "circle-check" } else { "circle" };
+    let icon = if chosen {
+        Lucide::CircleCheck
+    } else {
+        Lucide::Circle
+    };
     rsx! {
         button {
             class: if chosen { "setting choice selected" } else { "setting choice" },
@@ -744,7 +748,7 @@ fn Choice(
                 }
             },
             onclick: move |_| onclick.call(()),
-            Icon { name: icon, class: "small mark" }
+            Icon { icon, class: "small mark" }
             span { class: "setting-text",
                 span { class: "setting-title", "{title}" }
                 span { id: "{id}-detail", class: "small", "{detail}" }
@@ -764,7 +768,11 @@ fn Check(
     onclick: EventHandler,
     #[props(default)] disabled: bool,
 ) -> Element {
-    let icon = if checked { "square-check" } else { "square" };
+    let icon = if checked {
+        Lucide::SquareCheck
+    } else {
+        Lucide::Square
+    };
     rsx! {
         button {
             class: if checked { "setting check checked" } else { "setting check" },
@@ -773,7 +781,7 @@ fn Check(
             "aria-describedby": "{id}-detail",
             disabled,
             onclick: move |_| onclick.call(()),
-            Icon { name: icon, class: "small mark" }
+            Icon { icon, class: "small mark" }
             span { class: "setting-text",
                 span { class: "setting-title", "{title}" }
                 span { id: "{id}-detail", class: "small", "{detail}" }
@@ -823,7 +831,7 @@ fn SandboxFolder(folder: String, access: SandboxAccess) -> Element {
         div { class: "sandbox-folder",
             span { class: "folder-path elide", title: "{folder}", "{folder}" }
             IconButton {
-                icon: "x",
+                icon: Lucide::X,
                 label,
                 onclick: move |_| {
                     view.act(Action::ForgetSandboxFolder {

@@ -1,5 +1,5 @@
 //! Writes the Lucide icons the window uses (those `ui/*.slint` names as `@lucide/<name>.svg`,
-//! and the page's own `EXTRA`) as a lookup for the page, so its wasm carries only those.
+//! and the page's own `EXTRA`) as an enum for the page, so its wasm carries only those.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -40,17 +40,28 @@ fn main() {
             }
         }
     }
-    let mut code = String::from(
-        "/// The SVG of Lucide icon `name`, if the window uses it.\npub fn svg(name: &str) -> Option<&'static str> {\n    match name {\n",
-    );
+    let mut variants = String::new();
+    let mut svgs = String::new();
     for icon in lucide_static_svg::Icon::all() {
         let name = icon.to_string();
         if names.remove(&name) {
+            let variant: String = name
+                .split('-')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_ascii_uppercase().to_string() + chars.as_str()
+                    })
+                })
+                .collect();
             let svg = std::str::from_utf8(icon.svg_bytes()).expect("an SVG is text");
-            writeln!(code, "        {name:?} => Some({svg:?}),").expect("written to a string");
+            writeln!(variants, "    {variant},").expect("written to a string");
+            writeln!(svgs, "            Self::{variant} => {svg:?},").expect("written to a string");
         }
     }
     assert!(names.is_empty(), "icons Lucide hasn't: {names:?}");
-    code.push_str("        _ => None,\n    }\n}\n");
+    let code = format!(
+        "/// The Lucide icons the window uses.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Lucide {{\n{variants}}}\n\nimpl Lucide {{\n    /// Its SVG.\n    pub fn svg(self) -> &'static str {{\n        match self {{\n{svgs}        }}\n    }}\n}}\n"
+    );
     std::fs::write(out.join("icons.rs"), code).expect("write the icons");
 }

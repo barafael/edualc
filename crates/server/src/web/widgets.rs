@@ -7,23 +7,23 @@ mod icons {
     include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 }
 
-/// A Lucide icon by its name (`chevron-right`), drawn in the text's colour; nothing for one the
-/// page wasn't built with (see `build.rs`).
+pub use icons::Lucide;
+
+/// A Lucide icon, drawn in the text's colour.
 #[component]
-pub fn Icon(name: &'static str, #[props(default)] class: &'static str) -> Element {
-    let svg = icons::svg(name).unwrap_or_default();
+pub fn Icon(icon: Lucide, #[props(default, into)] class: String) -> Element {
     rsx! {
-        span { class: "icon {class}", "aria-hidden": "true", dangerous_inner_html: svg }
+        span { class: "icon {class}", "aria-hidden": "true", dangerous_inner_html: icon.svg() }
     }
 }
 
 /// A button showing only an icon, named for assistive technology and its tooltip.
 #[component]
 pub fn IconButton(
-    icon: &'static str,
+    icon: Lucide,
     label: String,
     onclick: EventHandler<MouseEvent>,
-    #[props(default)] class: &'static str,
+    #[props(default, into)] class: String,
     #[props(default)] disabled: bool,
     #[props(default)] pressed: Option<bool>,
 ) -> Element {
@@ -35,7 +35,7 @@ pub fn IconButton(
             "aria-pressed": pressed.map(|pressed| pressed.to_string()),
             disabled,
             onclick: move |event| onclick.call(event),
-            Icon { name: icon }
+            Icon { icon }
         }
     }
 }
@@ -48,7 +48,7 @@ pub fn Button(
     #[props(default)] primary: bool,
     #[props(default)] danger: bool,
     #[props(default)] disabled: bool,
-    #[props(default)] icon: Option<&'static str>,
+    #[props(default)] icon: Option<Lucide>,
     #[props(default)] title: String,
 ) -> Element {
     let kind = if primary {
@@ -65,7 +65,7 @@ pub fn Button(
             disabled,
             onclick: move |event| onclick.call(event),
             if let Some(icon) = icon {
-                Icon { name: icon }
+                Icon { icon }
             }
             {children}
         }
@@ -109,7 +109,7 @@ pub fn Menu(
     items: Vec<(String, String)>,
     chosen: Option<usize>,
     onchoose: EventHandler<usize>,
-    #[props(default)] class: &'static str,
+    #[props(default, into)] class: String,
     #[props(default)] upward: bool,
 ) -> Element {
     let mut open = use_signal(|| false);
