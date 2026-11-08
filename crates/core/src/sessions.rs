@@ -647,40 +647,6 @@ fn read_small(path: &Path, limit: u64) -> Option<String> {
     Some(text)
 }
 
-/// The demo project's sessions, in the browser demo (see `web::demo`), newest first.
-#[cfg(target_arch = "wasm32")]
-pub fn list(cwd: &Path, limit: usize, _known: Vec<SessionInfo>) -> Vec<SessionInfo> {
-    let mut sessions = crate::web::demo::saved(cwd);
-    sessions.truncate(limit);
-    sessions
-}
-
-/// The demo's folders, in the browser demo.
-#[cfg(target_arch = "wasm32")]
-pub fn projects() -> Vec<ProjectInfo> {
-    crate::web::demo::projects()
-}
-
-/// The demo's sessions "running in other terminals", in the browser demo.
-#[cfg(target_arch = "wasm32")]
-pub fn live() -> Vec<LiveSession> {
-    crate::web::demo::running()
-}
-
-/// The whole lines of one of the demo's transcripts from `offset` on, in the browser demo,
-/// and the offset after the last; they are built into the page whole.
-#[cfg(target_arch = "wasm32")]
-pub fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
-    let text = crate::web::demo::transcript(path)
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
-    let rest = usize::try_from(offset)
-        .ok()
-        .and_then(|at| text.get(at..))
-        .unwrap_or_default();
-    let lines = rest.lines().filter_map(parse_line).collect();
-    Ok((lines, u64::try_from(text.len()).unwrap_or(u64::MAX)))
-}
-
 /// The whole lines of a transcript from `offset` on, as they are written, and the offset after
 /// the last.
 #[cfg(not(target_arch = "wasm32"))]

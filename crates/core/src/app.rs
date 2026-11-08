@@ -34,7 +34,7 @@ use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
 use crate::trust;
 
-#[cfg_attr(target_arch = "wasm32", path = "web/images.rs")]
+#[cfg_attr(target_arch = "wasm32", path = "app/web_images.rs")]
 mod images;
 mod peek;
 mod protocol;
