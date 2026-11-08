@@ -11,8 +11,9 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/felintusun/edualc"
 
 [workspace.dependencies]
-edualc-core = { path = "crates/core" }
-edualc-host = { path = "crates/host" }
+# Versioned as well as found by path: cargo deny takes a bare path for a wildcard.
+edualc-core = { path = "crates/core", version = "0.1.0" }
+edualc-host = { path = "crates/host", version = "0.1.0" }
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -15,6 +15,7 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "zvariant, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils, unmaintained: Slint's build and macros block on futures with spin_on" },
 ]
 
 [licenses]
@@ -36,6 +37,10 @@ allow = [
   "MPL-2.0",
   "GPL-3.0-or-later", # edualc, niri-ipc
   "GPL-3.0-only",     # Slint, chosen among its three licenses
+  # Through Dioxus's fullstack: xxhash-rust (Boost, OSI and FSF approved), and webpki-roots'
+  # certificate list (CDLA-Permissive-2.0, a data licence that puts nothing on the program).
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]

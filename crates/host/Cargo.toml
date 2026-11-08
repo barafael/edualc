@@ -29,6 +29,9 @@ strum = { version = "0.27", features = ["derive"] }
 open = "5"
 # The desktop's own folder picker, through its portal on Linux.
 rfd = "0.17"
+# rfd's Wayland client, loaded as it is needed rather than linked: edualcd also runs where
+# no Wayland is installed. The window's Slint asks the same; edualcd alone doesn't.
+wayland-backend = { version = "0.3", features = ["dlopen"] }
 
 [dev-dependencies]
 proptest.workspace = true
