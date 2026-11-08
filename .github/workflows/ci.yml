@@ -56,18 +56,21 @@ jobs:
       - run: cargo install --locked ast-grep@0.51.1
       - run: ast-grep test
       - run: ast-grep scan
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --exclude edualc-server --all-targets -- -D warnings
+      # edualcd: the daemon and the page server (the page itself is checked in `web`)
+      - run: cargo clippy --locked -p edualc-server --features server --all-targets -- -D warnings
       # The image decoder's tests confine a helper as edualc starts it, with nothing open but the
       # standard streams; it refuses to run with more. A step here inherits one more descriptor,
       # so the tests run with everything past the standard streams closed.
       - run: >-
           python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX"));
-          os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
+          os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked --workspace --exclude edualc-server
+      - run: cargo test --locked -p edualc-server --features server
 
-  # The browser demo (src/web, pages.yml) builds from the same code. What only the daemon calls
-  # is left unused there, so dead code is no error in this build alone.
+  # The page (edualc-server's `web` feature) runs the shared app compiled to wasm. What only the
+  # daemon calls is left unused there, so dead code is no error in this build alone.
   web:
-    name: Browser demo
+    name: The page
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -80,7 +83,9 @@ jobs:
             --target wasm32-unknown-unknown
           rustup default "$RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings -A dead_code
+      - run: >-
+          cargo clippy --locked --target wasm32-unknown-unknown -p edualc-core -p edualc-server
+          --features edualc-server/web -- -D warnings -A dead_code
 
   deny:
     name: cargo deny

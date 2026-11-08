@@ -66,8 +66,11 @@ depends = "$auto, libwayland-client0, libwayland-egl1, libxkbcommon0, libegl1"
 # the window's filtered D-Bus (a screen reader, light or dark), and pasting images
 recommends = "xdg-dbus-proxy, wl-clipboard"
 assets = [
-    ["target/release/edualc", "usr/bin/", "755"],
-    ["target/release/edualcd", "usr/bin/", "755"],
+    ["target/release/edualc", "usr/lib/edualc/", "755"],
+    ["target/release/edualcd", "usr/lib/edualc/", "755"],
+    ["target/release/public/**/*", "usr/lib/edualc/public/", "644"],
+    ["../../assets/bin/edualc", "usr/bin/", "755"],
+    ["../../assets/bin/edualcd", "usr/bin/", "755"],
     ["../../assets/edualc.desktop", "usr/share/applications/", "644"],
     ["../../assets/edualc.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["../../README.md", "usr/share/doc/edualc/", "644"],
@@ -79,8 +82,11 @@ assets = [
 # own packages.
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/edualc", dest = "/usr/bin/edualc", mode = "755" },
-    { source = "target/release/edualcd", dest = "/usr/bin/edualcd", mode = "755" },
+    { source = "target/release/edualc", dest = "/usr/lib/edualc/edualc", mode = "755" },
+    { source = "target/release/edualcd", dest = "/usr/lib/edualc/edualcd", mode = "755" },
+    { source = "target/release/public/**/*", dest = "/usr/lib/edualc/public/", mode = "644" },
+    { source = "../../assets/bin/edualc", dest = "/usr/bin/edualc", mode = "755" },
+    { source = "../../assets/bin/edualcd", dest = "/usr/bin/edualcd", mode = "755" },
     { source = "../../assets/edualc.desktop", dest = "/usr/share/applications/edualc.desktop", mode = "644" },
     { source = "../../assets/edualc.svg", dest = "/usr/share/icons/hicolor/scalable/apps/edualc.svg", mode = "644" },
     { source = "../../README.md", dest = "/usr/share/doc/edualc/README.md", mode = "644", doc = true },

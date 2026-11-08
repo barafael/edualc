@@ -9,7 +9,7 @@ url='https://github.com/felintusun/edualc'
 license=(GPL-3.0-or-later)
 # fontconfig is linked; Wayland, xkbcommon and EGL (libglvnd) are opened at start
 depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd)
-makedepends=(cargo)
+makedepends=(cargo dioxus-cli)
 optdepends=(
   'claude-code: the Claude Code CLI that edualc runs (or Anthropic installer: claude on the PATH)'
   'xdg-dbus-proxy: the window'"'"'s filtered D-Bus, for screen readers and the light or dark setting'
@@ -32,17 +32,23 @@ build() {
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
+  # edualcd with its page: the server, and the public/ folder it serves beside itself
+  dx bundle --frozen -p edualc-server --platform web --fullstack --release
 }
 
 check() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen
+  cargo test --frozen --workspace --exclude edualc-server
 }
 
 package() {
   cd "$pkgname-$pkgver"
-  install -Dm755 target/release/edualc -t "$pkgdir/usr/bin"
+  # Both programs and the page in one folder, where each finds the other; scripts on the PATH.
+  install -Dm755 target/release/edualc -t "$pkgdir/usr/lib/edualc"
+  install -Dm755 target/dx/edualcd/release/web/server "$pkgdir/usr/lib/edualc/edualcd"
+  cp -r target/dx/edualcd/release/web/public "$pkgdir/usr/lib/edualc/public"
+  install -Dm755 assets/bin/edualc assets/bin/edualcd -t "$pkgdir/usr/bin"
   install -Dm644 assets/edualc.desktop -t "$pkgdir/usr/share/applications"
   install -Dm644 assets/edualc.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"

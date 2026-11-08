@@ -70,19 +70,27 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
+      - run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1 dioxus-cli@0.7.10
+      - run: rustup target add wasm32-unknown-unknown
+      # The window, then edualcd with its page (the server and its public/ folder).
       - run: cargo build --release --locked
+      - run: dx bundle --locked -p edualc-server --platform web --fullstack --release
+      - run: |
+          cp target/dx/edualcd/release/web/server target/release/edualcd
+          rm -rf target/release/public
+          cp -r target/dx/edualcd/release/web/public target/release/public
       # The packages and the PKGBUILDs name these libraries, and those winit opens as it starts
       # (Wayland, xkbcommon, EGL); a new one must be added there too.
       - name: Check the linked libraries
         run: |
-          readelf -d target/release/edualc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' > needed
+          readelf -d target/release/edualc target/release/edualcd \
+            | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u > needed
           cat needed
           if grep -vxE 'libfontconfig\.so\.1|libgcc_s\.so\.1|libm\.so\.6|libc\.so\.6|ld-linux-(x86-64|aarch64)\.so\.[12]' needed; then
             echo "edualc links a library the packages don't name"; exit 1
           fi
-      - run: cargo deb --no-build
-      - run: cargo generate-rpm
+      - run: cargo deb --no-build -p edualc
+      - run: cargo generate-rpm -p crates/slint
       - name: Gather the packages
         env:
           ARCH: ${{ matrix.arch }}
@@ -90,8 +98,9 @@ jobs:
         run: |
           name="edualc-$VERSION-$ARCH-linux"
           mkdir -p "out/$name"
-          cp target/release/edualc assets/edualc.desktop assets/edualc.svg \
-            README.md LICENSE THIRD_PARTY_LICENSES.md "out/$name/"
+          cp -r target/release/edualc target/release/edualcd target/release/public \
+            assets/edualc.desktop assets/edualc.svg README.md LICENSE THIRD_PARTY_LICENSES.md \
+            "out/$name/"
           tar -C out -czf "out/$name.tar.gz" "$name"
           rm -r "out/$name"
           cp target/debian/*.deb target/generate-rpm/*.rpm out/

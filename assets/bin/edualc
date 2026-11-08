@@ -1,0 +1,5 @@
+#!/bin/sh
+# edualc and edualcd are installed together in /usr/lib/edualc, beside edualcd's page (public/),
+# where each finds the other: the window starts the daemon beside itself, and the daemon takes
+# only edualc's programs from that folder as windows.
+exec /usr/lib/edualc/edualc "$@"
