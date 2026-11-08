@@ -73,12 +73,21 @@ fn read_for(request: ActId, read: Read, pieces: &mpsc::Sender<FromDaemon>) -> An
         }
         Read::Transcript { place, from } => {
             let path = resolve(&place);
-            let read = match sessions::read_lines_from(&path, from) {
-                Ok((lines, offset)) => {
-                    send_lines(request, lines, pieces);
-                    Ok(offset)
+            // A path the window names is read only if it is a transcript: the window's own
+            // reading is confined, and the daemon's isn't.
+            let read = if matches!(place, Place::Path(_)) && !sessions::holds_transcript(&path) {
+                Err(format!(
+                    "{} isn't one of Claude Code's transcripts",
+                    path.display()
+                ))
+            } else {
+                match sessions::read_lines_from(&path, from) {
+                    Ok((lines, offset)) => {
+                        send_lines(request, lines, pieces);
+                        Ok(offset)
+                    }
+                    Err(error) => Err(error.to_string()),
                 }
-                Err(error) => Err(error.to_string()),
             };
             Answer::Transcript { path, read }
         }

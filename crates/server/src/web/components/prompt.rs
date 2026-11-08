@@ -72,10 +72,18 @@ impl Grab {
     }
 }
 
-/// The request shown, as an answer names it: one meant for a request that went away is not
-/// given to the next.
-fn request(view: View) -> RequestId {
-    RequestId::from(view.prompt.peek().request.clone())
+/// The request shown as `serial`, as an answer names it, if it is still the one waiting: an
+/// answer meant for a request that went away is not given to the next.
+fn request(view: View, serial: i32) -> Option<RequestId> {
+    let prompt = view.prompt.peek();
+    (prompt.serial == serial).then(|| RequestId::from(prompt.request.clone()))
+}
+
+/// Hands the app the answer `made` makes of the request shown as `serial`, if it still waits.
+fn answer(view: View, serial: i32, made: impl FnOnce(RequestId) -> Action) {
+    if let Some(request) = request(view, serial) {
+        view.act(made(request));
+    }
 }
 
 /// What Claude waits for: its heading, then what it asks.
@@ -164,6 +172,7 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
         "prompt-summary code"
     };
     let always = prompt.always_label.clone();
+    let serial = prompt.serial;
     rsx! {
         div { class: "prompt-part",
             if !prompt.summary.is_empty() {
@@ -176,7 +185,7 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
                 Button {
                     primary: true,
                     disabled: !armed,
-                    onclick: move |_| view.act(Action::Allow(request(view))),
+                    onclick: move |_| answer(view, serial, Action::Allow),
                     "Allow"
                 }
                 // A long rule gives way in a narrow window, said in full on hover and to
@@ -186,7 +195,7 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
                         class: "button shortens",
                         title: "{always}",
                         disabled: !armed,
-                        onclick: move |_| view.act(Action::AllowAlways(request(view))),
+                        onclick: move |_| answer(view, serial, Action::AllowAlways),
                         span { "{always}" }
                     }
                 }
@@ -194,9 +203,10 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
                     danger: true,
                     disabled: !armed,
                     onclick: move |_| {
-                        view.act(Action::Deny {
-                            request: request(view),
-                            feedback: feedback(),
+                        let feedback_text = feedback();
+                        answer(view, serial, |request| Action::Deny {
+                            request,
+                            feedback: feedback_text,
                         });
                         feedback.set(String::new());
                     },
@@ -218,8 +228,8 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
                     if event.key() == Key::Enter && !event.is_composing() {
                         let text = feedback();
                         if armed && !text.is_empty() {
-                            view.act(Action::Deny {
-                                request: request(view),
+                            answer(view, serial, |request| Action::Deny {
+                                request,
                                 feedback: text,
                             });
                             feedback.set(String::new());
@@ -294,7 +304,7 @@ fn QuestionsPrompt(armed: bool, grab: Grab, current: Signal<usize>) -> Element {
                     Button {
                         primary: true,
                         disabled: !armed,
-                        onclick: move |_| view.act(Action::AnswerQuestions(request(view))),
+                        onclick: move |_| answer(view, serial, Action::AnswerQuestions),
                         "Answer"
                     }
                 } else {
@@ -307,8 +317,8 @@ fn QuestionsPrompt(armed: bool, grab: Grab, current: Signal<usize>) -> Element {
                 Button {
                     disabled: !armed,
                     onclick: move |_| {
-                        view.act(Action::Deny {
-                            request: request(view),
+                        answer(view, serial, |request| Action::Deny {
+                            request,
                             feedback: String::new(),
                         });
                     },
@@ -555,20 +565,24 @@ fn PlanPrompt(armed: bool, grab: Grab) -> Element {
             focus("prompt-overall");
         }
     });
+    let (count, serial) = {
+        let prompt = view.prompt.read();
+        (prompt.comment_count, prompt.serial)
+    };
     let mut approve = move |accept_edits: bool| {
         let mode = if accept_edits {
             PermissionMode::AcceptEdits
         } else {
             PermissionMode::Default
         };
-        view.act(Action::ApprovePlan {
-            request: request(view),
+        let comment = overall();
+        answer(view, serial, |request| Action::ApprovePlan {
+            request,
             mode,
-            overall: overall(),
+            overall: comment,
         });
         overall.set(String::new());
     };
-    let count = view.prompt.read().comment_count;
     rsx! {
         div { class: "prompt-part",
             if count == 1 {
@@ -600,9 +614,10 @@ fn PlanPrompt(armed: bool, grab: Grab) -> Element {
                 Button {
                     disabled: !armed,
                     onclick: move |_| {
-                        view.act(Action::Deny {
-                            request: request(view),
-                            feedback: overall(),
+                        let comment = overall();
+                        answer(view, serial, |request| Action::Deny {
+                            request,
+                            feedback: comment,
                         });
                         overall.set(String::new());
                     },

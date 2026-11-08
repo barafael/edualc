@@ -81,7 +81,8 @@ fn address() -> (String, Option<String>) {
     let mut dir = None;
     for pair in hash.trim_start_matches('#').split('&') {
         match pair.split_once('=') {
-            Some(("token", value)) => token = value.to_owned(),
+            // As the browser keeps it: what a URL may not hold (a space, say) `%`-escaped.
+            Some(("token", value)) => token = decoded(value),
             Some(("dir", value)) => dir = Some(decoded(value)),
             Some(_) | None => {}
         }
@@ -89,7 +90,8 @@ fn address() -> (String, Option<String>) {
     (token, dir)
 }
 
-/// A value of the address, its `%`-escapes undone.
+/// A value of the address, its `%`-escapes undone. A `+` stays one: in a URL's fragment it is
+/// no space (a folder may be named `c++`).
 #[cfg(feature = "web")]
 fn decoded(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -107,7 +109,7 @@ fn decoded(value: &str) -> String {
                 at += 3;
             }
             None => {
-                out.push(if byte == b'+' { b' ' } else { byte });
+                out.push(byte);
                 at += 1;
             }
         }

@@ -6,8 +6,8 @@
 //! page-level signal, [`SettingsOpen`], which `components::Window` provides with
 //! `use_context_provider(|| SettingsOpen(Signal::new(false)))` and every part reads with
 //! [`use_settings_open`]. What opens it does as the native sidebar's button does:
-//! [`SettingsOpen::open`] closes the usage details first. Ctrl+, opens it here, from wherever
-//! the focus is.
+//! [`SettingsOpen::open`] closes the usage details first. Ctrl+, opens it from wherever the
+//! focus is (the window's shortcuts, `components::Window`).
 
 use dioxus::html::geometry::PixelsVector2D;
 use dioxus::prelude::*;
@@ -493,26 +493,7 @@ fn StatLine(row: StatRow) -> Element {
 /// beside them closes them. Each takes effect at once and is kept in `settings.json`.
 #[component]
 pub fn Settings() -> Element {
-    let view = use_context::<View>();
-    let settings_open = use_context::<SettingsOpen>();
     let open = use_settings_open();
-    // Ctrl+, opens them from wherever the focus is, as in the native window.
-    use_hook(move || {
-        spawn(async move {
-            let mut keys = document::eval(
-                r#"document.addEventListener("keydown", (event) => {
-                    if (event.ctrlKey && !event.altKey && !event.metaKey && event.key === ",") {
-                        event.preventDefault();
-                        dioxus.send(true);
-                    }
-                });
-                await new Promise(() => {});"#,
-            );
-            while keys.recv::<bool>().await.is_ok() {
-                settings_open.open(view);
-            }
-        });
-    });
     rsx! {
         document::Stylesheet { href: STYLE }
         if open() {

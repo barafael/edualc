@@ -89,10 +89,17 @@ pub fn main() -> std::process::ExitCode {
     if daemon {
         return edualc_host::daemon::run();
     }
-    let access = if demo {
-        Access::Demo
-    } else {
-        token.map_or_else(Access::new, Access::Token)
+    let access = match token {
+        _ if demo => Access::Demo,
+        // An empty token would let every page through, a site's in the browser too.
+        Some(token) if token.is_empty() => {
+            eprintln!(
+                "edualcd: the token is empty; give one no one can guess, or none for a random one"
+            );
+            return std::process::ExitCode::from(2);
+        }
+        Some(token) => Access::Token(token),
+        None => Access::new(),
     };
     serve(listen, access)
 }
@@ -210,34 +217,45 @@ pub async fn carry(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
     };
     let (mut to_page, mut from_page) = page.split();
     let (mut to_daemon, mut from_daemon) = daemon.split();
-    loop {
-        tokio::select! {
-            asked = from_page.next() => match asked {
+    // Each way its own loop, the two polled together: a message waiting for the daemon to read
+    // doesn't stop what the daemon says being read, which would leave both writing and neither
+    // reading.
+    let asked = async {
+        loop {
+            match from_page.next().await {
                 Some(Ok(message)) => {
                     if let Err(error) = ws::send(&mut to_daemon, &message).await {
                         tracing::info!(%error, "the daemon hung up on a page");
-                        break;
+                        return;
                     }
                 }
                 Some(Err(error)) => {
                     tracing::info!(%error, "a page's line broke");
-                    break;
+                    return;
                 }
-                None => break,
-            },
-            said = ws::recv::<_, FromDaemon>(&mut from_daemon) => match said {
+                None => return,
+            }
+        }
+    };
+    let said = async {
+        loop {
+            match ws::recv::<_, FromDaemon>(&mut from_daemon).await {
                 Ok(message) => {
                     if let Err(error) = to_page.send(message).await {
                         tracing::info!(%error, "a page stopped listening");
-                        break;
+                        return;
                     }
                 }
                 Err(error) => {
                     tracing::info!(%error, "the daemon hung up on a page");
-                    break;
+                    return;
                 }
-            },
+            }
         }
+    };
+    tokio::select! {
+        () = asked => {}
+        () = said => {}
     }
     if let Err(error) = to_daemon.close().await {
         tracing::debug!(%error, "the daemon's line was gone already");

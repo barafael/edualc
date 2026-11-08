@@ -88,11 +88,19 @@ impl View {
 
     /// Hands an action to the app.
     pub fn act(&self, action: Action) {
-        if let Some(events) = self.events.peek().as_ref()
-            && events.try_send(Event::Action(action)).is_err()
-        {
-            tracing::debug!("an action after the app ended");
+        if !self.try_act(action) {
+            tracing::debug!("an action while no app runs");
         }
+    }
+
+    /// Hands an action to the app; false if none takes it (the line isn't open yet, or the app
+    /// ended), so that what it carries isn't let go of.
+    #[must_use]
+    pub fn try_act(&self, action: Action) -> bool {
+        self.events
+            .peek()
+            .as_ref()
+            .is_some_and(|events| events.try_send(Event::Action(action)).is_ok())
     }
 }
 
@@ -225,8 +233,14 @@ pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {
 
 /// Puts `text` on the browser's clipboard.
 pub fn copy(text: &str) {
+    // Only a secure context (https, or the loopback) has a clipboard: elsewhere
+    // `navigator.clipboard` is undefined, and calling it would throw through the page's code.
     #[cfg(feature = "web")]
     if let Some(window) = web_sys::window() {
+        if !window.is_secure_context() {
+            tracing::warn!("no clipboard here: the page isn't served over https or the loopback");
+            return;
+        }
         let written = window.navigator().clipboard().write_text(text);
         wasm_bindgen_futures::spawn_local(async move {
             if wasm_bindgen_futures::JsFuture::from(written).await.is_err() {

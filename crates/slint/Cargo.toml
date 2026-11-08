@@ -25,6 +25,8 @@ libc.workspace = true
 landlock.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+# The line's two ways, read and written apart.
+futures-util.workspace = true
 dirs.workspace = true
 strum = { version = "0.27", features = ["derive"] }
 # Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,

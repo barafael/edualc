@@ -313,6 +313,23 @@ fn all_sandboxed_projects() -> Vec<PathBuf> {
     Vec::new()
 }
 
+/// Whether `path` is where Claude Code keeps a transcript: a `.jsonl` file under the user's own
+/// folder of projects or a sandboxed home's, without `..` past it. A path a window names to be
+/// read is checked so: the daemon reads it for the window, which its confinement keeps from the
+/// user's other files.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn holds_transcript(path: &Path) -> bool {
+    use std::path::Component;
+    path.extension()
+        .is_some_and(|extension| extension == "jsonl")
+        && all_projects_dirs().iter().any(|projects| {
+            path.strip_prefix(projects).is_ok_and(|rest| {
+                rest.components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            })
+        })
+}
+
 /// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
 pub fn transcript_path(cwd: &Path, id: &SessionId) -> PathBuf {
     project_dir(cwd).join(format!("{}.jsonl", id.as_str()))
@@ -855,6 +872,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// What a window names to be read is a transcript only under Claude Code's projects, as a
+    /// `.jsonl` file, and without `..` leading out of them.
+    #[test]
+    fn only_transcripts_are_taken_for_transcripts() {
+        let projects = projects_dir();
+        let project = projects.join(project_name(Path::new("/home/someone/code")));
+        assert!(holds_transcript(&project.join("a-session.jsonl")));
+        assert!(holds_transcript(
+            &project.join("a-session/subagents/agent-1.jsonl")
+        ));
+        assert!(!holds_transcript(&project.join("a-session.txt")));
+        assert!(!holds_transcript(&project.join("../../../.ssh/id.jsonl")));
+        assert!(!holds_transcript(Path::new("/etc/passwd.jsonl")));
+        assert!(!holds_transcript(&projects.with_file_name("history.jsonl")));
+    }
 
     /// A session keeps its name however often it is started: an adjective and a noun from its
     /// id, its project, then two digits from its id; other ids get other names, but for rare

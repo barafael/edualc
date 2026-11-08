@@ -185,7 +185,7 @@ async fn window(
         let hello = ws::recv::<_, ToDaemon>(&mut socket).await?;
         Ok::<_, ipc::Error>((socket, hello))
     });
-    let mut socket = match greeted.await {
+    let socket = match greeted.await {
         Ok(Ok((mut socket, ToDaemon::Hello { protocol }))) => {
             let (settings, openers, live, claude_codes_sandbox) =
                 tokio::task::spawn_blocking(|| {
@@ -225,11 +225,14 @@ async fn window(
     };
     let (requests, received) = mpsc::channel(QUEUE);
     let (outbox, mut answers) = mpsc::channel(QUEUE);
-    // The socket's two directions, pumped in one task: requests in, answers out.
+    // The socket's two directions, each its own loop, polled together in one task: an answer
+    // waiting for the window to read doesn't stop requests being read, which would leave both
+    // ends writing to the other and neither reading.
+    let (mut writing, mut reading) = futures_util::StreamExt::split(socket);
     let pump = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                request = ws::recv::<_, ToDaemon>(&mut socket) => match request {
+        let read = async {
+            loop {
+                match ws::recv::<_, ToDaemon>(&mut reading).await {
                     Ok(request) => {
                         if requests.send(request).await.is_err() {
                             return;
@@ -239,18 +242,21 @@ async fn window(
                         tracing::info!(%error, "a window hung up");
                         return;
                     }
-                },
-                answer = answers.recv() => match answer {
-                    Some(answer) => {
-                        if let Err(error) = ws::send(&mut socket, &answer).await {
-                            tracing::info!(%error, "a window stopped listening");
-                            return;
-                        }
-                    }
-                    // Everything that could queue more is gone.
-                    None => return,
-                },
+                }
             }
+        };
+        // Until everything that could queue more is gone.
+        let write = async {
+            while let Some(answer) = answers.recv().await {
+                if let Err(error) = ws::send(&mut writing, &answer).await {
+                    tracing::info!(%error, "a window stopped listening");
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            () = read => {}
+            () = write => {}
         }
     });
     let connection = Connection::new(id).event_loop(received, outbox, hub).await;
@@ -346,9 +352,9 @@ impl Connection {
                     Effect::Read { request, read } => {
                         tokio::spawn(files::answer(request, read, outbox.clone()));
                     }
-                    Effect::Save(settings) => {
-                        tokio::spawn(files::save(settings));
-                    }
+                    // Kept one after the other, in the order asked: saves at once would write
+                    // over each other, the last asked not always the last kept.
+                    Effect::Save(settings) => files::save(settings).await,
                     Effect::Watch(order) => {
                         if watching.send(order).await.is_err() {
                             tracing::debug!("a window's watches ended");

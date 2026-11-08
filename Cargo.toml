@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/host", "crates/slint", "crates/server"]
-default-members = ["crates/core", "crates/host", "crates/slint", "crates/server"]
+# Not the server: built without its `server` feature, its `edualcd` would be neither the daemon
+# nor the server, and the window beside it would start that as its daemon. `cargo edualcd` and
+# `dx` build it.
+default-members = ["crates/core", "crates/host", "crates/slint"]
 
 [workspace.package]
 version = "0.1.0"

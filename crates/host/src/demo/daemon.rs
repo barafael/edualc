@@ -103,9 +103,12 @@ fn read_for(outbox: &Sender<FromDaemon>, request: ActId, read: Read) {
         Read::Transcript { place, from } => {
             let path = match place {
                 Place::Path(path) => path,
-                Place::Session { cwd, id } | Place::Subagent { cwd, id, .. } => {
-                    cwd.join(format!("{}.jsonl", id.as_str()))
-                }
+                Place::Session { cwd, id } => cwd.join(format!("{}.jsonl", id.as_str())),
+                // Beside its session's, as Claude Code keeps it: not its session's own.
+                Place::Subagent { cwd, id, task, .. } => crate::sessions::transcript_of(
+                    &cwd.join(format!("{}.jsonl", id.as_str())),
+                    &task,
+                ),
             };
             let read = match demo::transcript(&path) {
                 Some(text) => {

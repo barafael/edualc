@@ -84,37 +84,49 @@ pub(crate) fn run(runtime: tokio::runtime::Runtime, socket: Socket, events: Send
 }
 
 /// Writes what is queued and reads what the daemon says, until the line is lost or the window
-/// closes.
-async fn pump(mut socket: Socket, queue: &Receiver<ToDaemon>, events: &Sender<Event>) {
-    let mut inbox = Inbox::default();
-    loop {
-        tokio::select! {
-            message = queue.recv() => match message {
+/// closes. Each way is its own loop, the two polled together: a message waiting for the daemon
+/// to read doesn't stop the window reading, which would leave both ends writing and neither
+/// reading.
+async fn pump(socket: Socket, queue: &Receiver<ToDaemon>, events: &Sender<Event>) {
+    let (mut writing, mut reading) = futures_util::StreamExt::split(socket);
+    // Each says whether the daemon was lost (rather than the window closed).
+    let write = async {
+        loop {
+            match queue.recv().await {
                 Ok(message) => {
-                    if let Err(error) = ws::send(&mut socket, &message).await {
+                    if let Err(error) = ws::send(&mut writing, &message).await {
                         tracing::warn!(%error, "lost the daemon");
-                        break;
+                        return true;
                     }
                 }
                 // The window closed.
-                Err(_closed) => return,
-            },
-            message = ws::recv::<_, FromDaemon>(&mut socket) => match message {
+                Err(_closed) => return false,
+            }
+        }
+    };
+    let read = async {
+        let mut inbox = Inbox::default();
+        loop {
+            match ws::recv::<_, FromDaemon>(&mut reading).await {
                 Ok(message) => {
                     if let Some(event) = inbox.take(message)
                         && events.send(event).await.is_err()
                     {
-                        return;
+                        return false;
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "lost the daemon");
-                    break;
+                    return true;
                 }
-            },
+            }
         }
-    }
-    if events.send(Event::DaemonLost).await.is_err() {
+    };
+    let lost = tokio::select! {
+        lost = write => lost,
+        lost = read => lost,
+    };
+    if lost && events.send(Event::DaemonLost).await.is_err() {
         tracing::debug!("the window closed with the daemon");
     }
 }

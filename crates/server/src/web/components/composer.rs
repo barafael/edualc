@@ -9,6 +9,7 @@
 
 use dioxus::prelude::*;
 use edualc_core::app::Action;
+use edualc_core::present::Image;
 use edualc_core::present::model::{
     Activity, ComposerSize, LiveState, MenuItem, PermissionKind, PromptKind, SendKey,
 };
@@ -163,22 +164,32 @@ pub fn Composer() -> Element {
         }
     };
     // Sends the draft, emptied at once (the app puts back what must wait), so an Esc right
-    // after finds it empty and stops the turn.
+    // after finds it empty and stops the turn. Kept while no app takes it (the line not open
+    // yet).
     let mut send_draft = move || {
         let text = draft.peek().clone();
-        view.act(Action::Send(text));
-        draft.set(String::new());
-        sent();
+        if view.try_act(Action::Send(text)) {
+            draft.set(String::new());
+            sent();
+        }
     };
 
-    // The pasted images' thumbnails, encoded as they change, not as the draft does.
-    let thumbnails = use_memo(move || {
-        let images = view.images.read();
+    // The pasted images' thumbnails, encoded as they change: not as the rest of the composer
+    // (the commands matching the draft) does, at every key.
+    let chips = use_memo(move || {
         view.composer
             .read()
             .images
             .iter()
-            .map(|chip| image_url(&chip.thumbnail, &images))
+            .map(|chip| chip.thumbnail.clone())
+            .collect::<Vec<Image>>()
+    });
+    let thumbnails = use_memo(move || {
+        let images = view.images.read();
+        chips
+            .read()
+            .iter()
+            .map(|thumbnail| image_url(thumbnail, &images))
             .collect::<Vec<String>>()
     });
 
@@ -317,9 +328,10 @@ pub fn Composer() -> Element {
         }
         if commands > 0 && key == Key::Enter && !modifiers.shift() {
             event.prevent_default();
-            view.act(Action::RunCommand(at));
-            draft.set(String::new());
-            sent();
+            if view.try_act(Action::RunCommand(at)) {
+                draft.set(String::new());
+                sent();
+            }
             return;
         }
         if key == Key::Escape
@@ -583,7 +595,7 @@ pub fn Composer() -> Element {
                                 view.act(Action::Interrupt);
                             } else {
                                 send_draft();
-                                dom::focus_end("");
+                                dom::focus_end(&draft.peek());
                             }
                         },
                         Icon { icon: send_icon }
