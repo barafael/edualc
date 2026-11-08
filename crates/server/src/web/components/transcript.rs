@@ -249,7 +249,7 @@ pub fn Transcript() -> Element {
         event.prevent_default();
     };
 
-    let entries = view.entries.read();
+    let entries = view.entries;
     let to_end_shown = !follow() && !reviewing();
     rsx! {
         document::Stylesheet { href: asset!("/assets/transcript.css") }
@@ -264,10 +264,10 @@ pub fn Transcript() -> Element {
                 onscroll,
                 onkeydown,
                 onresize,
-                // The rows shown: a folded run's later calls aren't.
+                // Only the list's length is read here, so a row set anew draws only that row.
                 div { class: "rows", onresize,
-                    for entry in entries.iter().filter(|entry| !entry.hidden) {
-                        Row { key: "{entry.index}", entry: entry.clone() }
+                    for (index, entry) in entries.iter().enumerate() {
+                        Row { key: "{index}", row: entry }
                     }
                 }
             }
@@ -284,9 +284,14 @@ pub fn Transcript() -> Element {
     }
 }
 
-/// One row of the conversation.
+/// One row of the conversation, unless it is hidden (a folded run's later calls); drawn again
+/// only when the presenter sets it anew.
 #[component]
-fn Row(entry: Entry) -> Element {
+fn Row(row: ReadSignal<Entry>) -> Element {
+    let entry = row.read().clone();
+    if entry.hidden {
+        return rsx! {};
+    }
     let class = if entry.nested {
         "entry nested"
     } else {
@@ -725,7 +730,7 @@ fn ImageView(shown: ShownImage, #[props(default)] origin: String) -> Element {
 #[component]
 fn Greeting() -> Element {
     let view = use_context::<View>();
-    let empty = use_memo(move || view.entries.read().is_empty());
+    let empty = use_memo(move || view.entries.is_empty());
     let cwd = view.session.read().cwd.clone();
     let words = if empty() {
         "greeting-words"
@@ -759,7 +764,7 @@ enum Flight {
 #[component]
 fn Heron() -> Element {
     let view = use_context::<View>();
-    let wanted = use_memo(move || view.entries.read().is_empty());
+    let wanted = use_memo(move || view.entries.is_empty());
     let mut flight = use_signal(|| {
         if *wanted.peek() {
             Flight::Standing

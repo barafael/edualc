@@ -115,9 +115,6 @@
     flex: 1 1 0; min-width: 0; font-size: var(--small); color: var(--text-tertiary);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.live-dot { width: var(--icon-small); height: var(--icon-small); flex: none; display: inline-flex; align-items: center; justify-content: center; }
-.live-dot::before { content: ""; width: 8px; height: 8px; border-radius: 4px; background: var(--claude); }
-.composer .live-waiting { color: var(--warning-text); }
 .context-meter { display: flex; align-items: center; gap: var(--space-xs); white-space: nowrap; }
 .context-meter .meter { width: 28px; min-width: 28px; background: var(--divider); }
 .composer-tools .icon-button.tint-info { color: var(--info); }

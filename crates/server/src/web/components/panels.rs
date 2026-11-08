@@ -21,7 +21,7 @@ use edualc_core::settings;
 
 use crate::web::View;
 use crate::web::text::Blocks;
-use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter, focus, level};
 
 const STYLE: Asset = asset!("/assets/panels.css");
 
@@ -54,17 +54,6 @@ pub fn use_settings_open() -> Signal<bool> {
 /// The last request for the side panel's field to take the focus that a panel took: a panel
 /// just made takes one it missed, as the native window's `Side.focus-wanted` has it take it.
 static SIDE_FOCUS_TAKEN: GlobalSignal<u32> = Signal::global(|| 0);
-
-/// Focuses an element, once it is there.
-fn focus(element: Option<MountedEvent>) {
-    if let Some(element) = element {
-        spawn(async move {
-            if let Err(error) = element.set_focus(true).await {
-                tracing::debug!(?error, "an element didn't take the focus");
-            }
-        });
-    }
-}
 
 /// Scrolls a list to its end: the latest is at its foot.
 fn scroll_to_end(list: Option<MountedEvent>) {
@@ -485,13 +474,7 @@ fn UsagePanel() -> Element {
 /// where it is a share of something, and what is said of it.
 #[component]
 fn StatLine(row: StatRow) -> Element {
-    let level = if row.fraction >= 0.9 {
-        "danger"
-    } else if row.fraction >= 0.7 {
-        "warning"
-    } else {
-        ""
-    };
+    let level = level(row.fraction);
     rsx! {
         div { class: "stat",
             div { class: "stat-line",

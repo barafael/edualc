@@ -233,6 +233,11 @@ pub fn config_dir() -> PathBuf {
     )
 }
 
+/// Where Claude Code keeps a record of each session it runs, one file per process.
+pub fn records_dir() -> PathBuf {
+    config_dir().join("sessions")
+}
+
 /// `~/.claude.json` runs to hundreds of kilobytes; anything far larger isn't that file.
 pub const GLOBAL_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -527,7 +532,7 @@ pub fn projects() -> Vec<ProjectInfo> {
 /// The sessions Claude Code processes are running now, other than our own (`claude -p`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn live() -> Vec<LiveSession> {
-    let dir = config_dir().join("sessions");
+    let dir = records_dir();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) => {

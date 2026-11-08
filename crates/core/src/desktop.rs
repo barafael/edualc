@@ -64,6 +64,15 @@ impl Opener {
 }
 
 /// What this machine has to open a folder in: Zed, VS Code, a terminal, the file manager.
+/// Whether a link Claude wrote may open: a web page's, or mail. A file or another app's scheme
+/// could run what it wrote.
+pub fn is_web_link(link: &str) -> bool {
+    ["https://", "http://", "mailto:"].iter().any(|scheme| {
+        link.get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+    })
+}
+
 pub fn openers() -> Vec<Opener> {
     let first =
         |candidates: &[Program]| candidates.iter().copied().find(|program| on_path(*program));

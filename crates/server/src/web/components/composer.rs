@@ -10,7 +10,7 @@
 use dioxus::prelude::*;
 use edualc_core::app::Action;
 use edualc_core::present::model::{
-    Activity, ComposerSize, MenuItem, PermissionKind, PromptKind, SendKey,
+    Activity, ComposerSize, LiveState, MenuItem, PermissionKind, PromptKind, SendKey,
 };
 
 use crate::web::View;
@@ -171,12 +171,23 @@ pub fn Composer() -> Element {
         sent();
     };
 
+    // The pasted images' thumbnails, encoded as they change, not as the draft does.
+    let thumbnails = use_memo(move || {
+        let images = view.images.read();
+        view.composer
+            .read()
+            .images
+            .iter()
+            .map(|chip| image_url(&chip.thumbnail, &images))
+            .collect::<Vec<String>>()
+    });
+
     let session = view.session.read();
     let composer = view.composer.read();
     let prompt_kind = view.prompt.read().kind;
     let send_key = view.preferences.read().send_key;
     let page = view.page.read();
-    let images = view.images.read();
+    let thumbnails = thumbnails.read();
     let text = draft.read();
 
     let size_now = size();
@@ -406,7 +417,7 @@ pub fn Composer() -> Element {
                         for (index, chip) in composer.images.iter().enumerate() {
                             div { class: "image-chip",
                                 img {
-                                    src: image_url(&chip.thumbnail, &images),
+                                    src: thumbnails.get(index).cloned().unwrap_or_default(),
                                     alt: "A pasted image, {chip.caption}",
                                 }
                                 div { class: "image-chip-side",
@@ -516,10 +527,8 @@ pub fn Composer() -> Element {
                     // As the sidebar shows a session: a hand while Claude waits for the user, a
                     // dot while it works.
                     if session.busy {
-                        if waiting {
-                            Icon { icon: Lucide::Hand, class: "small live-waiting" }
-                        } else {
-                            span { class: "live-dot", "aria-hidden": "true" }
+                        super::sidebar::LiveDot {
+                            state: if waiting { LiveState::Waiting } else { LiveState::Busy },
                         }
                         span { class: "composer-status", "{session.status}" }
                     }

@@ -322,7 +322,7 @@ impl Mirror {
         std::thread::spawn(move || notice(&reading, &tell));
         let mut records = Records {
             own,
-            users: sessions::config_dir().join("sessions"),
+            users: sessions::records_dir(),
             expected,
             written: Vec::new(),
         };

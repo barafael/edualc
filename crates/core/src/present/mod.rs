@@ -68,8 +68,6 @@ pub enum EntriesChange {
 pub enum Command {
     Copy(String),
     SetDraft(String),
-    /// Adds text to the end of the draft, after what is there.
-    AppendDraft(String),
     FocusComposer,
     FocusSide,
     /// Goes to the transcript's end.
@@ -98,17 +96,18 @@ pub enum Command {
     Quit,
 }
 
-/// What draws the window: told the state of each of its parts as it changes, and what to do.
+/// What draws the window: told the state of each of its parts as it changes (with what it was
+/// told before, if anything), and what to do.
 pub trait Frontend {
-    fn session(&mut self, session: &model::Session);
-    fn composer(&mut self, composer: &model::Composer);
-    fn sessions(&mut self, sessions: &model::Sessions);
+    fn session(&mut self, old: Option<&model::Session>, session: &model::Session);
+    fn composer(&mut self, old: Option<&model::Composer>, composer: &model::Composer);
+    fn sessions(&mut self, old: Option<&model::Sessions>, sessions: &model::Sessions);
     fn entries(&mut self, change: EntriesChange);
-    fn prompt(&mut self, prompt: &model::Prompt);
-    fn peek(&mut self, peek: &model::Peek);
-    fn side(&mut self, side: &model::Side);
-    fn preferences(&mut self, preferences: &model::Preferences);
-    fn usage(&mut self, usage: &model::Usage);
+    fn prompt(&mut self, old: Option<&model::Prompt>, prompt: &model::Prompt);
+    fn peek(&mut self, old: Option<&model::Peek>, peek: &model::Peek);
+    fn side(&mut self, old: Option<&model::Side>, side: &model::Side);
+    fn preferences(&mut self, old: Option<&model::Preferences>, preferences: &model::Preferences);
+    fn usage(&mut self, old: Option<&model::Usage>, usage: &model::Usage);
     /// Image `key`'s pixels, or why it can't be shown.
     fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>);
     /// Lets go of the images but those `shown` holds: the conversation was replaced.

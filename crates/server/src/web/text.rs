@@ -16,7 +16,7 @@ pub fn markdown_html(source: &str) -> String {
             _ => Event::Text(html),
         },
         Event::Start(Tag::Link { dest_url, .. }) => {
-            let opens = opens(&dest_url);
+            let opens = edualc_core::desktop::is_web_link(&dest_url);
             links_open.push(opens);
             if opens {
                 Event::InlineHtml(CowStr::from(format!(
@@ -51,13 +51,6 @@ pub fn markdown_html(source: &str) -> String {
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events);
     html
-}
-
-/// Whether a link may open: a web page's, or mail.
-fn opens(url: &str) -> bool {
-    ["https://", "http://", "mailto:"]
-        .iter()
-        .any(|scheme| url.starts_with(scheme))
 }
 
 /// Text made safe inside HTML.

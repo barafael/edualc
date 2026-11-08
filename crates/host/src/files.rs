@@ -3,7 +3,7 @@
 //! window, confined, needn't: it asks (`ipc::Read`), and is told when what it watches changes
 //! (`ipc::Target`), noticed by inotify, never by looking every few seconds.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -197,12 +197,17 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: mpsc::Sender<FromD
                 }
                 None => return,
             },
-            descriptor = noticed.recv() => {
-                let Some(descriptor) = descriptor else {
+            descriptors = noticed.recv() => {
+                let Some(descriptors) = descriptors else {
                     tracing::warn!("stopped noticing changes for a window");
                     return;
                 };
-                for watched in touched(&inotify, &mut watches, descriptor) {
+                // A burst of writes tells each watch once.
+                let changed: HashSet<Watched> = descriptors
+                    .into_iter()
+                    .flat_map(|descriptor| touched(&inotify, &mut watches, descriptor))
+                    .collect();
+                for watched in changed {
                     if outbox.send(FromDaemon::Changed(watched)).await.is_err() {
                         return;
                     }
@@ -212,11 +217,12 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: mpsc::Sender<FromD
     }
 }
 
-/// Watches noticed and waiting for the actor.
-const QUEUE: usize = 1024;
+/// Batches of watches noticed and waiting for the actor.
+const QUEUE: usize = 64;
 
-/// Sends on the watches inotify names, until the actor ends: its end of `ending` closes.
-fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<i32>) {
+/// Sends on the watches inotify names, each once for all it has to tell at a time, until the
+/// actor ends: its end of `ending` closes.
+fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<BTreeSet<i32>>) {
     use rustix::event::{PollFd, PollFlags, poll};
     let mut buffer = [MaybeUninit::<u8>::uninit(); 4096];
     loop {
@@ -239,16 +245,20 @@ fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<i32>) {
             continue;
         }
         let mut reader = inotify::Reader::new(inotify, &mut buffer);
+        let mut descriptors = BTreeSet::new();
         loop {
             match reader.next() {
                 Ok(event) => {
-                    if noticing.blocking_send(event.wd()).is_err() {
-                        return;
-                    }
+                    descriptors.insert(event.wd());
                 }
                 Err(Errno::INTR) => {}
                 // All read, for now.
-                Err(Errno::WOULDBLOCK) => break,
+                Err(Errno::WOULDBLOCK) => {
+                    if !descriptors.is_empty() && noticing.blocking_send(descriptors).is_err() {
+                        return;
+                    }
+                    break;
+                }
                 Err(error) => {
                     tracing::warn!(%error, "stopped noticing changes for a window");
                     return;
@@ -303,12 +313,8 @@ fn start(inotify: &OwnedFd, target: &Target) -> Option<Watch> {
         | WatchFlags::MOVED_TO
         | WatchFlags::MOVED_FROM;
     let started = match target {
-        Target::Records => add(
-            inotify,
-            &sessions::config_dir().join("sessions"),
-            folder_flags,
-        )
-        .map(|descriptor| (None, descriptor, false)),
+        Target::Records => add(inotify, &sessions::records_dir(), folder_flags)
+            .map(|descriptor| (None, descriptor, false)),
         Target::Transcript(place) => {
             let file = resolve(place);
             if file.is_file() {

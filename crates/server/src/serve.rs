@@ -8,45 +8,29 @@ use futures_util::{SinkExt, StreamExt};
 /// What a page must show to be let through: the token printed as the server starts; nothing,
 /// for the demo, which runs nothing.
 #[derive(Debug, Clone)]
-pub struct Access {
-    token: String,
-    demo: bool,
+pub enum Access {
+    /// Pages that show this token, to the daemon.
+    Token(String),
+    /// Anyone, to the demo's script.
+    Demo,
 }
 
 impl Access {
     /// A token no one can guess: two random UUIDs' bits, as hex.
     fn new() -> Self {
-        let token = format!(
+        Self::Token(format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
-        );
-        Self { token, demo: false }
-    }
-
-    fn given(token: String) -> Self {
-        Self { token, demo: false }
-    }
-
-    /// Anyone, to the demo's script.
-    fn demo() -> Self {
-        Self {
-            token: String::new(),
-            demo: true,
-        }
-    }
-
-    /// Whether the lines go to the demo's script, not the daemon.
-    pub fn is_demo(&self) -> bool {
-        self.demo
+        ))
     }
 
     /// Whether `token` is the server's, compared in constant time.
     pub fn admits(&self, token: &str) -> bool {
-        if self.demo {
+        let Self::Token(ours) = self else {
             return true;
-        }
-        let (ours, theirs) = (self.token.as_bytes(), token.as_bytes());
+        };
+        let (ours, theirs) = (ours.as_bytes(), token.as_bytes());
         ours.len() == theirs.len()
             && ours
                 .iter()
@@ -106,23 +90,19 @@ pub fn main() -> std::process::ExitCode {
         return edualc_host::daemon::run();
     }
     let access = if demo {
-        Access::demo()
+        Access::Demo
     } else {
-        token.map_or_else(Access::new, Access::given)
+        token.map_or_else(Access::new, Access::Token)
     };
     serve(listen, access)
 }
 
 /// Serves the page, and the lines of pages that show `access`'s token, until stopped.
 fn serve(listen: Option<std::net::SocketAddr>, access: Access) -> std::process::ExitCode {
-    let shown = |address: std::net::SocketAddr| {
-        if access.demo {
-            eprintln!("edualcd: edualc's demo is at http://{address}/");
-        } else {
-            eprintln!(
-                "edualcd: edualc's page is at http://{address}/#token={}",
-                access.token
-            );
+    let shown = |address: std::net::SocketAddr| match &access {
+        Access::Demo => eprintln!("edualcd: edualc's demo is at http://{address}/"),
+        Access::Token(token) => {
+            eprintln!("edualcd: edualc's page is at http://{address}/#token={token}");
         }
     };
     match listen {

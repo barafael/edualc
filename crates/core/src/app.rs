@@ -1004,10 +1004,10 @@ impl<F: Frontend> App<F> {
         self.load_sessions();
         // Known before resuming: a session the daemon runs is attached to, one running
         // elsewhere watched, neither resumed by a second process writing the same transcript.
+        // The daemon just listed them for the greeting, so they aren't listed again now.
         self.hosted = hosted;
-        if resume.is_some() {
-            self.live = live;
-        }
+        self.live = live;
+        self.redraw.sessions = true;
         match resume {
             Some(id) => self.open_session(id),
             None => self.new_session(),
@@ -1027,7 +1027,7 @@ impl<F: Frontend> App<F> {
         }
         self.records = self.watch(Target::Records);
         self.tick.start(TICK, self.events.clone(), || Event::Tick);
-        self.tick();
+        self.read_on();
         self.render();
     }
 
@@ -1096,7 +1096,7 @@ impl<F: Frontend> App<F> {
             },
             Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
                 (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
-                    self.read_folder(Read::Folder(folder), false);
+                    self.read_folder(Read::Folder(folder));
                 }
                 (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
                     let folders = self.settings.sandbox_folders(access);
@@ -1157,7 +1157,7 @@ impl<F: Frontend> App<F> {
             Action::Interrupt => self.interrupt(),
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
-            Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed), true),
+            Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed)),
             Action::BrowseProject => self.pick_folder(FolderUse::Project),
             // The relay is told as the sandboxed process starts (`SandboxWish`).
             Action::ToggleMessagesUnasked => {
@@ -1444,7 +1444,8 @@ impl<F: Frontend> App<F> {
     }
 
     /// Makes whole the folder to open, or says why it isn't one.
-    fn read_folder(&mut self, read: Read, typed: bool) {
+    fn read_folder(&mut self, read: Read) {
+        let typed = matches!(read, Read::TypedFolder(_));
         self.read(read, Reading::Folder { typed });
     }
 

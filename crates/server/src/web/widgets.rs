@@ -1,5 +1,5 @@
 //! The page's small controls, as the native window's (`ui/widgets.slint`): icons, buttons, a
-//! menu of choices, a meter.
+//! meter; and moving the focus to one.
 
 use dioxus::prelude::*;
 
@@ -8,6 +8,37 @@ mod icons {
 }
 
 pub use icons::Lucide;
+
+/// Puts the focus on a control, as it is made (an `onmounted` handler).
+pub async fn take_focus(element: MountedEvent) {
+    if let Err(error) = element.set_focus(true).await {
+        tracing::debug!(?error, "an element didn't take the focus");
+    }
+}
+
+/// Moves the focus to `element`, if there is one.
+pub fn focus(element: Option<MountedEvent>) {
+    if let Some(element) = element {
+        spawn(take_focus(element));
+    }
+}
+
+/// How near its limit a share is, as a class (`theme.slint`'s thresholds): `danger` from nine
+/// tenths, `warning` from seven, otherwise none.
+pub fn level(fraction: f32) -> &'static str {
+    if fraction >= 0.9 {
+        "danger"
+    } else if fraction >= 0.7 {
+        "warning"
+    } else {
+        ""
+    }
+}
+
+/// A share in whole percent, from 0 to 100.
+pub fn percent(fraction: f32) -> f32 {
+    (fraction.clamp(0.0, 1.0) * 100.0).round()
+}
 
 /// A Lucide icon, drawn in the text's colour.
 #[component]
@@ -79,14 +110,8 @@ pub fn Meter(fraction: f32, #[props(default)] label: String) -> Element {
     if fraction < 0.0 {
         return rsx! {};
     }
-    let level = if fraction >= 0.9 {
-        "danger"
-    } else if fraction >= 0.7 {
-        "warning"
-    } else {
-        "info"
-    };
-    let percent = (fraction.clamp(0.0, 1.0) * 100.0).round();
+    let level = level(fraction);
+    let percent = percent(fraction);
     rsx! {
         div {
             class: "meter {level}",
@@ -96,55 +121,6 @@ pub fn Meter(fraction: f32, #[props(default)] label: String) -> Element {
             "aria-valuemax": "100",
             "aria-valuenow": "{percent}",
             div { class: "meter-fill", style: "width: {percent}%" }
-        }
-    }
-}
-
-/// A menu of choices, each with what choosing it means; the chosen one marked. It opens from
-/// `button`'s content, and closes as one is chosen or the page is clicked elsewhere.
-#[component]
-pub fn Menu(
-    label: String,
-    button: Element,
-    items: Vec<(String, String)>,
-    chosen: Option<usize>,
-    onchoose: EventHandler<usize>,
-    #[props(default, into)] class: String,
-    #[props(default)] upward: bool,
-) -> Element {
-    let mut open = use_signal(|| false);
-    let direction = if upward { "up" } else { "down" };
-    rsx! {
-        div { class: "menu {class}",
-            button {
-                class: "menu-button",
-                title: "{label}",
-                "aria-label": "{label}",
-                "aria-haspopup": "menu",
-                "aria-expanded": "{open}",
-                onclick: move |_| open.toggle(),
-                {button}
-            }
-            if open() {
-                div { class: "menu-backdrop", onclick: move |_| open.set(false) }
-                div { class: "menu-items popup {direction}", role: "menu",
-                    for (index, (title, description)) in items.into_iter().enumerate() {
-                        button {
-                            class: if chosen == Some(index) { "menu-item chosen" } else { "menu-item" },
-                            role: "menuitemradio",
-                            "aria-checked": "{chosen == Some(index)}",
-                            onclick: move |_| {
-                                open.set(false);
-                                onchoose.call(index);
-                            },
-                            div { class: "menu-title", "{title}" }
-                            if !description.is_empty() {
-                                div { class: "menu-description", "{description}" }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }

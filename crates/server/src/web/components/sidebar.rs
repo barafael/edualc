@@ -14,7 +14,7 @@ use edualc_core::present::model::{
 };
 
 use crate::web::View;
-use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter, focus, percent};
 
 const STYLE: Asset = asset!("/assets/sidebar.css");
 /// The heron's drawings: standing, and the frames of what it does now and then.
@@ -29,17 +29,6 @@ const HERON_UP: Asset = asset!("/assets/heron/heron-flapping-up.svg");
 const WIDEST: f64 = 720.0;
 /// How far an arrow key widens or narrows it.
 const STEP: f64 = 32.0;
-
-/// Moves the focus to `element`, if there is one.
-fn focus(element: Option<MountedEvent>) {
-    if let Some(element) = element {
-        spawn(async move {
-            if element.set_focus(true).await.is_err() {
-                tracing::debug!("an element that can't take the focus");
-            }
-        });
-    }
-}
 
 /// Opens the session with this id, as the lists hold it.
 fn open_session(view: View, id: &str) {
@@ -592,7 +581,7 @@ fn Folders(onclose: EventHandler<()>) -> Element {
 /// A limit's use: its label, its bar, and the share.
 #[component]
 fn UsageBar(#[props(into)] label: String, used: f32) -> Element {
-    let share = (used.clamp(0.0, 1.0) * 100.0).round();
+    let share = percent(used);
     rsx! {
         div { class: "usage-bar",
             span { class: "caption usage-label", "{label}" }
@@ -614,13 +603,11 @@ struct Drag {
 /// The sidebar. Narrow windows give up its width first, then the side panel's; the
 /// conversation keeps the rest. Its right edge sets its width: dragged, or with the arrow keys;
 /// a double click gives the default back. `onhide` hides it (the header then shows a button to
-/// show it again); `onsettings` opens the settings, which the page keeps itself.
+/// show it again).
 #[component]
-pub fn Sidebar(
-    onhide: EventHandler<()>,
-    #[props(default)] onsettings: Option<EventHandler<()>>,
-) -> Element {
+pub fn Sidebar(onhide: EventHandler<()>) -> Element {
     let view = use_context::<View>();
+    let settings = use_context::<super::panels::SettingsOpen>();
     let mut projects_open = use_signal(|| false);
     let mut project_button = use_signal(|| None::<MountedEvent>);
     let mut account_open = use_signal(|| false);
@@ -717,12 +704,7 @@ pub fn Sidebar(
                     IconButton {
                         icon: Lucide::Settings,
                         label: "Settings (Ctrl+,)",
-                        onclick: move |_| {
-                            view.act(Action::HideUsage);
-                            if let Some(open) = onsettings {
-                                open.call(());
-                            }
-                        },
+                        onclick: move |_| settings.open(view),
                     }
                     IconButton {
                         icon: Lucide::SquarePen,

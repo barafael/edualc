@@ -590,12 +590,7 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         }
         Act::Notify { summary, body } => desktop::notify(&summary, &body)?,
         Act::OpenUrl(link) => {
-            // Claude writes the links: a file or another app's scheme could run what it wrote.
-            let web = ["https://", "http://", "mailto:"].iter().any(|scheme| {
-                link.get(..scheme.len())
-                    .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
-            });
-            if !web {
+            if !desktop::is_web_link(&link) {
                 return Err(ActFailure::NotAWebLink(link));
             }
             open::that_detached(&link).map_err(|error| ActFailure::Open {

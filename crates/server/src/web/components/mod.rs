@@ -4,7 +4,7 @@
 //! usage details and settings over the conversation.
 
 use dioxus::prelude::*;
-use edualc_core::present::model::{ComposerSize, PromptKind, SideView};
+use edualc_core::present::model::{PromptKind, SideView};
 
 use super::View;
 
@@ -38,7 +38,6 @@ pub fn Window() -> Element {
             if sidebar_shown() {
                 sidebar::Sidebar {
                     onhide: move |()| sidebar_shown.set(false),
-                    onsettings: move |()| use_context::<panels::SettingsOpen>().open(view),
                 }
             }
             div { class: "column",
@@ -81,7 +80,3 @@ pub fn Window() -> Element {
         }
     }
 }
-
-// Silences the import until the composer's sizes are used here.
-#[allow(dead_code)]
-const _SIZES: [ComposerSize; 1] = [ComposerSize::Fit];

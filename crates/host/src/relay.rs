@@ -780,7 +780,7 @@ impl Places {
             inboxes.push(PathBuf::from(runtime).join("cc-socks"));
         }
         Self {
-            sessions: sessions::config_dir().join("sessions"),
+            sessions: sessions::records_dir(),
             inboxes,
         }
     }

@@ -88,8 +88,7 @@ impl ToSlint for Image {
 impl<T: ToSlint + PartialEq> ToSlint for Vec<T> {
     type Slint = ModelRc<T::Slint>;
     fn to_slint(&self, images: &Images) -> Self::Slint {
-        let rows: Vec<T::Slint> = self.iter().map(|row| row.to_slint(images)).collect();
-        ModelRc::new(VecModel::from(rows))
+        vec_model(self, images)
     }
     fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
         resync(&shown, old, self, images).unwrap_or(shown)
@@ -106,7 +105,7 @@ pub(crate) fn resync<T: ToSlint + PartialEq>(
     images: &Images,
 ) -> Option<ModelRc<T::Slint>> {
     let Some(rows) = model.as_any().downcast_ref::<VecModel<T::Slint>>() else {
-        return Some(new.to_vec_slint(images));
+        return Some(vec_model(new, images));
     };
     if rows.row_count() != old.len() {
         // Not what was shown: anew.
@@ -130,15 +129,10 @@ pub(crate) fn resync<T: ToSlint + PartialEq>(
     None
 }
 
-trait ToVecSlint<T: ToSlint> {
-    fn to_vec_slint(&self, images: &Images) -> ModelRc<T::Slint>;
-}
-
-impl<T: ToSlint> ToVecSlint<T> for [T] {
-    fn to_vec_slint(&self, images: &Images) -> ModelRc<T::Slint> {
-        let rows: Vec<T::Slint> = self.iter().map(|row| row.to_slint(images)).collect();
-        ModelRc::new(VecModel::from(rows))
-    }
+/// A model of `rows`, each made anew.
+fn vec_model<T: ToSlint>(rows: &[T], images: &Images) -> ModelRc<T::Slint> {
+    let rows: Vec<T::Slint> = rows.iter().map(|row| row.to_slint(images)).collect();
+    ModelRc::new(VecModel::from(rows))
 }
 
 /// The Slint window, as the presenter's frontend.
@@ -148,15 +142,6 @@ pub(crate) struct SlintFrontend {
     /// The transcript's rows: the model the list filters, and what they show.
     entries: ModelRc<slint_ui::Entry>,
     shown: Vec<present::Entry>,
-    /// What each global was set to last.
-    session: Option<present::Session>,
-    composer: Option<present::Composer>,
-    sessions: Option<present::Sessions>,
-    prompt: Option<present::Prompt>,
-    peek: Option<present::Peek>,
-    side: Option<present::Side>,
-    preferences: Option<present::Preferences>,
-    usage: Option<present::Usage>,
 }
 
 impl SlintFrontend {
@@ -182,14 +167,6 @@ impl SlintFrontend {
             images: Images::new(),
             entries,
             shown: Vec::new(),
-            session: None,
-            composer: None,
-            sessions: None,
-            prompt: None,
-            peek: None,
-            side: None,
-            preferences: None,
-            usage: None,
         }
     }
 
@@ -202,49 +179,40 @@ impl SlintFrontend {
 }
 
 impl Frontend for SlintFrontend {
-    fn session(&mut self, session: &present::Session) {
-        model::apply_session(&self.window, self.session.as_ref(), session, &self.images);
-        self.session = Some(session.clone());
+    fn session(&mut self, old: Option<&present::Session>, session: &present::Session) {
+        model::apply_session(&self.window, old, session, &self.images);
     }
 
-    fn composer(&mut self, composer: &present::Composer) {
-        model::apply_composer(&self.window, self.composer.as_ref(), composer, &self.images);
-        self.composer = Some(composer.clone());
+    fn composer(&mut self, old: Option<&present::Composer>, composer: &present::Composer) {
+        model::apply_composer(&self.window, old, composer, &self.images);
     }
 
-    fn sessions(&mut self, sessions: &present::Sessions) {
-        model::apply_sessions(&self.window, self.sessions.as_ref(), sessions, &self.images);
-        self.sessions = Some(sessions.clone());
+    fn sessions(&mut self, old: Option<&present::Sessions>, sessions: &present::Sessions) {
+        model::apply_sessions(&self.window, old, sessions, &self.images);
     }
 
-    fn prompt(&mut self, prompt: &present::Prompt) {
-        model::apply_prompt(&self.window, self.prompt.as_ref(), prompt, &self.images);
-        self.prompt = Some(prompt.clone());
+    fn prompt(&mut self, old: Option<&present::Prompt>, prompt: &present::Prompt) {
+        model::apply_prompt(&self.window, old, prompt, &self.images);
     }
 
-    fn peek(&mut self, peek: &present::Peek) {
-        model::apply_peek(&self.window, self.peek.as_ref(), peek, &self.images);
-        self.peek = Some(peek.clone());
+    fn peek(&mut self, old: Option<&present::Peek>, peek: &present::Peek) {
+        model::apply_peek(&self.window, old, peek, &self.images);
     }
 
-    fn side(&mut self, side: &present::Side) {
-        model::apply_side(&self.window, self.side.as_ref(), side, &self.images);
-        self.side = Some(side.clone());
+    fn side(&mut self, old: Option<&present::Side>, side: &present::Side) {
+        model::apply_side(&self.window, old, side, &self.images);
     }
 
-    fn preferences(&mut self, preferences: &present::Preferences) {
-        model::apply_preferences(
-            &self.window,
-            self.preferences.as_ref(),
-            preferences,
-            &self.images,
-        );
-        self.preferences = Some(preferences.clone());
+    fn preferences(
+        &mut self,
+        old: Option<&present::Preferences>,
+        preferences: &present::Preferences,
+    ) {
+        model::apply_preferences(&self.window, old, preferences, &self.images);
     }
 
-    fn usage(&mut self, usage: &present::Usage) {
-        model::apply_usage(&self.window, self.usage.as_ref(), usage, &self.images);
-        self.usage = Some(usage.clone());
+    fn usage(&mut self, old: Option<&present::Usage>, usage: &present::Usage) {
+        model::apply_usage(&self.window, old, usage, &self.images);
     }
 
     fn entries(&mut self, change: EntriesChange) {
@@ -289,16 +257,6 @@ impl Frontend for SlintFrontend {
         match command {
             Command::Copy(text) => window.invoke_copy_text(text.into()),
             Command::SetDraft(text) => window.global::<slint_ui::Composer>().set_draft(text.into()),
-            Command::AppendDraft(text) => {
-                let composer = window.global::<slint_ui::Composer>();
-                let draft = composer.get_draft();
-                let joined = if draft.trim().is_empty() {
-                    text
-                } else {
-                    format!("{}\n\n{text}", draft.trim_end())
-                };
-                composer.set_draft(joined.into());
-            }
             Command::FocusComposer => {
                 let composer = window.global::<slint_ui::Composer>();
                 composer.set_focus_serial(composer.get_focus_serial().wrapping_add(1));

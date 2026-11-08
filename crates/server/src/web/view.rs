@@ -49,7 +49,8 @@ pub struct View {
     pub side: Signal<model::Side>,
     pub preferences: Signal<model::Preferences>,
     pub usage: Signal<model::Usage>,
-    pub entries: Signal<Vec<model::Entry>>,
+    /// The transcript's rows, each drawn again only as it changes.
+    pub entries: Store<Vec<model::Entry>>,
     /// The conversation's images, decoded, as `data:` URLs.
     pub images: Signal<HashMap<ImageKey, String>>,
     pub draft: Signal<String>,
@@ -74,7 +75,7 @@ impl View {
             side: Signal::new(model::Side::default()),
             preferences: Signal::new(model::Preferences::default()),
             usage: Signal::new(model::Usage::default()),
-            entries: Signal::new(Vec::new()),
+            entries: Store::new(Vec::new()),
             images: Signal::new(HashMap::new()),
             draft: Signal::new(String::new()),
             page: Signal::new(Page {
@@ -95,13 +96,6 @@ impl View {
     }
 }
 
-/// Sets `signal` to `value` unless it holds that already, which would only draw it again.
-fn set<T: PartialEq + Clone + 'static>(mut signal: Signal<T>, value: &T) {
-    if *signal.peek() != *value {
-        signal.set(value.clone());
-    }
-}
-
 /// The page, as the presenter's frontend.
 pub struct PageFrontend {
     view: View,
@@ -114,49 +108,57 @@ impl PageFrontend {
 }
 
 impl Frontend for PageFrontend {
-    fn session(&mut self, session: &model::Session) {
-        set(self.view.session, session);
+    fn session(&mut self, _old: Option<&model::Session>, session: &model::Session) {
+        let mut shown = self.view.session;
+        shown.set(session.clone());
     }
 
-    fn composer(&mut self, composer: &model::Composer) {
-        set(self.view.composer, composer);
+    fn composer(&mut self, _old: Option<&model::Composer>, composer: &model::Composer) {
+        let mut shown = self.view.composer;
+        shown.set(composer.clone());
     }
 
-    fn sessions(&mut self, sessions: &model::Sessions) {
-        set(self.view.sessions, sessions);
+    fn sessions(&mut self, _old: Option<&model::Sessions>, sessions: &model::Sessions) {
+        let mut shown = self.view.sessions;
+        shown.set(sessions.clone());
     }
 
     fn entries(&mut self, change: EntriesChange) {
         let mut entries = self.view.entries;
         match change {
             EntriesChange::Reset(rows) => entries.set(rows),
-            EntriesChange::Push(row) => entries.write().push(row),
+            EntriesChange::Push(row) => entries.push(row),
             EntriesChange::Set(index, row) => {
-                if let Some(shown) = entries.write().get_mut(index) {
-                    *shown = row;
+                if let Some(mut shown) = entries.get(index) {
+                    shown.set(row);
                 }
             }
         }
     }
 
-    fn prompt(&mut self, prompt: &model::Prompt) {
-        set(self.view.prompt, prompt);
+    fn prompt(&mut self, _old: Option<&model::Prompt>, prompt: &model::Prompt) {
+        let mut shown = self.view.prompt;
+        shown.set(prompt.clone());
     }
 
-    fn peek(&mut self, peek: &model::Peek) {
-        set(self.view.peek, peek);
+    fn peek(&mut self, _old: Option<&model::Peek>, peek: &model::Peek) {
+        let mut shown = self.view.peek;
+        shown.set(peek.clone());
     }
 
-    fn side(&mut self, side: &model::Side) {
-        set(self.view.side, side);
+    fn side(&mut self, _old: Option<&model::Side>, side: &model::Side) {
+        let mut shown = self.view.side;
+        shown.set(side.clone());
     }
 
-    fn preferences(&mut self, preferences: &model::Preferences) {
-        set(self.view.preferences, preferences);
+    fn preferences(&mut self, _old: Option<&model::Preferences>, preferences: &model::Preferences) {
+        let mut shown = self.view.preferences;
+        shown.set(preferences.clone());
     }
 
-    fn usage(&mut self, usage: &model::Usage) {
-        set(self.view.usage, usage);
+    fn usage(&mut self, _old: Option<&model::Usage>, usage: &model::Usage) {
+        let mut shown = self.view.usage;
+        shown.set(usage.clone());
     }
 
     fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>) {
@@ -180,17 +182,6 @@ impl Frontend for PageFrontend {
         match command {
             Command::Copy(text) => copy(&text),
             Command::SetDraft(text) => draft.set(text),
-            Command::AppendDraft(text) => {
-                let joined = {
-                    let shown = draft.peek();
-                    if shown.trim().is_empty() {
-                        text
-                    } else {
-                        format!("{}\n\n{text}", shown.trim_end())
-                    }
-                };
-                draft.set(joined);
-            }
             Command::FocusComposer => page.write().focus_composer += 1,
             Command::FocusSide => page.write().focus_side += 1,
             Command::ScrollToEnd => page.write().scroll_to_end += 1,

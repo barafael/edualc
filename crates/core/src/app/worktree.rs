@@ -25,7 +25,7 @@ impl<F: Frontend> App<F> {
         };
         let Some(opener_index) = index.checked_sub(1) else {
             // A worktree may be gone since it was read.
-            self.read_folder(crate::ipc::Read::Folder(worktree.path), false);
+            self.read_folder(crate::ipc::Read::Folder(worktree.path));
             return;
         };
         let Some(&opener) = self.openers.get(opener_index) else {

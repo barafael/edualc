@@ -18,8 +18,8 @@ pub async fn line(
     if !access.admits(&token) {
         return Err(ServerFnError::new("this page's token isn't the server's").into());
     }
-    if access.is_demo() {
-        return Ok(options.on_upgrade(crate::serve::play));
-    }
-    Ok(options.on_upgrade(crate::serve::carry))
+    Ok(match access.0 {
+        Access::Demo => options.on_upgrade(crate::serve::play),
+        Access::Token(_) => options.on_upgrade(crate::serve::carry),
+    })
 }

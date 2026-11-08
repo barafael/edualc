@@ -5,17 +5,10 @@ use dioxus::prelude::*;
 use edualc_core::app::Action;
 
 use crate::web::View;
-use crate::web::widgets::{Button, Icon, IconButton, Lucide};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide, take_focus};
 
 /// What signs in to Claude Code, run in a terminal.
 const SIGN_IN_COMMAND: &str = "claude auth login";
-
-/// Puts the focus on a control as it is made.
-async fn take_focus(mounted: MountedEvent) {
-    if let Err(error) = mounted.set_focus(true).await {
-        tracing::debug!(?error, "the focus didn't move");
-    }
-}
 
 /// In place of the composer while a session another process runs is shown. Bringing it here
 /// stops it in its window, so it asks first.
