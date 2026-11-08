@@ -69,10 +69,10 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
     for (part, _) in split(src, false) {
         match part {
             // Checked with the break it may get: a line of `=` under it would make a heading.
-            Part::Paragraph(source) if slint_parses(&format!("{BEFORE_PARAGRAPH}{source}")) => {
+            Part::Paragraph(source) if accepted(&format!("{BEFORE_PARAGRAPH}{source}")) => {
                 join(&mut run, BEFORE_PARAGRAPH, source);
             }
-            Part::List(source) if slint_parses(&source) => join(&mut run, BEFORE_LIST, source),
+            Part::List(source) if accepted(&source) => join(&mut run, BEFORE_LIST, source),
             // Text Slint refuses is shown plain, and on its own: in a run, all of it would be.
             part @ (Part::Paragraph(_) | Part::List(_) | Part::Shown(_)) => {
                 out.extend(run.take().map(Block::Text));
@@ -443,29 +443,49 @@ fn unquote(source: &str) -> String {
         .to_owned()
 }
 
-/// Inline Markdown as Slint styled text; as plain text if Slint's parser refuses it (an HTML
-/// tag it doesn't know, say a stray `<T>` outside backticks).
-pub(crate) fn styled(source: &str) -> slint::StyledText {
+/// Whether the window's inline Markdown takes `source` (after [`sanitize`]): paragraphs and
+/// lists with emphasis, strikethrough, links, code spans, `<u>` and `<font>`, and nothing else
+/// (no headings, quotes, code blocks, tables, rules, images, other HTML). As Slint's own parser
+/// takes it, which is pulldown-cmark's with strikethrough on (checked against it in `ui`): text
+/// it refuses is shown plain.
+pub(crate) fn accepted(source: &str) -> bool {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
     let source = sanitize(source);
-
-    slint::StyledText::from_markdown(&source)
-        .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
-}
-
-/// Whether [`styled`] shows the source as Markdown.
-fn slint_parses(source: &str) -> bool {
-    slint::StyledText::from_markdown(&sanitize(source)).is_ok()
-}
-
-/// Text shown as it is (code, tool output): tabs as spaces, as the text layout draws no tab
-/// stops.
-pub(crate) fn plain(text: &str) -> slint::StyledText {
-    slint::StyledText::from_plain_text(&sanitize(text).replace('\t', "    "))
+    Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).all(|event| match event {
+        Event::Start(
+            Tag::Paragraph
+            | Tag::Item
+            | Tag::List(_)
+            | Tag::Strong
+            | Tag::Emphasis
+            | Tag::Strikethrough
+            | Tag::Link { .. },
+        )
+        | Event::End(_)
+        | Event::Text(_)
+        | Event::Code(_)
+        | Event::SoftBreak
+        | Event::HardBreak => true,
+        Event::InlineHtml(html) => {
+            let html = html.trim();
+            html == "<u>"
+                || html == "</u>"
+                || html == "</font>"
+                || (html.starts_with("<font color=") && html.ends_with('>'))
+        }
+        Event::Start(_)
+        | Event::Html(_)
+        | Event::Rule
+        | Event::TaskListMarker(_)
+        | Event::FootnoteReference(_)
+        | Event::InlineMath(_)
+        | Event::DisplayMath(_) => false,
+    })
 }
 
 /// Slint reserves U+E541 as its placeholder for arguments, and a carriage return would end a
 /// line in the middle of one.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     text.chars()
         .filter(|&c| c != '\r')
         .map(|c| if c == '\u{e541}' { '\u{fffd}' } else { c })
@@ -520,6 +540,13 @@ mod tests {
             sections,
             ["## Steps", "1. First", "2. Second\n   - detail", "Done."]
         );
+    }
+
+    /// Inline Markdown as the Slint window draws it.
+    fn styled(source: &str) -> slint::StyledText {
+        let source = sanitize(source);
+        slint::StyledText::from_markdown(&source)
+            .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
     }
 
     /// The lines Slint draws a text in, as its paragraphs; copying joins them with `\n`.

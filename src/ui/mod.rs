@@ -68,8 +68,8 @@ impl ToSlint for Styled {
     fn to_slint(&self, _: &Images) -> slint::StyledText {
         match self {
             Self::Empty => slint::StyledText::default(),
-            Self::Plain(text) => crate::markdown::plain(text),
-            Self::Markdown(text) => crate::markdown::styled(text),
+            Self::Plain(text) => plain(text),
+            Self::Markdown(text) => styled(text),
         }
     }
 }
@@ -389,4 +389,54 @@ fn slint_image(pixels: &Pixels) -> Option<slint::Image> {
     }
     bytes.copy_from_slice(&pixels.rgba);
     Some(slint::Image::from_rgba8(buffer))
+}
+
+/// Inline Markdown as Slint styled text; as plain text if Slint's parser refuses it (an HTML
+/// tag it doesn't know, say a stray `<T>` outside backticks).
+fn styled(source: &str) -> slint::StyledText {
+    let source = crate::markdown::sanitize(source);
+    slint::StyledText::from_markdown(&source)
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
+}
+
+/// Text shown as it is (code, tool output): tabs as spaces, as the text layout draws no tab
+/// stops.
+fn plain(text: &str) -> slint::StyledText {
+    slint::StyledText::from_plain_text(&crate::markdown::sanitize(text).replace('\t', "    "))
+}
+
+#[cfg(test)]
+mod tests {
+    /// What the shared Markdown splitter takes for inline Markdown is what Slint's parser takes.
+    #[test]
+    fn markdown_accepted_as_slint_accepts_it() {
+        let samples = [
+            "plain words",
+            "*emphasis* and **strong** and ~~struck~~",
+            "a [link](https://example.com) and `code`",
+            "- one\n- two\n  - nested",
+            "1. first\n2. second",
+            "<u>under</u> and <font color=\"red\">red</font>",
+            "A stray <T> here.",
+            "===",
+            "\n\n\\\nAfter a break",
+            "# Heading",
+            "> quoted",
+            "```\ncode\n```",
+            "| a | b |\n|---|---|\n| 1 | 2 |",
+            "---",
+            "![image](x.png)",
+            "<div>block</div>",
+            "line one\nline two  \nhard break",
+            "*unclosed emphasis",
+            "an email <me@example.com>",
+            "<https://example.com>",
+        ];
+        for sample in samples {
+            let ours = crate::markdown::accepted(sample);
+            let slints =
+                slint::StyledText::from_markdown(&crate::markdown::sanitize(sample)).is_ok();
+            assert_eq!(ours, slints, "{sample:?}");
+        }
+    }
 }
