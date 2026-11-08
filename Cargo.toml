@@ -1,119 +1,44 @@
-[package]
-name = "edualc"
-description = "edualc: a native desktop window for Claude Code, built with Slint"
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/host", "crates/slint"]
+default-members = ["crates/core", "crates/host", "crates/slint"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 # Slint is used under GPL-3.0-only, so a built binary goes out under GPL-3.0.
 license = "GPL-3.0-or-later"
 repository = "https://github.com/felintusun/edualc"
-readme = "README.md"
 
-[[bin]]
-name = "edualc"
-path = "src/main.rs"
-
-[dependencies]
-# Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
-# `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
-# on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
-# the latest). These are the patches b33p's fork carries. Go back to crates.io once 1.19 is out.
-# On top, from the user's fork (its `edualc` branch merges them), kept there for now: a loose
-# Markdown list's text on its bullet's line (once slint-ui/slint#14665), `line-height-factor` on
-# `StyledText` again (once #14666), and a `language` property, with which Japanese and Chinese
-# text sets a quarter em where ideographs meet Latin letters (branch `text-language`).
-# Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
-# widgets, so Qt would only add a dependency (and, at this revision, garbled italics). Its
-# features differ for the browser demo, below.
+[workspace.dependencies]
+edualc-core = { path = "crates/core" }
+edualc-host = { path = "crates/host" }
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Splitting assistant text into blocks; the inline Markdown inside them is Slint's to parse.
-pulldown-cmark = { version = "0.13", default-features = false }
-# Line diffs for Edit and Write tool calls.
-similar = "3"
-dirs = "7"
 thiserror = "2"
-strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
-jiff = { version = "0.2.38", features = ["serde"] }
-# `Instant`, which is std's on Linux and the page's clock in a browser; already built for Slint.
-web-time = "1.1"
-# Newtypes' `Display` and `From`; already built for Slint.
-derive_more = { version = "2", features = ["display", "from"] }
-# Images, decoded in a confined helper (see `decode`): pure-Rust PNG, JPEG, GIF and WebP, whose
-# decoders are already built for Slint (through resvg).
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-# Images go to Claude Code base64-encoded; already built for Slint (through resvg).
-base64 = "0.23"
-# Each `!` command's id, which Claude Code skips repeats by, and each new session's; already
-# built for Slint (through AccessKit).
-uuid = { version = "1.29", default-features = false, features = ["std", "v4", "serde"] }
-# The words of a session's name for other sessions to message it by: curated English adjectives
-# and nouns, picked by the session's id (no random generator).
-petname = { version = "3.2", default-features = false, features = ["default-words"] }
-# The user's sign-in token, cleared from memory once a sandboxed session has it.
-zeroize = "1.9"
-# The messages between the windows and the daemon: self-describing, compact, bytes as bytes.
-ciborium = "0.2.2"
-serde_bytes = "0.11"
-
-# What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
-# Opens links in the browser.
-open = "5"
-# The desktop's own folder picker, through its portal on Linux.
-rfd = "0.17"
-# The command line, derived: `--help`, `--version`, `--model=opus`, checked values. No colour.
-clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
-# socket; already built for winit.
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 rustix = { version = "1", features = ["fs", "net", "process", "pipe", "event"] }
-# The window refusing itself every socket but Unix ones (no network at all), and io_uring.
 seccompiler = "0.5"
-# The system calls and socket families that filter names; already built for most dependencies.
 libc = "0.2"
-# Sandboxing the claude process (and what it starts) with the kernel's Landlock.
 landlock = "0.4"
-# The daemon's actors (connections, sessions), their channels, its processes and sockets;
-# already built for a dependency.
 tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
-# What the confined image decoder answers: compact, strictly checked serde.
-postcard = { version = "1", default-features = false, features = ["use-std"] }
-# The line between the windows and the daemon: a WebSocket (over the daemon's Unix socket, or
-# TCP for a browser), each message one binary frame of CBOR, as Dioxus's typed websockets frame
-# theirs. Without TLS: the socket is private, and the browser's line local.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-
-# The browser demo (`web/`): the window, drawn with WebGL into the page's canvas, with a scripted
-# daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
-# The page's entry point.
-wasm-bindgen = "0.2"
-# The browser's clock and random numbers, for timestamps and ids.
-jiff = { version = "0.2.38", features = ["js"] }
-uuid = { version = "1.29", default-features = false, features = ["js"] }
-
-[build-dependencies]
-slint-build = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0" }
-# The icons (Lucide), written out for the UI as `@image-url("@lucide/<name>.svg")`.
-lucide-static-svg = "1.55"
-
-[dev-dependencies]
-# What a peer sends is fed, at random and shrunk to the smallest failing case, to the parsers
-# that take it (the frames, the pasted pieces). Without forking tests into processes of their own.
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+dirs = "7"
+uuid = { version = "1.29", default-features = false, features = ["std", "v4", "serde"] }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 # "deny", not "forbid": Slint's generated code allows `unsafe` for itself, which "forbid" refuses.
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "deny"
 
 # The harness workspace's set (../edit-epistemology/benchmark/harness): errors are not swallowed,
 # casts don't lose, matches name every variant. Shared mutable state is refused in clippy.toml.
-[lints.clippy]
+[workspace.lints.clippy]
 map_err_ignore = "deny"
 indexing_slicing = "deny"
 fallible_impl_from = "deny"
@@ -159,49 +84,3 @@ codegen-units = 1
 # names itself (`--remove-name-section`).
 strip = false
 
-# `cargo deb --no-build`, after a release build (see .github/workflows/release.yml). fontconfig is
-# linked, and dpkg-shlibdeps finds it; winit opens Wayland, xkbcommon and EGL as it starts.
-# Claude Code itself is no package anywhere, so it is named in the README, not here.
-[package.metadata.deb]
-maintainer = "Felin Tusun <16455996+felintusun@users.noreply.github.com>"
-copyright = "Felin Tusun"
-license-file = ["LICENSE", "0"]
-section = "devel"
-extended-description = """\
-A native desktop window for Claude Code, Anthropic's coding agent: conversations, permission \
-prompts, plans to comment on, and sessions across projects, without the terminal UI. It runs \
-the claude CLI, sandboxed with Landlock by default, so Claude Code must be installed."""
-depends = "$auto, libwayland-client0, libwayland-egl1, libxkbcommon0, libegl1"
-# the window's filtered D-Bus (a screen reader, light or dark), and pasting images
-recommends = "xdg-dbus-proxy, wl-clipboard"
-assets = [
-    ["target/release/edualc", "usr/bin/", "755"],
-    ["assets/edualc.desktop", "usr/share/applications/", "644"],
-    ["assets/edualc.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["README.md", "usr/share/doc/edualc/", "644"],
-    ["THIRD_PARTY_LICENSES.md", "usr/share/doc/edualc/", "644"],
-]
-
-# `cargo generate-rpm`, after a release build. Linked libraries are found by reading the binary;
-# the ones opened at start are named by their sonames, which each distribution resolves to its
-# own packages.
-[package.metadata.generate-rpm]
-assets = [
-    { source = "target/release/edualc", dest = "/usr/bin/edualc", mode = "755" },
-    { source = "assets/edualc.desktop", dest = "/usr/share/applications/edualc.desktop", mode = "644" },
-    { source = "assets/edualc.svg", dest = "/usr/share/icons/hicolor/scalable/apps/edualc.svg", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/edualc/README.md", mode = "644", doc = true },
-    { source = "LICENSE", dest = "/usr/share/licenses/edualc/LICENSE", mode = "644", doc = true },
-    { source = "THIRD_PARTY_LICENSES.md", dest = "/usr/share/licenses/edualc/THIRD_PARTY_LICENSES.md", mode = "644", doc = true },
-]
-auto-req = "builtin"
-
-[package.metadata.generate-rpm.requires]
-"libwayland-client.so.0()(64bit)" = "*"
-"libwayland-egl.so.1()(64bit)" = "*"
-"libxkbcommon.so.0()(64bit)" = "*"
-"libEGL.so.1()(64bit)" = "*"
-
-[package.metadata.generate-rpm.recommends]
-xdg-dbus-proxy = "*"
-wl-clipboard = "*"

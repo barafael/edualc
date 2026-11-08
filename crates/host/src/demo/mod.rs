@@ -1,0 +1,50 @@
+//! The browser demo: the window as on Linux, in a page, with a script in place of the daemon
+//! and Claude Code (`daemon`, `scenarios`), and a demo project's sessions in place of
+//! `~/.claude` (`demo`). It opens on a session that fixed the project's elevation gain.
+
+use std::path::PathBuf;
+
+use slint::ComponentHandle;
+
+use crate::app::{App, Desktop};
+use crate::external::wire::SessionId;
+use crate::{generated, ui};
+
+mod daemon;
+pub mod demo;
+mod scenarios;
+
+/// How many messages to the daemon may wait; the demo's answers them at once.
+const QUEUE: usize = 1024;
+
+pub fn main() {
+    let window = match generated::AppWindow::new() {
+        Ok(window) => window,
+        Err(error) => {
+            tracing::error!(%error, "no window");
+            return;
+        }
+    };
+    let (events, received) = async_channel::unbounded();
+    let (link, requests) = async_channel::bounded(QUEUE);
+    ui::wire(&window, &events);
+    let mut app = App::new(
+        window.clone_strong(),
+        events.clone(),
+        link,
+        Desktop::in_the_browser(),
+        PathBuf::from(demo::PROJECT),
+        None,
+    );
+    let first = SessionId::try_from(demo::FIRST.to_owned()).ok();
+    app.begin(Vec::new(), first, None, None);
+    let started = slint::spawn_local(app.run(received))
+        .and_then(|_app| slint::spawn_local(daemon::run(requests, events)));
+    if let Err(error) = started {
+        tracing::error!(%error, "the demo couldn't start");
+        return;
+    }
+    if let Err(error) = window.run() {
+        tracing::error!(%error, "the window couldn't run");
+    }
+}

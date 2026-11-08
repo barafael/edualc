@@ -1240,29 +1240,16 @@ name = "edualc"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "base64",
- "ciborium",
  "clap",
- "derive_more",
  "dirs",
- "futures-util",
- "image",
- "jiff",
+ "edualc-core",
  "landlock",
  "libc",
  "lucide-static-svg",
- "open",
- "petname",
- "postcard",
  "proptest",
- "pulldown-cmark",
- "rfd",
  "rustix 1.1.6",
  "seccompiler",
  "serde",
- "serde_bytes",
- "serde_json",
- "similar",
  "slint",
  "slint-build",
  "strum 0.27.2",
@@ -1271,9 +1258,69 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "edualc-core"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "base64",
+ "ciborium",
+ "derive_more",
+ "dirs",
+ "futures-util",
+ "gloo-timers",
+ "image",
+ "jiff",
+ "landlock",
+ "libc",
+ "petname",
+ "postcard",
+ "proptest",
+ "pulldown-cmark",
+ "rustix 1.1.6",
+ "seccompiler",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "similar",
+ "slint",
+ "strum 0.27.2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
  "uuid",
- "wasm-bindgen",
  "web-time",
+ "zeroize",
+]
+
+[[package]]
+name = "edualc-host"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "base64",
+ "dirs",
+ "edualc-core",
+ "futures-util",
+ "jiff",
+ "libc",
+ "open",
+ "postcard",
+ "proptest",
+ "rfd",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
  "zeroize",
 ]
 
@@ -1746,6 +1793,16 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "glow"
