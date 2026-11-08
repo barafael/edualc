@@ -41,7 +41,7 @@ strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
 jiff = { version = "0.2.38", features = ["serde"] }
 # `Instant`, which is std's on Linux and the page's clock in a browser; already built for Slint.
-web-time = "1.1"
+web-time = { version = "1.1", features = ["serde"] }
 # Newtypes' `Display`, `From` and `Deref`; already built for Slint.
 derive_more = { version = "2", features = ["display", "from", "deref"] }
 # Images, decoded in a confined helper (see `decode`): pure-Rust PNG, JPEG, GIF and WebP, whose
@@ -70,7 +70,7 @@ clap = { version = "4.6", default-features = false, features = ["std", "derive",
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
 # socket; already built for winit.
-rustix = { version = "1", features = ["fs", "net", "process"] }
+rustix = { version = "1", features = ["fs", "net", "process", "pipe", "event"] }
 # The image decoder's confinement (see `decode`): its system calls filtered, and its files
 # closed with the kernel's Landlock.
 seccompiler = "0.5"

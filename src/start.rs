@@ -169,17 +169,17 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     };
 
-    let mut connected = match link::connect() {
+    let connected = match link::connect() {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("edualc: {error}");
             return Ok(std::process::ExitCode::FAILURE);
         }
     };
-    let desktop = app::Desktop::find();
+    let link::Connected { line, greeting } = connected;
+    let desktop = app::Desktop::find(greeting.openers);
     let (events, received) = async_channel::unbounded();
-    let hosted = std::mem::take(&mut connected.hosted);
-    let link = match link::run(connected, events.clone()) {
+    let link = match link::run(line, events.clone()) {
         Ok(link) => link,
         Err(error) => {
             eprintln!("edualc: {error}");
@@ -195,11 +195,18 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         events,
         link,
         desktop,
+        greeting.settings,
         cwd,
         backend,
         model,
     );
-    app.begin(hosted, resume, mode, prompt.as_deref());
+    app.begin(
+        greeting.hosted,
+        greeting.live,
+        resume,
+        mode,
+        prompt.as_deref(),
+    );
     slint::spawn_local(app.run(received)).expect("the event loop is set up");
     window.show()?;
     slint::run_event_loop_until_quit()?;

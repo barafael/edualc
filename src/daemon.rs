@@ -37,7 +37,7 @@ use crate::ipc::{
     self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
     PasteFailure, StartFailure, Stream, ToDaemon,
 };
-use crate::{spawn, trust};
+use crate::{files, sessions, settings, spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -171,8 +171,20 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHu
     let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
     match hello.await {
         Ok(Ok(ToDaemon::Hello { protocol })) => {
+            let (settings, openers, live) = tokio::task::spawn_blocking(|| {
+                (
+                    settings::load().map_err(|error| error.to_string()),
+                    desktop::openers(),
+                    sessions::live(),
+                )
+            })
+            .await
+            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
+                settings,
+                openers,
+                live,
             };
             if let Err(error) = ipc::send(&mut writing, &answer).await {
                 tracing::warn!(%error, "a window left as it came");
@@ -231,12 +243,23 @@ enum Effect {
     /// For the hub.
     Hub(Ask),
     /// For the desktop, answered to the window.
-    Act { request: ActId, act: Act },
+    Act {
+        request: ActId,
+        act: Act,
+    },
     /// What was asked can't be done; the window is told.
     Refuse {
         key: Generation,
         failure: StartFailure,
     },
+    /// For the files, answered to the window.
+    Read {
+        request: ActId,
+        read: ipc::Read,
+    },
+    Save(crate::settings::Settings),
+    /// For the window's watches.
+    Watch(files::Order),
 }
 
 /// What a window asks of the hub, by its keys.
@@ -310,9 +333,22 @@ impl Connection {
         {
             return self;
         }
+        let (watching, watch_orders) = mpsc::channel(QUEUE);
+        tokio::spawn(files::watch(watch_orders, outbox.clone()));
         while let Some(request) = requests.recv().await {
             for effect in self.handle(request) {
                 match effect {
+                    Effect::Read { request, read } => {
+                        tokio::spawn(files::answer(request, read, outbox.clone()));
+                    }
+                    Effect::Save(settings) => {
+                        tokio::spawn(files::save(settings));
+                    }
+                    Effect::Watch(order) => {
+                        if watching.send(order).await.is_err() {
+                            tracing::debug!("a window's watches ended");
+                        }
+                    }
                     Effect::Hub(ask) => {
                         let outbox = outbox.clone();
                         if hub
@@ -397,6 +433,12 @@ impl Connection {
             ToDaemon::Hello { .. } | ToDaemon::Identify { .. } => Vec::new(),
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
             ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
+            ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
+            ToDaemon::SaveSettings(settings) => vec![Effect::Save(settings)],
+            ToDaemon::Watch { watched, target } => {
+                vec![Effect::Watch(files::Order::Watch(watched, target))]
+            }
+            ToDaemon::Unwatch(watched) => vec![Effect::Watch(files::Order::Unwatch(watched))],
         }
     }
 }

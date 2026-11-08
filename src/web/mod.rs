@@ -6,6 +6,7 @@ use slint::ComponentHandle;
 
 use crate::app::{App, Desktop};
 use crate::external::wire::SessionId;
+use crate::settings::Settings;
 use crate::{generated, ui};
 
 mod daemon;
@@ -31,11 +32,18 @@ pub(crate) fn main() {
         events.clone(),
         link,
         Desktop::in_the_browser(),
+        Ok(Settings::default()),
         demo::Folder::Trailhead.path().to_path_buf(),
         crate::claude::Backend::Claude,
         None,
     );
-    app.begin(Vec::new(), Some(SessionId::from(demo::FIRST)), None, None);
+    app.begin(
+        Vec::new(),
+        Vec::new(),
+        Some(SessionId::from(demo::FIRST)),
+        None,
+        None,
+    );
     let started = slint::spawn_local(app.run(received))
         .and_then(|_app| slint::spawn_local(daemon::run(requests, events)));
     if let Err(error) = started {

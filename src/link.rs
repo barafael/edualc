@@ -13,11 +13,16 @@ use async_channel::Sender;
 
 use crate::app::Event;
 use crate::claude::Output;
+use std::collections::HashMap;
+
 use crate::decode;
+use crate::desktop::Opener;
 use crate::ipc::{
-    self, ActId, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL,
-    PasteFailure, Pasted, Stream, ToDaemon,
+    self, ActId, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted,
+    LineSplitter, PROTOCOL, PasteFailure, Pasted, Stream, ToDaemon,
 };
+use crate::sessions::{self, LiveSession};
+use crate::settings::Settings;
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
 /// taking messages loses the line rather than the window its memory.
@@ -76,11 +81,30 @@ pub(crate) fn send_input(link: &Link, key: Generation, line: &str) -> Result<(),
 /// A line to the daemon, greeted, its threads not started yet.
 #[derive(Debug)]
 pub(crate) struct Connected {
+    pub(crate) line: Line,
+    /// What the daemon tells as the window connects.
+    pub(crate) greeting: Greeting,
+}
+
+/// The line itself, greeted, its threads not started yet.
+#[derive(Debug)]
+pub(crate) struct Line {
     channel: Channel,
     deframer: Deframer<FromDaemon>,
-    /// The sessions the daemon runs as the window connected: known before the window opens
-    /// one, so that one it runs is attached to rather than started a second time.
+}
+
+/// What the daemon tells a window as it connects.
+#[derive(Debug)]
+pub(crate) struct Greeting {
+    /// The sessions the daemon runs: known before the window opens one, so that one it runs
+    /// is attached to rather than started a second time.
     pub(crate) hosted: Vec<Hosted>,
+    /// The sessions running now (in terminals, say): one of them resumed is watched instead.
+    pub(crate) live: Vec<LiveSession>,
+    /// The settings, or why they can't be read.
+    pub(crate) settings: Result<Settings, String>,
+    /// What folders open in, besides the window.
+    pub(crate) openers: Vec<Opener>,
 }
 
 /// Connects to the daemon, starting it if none runs.
@@ -104,8 +128,13 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    match greeting {
-        FromDaemon::Hello { protocol } if protocol == PROTOCOL => {}
+    let (settings, openers, live) = match greeting {
+        FromDaemon::Hello {
+            protocol,
+            settings,
+            openers,
+            live,
+        } if protocol == PROTOCOL => (settings, openers, live),
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
         | FromDaemon::Failed { .. }
@@ -116,8 +145,11 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Trusted { .. }
         | FromDaemon::Hosted(_)
         | FromDaemon::ShuttingDown
+        | FromDaemon::Answer { .. }
+        | FromDaemon::Lines { .. }
+        | FromDaemon::Changed(_)
         | FromDaemon::Pasted { .. } => return Err(Error::Version),
-    }
+    };
     let hosted = match channel.recv(&mut deframer)? {
         FromDaemon::Hosted(hosted) => hosted,
         FromDaemon::Hello { .. }
@@ -129,22 +161,29 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Picked { .. }
         | FromDaemon::Trusted { .. }
         | FromDaemon::ShuttingDown
+        | FromDaemon::Answer { .. }
+        | FromDaemon::Lines { .. }
+        | FromDaemon::Changed(_)
         | FromDaemon::Pasted { .. } => return Err(Error::OutOfTurn),
     };
-    Ok(Connected {
-        channel,
-        deframer,
+    let greeting = Greeting {
         hosted,
+        live,
+        settings,
+        openers,
+    };
+    Ok(Connected {
+        line: Line { channel, deframer },
+        greeting,
     })
 }
 
 /// Starts the threads that carry the line; what the daemon says comes to the app as `events`.
-pub(crate) fn run(connected: Connected, events: Sender<Event>) -> Result<Link, Error> {
-    let Connected {
+pub(crate) fn run(line: Line, events: Sender<Event>) -> Result<Link, Error> {
+    let Line {
         mut channel,
         deframer,
-        ..
-    } = connected;
+    } = line;
     let reading = channel.try_clone()?;
     let (link, queue) = std::sync::mpsc::sync_channel(QUEUE);
     std::thread::spawn(move || {
@@ -199,6 +238,8 @@ fn wait_for_daemon(folder: &Folder) -> Result<Channel, Error> {
 fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sender<Event>) {
     let mut lines: Assembler<(Generation, Stream)> = Assembler::default();
     let mut pasting: BTreeMap<ActId, Joining> = BTreeMap::new();
+    // A transcript's text, made lines as it comes, kept for the answer it belongs to.
+    let mut transcripts: HashMap<ActId, (LineSplitter, Vec<String>)> = HashMap::new();
     loop {
         let message = match channel.recv(&mut deframer) {
             Ok(message) => message,
@@ -258,6 +299,20 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
             } => joined(&mut pasting, request, &piece, last)
                 .map(|pasted| Event::Pasted { request, pasted }),
             FromDaemon::ShuttingDown => Some(Event::DaemonShuttingDown),
+            FromDaemon::Lines { request, text } => {
+                let (splitter, lines) = transcripts.entry(request).or_default();
+                lines.extend(splitter.push(text.as_bytes()));
+                None
+            }
+            FromDaemon::Answer { request, answer } => {
+                let (_unfinished, lines) = transcripts.remove(&request).unwrap_or_default();
+                Some(Event::Answered {
+                    request,
+                    answer,
+                    lines: sessions::parse_lines(&lines),
+                })
+            }
+            FromDaemon::Changed(watched) => Some(Event::Changed(watched)),
             FromDaemon::Hello { .. } => None,
         };
         if let Some(event) = event

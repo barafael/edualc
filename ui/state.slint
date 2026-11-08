@@ -153,8 +153,11 @@ export global Sessions {
     callback filter-edited(string);
     callback new-session;
     callback open(string);
-    // Turns to the folder a path names; answers why it can't, or nothing when it does.
-    callback open-project(string) -> string;
+    // Turns to the folder a path names, as the daemon finds it: if it can't, `problem` says
+    // why; if it does, `opened-serial` is bumped.
+    callback open-project(string);
+    in property <string> problem;
+    in property <int> opened-serial;
     callback browse-project;
     callback refresh-projects;
 }

@@ -2,7 +2,7 @@
 //! the file manager.
 
 use super::{App, Event};
-use crate::sessions::{self, Worktree};
+use crate::sessions::Worktree;
 
 impl App {
     /// The worktree of the session shown: the watched one's as its process reports it, or ours.
@@ -24,10 +24,7 @@ impl App {
         };
         let Some(opener_index) = index.checked_sub(1) else {
             // A worktree may be gone since it was read.
-            match crate::folder::Folder::at(worktree.path) {
-                Ok(folder) => self.open_project(folder),
-                Err(problem) => self.chat.error(problem.to_string()),
-            }
+            self.read_folder(crate::ipc::Read::Folder(worktree.path), false);
             return;
         };
         let Some(&opener) = self.openers.get(opener_index) else {
@@ -43,19 +40,20 @@ impl App {
     }
 
     /// Looks for the worktree the session entered, as its transcript says after a turn.
-    pub(super) fn read_worktree(&self) {
+    pub(super) fn read_worktree(&mut self) {
         let Some(id) = self.status.session_id.clone() else {
             return;
         };
-        let cwd = self.cwd.clone();
-        self.in_background(
-            move || {
-                let worktree = sessions::find_transcript(&cwd, &id)
-                    .and_then(|transcript| sessions::worktree_of(&transcript));
-                (id, worktree)
-            },
-            |(id, worktree)| Event::WorktreeRead { id, worktree },
-        );
+        let read = crate::ipc::Read::WorktreeOf {
+            cwd: self.cwd.clone(),
+            id: id.clone(),
+        };
+        self.read(read, move |answer, _| {
+            let crate::ipc::Answer::Worktree(worktree) = answer else {
+                return None;
+            };
+            Some(Event::WorktreeRead { id, worktree })
+        });
     }
 
     pub(super) fn worktree_read(

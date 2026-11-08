@@ -26,13 +26,20 @@ pub(crate) use socket::{
     AsyncChannel, Channel, Deframer, Error, Folder, Listener, Writing, recv, send,
 };
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use socket::frame;
+
 use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
-use crate::external::wire::SessionId;
+use crate::external::wire::{SessionId, TaskId};
+use crate::sessions::{LiveSession, ProjectInfo, SessionInfo, Worktree};
+use crate::settings::Settings;
 
-/// The largest message either side sends: more is a broken or hostile peer.
-pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
+/// The largest message either side sends: more is a broken or hostile peer. Text is cut to fit
+/// (see [`chunks`]); what the daemon reads for a window (the sessions listed, the folders
+/// worked in) is one message, which a thousand sessions fill well past 64 KiB.
+pub(crate) const MAX_MESSAGE: usize = 1024 * 1024;
 /// Text sent in one message at most (a long line of Claude's output goes in several), with
 /// room left for what the message says besides.
 pub(crate) const MAX_CHUNK: usize = MAX_MESSAGE - 1024;
@@ -149,7 +156,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 17;
+pub(crate) const PROTOCOL: u32 = 18;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -193,9 +200,14 @@ impl ActId {
 #[serde(deny_unknown_fields)]
 pub(crate) enum ToDaemon {
     /// The first message, and only it.
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     /// Starts Claude Code for a session, known by `key` from then on.
-    Start { key: Generation, launch: Launch },
+    Start {
+        key: Generation,
+        launch: Launch,
+    },
     /// A piece of a line for the session's input; the last piece ends the line.
     Input {
         key: Generation,
@@ -203,27 +215,139 @@ pub(crate) enum ToDaemon {
         last: bool,
     },
     /// Ends the session's process: its input closes, and what doesn't end is killed.
-    End { key: Generation },
+    End {
+        key: Generation,
+    },
     /// Shows a session the daemon runs in this window, known by `key` here from then on: what
     /// it asks and wasn't answered comes again, then what it says.
-    Attach { key: Generation, hosted: HostedId },
+    Attach {
+        key: Generation,
+        hosted: HostedId,
+    },
     /// Stops showing the session, which runs on (the window closes).
-    Detach { key: Generation },
+    Detach {
+        key: Generation,
+    },
     /// Claude Code's id for the session, as its process told the window: for the list.
-    Identify { key: Generation, session: SessionId },
+    Identify {
+        key: Generation,
+        session: SessionId,
+    },
     /// Something for the desktop, answered by `Done` with the same `request`.
-    Act { request: ActId, act: Act },
+    Act {
+        request: ActId,
+        act: Act,
+    },
     /// Ends every session the daemon runs, in every window, and then the daemon: the user
     /// asked, to have the next window start the edualc installed now.
     ShutDown,
+    /// Something of Claude Code's or edualc's files, which a window doesn't read itself (a
+    /// page can't, and the native window needn't), answered by `Answer` with the same
+    /// `request`; a transcript's lines come before, as `Lines`.
+    Read {
+        request: ActId,
+        read: Read,
+    },
+    /// Keeps the settings (`~/.config/edualc/settings.json`).
+    SaveSettings(Settings),
+    /// Tells the window, as `Changed`, when what `target` names changes, until `Unwatch`.
+    Watch {
+        watched: Watched,
+        target: Target,
+    },
+    Unwatch(Watched),
+}
+
+/// A watch, named by the window that asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct Watched(uuid::Uuid);
+
+impl Watched {
+    pub(crate) fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+/// What a window watches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Target {
+    /// The records of the sessions running (`~/.claude/sessions`).
+    Records,
+    /// A transcript being written to; while it isn't there yet, the folders it will be in.
+    Transcript(Place),
+}
+
+/// Where a transcript is, as a window knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Place {
+    /// Found already.
+    Path(PathBuf),
+    /// A session's, wherever it is: a worktree it entered may have moved it.
+    Session { cwd: PathBuf, id: SessionId },
+    /// A subagent's, beside its session's.
+    Subagent {
+        cwd: PathBuf,
+        id: SessionId,
+        task: TaskId,
+    },
+}
+
+/// What a window reads through the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Read {
+    /// The sessions running now: `Answer::Live`.
+    Live,
+    /// The folders Claude Code worked in: `Answer::Projects`.
+    Projects,
+    /// A folder's sessions, newest first, those `known` summed up again only if their
+    /// transcript changed: `Answer::Sessions`.
+    Sessions {
+        cwd: PathBuf,
+        limit: usize,
+        known: Vec<SessionInfo>,
+    },
+    /// A transcript's whole lines from `from` on: `Lines`, then `Answer::Transcript`.
+    Transcript { place: Place, from: u64 },
+    /// The worktree a session's transcript says it entered: `Answer::Worktree`.
+    WorktreeOf { cwd: PathBuf, id: SessionId },
+    /// `cwd` as a git worktree, if it is a linked one: `Answer::Worktree`.
+    LinkedWorktree { cwd: PathBuf },
+    /// The folder a path typed names, made whole, `~` at its start the home folder:
+    /// `Answer::Folder`.
+    TypedFolder(String),
+    /// The folder at a path (the picker's, a worktree's), made whole, if it is one:
+    /// `Answer::Folder`.
+    Folder(PathBuf),
+}
+
+/// What the daemon read for a window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Answer {
+    Live(Vec<LiveSession>),
+    Projects(Vec<ProjectInfo>),
+    Sessions(Vec<SessionInfo>),
+    /// The end of a transcript's lines: where it was found, and the offset after its last
+    /// whole line, or why it couldn't be read.
+    Transcript {
+        path: PathBuf,
+        read: Result<u64, String>,
+    },
+    Worktree(Option<Worktree>),
+    Folder(Result<PathBuf, String>),
 }
 
 /// What the daemon tells the window.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum FromDaemon {
-    /// `Hosted` follows, before anything else.
-    Hello { protocol: u32 },
+    /// With the settings (or why they can't be read), what folders open in here, and the
+    /// sessions running now. `Hosted` follows, before anything else.
+    Hello {
+        protocol: u32,
+        settings: Result<Settings, String>,
+        openers: Vec<Opener>,
+        live: Vec<LiveSession>,
+    },
     /// The process runs: started for the window, or running already as it attaches.
     Started {
         key: Generation,
@@ -272,6 +396,14 @@ pub(crate) enum FromDaemon {
         piece: Vec<u8>,
         last: bool,
     },
+    /// What was read, as asked by `Read`.
+    Answer { request: ActId, answer: Answer },
+    /// A transcript's lines, as asked by `Read::Transcript`: its text, a piece at a time that
+    /// fits a message (a piece ends where it ends, not at a line); its `Answer` follows the
+    /// last.
+    Lines { request: ActId, text: String },
+    /// What a watch names changed.
+    Changed(Watched),
 }
 
 /// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.

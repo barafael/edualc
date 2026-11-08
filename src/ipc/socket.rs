@@ -7,7 +7,6 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-use postcard::accumulator::{CobsAccumulator, FeedResult};
 use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
@@ -343,12 +342,12 @@ const MAX_FRAME: usize = MAX_MESSAGE + MAX_MESSAGE / 254 + 2;
 
 /// A connection's bytes, as they come, made into messages (sans-io: the window's blocking reads
 /// and the daemon's tokio reads feed the same one). Frames are postcard's COBS, each ended by a
-/// `0`, taken apart by postcard's own accumulator, which never holds more than [`MAX_FRAME`]: a
-/// longer frame, or one that doesn't parse, ends the connection (the accumulator would go on
-/// with the next frame, as a lossy serial line needs; a peer here sending one is broken or
-/// hostile).
+/// `0`. The frame being read is kept on the heap, and never grows past [`MAX_FRAME`]: a longer
+/// frame, or one that doesn't parse, ends the connection (a peer here sending one is broken or
+/// hostile; the next frame isn't gone on to, as a lossy serial line would).
 pub(crate) struct Deframer<Message> {
-    accumulator: CobsAccumulator<MAX_FRAME>,
+    /// The bytes of the frame so far, up to its `0`.
+    frame: Vec<u8>,
     /// Whole messages a read brought, not yet taken.
     ready: VecDeque<Message>,
 }
@@ -356,7 +355,7 @@ pub(crate) struct Deframer<Message> {
 impl<Message> Default for Deframer<Message> {
     fn default() -> Self {
         Self {
-            accumulator: CobsAccumulator::new(),
+            frame: Vec::new(),
             ready: VecDeque::new(),
         }
     }
@@ -378,17 +377,24 @@ impl<Message: DeserializeOwned> Deframer<Message> {
             return Err(Error::Closed);
         }
         let mut rest = bytes;
-        while !rest.is_empty() {
-            rest = match self.accumulator.feed::<Message>(rest) {
-                FeedResult::Consumed => break,
-                FeedResult::Success { data, remaining } => {
-                    self.ready.push_back(data);
-                    remaining
-                }
-                FeedResult::OverFull(_) => return Err(Error::Oversized),
-                FeedResult::DeserError(_) => return Err(Error::Unreadable),
-            };
+        while let Some(end) = rest.iter().position(|&byte| byte == 0) {
+            let (last, after) = rest.split_at(end);
+            self.take(last)?;
+            let message = postcard::from_bytes_cobs::<Message>(&mut self.frame)
+                .map_err(|_unreadable| Error::Unreadable)?;
+            self.frame.clear();
+            self.ready.push_back(message);
+            rest = after.get(1..).unwrap_or_default();
         }
+        self.take(rest)
+    }
+
+    /// Adds to the frame being read, which may not outgrow [`MAX_FRAME`].
+    fn take(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if self.frame.len() + bytes.len() > MAX_FRAME {
+            return Err(Error::Oversized);
+        }
+        self.frame.extend_from_slice(bytes);
         Ok(())
     }
 
@@ -600,15 +606,15 @@ mod tests {
         let long = "x".repeat(MAX_MESSAGE);
         assert!(matches!(client.send(&long), Err(Error::Oversized)));
         // A frame that doesn't end in time: refused on the way in, holding no more than one.
-        client
-            .stream
-            .write_all(&vec![1u8; MAX_FRAME + 1])
-            .expect("raw");
+        // From another thread: more than the socket's buffer holds, which is read as it is sent.
+        let mut raw = client.stream.try_clone().expect("cloned");
+        let sending = std::thread::spawn(move || raw.write_all(&vec![1u8; MAX_FRAME + 1]));
         let mut taking = Deframer::<String>::default();
         assert!(matches!(
             recv::<String>(&mut reading, &mut taking).await,
             Err(Error::Oversized)
         ));
+        sending.join().expect("the thread ran").expect("raw");
         // Refused, the connection ends: what is left of it is read no more.
         drop(client);
         assert!(matches!(

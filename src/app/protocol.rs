@@ -174,9 +174,7 @@ impl App {
                 permission_mode,
                 cwd,
             } => {
-                if let Some(worktree) = crate::sessions::linked_worktree(&cwd) {
-                    self.status.worktree = Some(worktree);
-                }
+                self.read_linked_worktree(cwd, true);
                 if self.status.session_id.as_ref() != Some(&session_id) {
                     // The daemon lists it under this id, for a window to come back to.
                     if let Some(process) = &self.process
