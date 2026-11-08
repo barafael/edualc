@@ -36,6 +36,7 @@ mod present;
 mod process;
 #[cfg(not(target_arch = "wasm32"))]
 mod relay;
+mod repeat;
 mod sandbox;
 mod sessions;
 mod settings;

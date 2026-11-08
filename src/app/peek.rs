@@ -102,17 +102,12 @@ impl App {
         }
     }
 
-    fn start_polling(&self) {
+    fn start_polling(&mut self) {
         if self.polling.running() {
             return;
         }
-        let events = self.events.clone();
         self.polling
-            .start(slint::TimerMode::Repeated, POLL_OUTPUT, move || {
-                if events.try_send(Event::PollOutput).is_err() {
-                    tracing::debug!("polling after the window closed");
-                }
-            });
+            .start(POLL_OUTPUT, self.events.clone(), || Event::PollOutput);
     }
 
     /// Asks Claude Code for the followed command's output, unless the last question is still
