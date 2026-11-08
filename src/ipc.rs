@@ -1,4 +1,4 @@
-//! The window and its daemon (`edualc --daemon`), speaking over a Unix socket that only they
+//! The windows and their daemon (`edualc --daemon`), speaking over a Unix socket that only they
 //! reach.
 //!
 //! - The socket lives in `$XDG_RUNTIME_DIR/edualc`, a folder of the user's alone (0700), which is
@@ -8,12 +8,13 @@
 //! - Who is the daemon is decided by a lock held as long as it runs: only its holder removes a
 //!   stale socket and binds anew, so two starting at once can't both bind, nor one unbind the
 //!   other's.
-//! - Each peer is checked as it connects: a window, to be the same user running this same
-//!   program; the daemon, which makes itself non-dumpable (its `/proc` entries closed to the
-//!   user's other processes), to be the same user, in the place only the daemon binds.
-//! - Messages are postcard (compact serde), each COBS-framed by postcard: a frame longer than
-//!   one of [`MAX_MESSAGE`] ends the connection once the reader's fixed buffer is full, as does
-//!   a message that doesn't parse. Nothing in a message makes the reader hold more than that.
+//! - Each peer is checked as it connects: a window, to be the same user running edualc; the
+//!   daemon, which makes itself non-dumpable (its `/proc` entries closed to the user's other
+//!   processes), to be the same user, in the place only the daemon binds.
+//! - On the socket, the two speak WebSocket (`ws`), as a browser does: each message is one
+//!   binary frame of CBOR, the framing Dioxus's typed websockets use, so a page and the native
+//!   window take the same messages. A frame longer than [`MAX_MESSAGE`] ends the connection, as
+//!   does a message that doesn't parse.
 
 use std::path::PathBuf;
 
@@ -22,9 +23,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 mod socket;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use socket::{
-    AsyncChannel, Channel, Deframer, Error, Folder, Listener, Writing, recv, send,
-};
+pub(crate) mod ws;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use socket::{Error, Folder, Listener, accept, connect};
 
 use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
@@ -32,11 +33,9 @@ use crate::desktop::{Opener, Program, Running};
 use crate::external::wire::SessionId;
 use crate::sandbox::Enforcement;
 
-/// The largest message either side sends: more is a broken or hostile peer.
-pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
-/// Text sent in one message at most (a long line of Claude's output goes in several), with
-/// room left for what the message says besides.
-pub(crate) const MAX_CHUNK: usize = MAX_MESSAGE - 1024;
+/// The largest message either side sends: more is a broken or hostile peer. Room for the
+/// longest line kept, and what the message says besides.
+pub(crate) const MAX_MESSAGE: usize = MAX_LINE + 1024 * 1024;
 /// The longest line kept, of a process's output or a window's input: a tool's result can be
 /// long, but not without end.
 pub(crate) const MAX_LINE: usize = 32 * 1024 * 1024;
@@ -89,68 +88,29 @@ impl LineSplitter {
     }
 }
 
-/// Lines put together again from the pieces they were sent in (sans-io), up to [`MAX_LINE`].
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub(crate) struct Assembler<K: Eq + std::hash::Hash> {
-    partial: std::collections::HashMap<K, String>,
+/// A message as it goes on the line: CBOR.
+pub(crate) fn encode(message: &impl Serialize) -> Result<Vec<u8>, EncodeError> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(message, &mut bytes).map_err(|error| EncodeError(error.to_string()))?;
+    Ok(bytes)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl<K: Eq + std::hash::Hash> Default for Assembler<K> {
-    fn default() -> Self {
-        Self {
-            partial: std::collections::HashMap::new(),
-        }
-    }
+/// A message as it came on the line.
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    ciborium::from_reader(bytes).map_err(|error| DecodeError(error.to_string()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl<K: Eq + std::hash::Hash> Assembler<K> {
-    /// The whole line, once its last piece came; an error for one too long.
-    pub(crate) fn push(
-        &mut self,
-        key: K,
-        piece: &str,
-        last: bool,
-    ) -> Result<Option<String>, Error> {
-        let line = self.partial.entry(key).or_default();
-        if line.len() + piece.len() > MAX_LINE {
-            line.clear();
-            return Err(Error::Oversized);
-        }
-        line.push_str(piece);
-        Ok(last.then(|| std::mem::take(line)))
-    }
+#[derive(Debug, thiserror::Error)]
+#[error("couldn't encode a message: {0}")]
+pub(crate) struct EncodeError(String);
 
-    /// Forgets the pieces of a session that ended.
-    pub(crate) fn forget(&mut self, key: &K) {
-        self.partial.remove(key);
-    }
-}
+#[derive(Debug, thiserror::Error)]
+#[error("a message that doesn't parse: {0}")]
+pub(crate) struct DecodeError(String);
 
-/// Text cut into pieces that each fit a message, on character boundaries.
-pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
-    let mut rest = text;
-    let mut first = true;
-    std::iter::from_fn(move || {
-        if rest.is_empty() && !std::mem::take(&mut first) {
-            return None;
-        }
-        first = false;
-        let mut end = rest.len().min(MAX_CHUNK);
-        while !rest.is_char_boundary(end) {
-            end -= 1;
-        }
-        let (piece, after) = rest.split_at(end);
-        rest = after;
-        Some(piece)
-    })
-}
-
-/// Bumped with any change to the messages below, or to their framing: postcard isn't
-/// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 14;
+/// Bumped with any change to the messages below, or to their framing: both ends must agree on
+/// every type, which are checked strictly (unknown fields refused).
+pub(crate) const PROTOCOL: u32 = 15;
 
 /// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,12 +167,8 @@ pub(crate) enum ToDaemon {
     Hello { protocol: u32 },
     /// Starts Claude Code for a session, known by `key` from then on.
     Start { key: Generation, launch: Launch },
-    /// A piece of a line for the session's input; the last piece ends the line.
-    Input {
-        key: Generation,
-        text: String,
-        last: bool,
-    },
+    /// A line for the session's input, up to [`MAX_LINE`].
+    Input { key: Generation, line: String },
     /// Ends the session's process: its input closes, and what doesn't end is killed.
     End { key: Generation },
     /// Shows a session the daemon runs in this window, known by `key` here from then on: what
@@ -246,12 +202,11 @@ pub(crate) enum FromDaemon {
         key: Generation,
         failure: StartFailure,
     },
-    /// A piece of a line the process wrote; the last piece ends the line.
+    /// A line the process wrote.
     Output {
         key: Generation,
         stream: Stream,
-        text: String,
-        last: bool,
+        line: String,
     },
     /// The process ended, with its exit code if it exited on its own.
     Ended { key: Generation, code: Option<i32> },
@@ -277,13 +232,8 @@ pub(crate) enum FromDaemon {
     },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
-    /// The clipboard's image, or why there is none: a [`Pasted`], postcard-encoded, in pieces
-    /// that fit messages; the last piece ends it.
-    Pasted {
-        request: ActId,
-        piece: Vec<u8>,
-        last: bool,
-    },
+    /// The clipboard's image, or why there is none.
+    Pasted { request: ActId, pasted: Pasted },
 }
 
 /// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.
@@ -488,18 +438,4 @@ pub(crate) enum Act {
         pid: u32,
     },
     StopSession(Running),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn long_text_goes_in_pieces_that_fit() {
-        let text = "é".repeat(MAX_CHUNK);
-        let pieces: Vec<&str> = chunks(&text).collect();
-        assert!(pieces.iter().all(|piece| piece.len() <= MAX_CHUNK));
-        assert_eq!(pieces.concat(), text);
-        assert_eq!(chunks("").collect::<Vec<_>>(), [""]);
-    }
 }

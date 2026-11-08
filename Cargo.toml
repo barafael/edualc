@@ -53,6 +53,9 @@ uuid = { version = "1.29", default-features = false, features = ["std", "v4", "s
 petname = { version = "3.2", default-features = false, features = ["default-words"] }
 # The user's sign-in token, cleared from memory once a sandboxed session has it.
 zeroize = "1.9"
+# The messages between the windows and the daemon: self-describing, compact, bytes as bytes.
+ciborium = "0.2.2"
+serde_bytes = "0.11"
 
 # What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -76,8 +79,13 @@ landlock = "0.4"
 # The daemon's actors (connections, sessions), their channels, its processes and sockets;
 # already built for a dependency.
 tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
-# The messages between the window and its daemon: compact, strictly checked serde.
+# What the confined image decoder answers: compact, strictly checked serde.
 postcard = { version = "1", default-features = false, features = ["use-std"] }
+# The line between the windows and the daemon: a WebSocket (over the daemon's Unix socket, or
+# TCP for a browser), each message one binary frame of CBOR, as Dioxus's typed websockets frame
+# theirs. Without TLS: the socket is private, and the browser's line local.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # The browser demo (`web/`): the window, drawn with WebGL into the page's canvas, with a scripted
 # daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.

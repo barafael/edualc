@@ -96,6 +96,7 @@ pub(crate) enum Shown {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Picture {
     pub(crate) media_type: MediaType,
+    #[serde(with = "serde_bytes")]
     pub(crate) bytes: Vec<u8>,
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
@@ -108,6 +109,7 @@ pub(crate) struct Picture {
 pub(crate) struct Pixels {
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
+    #[serde(with = "serde_bytes")]
     pub(crate) rgba: Vec<u8>,
 }
 

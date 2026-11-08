@@ -35,8 +35,8 @@ use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Buses, Deframer, FolderUse, FromDaemon, Generation, Hosted,
-    HostedId, LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
+    self, Act, ActFailure, ActId, Buses, FolderUse, FromDaemon, Generation, Hosted, HostedId,
+    LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon, ws,
 };
 use crate::mirror::{self, Mirror};
 use crate::relay::{self, FromProcess, Relay, Work};
@@ -133,10 +133,10 @@ async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), 
             }
         };
         tokio::select! {
-            accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
-                Ok(channel) => {
+            accepted = ipc::accept(&listener) => match accepted {
+                Ok(stream) => {
                     last_window = last_window.next();
-                    windows.spawn(window(channel, last_window, buses.clone(), hub.clone()));
+                    windows.spawn(window(stream, last_window, buses.clone(), hub.clone()));
                     quiet_since = None;
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
@@ -172,19 +172,26 @@ async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), 
     Ok(())
 }
 
-/// A window's connection: hello, then its requests to its [`Connection`], and what the hub,
-/// sessions and the desktop say back, until it hangs up.
-async fn window(channel: ipc::AsyncChannel, id: WindowId, buses: Buses, hub: mpsc::Sender<ToHub>) {
-    let (mut reading, mut writing) = channel.split();
-    let mut deframer = Deframer::default();
-    let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
-    match hello.await {
-        Ok(Ok(ToDaemon::Hello { protocol })) => {
+/// A window's connection: the WebSocket handshake and hello, then its requests to its
+/// [`Connection`], and what the hub, sessions and the desktop say back, until it hangs up.
+async fn window(
+    stream: tokio::net::UnixStream,
+    id: WindowId,
+    buses: Buses,
+    hub: mpsc::Sender<ToHub>,
+) {
+    let greeted = tokio::time::timeout(HELLO, async {
+        let mut socket = ws::accept(stream).await?;
+        let hello = ws::recv::<_, ToDaemon>(&mut socket).await?;
+        Ok::<_, ipc::Error>((socket, hello))
+    });
+    let mut socket = match greeted.await {
+        Ok(Ok((mut socket, ToDaemon::Hello { protocol }))) => {
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
                 buses,
             };
-            if let Err(error) = ipc::send(&mut writing, &answer).await {
+            if let Err(error) = ws::send(&mut socket, &answer).await {
                 tracing::warn!(%error, "a window left as it came");
                 return;
             }
@@ -192,46 +199,47 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, buses: Buses, hub: mps
                 tracing::warn!(protocol, "a window of another version");
                 return;
             }
+            socket
         }
         Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
             tracing::warn!("a connection that didn't say hello");
             return;
         }
-    }
+    };
     let (requests, received) = mpsc::channel(QUEUE);
-    let (outbox, answers) = mpsc::channel(QUEUE);
-    // The socket's two directions: pumps, not actors.
-    let reader = tokio::spawn(async move {
+    let (outbox, mut answers) = mpsc::channel(QUEUE);
+    // The socket's two directions, pumped in one task: requests in, answers out.
+    let pump = tokio::spawn(async move {
         loop {
-            match ipc::recv::<ToDaemon>(&mut reading, &mut deframer).await {
-                Ok(request) => {
-                    if requests.send(request).await.is_err() {
+            tokio::select! {
+                request = ws::recv::<_, ToDaemon>(&mut socket) => match request {
+                    Ok(request) => {
+                        if requests.send(request).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::info!(%error, "a window hung up");
                         return;
                     }
-                }
-                Err(error) => {
-                    tracing::info!(%error, "a window hung up");
-                    return;
-                }
+                },
+                answer = answers.recv() => match answer {
+                    Some(answer) => {
+                        if let Err(error) = ws::send(&mut socket, &answer).await {
+                            tracing::info!(%error, "a window stopped listening");
+                            return;
+                        }
+                    }
+                    // Everything that could queue more is gone.
+                    None => return,
+                },
             }
         }
     });
-    let writer = tokio::spawn(write(writing, answers));
     let connection = Connection::new(id).event_loop(received, outbox, hub).await;
     tracing::info!(window = ?connection.id, "a window's connection ended");
-    reader.abort();
-    if let Err(error) = writer.await {
-        tracing::debug!(%error, "the writer ended");
-    }
-}
-
-/// Writes what is queued for a window, until everything that could queue more is gone.
-async fn write(mut writing: ipc::Writing, mut answers: mpsc::Receiver<FromDaemon>) {
-    while let Some(answer) = answers.recv().await {
-        if let Err(error) = ipc::send(&mut writing, &answer).await {
-            tracing::info!(%error, "a window stopped listening");
-            return;
-        }
+    if let Err(error) = pump.await {
+        tracing::debug!(%error, "the pump ended");
     }
 }
 
@@ -270,18 +278,18 @@ impl WindowId {
     }
 }
 
-/// A window: the keys it shows sessions under, and the line it is sending each in pieces.
+/// A window: the keys it shows sessions under.
 #[derive(Debug, PartialEq, Eq)]
 struct Connection {
     id: WindowId,
-    keys: BTreeMap<Generation, String>,
+    keys: std::collections::BTreeSet<Generation>,
 }
 
 impl Connection {
     fn new(id: WindowId) -> Self {
         Self {
             id,
-            keys: BTreeMap::new(),
+            keys: std::collections::BTreeSet::new(),
         }
     }
 
@@ -340,7 +348,7 @@ impl Connection {
     fn handle(&mut self, request: ToDaemon) -> Vec<Effect> {
         match request {
             ToDaemon::Start { key, .. } | ToDaemon::Attach { key, .. }
-                if self.keys.contains_key(&key) =>
+                if self.keys.contains(&key) =>
             {
                 vec![Effect::Refuse {
                     key,
@@ -348,45 +356,35 @@ impl Connection {
                 }]
             }
             ToDaemon::Start { key, launch } => {
-                self.keys.insert(key, String::new());
+                self.keys.insert(key);
                 vec![Effect::Hub(Ask::Start { key, launch })]
             }
             ToDaemon::Attach { key, hosted } => {
-                self.keys.insert(key, String::new());
+                self.keys.insert(key);
                 vec![Effect::Hub(Ask::Attach { key, hosted })]
             }
-            ToDaemon::Input { key, text, last } => {
-                let Some(line) = self.keys.get_mut(&key) else {
-                    return Vec::new();
-                };
-                if line.len() + text.len() > ipc::MAX_LINE {
-                    line.clear();
-                    return vec![Effect::Refuse {
-                        key,
-                        failure: StartFailure::LineTooLong,
-                    }];
-                }
-                line.push_str(&text);
-                if last {
-                    let line = std::mem::take(line);
-                    vec![Effect::Hub(Ask::Line { key, line })]
-                } else {
-                    Vec::new()
-                }
+            ToDaemon::Input { key, .. } if !self.keys.contains(&key) => Vec::new(),
+            ToDaemon::Input { key, line } if line.len() > ipc::MAX_LINE => {
+                vec![Effect::Refuse {
+                    key,
+                    failure: StartFailure::LineTooLong,
+                }]
             }
-            ToDaemon::End { key } => match self.keys.remove(&key) {
-                Some(_) => vec![Effect::Hub(Ask::End { key })],
-                None => Vec::new(),
-            },
-            ToDaemon::Detach { key } => match self.keys.remove(&key) {
-                Some(_) => vec![Effect::Hub(Ask::Detach { key })],
-                None => Vec::new(),
-            },
-            ToDaemon::Identify { key, session } if self.keys.contains_key(&key) => {
+            ToDaemon::Input { key, line } => vec![Effect::Hub(Ask::Line { key, line })],
+            ToDaemon::End { key } if self.keys.remove(&key) => {
+                vec![Effect::Hub(Ask::End { key })]
+            }
+            ToDaemon::Detach { key } if self.keys.remove(&key) => {
+                vec![Effect::Hub(Ask::Detach { key })]
+            }
+            ToDaemon::Identify { key, session } if self.keys.contains(&key) => {
                 vec![Effect::Hub(Ask::Identify { key, session })]
             }
             // A second hello, or a key not in use.
-            ToDaemon::Hello { .. } | ToDaemon::Identify { .. } => Vec::new(),
+            ToDaemon::Hello { .. }
+            | ToDaemon::Identify { .. }
+            | ToDaemon::End { .. }
+            | ToDaemon::Detach { .. } => Vec::new(),
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
         }
     }
@@ -521,29 +519,10 @@ async fn clipboard(args: &[&str], limit: usize) -> Result<Vec<u8>, PasteFailure>
         })?
 }
 
-/// The pasted image to a window, in pieces that fit messages.
+/// The pasted image to a window.
 async fn tell_pasted(outbox: &mpsc::Sender<FromDaemon>, request: ActId, pasted: &ipc::Pasted) {
-    let encoded = match postcard::to_stdvec(pasted) {
-        Ok(encoded) => encoded,
-        Err(error) => {
-            tracing::error!(%error, "couldn't encode a pasted image");
-            return;
-        }
-    };
-    let mut pieces = encoded.chunks(ipc::MAX_CHUNK).peekable();
-    while let Some(piece) = pieces.next() {
-        let last = pieces.peek().is_none();
-        let piece = piece.to_vec();
-        tell(
-            outbox,
-            FromDaemon::Pasted {
-                request,
-                piece,
-                last,
-            },
-        )
-        .await;
-    }
+    let pasted = pasted.clone();
+    tell(outbox, FromDaemon::Pasted { request, pasted }).await;
 }
 
 /// Tells a window something; a window gone isn't told.
@@ -1497,20 +1476,15 @@ async fn pump(
     }
 }
 
-/// A line to a window, in pieces that fit messages.
+/// A line to a window.
 async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: Stream, line: &str) {
-    let mut pieces = ipc::chunks(line).peekable();
-    while let Some(text) = pieces.next() {
-        let last = pieces.peek().is_none();
-        let piece = FromDaemon::Output {
-            key,
-            stream,
-            text: text.to_owned(),
-            last,
-        };
-        if outbox.send(piece).await.is_err() {
-            return;
-        }
+    let output = FromDaemon::Output {
+        key,
+        stream,
+        line: line.to_owned(),
+    };
+    if outbox.send(output).await.is_err() {
+        tracing::debug!("a window gone");
     }
 }
 
@@ -1586,15 +1560,14 @@ mod tests {
         }
     }
 
-    fn piece(key: Generation, text: &str, last: bool) -> ToDaemon {
+    fn input(key: Generation, line: &str) -> ToDaemon {
         ToDaemon::Input {
             key,
-            text: text.to_owned(),
-            last,
+            line: line.to_owned(),
         }
     }
 
-    /// Pieces of a line make one line, for a key in use; a key used twice is refused.
+    /// A line goes to the session of a key in use; a key used twice is refused.
     #[test]
     fn a_connection_works_out_what_requests_come_to() {
         let key = Generation::default().next();
@@ -1620,16 +1593,15 @@ mod tests {
                 failure: StartFailure::KeyInUse
             }]
         );
-        assert!(connection.handle(piece(key, "{\"a\":", false)).is_empty());
         assert_eq!(
-            connection.handle(piece(key, "1}", true)),
+            connection.handle(input(key, "{\"a\":1}")),
             vec![Effect::Hub(Ask::Line {
                 key,
                 line: "{\"a\":1}".to_owned()
             })]
         );
         assert!(
-            connection.handle(piece(unused_key, "x", true)).is_empty(),
+            connection.handle(input(unused_key, "x")).is_empty(),
             "no key, no line"
         );
         assert_eq!(
@@ -1958,8 +1930,8 @@ mod tests {
         );
         assert!(told.iter().any(|answer| matches!(
             answer,
-            FromDaemon::Output { key: shown, stream: Stream::Out, text, last: true }
-                if *shown == key && text == asked
+            FromDaemon::Output { key: shown, stream: Stream::Out, line }
+                if *shown == key && line == asked
         )));
         assert!(matches!(
             told.last(),
