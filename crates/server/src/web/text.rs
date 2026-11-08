@@ -126,7 +126,7 @@ pub fn Block(block: MdBlock) -> Element {
                 button {
                     class: "copy",
                     title: "Copy",
-                    onclick: move |_| super::view::copy(block.raw.clone()),
+                    onclick: move |_| super::view::copy(&block.raw),
                     "⧉"
                 }
                 pre { code { "{block.raw}" } }

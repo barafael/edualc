@@ -433,7 +433,7 @@ fn MarkdownBlock(block: MdBlock) -> Element {
                             icon: Lucide::Copy,
                             label: "Copy table",
                             class: "tiny",
-                            onclick: move |_| copy(raw.clone()),
+                            onclick: move |_| copy(&raw),
                         }
                     }
                 }

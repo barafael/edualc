@@ -178,7 +178,7 @@ impl Frontend for PageFrontend {
         let mut page = self.view.page;
         let mut draft = self.view.draft;
         match command {
-            Command::Copy(text) => copy(text),
+            Command::Copy(text) => copy(&text),
             Command::SetDraft(text) => draft.set(text),
             Command::AppendDraft(text) => {
                 let joined = {
@@ -233,11 +233,10 @@ pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {
 }
 
 /// Puts `text` on the browser's clipboard.
-#[cfg_attr(not(feature = "web"), allow(clippy::needless_pass_by_value))]
-pub fn copy(text: String) {
+pub fn copy(text: &str) {
     #[cfg(feature = "web")]
     if let Some(window) = web_sys::window() {
-        let written = window.navigator().clipboard().write_text(&text);
+        let written = window.navigator().clipboard().write_text(text);
         wasm_bindgen_futures::spawn_local(async move {
             if wasm_bindgen_futures::JsFuture::from(written).await.is_err() {
                 tracing::warn!("the clipboard refused the text");
@@ -245,5 +244,5 @@ pub fn copy(text: String) {
         });
     }
     #[cfg(not(feature = "web"))]
-    drop(text);
+    let _: &str = text;
 }
