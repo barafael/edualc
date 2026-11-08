@@ -43,12 +43,7 @@ pub fn App() -> Element {
     let style = format!("--base-size: {}px;", page.text_size);
     rsx! {
         document::Stylesheet { href: STYLE }
-        document::Style {
-            "@font-face {{ font-family: 'Fira Sans'; src: url({SANS}); font-weight: 400; }}
-            @font-face {{ font-family: 'Fira Sans'; src: url({SANS_SEMIBOLD}); font-weight: 600; }}
-            @font-face {{ font-family: 'Fira Sans'; src: url({SANS_ITALIC}); font-style: italic; }}
-            @font-face {{ font-family: 'Fira Code'; src: url({MONO}); }}"
-        }
+        Fonts {}
         document::Title { "edualc" }
         div { class: "window {theme}", style,
             if let Some(lost) = &page.lost {
@@ -57,6 +52,20 @@ pub fn App() -> Element {
                 div { class: "lost", "This window was closed. Reload the page to open it again." }
             }
             components::Window {}
+        }
+    }
+}
+
+/// The fonts' faces, declared once: their own component, so the page's changes don't touch
+/// them.
+#[component]
+fn Fonts() -> Element {
+    rsx! {
+        document::Style {
+            "@font-face {{ font-family: 'Fira Sans'; src: url({SANS}); font-weight: 400; }}
+            @font-face {{ font-family: 'Fira Sans'; src: url({SANS_SEMIBOLD}); font-weight: 600; }}
+            @font-face {{ font-family: 'Fira Sans'; src: url({SANS_ITALIC}); font-style: italic; }}
+            @font-face {{ font-family: 'Fira Code'; src: url({MONO}); }}"
         }
     }
 }
@@ -119,6 +128,7 @@ async fn run(view: View) {
         page.write().lost = Some(why);
     };
     let (token, dir) = address();
+    tracing::debug!("opening the line to the daemon");
     let socket = match crate::line::line(token, WebSocketOptions::new()).await {
         Ok(socket) => socket,
         Err(error) => return lost(format!("No line to edualc's daemon: {error}")),
@@ -134,6 +144,7 @@ async fn run(view: View) {
             ));
         }
     };
+    tracing::debug!("the daemon answered");
     let greeting = match link::greeted(hello, hosted) {
         Ok((_buses, greeting)) => greeting,
         Err(error) => return lost(error.to_string()),
@@ -157,6 +168,7 @@ async fn run(view: View) {
         None,
     );
     app.begin(greeting.hosted, greeting.live, None, None, None);
+    tracing::debug!("the app began");
     spawn(app.run(received));
     let mut inbox = Inbox::default();
     loop {
