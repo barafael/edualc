@@ -198,7 +198,16 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         greeting,
         ..
     } = connected;
-    let desktop = app::Desktop::find(&greeting);
+    // Asked before the window is confined, of programs it may not run then.
+    let (fonts, text_size) = std::thread::scope(|scope| {
+        let fonts = scope.spawn(crate::appearance::fonts);
+        let text_size = crate::appearance::desktop_text_size();
+        let fonts = fonts
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (fonts, text_size)
+    });
+    let desktop = app::Desktop::of(&greeting, text_size);
     match confine::confine() {
         Ok(confinement) => tracing::info!(?confinement, "the window is confined"),
         Err(error) => {
@@ -212,8 +221,9 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
+    let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts);
     let mut app = app::App::new(
-        window.clone_strong(),
+        Box::new(frontend),
         events,
         link,
         desktop,

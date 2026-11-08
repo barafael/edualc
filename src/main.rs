@@ -32,6 +32,7 @@ mod markdown;
 #[cfg(not(target_arch = "wasm32"))]
 mod mirror;
 mod plan;
+mod present;
 mod process;
 #[cfg(not(target_arch = "wasm32"))]
 mod relay;

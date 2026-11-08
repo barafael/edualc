@@ -20,19 +20,18 @@ use crate::external::wire::{
     ToolInput, ToolName, ToolUseId, TranscriptLine,
 };
 use crate::folder::Folder;
-use crate::generated::AppWindow;
 use crate::ipc::{
     self, Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Read, Runs,
     SandboxAccess, Target, ToDaemon, Watched,
 };
 use crate::link::{self, Link};
 use crate::plan;
+use crate::present::{Frontend, Presenter};
 use crate::sandbox;
 use crate::sessions::{LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree};
 use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
 use crate::trust;
-use crate::ui::View;
 
 #[cfg_attr(target_arch = "wasm32", path = "web/images.rs")]
 mod images;
@@ -512,7 +511,7 @@ pub(crate) enum Doing {
     Starting,
     #[display("Thinking")]
     Thinking,
-    #[display("Thinking  ~{}", crate::ui::short_count(*_0))]
+    #[display("Thinking  ~{}", crate::present::short_count(*_0))]
     ThinkingTokens(u64),
     #[display("Writing")]
     Writing,
@@ -529,7 +528,7 @@ pub(crate) enum Doing {
     #[display("{_0}")]
     Retrying(Retry),
     /// Waiting on the API, and nothing heard from Claude Code for this long.
-    #[display("No answer for {}", crate::ui::short_duration(*_0))]
+    #[display("No answer for {}", crate::present::short_duration(*_0))]
     Silent(Duration),
 }
 
@@ -752,7 +751,7 @@ const QUIET: Duration = Duration::from_secs(30);
 type Then = Box<dyn FnOnce(ipc::Answer, Vec<TranscriptLine>) -> Option<Event>>;
 
 pub(crate) struct App {
-    view: View,
+    view: Presenter,
     events: Sender<Event>,
     chat: Chat,
     status: Status,
@@ -832,7 +831,7 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new(
-        window: AppWindow,
+        frontend: Box<dyn Frontend>,
         events: Sender<Event>,
         link: Link,
         desktop_found: Desktop,
@@ -844,10 +843,9 @@ impl App {
             openers,
             claude_codes_sandbox,
             finds_windows,
-            fonts,
             text_size: desktop_text_size,
         } = desktop_found;
-        let mut view = View::new(window, &openers, fonts, finds_windows);
+        let mut view = Presenter::new(frontend, &openers, finds_windows);
         let (settings, settings_problem) = match settings {
             Ok(settings) => (settings, None),
             Err(problem) => {
@@ -1266,12 +1264,13 @@ impl App {
             TrustGate::Asking { runs, .. } => Some(runs.as_slice()),
             TrustGate::Open | TrustGate::Checking { .. } => None,
         };
+        let worktree = self.current_worktree().cloned();
         self.view.render_status(
             &self.status,
             asking,
             &self.cwd,
             self.watch.as_ref(),
-            self.current_worktree(),
+            worktree.as_ref(),
         );
         if redraw.menus {
             self.view.render_menus(&self.status);
@@ -1319,6 +1318,7 @@ impl App {
             self.view
                 .render_sidebar(&rows, !self.session_filter.trim().is_empty());
         }
+        self.view.flush();
     }
 
     /// How this window's own session is doing, while its process runs here.
@@ -1790,9 +1790,7 @@ impl App {
         self.tick.stop();
         self.generation = self.generation.next();
         self.let_go();
-        if let Err(error) = slint::quit_event_loop() {
-            tracing::warn!(%error, "couldn't quit the event loop");
-        }
+        self.view.command(crate::present::Command::Quit);
     }
 
     /// Writes to the process; says so in the transcript if that fails.
@@ -2876,8 +2874,7 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
     }
 }
 
-/// What the desktop has and says: asked before the window is confined, of programs it may not
-/// run then.
+/// What the desktop has and says: the daemon's word, and what the window's desktop says.
 #[derive(Debug)]
 pub(crate) struct Desktop {
     openers: Vec<desktop::Opener>,
@@ -2885,48 +2882,21 @@ pub(crate) struct Desktop {
     claude_codes_sandbox: bool,
     /// Other programs' windows can be found, as the daemon says.
     finds_windows: bool,
-    fonts: crate::appearance::Fonts,
     /// In logical pixels.
     text_size: f32,
 }
 
 impl Desktop {
-    /// Asks several programs at once, before the first frame.
-    /// Besides what the daemon told.
-    pub(crate) fn find(greeting: &link::Greeting) -> Self {
-        std::thread::scope(|scope| {
-            let fonts = scope.spawn(crate::appearance::fonts);
-            let text_size = crate::appearance::desktop_text_size();
-            Self {
-                openers: greeting.openers.clone(),
-                claude_codes_sandbox: greeting.claude_codes_sandbox,
-                finds_windows: greeting.finds_windows,
-                fonts: joined(fonts),
-                text_size,
-            }
-        })
-    }
-
-    /// The browser demo's: nothing to open a folder in, the theme's own fonts (built into the
-    /// page), and text of the size most desktops have.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn in_the_browser() -> Self {
+    /// What the daemon told, and the text size of the desktop the window is on, in logical
+    /// pixels.
+    pub(crate) fn of(greeting: &link::Greeting, text_size: f32) -> Self {
         Self {
-            openers: Vec::new(),
-            fonts: crate::appearance::Fonts {
-                sans: None,
-                mono: None,
-            },
-            text_size: crate::appearance::DEFAULT_TEXT_SIZE,
+            openers: greeting.openers.clone(),
+            claude_codes_sandbox: greeting.claude_codes_sandbox,
+            finds_windows: greeting.finds_windows,
+            text_size,
         }
     }
-}
-
-/// What a scoped thread made; its panic, if it panicked, goes on here.
-fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
-    handle
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Why a control request of ours brought no answer to take.
