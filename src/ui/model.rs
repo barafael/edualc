@@ -9,6 +9,7 @@ use slint::ComponentHandle;
 
 use super::{Images, ToSlint, resync};
 use crate::generated::{self as slint_ui, AppWindow};
+use crate::present::Styled;
 use crate::present::model as present;
 
 impl ToSlint for present::BlockKind {
@@ -296,7 +297,12 @@ impl ToSlint for present::MdBlock {
     fn to_slint(&self, images: &Images) -> Self::Slint {
         slint_ui::MdBlock {
             kind: self.kind.to_slint(images),
-            body: self.body.to_slint(images),
+            body: match (self.kind, &self.body) {
+                (present::BlockKind::Text, Styled::Markdown(text)) => {
+                    Styled::Markdown(crate::markdown::spaced_for_slint(text)).to_slint(images)
+                }
+                _ => self.body.to_slint(images),
+            },
             cjk: self.cjk.to_slint(images),
             lang: self.lang.to_slint(images),
             level: self.level.to_slint(images),

@@ -56,11 +56,13 @@ impl Part {
     }
 }
 
+/// What goes between a text's paragraphs, and before a list: a blank line, as Markdown has it.
+const BETWEEN: &str = "\n\n";
 /// Slint draws a text's paragraphs with no space between them. A paragraph that opens with a
 /// hard break (`\` ending a line) opens with an empty line, which copies as a blank one too.
-const BEFORE_PARAGRAPH: &str = "\n\n\\\n";
-/// A list goes right under the text that leads into it.
-const BEFORE_LIST: &str = "\n\n";
+/// Only what draws with Slint does this (see [`spaced_for_slint`]): elsewhere it would be a
+/// stray line break.
+const BEFORE_PARAGRAPH_IN_SLINT: &str = "\n\n\\\n";
 
 /// Each run of paragraphs and lists is one block, so that a selection can span it.
 pub(crate) fn blocks(src: &str) -> Vec<Block> {
@@ -69,10 +71,12 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
     for (part, _) in split(src, false) {
         match part {
             // Checked with the break it may get: a line of `=` under it would make a heading.
-            Part::Paragraph(source) if slint_parses(&format!("{BEFORE_PARAGRAPH}{source}")) => {
-                join(&mut run, BEFORE_PARAGRAPH, source);
+            Part::Paragraph(source)
+                if accepted(&format!("{BEFORE_PARAGRAPH_IN_SLINT}{source}")) =>
+            {
+                join(&mut run, BETWEEN, source);
             }
-            Part::List(source) if slint_parses(&source) => join(&mut run, BEFORE_LIST, source),
+            Part::List(source) if accepted(&source) => join(&mut run, BETWEEN, source),
             // Text Slint refuses is shown plain, and on its own: in a run, all of it would be.
             part @ (Part::Paragraph(_) | Part::List(_) | Part::Shown(_)) => {
                 out.extend(run.take().map(Block::Text));
@@ -82,6 +86,34 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
     }
     out.extend(run.map(Block::Text));
     out
+}
+
+/// A text block's Markdown as Slint draws paragraphs: each after the first opening with a hard
+/// break, so that there is space between them. Everything else is as it was.
+pub(crate) fn spaced_for_slint(text: &str) -> String {
+    let mut spaced = String::with_capacity(text.len());
+    for (part, _) in split(text, false) {
+        let (separator, source) = match part {
+            Part::Paragraph(source) => (BEFORE_PARAGRAPH_IN_SLINT, source),
+            Part::List(source) => (BETWEEN, source),
+            // A text block holds only paragraphs and lists; anything else is left as written.
+            Part::Shown(block) => (BETWEEN, block_source(block)),
+        };
+        if !spaced.is_empty() {
+            spaced.push_str(separator);
+        }
+        spaced.push_str(&source);
+    }
+    spaced
+}
+
+/// What a block shown as it is says, as text.
+fn block_source(block: Block) -> String {
+    match block {
+        Block::Text(source) | Block::Quote(source) | Block::Heading(_, source) => source,
+        Block::Code { code, .. } => code,
+        Block::Table(_) | Block::Rule => String::new(),
+    }
 }
 
 fn join(run: &mut Option<String>, separator: &str, source: String) {
@@ -443,29 +475,49 @@ fn unquote(source: &str) -> String {
         .to_owned()
 }
 
-/// Inline Markdown as Slint styled text; as plain text if Slint's parser refuses it (an HTML
-/// tag it doesn't know, say a stray `<T>` outside backticks).
-pub(crate) fn styled(source: &str) -> slint::StyledText {
+/// Whether the window's inline Markdown takes `source` (after [`sanitize`]): paragraphs and
+/// lists with emphasis, strikethrough, links, code spans, `<u>` and `<font>`, and nothing else
+/// (no headings, quotes, code blocks, tables, rules, images, other HTML). As Slint's own parser
+/// takes it, which is pulldown-cmark's with strikethrough on (checked against it in `ui`): text
+/// it refuses is shown plain.
+pub(crate) fn accepted(source: &str) -> bool {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
     let source = sanitize(source);
-
-    slint::StyledText::from_markdown(&source)
-        .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
-}
-
-/// Whether [`styled`] shows the source as Markdown.
-fn slint_parses(source: &str) -> bool {
-    slint::StyledText::from_markdown(&sanitize(source)).is_ok()
-}
-
-/// Text shown as it is (code, tool output): tabs as spaces, as the text layout draws no tab
-/// stops.
-pub(crate) fn plain(text: &str) -> slint::StyledText {
-    slint::StyledText::from_plain_text(&sanitize(text).replace('\t', "    "))
+    Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).all(|event| match event {
+        Event::Start(
+            Tag::Paragraph
+            | Tag::Item
+            | Tag::List(_)
+            | Tag::Strong
+            | Tag::Emphasis
+            | Tag::Strikethrough
+            | Tag::Link { .. },
+        )
+        | Event::End(_)
+        | Event::Text(_)
+        | Event::Code(_)
+        | Event::SoftBreak
+        | Event::HardBreak => true,
+        Event::InlineHtml(html) => {
+            let html = html.trim();
+            html == "<u>"
+                || html == "</u>"
+                || html == "</font>"
+                || (html.starts_with("<font color=") && html.ends_with('>'))
+        }
+        Event::Start(_)
+        | Event::Html(_)
+        | Event::Rule
+        | Event::TaskListMarker(_)
+        | Event::FootnoteReference(_)
+        | Event::InlineMath(_)
+        | Event::DisplayMath(_) => false,
+    })
 }
 
 /// Slint reserves U+E541 as its placeholder for arguments, and a carriage return would end a
 /// line in the middle of one.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     text.chars()
         .filter(|&c| c != '\r')
         .map(|c| if c == '\u{e541}' { '\u{fffd}' } else { c })
@@ -495,6 +547,31 @@ mod tests {
         );
     }
 
+    /// A text's paragraphs are apart as Markdown has them, with no break Slint alone needs.
+    #[test]
+    fn paragraphs_are_apart_by_a_blank_line_alone() {
+        let blocks = blocks("one\n\ntwo\n\n- x\n\nthree");
+        assert_eq!(
+            blocks,
+            vec![Block::Text("one\n\ntwo\n\n- x\n\nthree".into())]
+        );
+        let Some(Block::Text(text)) = blocks.first() else {
+            panic!("a text block");
+        };
+        assert!(!text.contains("\\\n"), "no hard break in {text:?}");
+    }
+
+    /// Slint draws a paragraph after the first with a hard break, to put space between them.
+    #[test]
+    fn slint_is_given_the_hard_breaks_it_needs() {
+        assert_eq!(
+            spaced_for_slint("one\n\ntwo\n\n- x\n\nthree"),
+            "one\n\n\\\ntwo\n\n- x\n\n\\\nthree"
+        );
+        assert_eq!(spaced_for_slint("alone"), "alone");
+        assert_eq!(spaced_for_slint(""), "");
+    }
+
     #[test]
     fn unclosed_fence_while_streaming_is_code() {
         assert_eq!(
@@ -522,6 +599,13 @@ mod tests {
         );
     }
 
+    /// Inline Markdown as the Slint window draws it.
+    fn styled(source: &str) -> slint::StyledText {
+        let source = sanitize(source);
+        slint::StyledText::from_markdown(&source)
+            .unwrap_or_else(|_| slint::StyledText::from_plain_text(&source))
+    }
+
     /// The lines Slint draws a text in, as its paragraphs; copying joins them with `\n`.
     fn drawn_lines(source: &str) -> Vec<String> {
         let shown = format!("{:?}", styled(source));
@@ -533,8 +617,8 @@ mod tests {
             .collect()
     }
 
-    /// One text, so a selection spans it: an empty line before each paragraph after the
-    /// first, none before a list.
+    /// One text, so a selection spans it; as Slint draws it (`spaced_for_slint`), an empty line
+    /// before each paragraph after the first, none before a list.
     #[test]
     fn a_run_of_paragraphs_and_lists_is_one_text() {
         let src =
@@ -544,7 +628,7 @@ mod tests {
             panic!("a run, code, a paragraph: not {blocks:?}")
         };
         assert_eq!(
-            drawn_lines(run),
+            drawn_lines(&spaced_for_slint(run)),
             [
                 "First.",
                 "",
