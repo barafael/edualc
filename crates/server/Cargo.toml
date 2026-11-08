@@ -21,7 +21,7 @@ base64 = "0.23"
 # Inline Markdown as HTML, raw HTML in it escaped.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # The page's own: its address (the token), the clipboard, opening links, encoding images.
-web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition"] }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "HtmlDocument", "NodeList", "Event", "EventTarget", "MouseEvent"] }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # The daemon and the server: Linux only.
