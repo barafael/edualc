@@ -113,7 +113,7 @@ pub(crate) struct Pixels {
 
 impl Pixels {
     /// Whether there are as many bytes as pixels, four each.
-    fn whole(&self) -> bool {
+    pub(crate) fn is_whole(&self) -> bool {
         let pixels = u64::from(self.width_px) * u64::from(self.height_px);
         u64::try_from(self.rgba.len()).ok() == Some(pixels * 4)
     }

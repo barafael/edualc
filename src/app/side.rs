@@ -160,7 +160,7 @@ impl App {
         self.redraw.side = true;
     }
 
-    pub(super) fn copy_side(&self, index: usize) {
+    pub(super) fn copy_side(&mut self, index: usize) {
         if let Some(Exchange {
             answer: Answer::Answered(text),
             ..
@@ -172,7 +172,7 @@ impl App {
 
     /// Puts the side questions and their answers into the draft, to send on with the
     /// conversation.
-    pub(super) fn side_to_conversation(&self) {
+    pub(super) fn side_to_conversation(&mut self) {
         if !self.side.has_answers() {
             return;
         }

@@ -12,8 +12,7 @@ mod appearance;
 mod chat;
 mod cjk;
 mod claude;
-#[cfg_attr(target_arch = "wasm32", path = "web/colouring.rs")]
-mod colouring;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod daemon;
 mod decode;
@@ -23,12 +22,13 @@ mod external;
 mod files;
 mod folder;
 mod grouping;
-mod highlight;
+
 mod ipc;
 #[cfg_attr(target_arch = "wasm32", path = "web/link.rs")]
 mod link;
 mod markdown;
 mod plan;
+mod present;
 mod process;
 mod sessions;
 mod settings;

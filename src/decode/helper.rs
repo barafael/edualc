@@ -147,7 +147,7 @@ fn checked(answer: &[u8]) -> Result<Picture, Error> {
         && thumbnail.height_px <= THUMBNAIL_SIDE_PX
         && !picture.bytes.is_empty()
         && picture.bytes.len() <= MAX_SENT_BYTES;
-    if thumbnail.whole() && fits {
+    if thumbnail.is_whole() && fits {
         Ok(picture)
     } else {
         Err(Error::Malformed)
@@ -169,7 +169,7 @@ fn checked_shown(answer: &[u8]) -> Result<Pixels, Error> {
     };
     let fits = (1..=SHOWN_SIDE_PX).contains(&pixels.width_px)
         && (1..=SHOWN_SIDE_PX).contains(&pixels.height_px);
-    if pixels.whole() && fits {
+    if pixels.is_whole() && fits {
         Ok(pixels)
     } else {
         Err(Error::Malformed)
@@ -399,7 +399,7 @@ mod tests {
     fn an_image_to_show_fits_its_room_and_its_answer_is_checked() {
         let large = shown(&png(3000, 1000)).expect("decodes");
         assert_eq!((large.width_px, large.height_px), (SHOWN_SIDE_PX, 320));
-        assert!(large.whole());
+        assert!(large.is_whole());
         let small = shown(&png(40, 20)).expect("decodes");
         assert_eq!((small.width_px, small.height_px), (40, 20));
         assert_eq!(small.rgba.get(..4), Some([0, 0, 128, 255].as_slice()));

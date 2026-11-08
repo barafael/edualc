@@ -27,8 +27,15 @@ pub(crate) fn main() {
     let (events, received) = async_channel::unbounded();
     let (link, requests) = async_channel::bounded(QUEUE);
     ui::wire(&window, &events);
-    let mut app = App::new(
+    let frontend = ui::SlintFrontend::new(
         window.clone_strong(),
+        crate::appearance::Fonts {
+            sans: None,
+            mono: None,
+        },
+    );
+    let mut app = App::new(
+        Box::new(frontend),
         events.clone(),
         link,
         Desktop::in_the_browser(),
