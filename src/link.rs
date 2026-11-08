@@ -13,9 +13,14 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::app::Event;
 use crate::claude::Output;
+use std::collections::HashMap;
+
+use crate::desktop::Opener;
 use crate::ipc::{
-    self, Buses, Folder, FromDaemon, Generation, Hosted, PROTOCOL, Stream, ToDaemon, ws,
+    self, ActId, Buses, Folder, FromDaemon, Generation, Hosted, PROTOCOL, Stream, ToDaemon, ws,
 };
+use crate::sessions::{self, LiveSession};
+use crate::settings::Settings;
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
 /// taking messages loses the line rather than the window its memory.
@@ -60,18 +65,31 @@ pub(crate) fn send_input(link: &Link, key: Generation, line: &str) -> Result<(),
     send(link, ToDaemon::Input { key, line })
 }
 
-type Socket = WebSocketStream<tokio::net::UnixStream>;
+pub(crate) type Socket = WebSocketStream<tokio::net::UnixStream>;
 
 /// A line to the daemon, greeted, its thread not started yet.
 #[derive(Debug)]
 pub(crate) struct Connected {
-    runtime: tokio::runtime::Runtime,
-    socket: Socket,
+    pub(crate) runtime: tokio::runtime::Runtime,
+    pub(crate) socket: Socket,
     /// The D-Bus the window is to use.
     pub(crate) buses: Buses,
-    /// The sessions the daemon runs as the window connected: known before the window opens
-    /// one, so that one it runs is attached to rather than started a second time.
+    /// What the daemon tells as the window connects.
+    pub(crate) greeting: Greeting,
+}
+
+/// What the daemon tells a window as it connects.
+#[derive(Debug)]
+pub(crate) struct Greeting {
+    /// The sessions the daemon runs: known before the window opens one, so that one it runs
+    /// is attached to rather than started a second time.
     pub(crate) hosted: Vec<Hosted>,
+    /// The sessions running now (in terminals, say): one of them resumed is watched instead.
+    pub(crate) live: Vec<LiveSession>,
+    /// The settings, or why they can't be read.
+    pub(crate) settings: Result<Settings, String>,
+    /// What folders open in, besides the window.
+    pub(crate) openers: Vec<Opener>,
 }
 
 /// Connects to the daemon, starting it if none runs: before the window is confined, which the
@@ -90,19 +108,17 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         .enable_all()
         .build()
         .map_err(Error::Start)?;
-    let (socket, buses, hosted) = runtime.block_on(greet(stream))?;
+    let (socket, buses, greeting) = runtime.block_on(greet(stream))?;
     Ok(Connected {
         runtime,
         socket,
         buses,
-        hosted,
+        greeting,
     })
 }
 
 /// The handshake and hello, then the sessions the daemon runs, which come first.
-async fn greet(
-    stream: std::os::unix::net::UnixStream,
-) -> Result<(Socket, Buses, Vec<Hosted>), Error> {
+async fn greet(stream: std::os::unix::net::UnixStream) -> Result<(Socket, Buses, Greeting), Error> {
     stream.set_nonblocking(true).map_err(ipc::Error::Io)?;
     let stream = tokio::net::UnixStream::from_std(stream).map_err(ipc::Error::Io)?;
     let mut socket = ws::connect(stream).await?;
@@ -115,7 +131,14 @@ async fn greet(
         }
         Err(error) => return Err(error.into()),
     };
-    let FromDaemon::Hello { protocol, buses } = greeting else {
+    let FromDaemon::Hello {
+        protocol,
+        buses,
+        settings,
+        openers,
+        live,
+    } = greeting
+    else {
         return Err(Error::Version);
     };
     if protocol != PROTOCOL {
@@ -124,22 +147,26 @@ async fn greet(
     let FromDaemon::Hosted(hosted) = ws::recv::<_, FromDaemon>(&mut socket).await? else {
         return Err(Error::OutOfTurn);
     };
-    Ok((socket, buses, hosted))
+    let greeting = Greeting {
+        hosted,
+        live,
+        settings,
+        openers,
+    };
+    Ok((socket, buses, greeting))
 }
 
 /// Starts the thread that carries the line; what the daemon says comes to the app as `events`.
-pub(crate) fn run(connected: Connected, events: Sender<Event>) -> Result<Link, Error> {
-    let Connected {
-        runtime, socket, ..
-    } = connected;
+pub(crate) fn run(runtime: tokio::runtime::Runtime, socket: Socket, events: Sender<Event>) -> Link {
     let (link, queue) = async_channel::bounded(QUEUE);
     std::thread::spawn(move || runtime.block_on(pump(socket, &queue, &events)));
-    Ok(link)
+    link
 }
 
 /// Writes what is queued and reads what the daemon says, until the line is lost or the window
 /// closes.
 async fn pump(mut socket: Socket, queue: &Receiver<ToDaemon>, events: &Sender<Event>) {
+    let mut inbox = Inbox::default();
     loop {
         tokio::select! {
             message = queue.recv() => match message {
@@ -154,7 +181,7 @@ async fn pump(mut socket: Socket, queue: &Receiver<ToDaemon>, events: &Sender<Ev
             },
             message = ws::recv::<_, FromDaemon>(&mut socket) => match message {
                 Ok(message) => {
-                    if let Some(event) = event_of(message)
+                    if let Some(event) = inbox.take(message)
                         && events.send(event).await.is_err()
                     {
                         return;
@@ -208,47 +235,68 @@ fn wait_for_daemon(folder: &Folder) -> Result<std::os::unix::net::UnixStream, Er
     }
 }
 
-/// What the daemon says, as the app's event.
-pub(crate) fn event_of(message: FromDaemon) -> Option<Event> {
-    Some(match message {
-        FromDaemon::Started {
-            key,
-            pid,
-            enforcement,
-            turns,
-        } => claude(
-            key,
-            Output::Started {
+/// What the daemon says, made the app's events (sans-io): a transcript's lines are kept until
+/// the answer they belong to comes, and read then, off the app's thread.
+#[derive(Debug, Default)]
+pub(crate) struct Inbox {
+    lines: HashMap<ActId, Vec<String>>,
+}
+
+impl Inbox {
+    pub(crate) fn take(&mut self, message: FromDaemon) -> Option<Event> {
+        Some(match message {
+            FromDaemon::Started {
+                key,
                 pid,
                 enforcement,
                 turns,
+            } => claude(
+                key,
+                Output::Started {
+                    pid,
+                    enforcement,
+                    turns,
+                },
+            ),
+            FromDaemon::Failed { key, failure } => claude(key, Output::Failed(failure)),
+            FromDaemon::Output { key, stream, line } => claude(
+                key,
+                match stream {
+                    Stream::Out => Output::of_line(line),
+                    Stream::Err => Output::Log(line),
+                },
+            ),
+            FromDaemon::Ended { key, code } => claude(key, Output::Ended(code)),
+            FromDaemon::Diverged { key, left } => claude(key, Output::Diverged(left)),
+            FromDaemon::Done { request, result } => Event::Acted { request, result },
+            FromDaemon::Picked { request, folder } => Event::Picked { request, folder },
+            FromDaemon::Trusted {
+                request,
+                accepted,
+                runs,
+            } => Event::Trusted {
+                request,
+                accepted,
+                runs,
             },
-        ),
-        FromDaemon::Failed { key, failure } => claude(key, Output::Failed(failure)),
-        FromDaemon::Output { key, stream, line } => claude(
-            key,
-            match stream {
-                Stream::Out => Output::of_line(line),
-                Stream::Err => Output::Log(line),
-            },
-        ),
-        FromDaemon::Ended { key, code } => claude(key, Output::Ended(code)),
-        FromDaemon::Diverged { key, left } => claude(key, Output::Diverged(left)),
-        FromDaemon::Done { request, result } => Event::Acted { request, result },
-        FromDaemon::Picked { request, folder } => Event::Picked { request, folder },
-        FromDaemon::Trusted {
-            request,
-            accepted,
-            runs,
-        } => Event::Trusted {
-            request,
-            accepted,
-            runs,
-        },
-        FromDaemon::Hosted(sessions) => Event::Hosted(sessions),
-        FromDaemon::Pasted { request, pasted } => Event::Pasted { request, pasted },
-        FromDaemon::Hello { .. } => return None,
-    })
+            FromDaemon::Hosted(sessions) => Event::Hosted(sessions),
+            FromDaemon::Pasted { request, pasted } => Event::Pasted { request, pasted },
+            FromDaemon::Lines { request, lines } => {
+                self.lines.entry(request).or_default().extend(lines);
+                return None;
+            }
+            FromDaemon::Answer { request, answer } => {
+                let lines = self.lines.remove(&request).unwrap_or_default();
+                Event::Answered {
+                    request,
+                    answer,
+                    lines: sessions::parse_lines(&lines),
+                }
+            }
+            FromDaemon::Changed(watched) => Event::Changed(watched),
+            FromDaemon::Hello { .. } => return None,
+        })
+    }
 }
 
 fn claude(generation: Generation, output: Output) -> Event {

@@ -178,7 +178,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
 
     // In this order: the daemon is reached (and started) and the desktop asked while the window
     // is free; then it is confined, and all it makes after keeps that.
-    let mut connected = match link::connect() {
+    let connected = match link::connect() {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("edualc: {error}");
@@ -192,7 +192,13 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         eprintln!("edualc: couldn't start again with the D-Bus proxies: {error}");
         return Ok(std::process::ExitCode::FAILURE);
     }
-    let desktop = app::Desktop::find();
+    let link::Connected {
+        runtime,
+        socket,
+        greeting,
+        ..
+    } = connected;
+    let desktop = app::Desktop::find(greeting.openers);
     match confine::confine() {
         Ok(confinement) => tracing::info!(?confinement, "the window is confined"),
         Err(error) => {
@@ -201,20 +207,27 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     }
     let (events, received) = async_channel::unbounded();
-    let hosted = std::mem::take(&mut connected.hosted);
-    let link = match link::run(connected, events.clone()) {
-        Ok(link) => link,
-        Err(error) => {
-            eprintln!("edualc: {error}");
-            return Ok(std::process::ExitCode::FAILURE);
-        }
-    };
+    let link = link::run(runtime, socket, events.clone());
     let window = generated::AppWindow::new()?;
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
-    let mut app = app::App::new(window.clone_strong(), events, link, desktop, cwd, model);
-    app.begin(hosted, resume, mode, prompt.as_deref());
+    let mut app = app::App::new(
+        window.clone_strong(),
+        events,
+        link,
+        desktop,
+        greeting.settings,
+        cwd,
+        model,
+    );
+    app.begin(
+        greeting.hosted,
+        greeting.live,
+        resume,
+        mode,
+        prompt.as_deref(),
+    );
     slint::spawn_local(app.run(received)).expect("the event loop is set up");
     window.show()?;
     slint::run_event_loop_until_quit()?;

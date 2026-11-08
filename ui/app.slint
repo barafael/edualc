@@ -545,6 +545,11 @@ component Sidebar inherits Rectangle {
                 }
             }
         }
+        // The folder typed was opened: the list closes.
+        property <int> project-opened: Sessions.opened-serial;
+        changed project-opened => {
+            projects.close();
+        }
         projects := PopupWindow {
             x: project-button.x;
             y: project-button.y + project-button.height + Theme.space-xs;
@@ -552,14 +557,11 @@ component Sidebar inherits Rectangle {
             height: 460px;
             close-policy: close-on-click-outside;
             folders := Rectangle {
-                // Why the folder last asked for didn't open (made anew, so empty, each time the
-                // list opens): the list stays open, the path still in its field to correct.
-                property <string> problem;
+                // Why the folder last asked for didn't open (emptied each time the list opens):
+                // the list stays open, the path still in its field to correct.
+                property <string> problem: Sessions.problem;
                 function open(path: string) {
-                    self.problem = Sessions.open-project(path);
-                    if self.problem == "" {
-                        projects.close();
-                    }
+                    Sessions.open-project(path);
                 }
                 background: Theme.surface;
                 border-radius: Theme.radius-l;

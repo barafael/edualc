@@ -1099,6 +1099,18 @@ impl View {
             .set_chosen_width(width_px.map_or(0.0, f32::from));
     }
 
+    /// Why the folder typed in the list of folders didn't open; empty for nothing to say.
+    pub(crate) fn set_project_problem(&self, problem: &str) {
+        self.window.global::<Sessions>().set_problem(problem.into());
+    }
+
+    /// The folder typed in the list of folders opened: the list closes.
+    pub(crate) fn projects_opened(&self) {
+        let sessions = self.window.global::<Sessions>();
+        sessions.set_problem(slint::SharedString::new());
+        sessions.set_opened_serial(sessions.get_opened_serial().wrapping_add(1));
+    }
+
     pub(crate) fn render_projects(&self, projects: &[ProjectInfo]) {
         let items: Vec<ProjectItem> = projects
             .iter()

@@ -112,7 +112,7 @@ pub(crate) fn id_number(id: &SessionId, at: usize) -> usize {
         .unwrap_or(0)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub(crate) struct SessionInfo {
     pub(crate) id: SessionId,
     pub(crate) title: String,
@@ -122,7 +122,7 @@ pub(crate) struct SessionInfo {
 }
 
 /// A git worktree a session works in (`claude --worktree`, the EnterWorktree tool).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub(crate) struct Worktree {
     pub(crate) path: PathBuf,
     pub(crate) name: String,
@@ -173,7 +173,7 @@ pub(crate) fn folder_name(path: &Path) -> String {
     )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub(crate) struct ProjectInfo {
     pub(crate) path: PathBuf,
     pub(crate) modified: SystemTime,
@@ -181,7 +181,7 @@ pub(crate) struct ProjectInfo {
 
 /// A session some Claude Code process is running right now (a terminal, an editor, the
 /// background), as that process reports itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub(crate) struct LiveSession {
     pub(crate) pid: u32,
     /// When its process started, to tell it from a later one with the same pid.
@@ -210,7 +210,7 @@ pub(crate) enum LiveKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LiveStatus {
     Idle,
@@ -681,9 +681,10 @@ pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<Transc
     Ok((lines, u64::try_from(text.len()).unwrap_or(u64::MAX)))
 }
 
-/// The whole lines of a transcript from `offset` on, and the offset after the last.
+/// The whole lines of a transcript from `offset` on, as they are written, and the offset after
+/// the last.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
+pub(crate) fn read_lines_from(path: &Path, offset: u64) -> std::io::Result<(Vec<String>, u64)> {
     if !std::fs::metadata(path)?.is_file() {
         return Err(std::io::Error::other("not a regular file"));
     }
@@ -697,8 +698,22 @@ pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<Transc
         .rposition(|&byte| byte == b'\n')
         .map_or(0, |at| at + 1);
     let text = String::from_utf8_lossy(bytes.get(..whole).unwrap_or_default());
-    let lines = text.lines().filter_map(parse_line).collect();
+    let lines = text.lines().map(str::to_owned).collect();
     Ok((lines, offset + whole as u64))
+}
+
+/// A transcript's lines, read: those that don't parse are passed over.
+pub(crate) fn parse_lines(lines: &[String]) -> Vec<TranscriptLine> {
+    lines.iter().filter_map(|line| parse_line(line)).collect()
+}
+
+/// Where Claude Code keeps the transcript of subagent `task` of the session whose transcript is
+/// `session`.
+pub(crate) fn transcript_of(session: &Path, task: &crate::external::wire::TaskId) -> PathBuf {
+    session
+        .with_extension("")
+        .join("subagents")
+        .join(format!("agent-{task}.jsonl"))
 }
 
 fn parse_line(line: &str) -> Option<TranscriptLine> {
@@ -1086,7 +1101,7 @@ mod tests {
         let next = json!({ "type": "summary", "summary": "b" }).to_string();
         let unfinished: String = next.chars().take(next.len() / 2).collect();
         std::fs::write(&path, format!("{whole}{unfinished}")).expect("a transcript");
-        let (lines, offset) = read_from(&path, 0).expect("readable");
+        let (lines, offset) = read_lines_from(&path, 0).expect("readable");
         assert_eq!(lines.len(), 1);
         assert_eq!(offset, whole.len() as u64);
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");

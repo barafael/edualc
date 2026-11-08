@@ -40,7 +40,7 @@ use crate::ipc::{
 };
 use crate::mirror::{self, Mirror};
 use crate::relay::{self, FromProcess, Relay, Work};
-use crate::{home, sessions, spawn, trust};
+use crate::{files, home, sessions, settings, spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -187,9 +187,21 @@ async fn window(
     });
     let mut socket = match greeted.await {
         Ok(Ok((mut socket, ToDaemon::Hello { protocol }))) => {
+            let (settings, openers, live) = tokio::task::spawn_blocking(|| {
+                (
+                    settings::load().map_err(|error| error.to_string()),
+                    desktop::openers(),
+                    sessions::live(),
+                )
+            })
+            .await
+            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
                 buses,
+                settings,
+                openers,
+                live,
             };
             if let Err(error) = ws::send(&mut socket, &answer).await {
                 tracing::warn!(%error, "a window left as it came");
@@ -249,12 +261,23 @@ enum Effect {
     /// For the hub.
     Hub(Ask),
     /// For the desktop, answered to the window.
-    Act { request: ActId, act: Act },
+    Act {
+        request: ActId,
+        act: Act,
+    },
     /// What was asked can't be done; the window is told.
     Refuse {
         key: Generation,
         failure: StartFailure,
     },
+    /// For the files, answered to the window.
+    Read {
+        request: ActId,
+        read: ipc::Read,
+    },
+    Save(crate::settings::Settings),
+    /// For the window's watches.
+    Watch(files::Order),
 }
 
 /// What a window asks of the hub, by its keys.
@@ -310,9 +333,22 @@ impl Connection {
         {
             return self;
         }
+        let (watching, watch_orders) = mpsc::channel(QUEUE);
+        tokio::spawn(files::watch(watch_orders, outbox.clone()));
         while let Some(request) = requests.recv().await {
             for effect in self.handle(request) {
                 match effect {
+                    Effect::Read { request, read } => {
+                        tokio::spawn(files::answer(request, read, outbox.clone()));
+                    }
+                    Effect::Save(settings) => {
+                        tokio::spawn(files::save(settings));
+                    }
+                    Effect::Watch(order) => {
+                        if watching.send(order).await.is_err() {
+                            tracing::debug!("a window's watches ended");
+                        }
+                    }
                     Effect::Hub(ask) => {
                         let outbox = outbox.clone();
                         if hub
@@ -386,6 +422,12 @@ impl Connection {
             | ToDaemon::End { .. }
             | ToDaemon::Detach { .. } => Vec::new(),
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
+            ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
+            ToDaemon::SaveSettings(settings) => vec![Effect::Save(settings)],
+            ToDaemon::Watch { watched, target } => {
+                vec![Effect::Watch(files::Order::Watch(watched, target))]
+            }
+            ToDaemon::Unwatch(watched) => vec![Effect::Watch(files::Order::Unwatch(watched))],
         }
     }
 }

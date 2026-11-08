@@ -7,7 +7,6 @@ use slint::ComponentHandle;
 use crate::app::{Action, Event, PermissionMode};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
-use crate::folder::Folder;
 use crate::generated::{
     AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, Preferences, Prompt,
     SandboxAccess, SendKey, Session, Sessions, Side, Transcript, Usage,
@@ -215,18 +214,9 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             actions.send(Action::SidebarWidth(kept));
         }
     });
-    // Checked here, while the list is open: what is wrong is said there, with the path still
-    // in its field to correct.
-    sessions.on_open_project({
-        let actions = actions.clone();
-        move |text| match Folder::typed(&text, dirs::home_dir().as_deref()) {
-            Ok(folder) => {
-                actions.send(Action::OpenProject(folder));
-                slint::SharedString::new()
-            }
-            Err(problem) => problem.to_string().into(),
-        }
-    });
+    // Checked by the daemon, while the list stays open: what is wrong is said there, with the
+    // path still in its field to correct (`View::set_project_problem`).
+    sessions.on_open_project(actions.on_text(Action::OpenProject));
     sessions.on_browse_project(actions.on(|| Action::BrowseProject));
     sessions.on_refresh_projects(actions.on(|| Action::ListProjects));
     sessions.on_filter_edited(actions.on_text(Action::FilterSessions));

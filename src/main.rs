@@ -19,6 +19,8 @@ mod daemon;
 mod decode;
 mod desktop;
 mod external;
+#[cfg(not(target_arch = "wasm32"))]
+mod files;
 mod folder;
 mod grouping;
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,8 +45,6 @@ mod spawn;
 mod start;
 mod tools;
 mod trust;
-#[cfg_attr(target_arch = "wasm32", path = "web/watcher.rs")]
-mod watcher;
 #[cfg(target_arch = "wasm32")]
 mod web;
 

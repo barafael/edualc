@@ -4,7 +4,7 @@
 //! background command: the end of what it printed, asked of Claude Code every little while as
 //! it runs and once after.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -14,9 +14,8 @@ use crate::chat::strip_ansi;
 use crate::external::wire::{
     ContentBlock, ControlRequest, TaskId, TaskKind, TaskOutput, TranscriptLine, UserContent,
 };
-use crate::sessions;
+use crate::ipc::{Answer, Place, Read, Target, Watched};
 use crate::tools::{self, Depth};
-use crate::watcher::Watched;
 
 use super::{App, Event, Refresh, Request, Sandboxing};
 
@@ -40,10 +39,10 @@ impl App {
         let agent = running.task.subagent_type.clone();
         let view = match Followed::of(kind) {
             Some(Followed::Conversation) => {
-                let Some(path) = self.subagent_transcript(&task) else {
+                let Some(place) = self.subagent_transcript(&task) else {
                     return;
                 };
-                PeekView::Conversation(Conversation::new(agent, path))
+                PeekView::Conversation(Conversation::new(agent, place))
             }
             Some(Followed::Output) => PeekView::Output(CommandOutput::default()),
             None => return,
@@ -56,10 +55,11 @@ impl App {
             view,
         });
         self.redraw.peek = true;
+        // Its transcript watched, or until it is written, the folder it will be in.
         let following = self
             .conversation()
-            .map(|conversation| conversation.path.clone())
-            .and_then(|path| self.follow_peek(&path));
+            .map(|conversation| conversation.place.clone())
+            .and_then(|place| self.watch(Target::Transcript(place)));
         if let Some(conversation) = self.conversation() {
             conversation.following = following;
             self.read_peek();
@@ -72,18 +72,18 @@ impl App {
     /// Where subagent `task` of the session shown keeps its transcript: beside the session's in
     /// the home its process writes in, as the user's own follows a sandboxed session's
     /// transcript but not its subagents'.
-    fn subagent_transcript(&self, task: &TaskId) -> Option<PathBuf> {
-        let id = self.status.session_id.as_ref()?;
-        let home = match self.status.sandboxing {
-            Sandboxing::Landlock(_) => sessions::ClaudeHome::Sandboxed,
-            Sandboxing::Pending | Sandboxing::Off | Sandboxing::ClaudeCodes => {
-                sessions::ClaudeHome::Users
-            }
+    fn subagent_transcript(&self, task: &TaskId) -> Option<Place> {
+        let id = self.status.session_id.clone()?;
+        let sandboxed = match self.status.sandboxing {
+            Sandboxing::Landlock(_) => true,
+            Sandboxing::Pending | Sandboxing::Off | Sandboxing::ClaudeCodes => false,
         };
-        Some(transcript_of(
-            &sessions::written_transcript(home, &self.cwd, id),
-            task,
-        ))
+        Some(Place::Subagent {
+            sandboxed,
+            cwd: self.cwd.clone(),
+            id,
+            task: task.clone(),
+        })
     }
 
     /// The subagent's conversation peeked into, if one is.
@@ -168,79 +168,42 @@ impl App {
         self.redraw.peek |= changed;
     }
 
-    /// Watches the subagent's transcript, or until it is written, the nearest folder that will
-    /// hold it.
-    fn follow_peek(&self, path: &Path) -> Option<Following> {
-        let watcher = self.watcher.as_ref()?;
-        let following = if path.is_file() {
-            watcher.file(path).map(Following::File)
-        } else {
-            let folder = path.ancestors().skip(1).take(2).find(|dir| dir.is_dir())?;
-            watcher.folder(folder).map(Following::Folder)
-        };
-        following
-            .inspect_err(|error| tracing::debug!(%error, "couldn't follow a subagent"))
-            .ok()
-    }
-
     /// Whether `watched` is the peek's watch.
     pub(super) fn peeks_at(&self, watched: Watched) -> bool {
         match self.peek.as_ref().map(|peek| &peek.view) {
-            Some(PeekView::Conversation(conversation)) => conversation
-                .following
-                .is_some_and(|following| following.watched() == watched),
+            Some(PeekView::Conversation(conversation)) => conversation.following == Some(watched),
             Some(PeekView::Output(_)) | None => false,
         }
     }
 
-    /// The subagent's transcript, or its folder, changed.
-    pub(super) fn peek_changed(&mut self) {
-        let Some(conversation) = self.conversation() else {
-            return;
-        };
-        // Watching a folder until the transcript is there: from now on the transcript.
-        if let Some(Following::Folder(watched)) = conversation.following
-            && conversation.path.is_file()
-        {
-            let path = conversation.path.clone();
-            if let Some(watcher) = &self.watcher {
-                watcher.forget(watched);
-            }
-            let following = self.follow_peek(&path);
-            if let Some(conversation) = self.conversation() {
-                conversation.following = following;
-            }
-        }
-        self.read_peek();
-    }
-
     /// Reads what the subagent's transcript says after what is shown.
-    fn read_peek(&mut self) {
+    pub(super) fn read_peek(&mut self) {
         let Some(peek) = self.peek.as_mut() else {
             return;
         };
         let PeekView::Conversation(conversation) = &mut peek.view else {
             return;
         };
-        let grown = std::fs::metadata(&conversation.path)
-            .is_ok_and(|metadata| metadata.len() > conversation.offset);
-        if grown && conversation.reading.wanted() {
-            let (task, path, from) = (
+        if conversation.reading.wanted() {
+            let (task, place, from) = (
                 peek.task.clone(),
-                conversation.path.clone(),
+                conversation.place.clone(),
                 conversation.offset,
             );
-            self.in_background(
-                move || sessions::read_from(&path, from),
-                move |result| Event::PeekGrew { task, result },
-            );
+            self.read(Read::Transcript { place, from }, move |answer, lines| {
+                let Answer::Transcript { read, .. } = answer else {
+                    return None;
+                };
+                let result = read.map(|offset| (lines, offset));
+                Some(Event::PeekGrew { task, result })
+            });
         }
     }
 
     pub(super) fn peek_grew(
         &mut self,
         task: &TaskId,
-        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+        result: Result<(Vec<TranscriptLine>, u64), String>,
     ) {
         let cwd = self.cwd.clone();
         if self.peek.as_ref().is_none_or(|peek| &peek.task != task) {
@@ -268,27 +231,11 @@ impl App {
         self.polling.stop();
         if let Some(peek) = self.peek.take() {
             if let PeekView::Conversation(conversation) = peek.view
-                && let (Some(watcher), Some(following)) = (&self.watcher, conversation.following)
+                && let Some(following) = conversation.following
             {
-                watcher.forget(following.watched());
+                self.unwatch(following);
             }
             self.redraw.peek = true;
-        }
-    }
-}
-
-/// What is watched to follow a subagent's transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Following {
-    /// The folder it will be written in, until it is there.
-    Folder(Watched),
-    File(Watched),
-}
-
-impl Following {
-    fn watched(self) -> Watched {
-        match self {
-            Self::Folder(watched) | Self::File(watched) => watched,
         }
     }
 }
@@ -345,10 +292,11 @@ pub(crate) struct Conversation {
     /// Its kind ("Explore"), kept for after it ended.
     pub(crate) agent: Option<String>,
     /// Its transcript; it may not be written yet.
-    path: PathBuf,
+    place: Place,
     offset: u64,
     reading: Refresh,
-    following: Option<Following>,
+    /// The watch on its transcript.
+    following: Option<Watched>,
     pub(crate) steps: Vec<Step>,
 }
 
@@ -454,10 +402,10 @@ pub(crate) enum StepKind {
 }
 
 impl Conversation {
-    fn new(agent: Option<String>, path: PathBuf) -> Self {
+    fn new(agent: Option<String>, place: Place) -> Self {
         Self {
             agent,
-            path,
+            place,
             offset: 0,
             reading: Refresh::default(),
             following: None,
@@ -472,15 +420,6 @@ impl Conversation {
         let over = self.steps.len().saturating_sub(MAX_STEPS);
         self.steps.drain(..over);
     }
-}
-
-/// Where Claude Code keeps the transcript of subagent `task` of the session whose transcript is
-/// `session`.
-pub(crate) fn transcript_of(session: &Path, task: &TaskId) -> PathBuf {
-    session
-        .with_extension("")
-        .join("subagents")
-        .join(format!("agent-{task}.jsonl"))
 }
 
 /// The steps a line of a subagent's transcript tells.
@@ -535,7 +474,10 @@ fn steps(line: &TranscriptLine, cwd: &Path) -> Vec<Step> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::sessions;
     use serde_json::json;
 
     fn line(value: serde_json::Value) -> TranscriptLine {
@@ -565,7 +507,7 @@ mod tests {
             line(json!({ "type": "user", "isMeta": true,
                 "message": { "role": "user", "content": "<system-reminder>x</system-reminder>" } })),
         ];
-        let mut conversation = Conversation::new(None, PathBuf::new());
+        let mut conversation = Conversation::new(None, Place::Path(PathBuf::new()));
         conversation.take(&lines, cwd);
         let [asked, said, called] = conversation.steps.as_slice() else {
             panic!("three steps: {:?}", conversation.steps);
@@ -592,7 +534,7 @@ mod tests {
                 ] } }))
         };
         let lines: Vec<TranscriptLine> = (0..MAX_STEPS + 5).map(|n| said(n.to_string())).collect();
-        let mut conversation = Conversation::new(None, PathBuf::new());
+        let mut conversation = Conversation::new(None, Place::Path(PathBuf::new()));
         conversation.take(&lines, Path::new("/"));
         assert_eq!(conversation.steps.len(), MAX_STEPS);
         assert_eq!(
@@ -671,7 +613,7 @@ mod tests {
     fn a_subagents_transcript_is_beside_its_sessions() {
         let session = Path::new("/home/u/.claude/projects/-p/0b8f.jsonl");
         assert_eq!(
-            transcript_of(session, &TaskId::from("a50b8b2d1bc3507ae".to_owned())),
+            sessions::transcript_of(session, &TaskId::from("a50b8b2d1bc3507ae".to_owned())),
             Path::new("/home/u/.claude/projects/-p/0b8f/subagents/agent-a50b8b2d1bc3507ae.jsonl")
         );
     }

@@ -46,6 +46,11 @@ impl Folder {
         }
     }
 
+    /// A folder the daemon found to be one, and made whole (`ipc::Read::Folder`).
+    pub(crate) fn checked(path: PathBuf) -> Self {
+        Self(path)
+    }
+
     pub(crate) fn into_path(self) -> PathBuf {
         self.0
     }

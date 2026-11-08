@@ -69,7 +69,7 @@ clap = { version = "4.6", default-features = false, features = ["std", "derive",
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
 # socket; already built for winit.
-rustix = { version = "1", features = ["fs", "net", "process"] }
+rustix = { version = "1", features = ["fs", "net", "process", "pipe", "event"] }
 # The window refusing itself every socket but Unix ones (no network at all), and io_uring.
 seccompiler = "0.5"
 # The system calls and socket families that filter names; already built for most dependencies.

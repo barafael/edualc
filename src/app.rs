@@ -22,8 +22,8 @@ use crate::external::wire::{
 use crate::folder::Folder;
 use crate::generated::AppWindow;
 use crate::ipc::{
-    Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Runs,
-    SandboxAccess, ToDaemon,
+    self, Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Read, Runs,
+    SandboxAccess, Target, ToDaemon, Watched,
 };
 use crate::link::{self, Link};
 use crate::plan;
@@ -35,7 +35,6 @@ use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
 use crate::trust;
 use crate::ui::View;
-use crate::watcher::{Watched, Watcher};
 
 #[cfg_attr(target_arch = "wasm32", path = "web/images.rs")]
 mod images;
@@ -116,22 +115,41 @@ pub(crate) enum Event {
         sessions: Vec<SessionInfo>,
     },
     ProjectsListed(Vec<ProjectInfo>),
-    /// A saved session read from its start, as a conversation (built off the UI thread); where
-    /// its transcript was found, and how far into it the conversation reaches.
+    /// A saved session read from its start, as a conversation; where its transcript was
+    /// found, and how far into it the conversation reaches.
     SessionLoaded {
         id: SessionId,
         path: PathBuf,
-        result: std::io::Result<(Chat, u64)>,
+        result: Result<(Chat, u64), String>,
     },
     /// What a watched session's transcript says after what is shown.
     TranscriptGrew {
         id: SessionId,
-        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+        result: Result<(Vec<TranscriptLine>, u64), String>,
     },
     /// What the transcript of the subagent peeked into says after what is shown.
     PeekGrew {
         task: wire::TaskId,
-        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+        result: Result<(Vec<TranscriptLine>, u64), String>,
+    },
+    /// What the daemon read, as asked (`App::read`), with a transcript's lines, read.
+    Answered {
+        request: ActId,
+        answer: ipc::Answer,
+        lines: Vec<TranscriptLine>,
+    },
+    /// `cwd` as a linked git worktree, if it is one; `replace` says the process said it works
+    /// there, which goes before what was known.
+    LinkedWorktreeRead {
+        cwd: PathBuf,
+        worktree: Option<Worktree>,
+        replace: bool,
+    },
+    /// The folder to open, made whole by the daemon, or why it isn't one; `typed` in the list
+    /// of folders, which says what is wrong there.
+    FolderRead {
+        typed: bool,
+        result: Result<PathBuf, String>,
     },
     LiveListed(Vec<LiveSession>),
     /// The daemon did what the desktop was asked, or says why not.
@@ -315,7 +333,8 @@ pub(crate) enum Action {
     Interrupt,
     NewSession,
     OpenSession(SessionId),
-    OpenProject(Folder),
+    /// A folder typed into the list of folders, to open.
+    OpenProject(String),
     BrowseProject,
     ListProjects,
     ChooseModel(usize),
@@ -731,6 +750,9 @@ const NOTIFY_AGAIN: Duration = Duration::from_secs(60);
 const LISTEN: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_secs(30);
 
+/// What is done with an answer the daemon read (`App::read`).
+type Then = Box<dyn FnOnce(ipc::Answer, Vec<TranscriptLine>) -> Option<Event>>;
+
 pub(crate) struct App {
     view: View,
     events: Sender<Event>,
@@ -762,7 +784,10 @@ pub(crate) struct App {
     watch: Option<Watch>,
     /// The subagent whose conversation the side panel follows.
     peek: Option<Peek>,
-    watcher: Option<Watcher>,
+    /// What is done with the daemon's answers to what was read, by request.
+    answers: HashMap<ActId, Then>,
+    /// Why the settings couldn't be read, to say once the window is up.
+    settings_problem: Option<String>,
     /// The watch on the running sessions' records.
     records: Option<Watched>,
     side: SideChat,
@@ -811,6 +836,7 @@ impl App {
         events: Sender<Event>,
         link: Link,
         desktop_found: Desktop,
+        settings: Result<Settings, String>,
         cwd: PathBuf,
         model: Option<String>,
     ) -> Self {
@@ -820,10 +846,13 @@ impl App {
             text_size: desktop_text_size,
         } = desktop_found;
         let mut view = View::new(window, &openers, fonts);
-        let settings = settings::load().unwrap_or_else(|error| {
-            tracing::warn!(%error, "starting with the default settings");
-            Settings::default()
-        });
+        let (settings, settings_problem) = match settings {
+            Ok(settings) => (settings, None),
+            Err(problem) => {
+                tracing::warn!(%problem, "starting with the default settings");
+                (Settings::default(), Some(problem))
+            }
+        };
         view.set_text_size(desktop_text_size * settings.scale());
         view.set_composer_height(settings.composer_height_px);
         view.set_sidebar_width(settings.sidebar_width_px);
@@ -862,7 +891,8 @@ impl App {
             notified: HashMap::new(),
             watch: None,
             peek: None,
-            watcher: None,
+            answers: HashMap::new(),
+            settings_problem,
             records: None,
             side: SideChat::default(),
             openers,
@@ -893,6 +923,7 @@ impl App {
     pub(crate) fn begin(
         &mut self,
         hosted: Vec<Hosted>,
+        live: Vec<LiveSession>,
         resume: Option<SessionId>,
         mode: Option<PermissionMode>,
         prompt: Option<&str>,
@@ -902,14 +933,14 @@ impl App {
         // elsewhere watched, neither resumed by a second process writing the same transcript.
         self.hosted = hosted;
         if resume.is_some() {
-            self.live = sessions::live();
+            self.live = live;
         }
         match resume {
             Some(id) => self.open_session(id),
             None => self.new_session(),
         }
         // Said in the window, not only the log: what is changed now isn't kept.
-        if let Err(error) = settings::load() {
+        if let Some(error) = self.settings_problem.take() {
             self.chat.error(format!(
                 "{error}\nThe window runs with the default settings, and keeps no change until the \
                  file is put right."
@@ -921,16 +952,7 @@ impl App {
         if let Some(prompt) = prompt {
             self.send(prompt);
         }
-        match Watcher::start(self.events.clone()) {
-            Ok(watcher) => {
-                self.records = watcher
-                    .folder(&sessions::config_dir().join("sessions"))
-                    .inspect_err(|error| tracing::warn!(%error, "running sessions go unnoticed"))
-                    .ok();
-                self.watcher = Some(watcher);
-            }
-            Err(error) => tracing::warn!(%error, "changes go unnoticed until the next tick"),
-        }
+        self.records = self.watch(Target::Records);
         let events = self.events.clone();
         self.tick.start(slint::TimerMode::Repeated, TICK, move || {
             if events.try_send(Event::Tick).is_err() {
@@ -972,12 +994,41 @@ impl App {
             Event::LiveListed(live) => self.live_listed(live),
             Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
             Event::Acted { request, result } => self.acted(request, result),
+            Event::Answered {
+                request,
+                answer,
+                lines,
+            } => {
+                if let Some(then) = self.answers.remove(&request)
+                    && let Some(event) = then(answer, lines)
+                {
+                    return self.handle(event);
+                }
+            }
+            Event::LinkedWorktreeRead {
+                cwd,
+                worktree,
+                replace,
+            } => {
+                if worktree.is_some()
+                    && (replace || (self.status.worktree.is_none() && self.cwd == cwd))
+                {
+                    self.status.worktree = worktree;
+                }
+            }
+            Event::FolderRead { typed, result } => match result {
+                Ok(path) => {
+                    if typed {
+                        self.view.projects_opened();
+                    }
+                    self.open_project(Folder::checked(path));
+                }
+                Err(problem) if typed => self.view.set_project_problem(&problem),
+                Err(problem) => self.chat.error(problem),
+            },
             Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
                 (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
-                    match Folder::at(folder) {
-                        Ok(folder) => self.open_project(folder),
-                        Err(problem) => self.chat.error(problem.to_string()),
-                    }
+                    self.read_folder(Read::Folder(folder), false);
                 }
                 (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
                     let folders = self.settings.sandbox_folders(access);
@@ -1038,7 +1089,7 @@ impl App {
             Action::Interrupt => self.interrupt(),
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
-            Action::OpenProject(folder) => self.open_project(folder),
+            Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed), true),
             Action::BrowseProject => self.pick_folder(FolderUse::Project),
             // The relay is told as the sandboxed process starts (`SandboxWish`).
             Action::ToggleMessagesUnasked => {
@@ -1054,7 +1105,15 @@ impl App {
                     .retain(|kept| kept.to_string_lossy() != folder);
                 self.sandbox_folders_changed();
             }
-            Action::ListProjects => self.in_background(sessions::projects, Event::ProjectsListed),
+            Action::ListProjects => {
+                self.view.set_project_problem("");
+                self.read(Read::Projects, |answer, _| {
+                    let ipc::Answer::Projects(projects) = answer else {
+                        return None;
+                    };
+                    Some(Event::ProjectsListed(projects))
+                });
+            }
             Action::ChooseModel(index) => self.choose_model(index),
             Action::ChooseMode(index) => self.choose_mode(index),
             Action::DraftEdited(draft) => self.draft_edited(&draft),
@@ -1136,44 +1195,32 @@ impl App {
                 self.settings.zoom(zoom);
                 self.view
                     .set_text_size(self.desktop_text_size * self.settings.scale());
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the zoom");
-                }
+                self.save_settings();
             }
             Action::SwitchLook => {
                 self.settings.look = self.settings.look.other();
                 self.view.set_look(self.settings.look);
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the look");
-                }
+                self.save_settings();
             }
             Action::SendWith(key) => {
                 self.settings.send_with = key;
                 self.view.set_send_key(key);
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the key that sends");
-                }
+                self.save_settings();
             }
             Action::HanLanguage(language) => {
                 self.settings.han_text = Some(language);
                 self.view.set_han_language(language);
                 // Messages already drawn are drawn again in it.
                 self.chat.touch_all();
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the language of Han text");
-                }
+                self.save_settings();
             }
             Action::ComposerHeight(height_px) => {
                 self.settings.composer_height_px = height_px;
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the composer's height");
-                }
+                self.save_settings();
             }
             Action::SidebarWidth(width_px) => {
                 self.settings.sidebar_width_px = width_px;
-                if let Err(error) = settings::save(&self.settings) {
-                    tracing::warn!(%error, "couldn't keep the sidebar's width");
-                }
+                self.save_settings();
             }
             Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
             Action::RemoveImage(index) => {
@@ -1320,28 +1367,69 @@ impl App {
         })
     }
 
-    /// Runs `work` on a thread of its own; its result comes back as the event `done` makes.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn in_background<T: Send + 'static>(
-        &self,
-        work: impl FnOnce() -> T + Send + 'static,
-        done: impl FnOnce(T) -> Event + Send + 'static,
+    /// Asks the daemon to read something; what `then` makes of its answer comes back as an
+    /// event, if anything.
+    fn read(
+        &mut self,
+        read: Read,
+        then: impl FnOnce(ipc::Answer, Vec<TranscriptLine>) -> Option<Event> + 'static,
     ) {
-        let events = self.events.clone();
-        std::thread::spawn(move || {
-            if events.send_blocking(done(work())).is_err() {
-                tracing::debug!("the window closed before background work finished");
-            }
+        self.last_act = self.last_act.next();
+        let request = self.last_act;
+        if link::send(&self.link, ToDaemon::Read { request, read }).is_ok() {
+            self.answers.insert(request, Box::new(then));
+        } else {
+            tracing::warn!("the daemon is gone: nothing is read");
+        }
+    }
+
+    /// Makes whole the folder to open, or says why it isn't one.
+    fn read_folder(&mut self, read: Read, typed: bool) {
+        self.read(read, move |answer, _| {
+            let ipc::Answer::Folder(result) = answer else {
+                return None;
+            };
+            Some(Event::FolderRead { typed, result })
         });
     }
 
-    /// Runs `work` now, in the browser demo, which has no threads (and whose work reads only
-    /// what is built into the page); its result comes back as the event `done` makes, after
-    /// what is handled now.
-    #[cfg(target_arch = "wasm32")]
-    fn in_background<T>(&self, work: impl FnOnce() -> T, done: impl FnOnce(T) -> Event) {
-        if self.events.try_send(done(work())).is_err() {
-            tracing::debug!("the window closed before background work finished");
+    /// Reads whether the working folder is a linked git worktree.
+    fn read_linked_worktree(&mut self, cwd: PathBuf, replace: bool) {
+        let read = Read::LinkedWorktree { cwd: cwd.clone() };
+        self.read(read, move |answer, _| {
+            let ipc::Answer::Worktree(worktree) = answer else {
+                return None;
+            };
+            Some(Event::LinkedWorktreeRead {
+                cwd,
+                worktree,
+                replace,
+            })
+        });
+    }
+
+    /// Has the daemon tell when what `target` names changes (`Event::Changed`).
+    fn watch(&self, target: Target) -> Option<Watched> {
+        let watched = Watched::new();
+        match link::send(&self.link, ToDaemon::Watch { watched, target }) {
+            Ok(()) => Some(watched),
+            Err(link::Lost) => {
+                tracing::warn!("the daemon is gone: changes go unnoticed");
+                None
+            }
+        }
+    }
+
+    fn unwatch(&self, watched: Watched) {
+        if link::send(&self.link, ToDaemon::Unwatch(watched)).is_err() {
+            tracing::debug!("the daemon is gone with its watches");
+        }
+    }
+
+    /// Has the daemon keep the settings.
+    fn save_settings(&self) {
+        if link::send(&self.link, ToDaemon::SaveSettings(self.settings.clone())).is_err() {
+            tracing::warn!("the daemon is gone: the settings aren't kept");
         }
     }
 
@@ -1408,7 +1496,7 @@ impl App {
         // The folder may be another than at the last start.
         self.status.sandbox_choice.hardware = self.settings.hardware_in(&self.cwd);
         if self.status.worktree.is_none() {
-            self.status.worktree = sessions::linked_worktree(&self.cwd);
+            self.read_linked_worktree(self.cwd.clone(), false);
         }
         let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
         let launch = Launch {
@@ -1492,8 +1580,8 @@ impl App {
         self.view.set_sandbox_folders(&self.settings);
         if self.settings.sandbox {
             self.sandbox_changed();
-        } else if let Err(error) = settings::save(&self.settings) {
-            tracing::warn!(%error, "couldn't keep the sandbox's folders");
+        } else {
+            self.save_settings();
         }
     }
 
@@ -1507,9 +1595,7 @@ impl App {
             }
         };
         self.settings.trusted_folders.push(self.cwd.clone());
-        if let Err(error) = settings::save(&self.settings) {
-            tracing::warn!(%error, "couldn't keep the trusted folder");
-        }
+        self.save_settings();
         self.launch(resume, FolderConfiguration::Read);
         self.view.focus_composer();
     }
@@ -1541,9 +1627,7 @@ impl App {
             desktop: self.settings.sandbox_desktop,
             hardware: self.settings.hardware_in(&self.cwd),
         };
-        if let Err(error) = settings::save(&self.settings) {
-            tracing::warn!(%error, "couldn't keep the sandbox setting");
-        }
+        self.save_settings();
         if self.process.is_some() && self.under_way() {
             if !self.restart_waits {
                 self.chat.info(
@@ -1831,35 +1915,47 @@ impl App {
 
     /// Loads a session's transcript in the background, looking for it: a worktree the session
     /// entered may have moved it.
-    fn load_session(&self, id: SessionId, cwd: PathBuf) {
-        self.in_background(
-            move || {
-                let path = sessions::locate(&cwd, &id);
-                let result = sessions::read_from(&path, 0)
-                    .map(|(lines, offset)| (Chat::from_transcript(&lines), offset));
-                Event::SessionLoaded { id, path, result }
-            },
-            std::convert::identity,
-        );
+    fn load_session(&mut self, id: SessionId, cwd: PathBuf) {
+        let place = ipc::Place::Session {
+            cwd,
+            id: id.clone(),
+        };
+        self.read(Read::Transcript { place, from: 0 }, move |answer, lines| {
+            let ipc::Answer::Transcript { path, read } = answer else {
+                return None;
+            };
+            let result = read.map(|offset| (Chat::from_transcript(&lines), offset));
+            Some(Event::SessionLoaded { id, path, result })
+        });
     }
 
     fn session_loaded(
         &mut self,
         id: &SessionId,
         path: PathBuf,
-        result: std::io::Result<(Chat, u64)>,
+        result: Result<(Chat, u64), String>,
     ) {
         // Another session may have been opened meanwhile.
         if self.status.session_id.as_ref() != Some(id) {
             return;
         }
+        // Watched, or until it is written, the folder it will be in.
+        let follows = self
+            .watch
+            .as_ref()
+            .is_some_and(|watch| &watch.session.id == id);
+        let watched = if follows {
+            self.watch(Target::Transcript(ipc::Place::Path(path.clone())))
+        } else {
+            None
+        };
         let watching = self.watch.as_mut().filter(|watch| &watch.session.id == id);
         match result {
             Ok((chat, offset)) => {
                 self.chat = chat;
                 self.view.open_at_end();
                 if let Some(watch) = watching {
-                    watch.watched = watch_transcript(self.watcher.as_ref(), &path);
+                    watch.watched = watched;
                     watch.path = path;
                     watch.offset = offset;
                     if watch.reading.done() {
@@ -1870,7 +1966,7 @@ impl App {
             Err(error) => {
                 // Not written yet, perhaps: it is watched for, and read once it is.
                 if let Some(watch) = watching {
-                    watch.watched = watch_transcript(self.watcher.as_ref(), &path);
+                    watch.watched = watched;
                     watch.path = path;
                     watch.reading = Refresh::Idle;
                 }
@@ -1883,7 +1979,7 @@ impl App {
     fn transcript_grew(
         &mut self,
         id: &SessionId,
-        result: std::io::Result<(Vec<TranscriptLine>, u64)>,
+        result: Result<(Vec<TranscriptLine>, u64), String>,
     ) {
         let Some(watch) = self.watch.as_mut().filter(|watch| &watch.session.id == id) else {
             return;
@@ -1999,17 +2095,22 @@ impl App {
         {
             self.read_on();
         } else if self.peeks_at(watched) {
-            self.peek_changed();
-        } else if let Some(watcher) = &self.watcher {
+            self.read_peek();
+        } else {
             // A transcript no longer followed.
-            watcher.forget(watched);
+            self.unwatch(watched);
         }
     }
 
     /// Lists the running sessions again, once whatever listing is under way is done.
     fn list_live(&mut self) {
         if self.listing_live.wanted() {
-            self.in_background(sessions::live, Event::LiveListed);
+            self.read(Read::Live, |answer, _| {
+                let ipc::Answer::Live(live) = answer else {
+                    return None;
+                };
+                Some(Event::LiveListed(live))
+            });
         }
     }
 
@@ -2018,24 +2119,23 @@ impl App {
         let Some(watch) = self.watch.as_mut() else {
             return;
         };
-        let grown =
-            std::fs::metadata(&watch.path).is_ok_and(|metadata| metadata.len() > watch.offset);
-        if grown && watch.reading.wanted() {
+        if watch.reading.wanted() {
             let (id, path, from) = (watch.session.id.clone(), watch.path.clone(), watch.offset);
-            self.in_background(
-                move || sessions::read_from(&path, from),
-                move |result| Event::TranscriptGrew { id, result },
-            );
+            let place = ipc::Place::Path(path);
+            self.read(Read::Transcript { place, from }, move |answer, lines| {
+                let ipc::Answer::Transcript { read, .. } = answer else {
+                    return None;
+                };
+                let result = read.map(|offset| (lines, offset));
+                Some(Event::TranscriptGrew { id, result })
+            });
         }
     }
 
     /// Stops watching the followed session's transcript.
     fn forget_watch(&self) {
-        if let (Some(watcher), Some(watched)) = (
-            &self.watcher,
-            self.watch.as_ref().and_then(|watch| watch.watched),
-        ) {
-            watcher.forget(watched);
+        if let Some(watched) = self.watch.as_ref().and_then(|watch| watch.watched) {
+            self.unwatch(watched);
         }
     }
 
@@ -2089,15 +2189,20 @@ impl App {
     }
 
     /// Lists the working directory's sessions anew, e.g. once a new one has its title.
-    fn load_sessions(&self) {
+    fn load_sessions(&mut self) {
         let cwd = self.cwd.clone();
-        let listed = cwd.clone();
         // Those listed already are summed up again only if their transcript changed.
-        let known = self.sessions.clone();
-        self.in_background(
-            move || sessions::list(&listed, 200, known),
-            move |sessions| Event::SessionsListed { cwd, sessions },
-        );
+        let read = Read::Sessions {
+            cwd: cwd.clone(),
+            limit: 200,
+            known: self.sessions.clone(),
+        };
+        self.read(read, move |answer, _| {
+            let ipc::Answer::Sessions(sessions) = answer else {
+                return None;
+            };
+            Some(Event::SessionsListed { cwd, sessions })
+        });
     }
 
     fn sessions_listed(&mut self, cwd: &Path, sessions: Vec<SessionInfo>) {
@@ -2766,18 +2871,6 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
     }
 }
 
-/// Watches a followed session's transcript, or the folder it will be written in while it isn't
-/// there yet.
-fn watch_transcript(watcher: Option<&Watcher>, path: &Path) -> Option<Watched> {
-    let watcher = watcher?;
-    watcher.file(path).ok().or_else(|| {
-        watcher
-            .folder(path.parent()?)
-            .inspect_err(|error| tracing::debug!(%error, "a followed session goes unwatched"))
-            .ok()
-    })
-}
-
 /// What the desktop has and says: asked before the window is confined, of programs it may not
 /// run then.
 #[derive(Debug)]
@@ -2790,13 +2883,13 @@ pub(crate) struct Desktop {
 
 impl Desktop {
     /// Asks several programs at once, before the first frame.
-    pub(crate) fn find() -> Self {
+    /// `openers` as the daemon found them.
+    pub(crate) fn find(openers: Vec<desktop::Opener>) -> Self {
         std::thread::scope(|scope| {
-            let openers = scope.spawn(desktop::openers);
             let fonts = scope.spawn(crate::appearance::fonts);
             let text_size = crate::appearance::desktop_text_size();
             Self {
-                openers: joined(openers),
+                openers,
                 fonts: joined(fonts),
                 text_size,
             }

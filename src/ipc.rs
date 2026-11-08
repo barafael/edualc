@@ -30,8 +30,10 @@ pub(crate) use socket::{Error, Folder, Listener, accept, connect};
 use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
-use crate::external::wire::SessionId;
+use crate::external::wire::{SessionId, TaskId};
 use crate::sandbox::Enforcement;
+use crate::sessions::{LiveSession, ProjectInfo, SessionInfo, Worktree};
+use crate::settings::Settings;
 
 /// The largest message either side sends: more is a broken or hostile peer. Room for the
 /// longest line kept, and what the message says besides.
@@ -164,31 +166,153 @@ impl ActId {
 #[serde(deny_unknown_fields)]
 pub(crate) enum ToDaemon {
     /// The first message, and only it.
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     /// Starts Claude Code for a session, known by `key` from then on.
-    Start { key: Generation, launch: Launch },
+    Start {
+        key: Generation,
+        launch: Launch,
+    },
     /// A line for the session's input, up to [`MAX_LINE`].
-    Input { key: Generation, line: String },
+    Input {
+        key: Generation,
+        line: String,
+    },
     /// Ends the session's process: its input closes, and what doesn't end is killed.
-    End { key: Generation },
+    End {
+        key: Generation,
+    },
     /// Shows a session the daemon runs in this window, known by `key` here from then on: what
     /// it asks and wasn't answered comes again, then what it says.
-    Attach { key: Generation, hosted: HostedId },
+    Attach {
+        key: Generation,
+        hosted: HostedId,
+    },
     /// Stops showing the session, which runs on (the window closes).
-    Detach { key: Generation },
+    Detach {
+        key: Generation,
+    },
     /// Claude Code's id for the session, as its process told the window: for the list.
-    Identify { key: Generation, session: SessionId },
+    Identify {
+        key: Generation,
+        session: SessionId,
+    },
     /// Something for the desktop, answered by `Done` with the same `request`.
-    Act { request: ActId, act: Act },
+    Act {
+        request: ActId,
+        act: Act,
+    },
+    /// Something of Claude Code's or edualc's files, which a window doesn't read itself (a
+    /// page can't, and the native window needn't), answered by `Answer` with the same
+    /// `request`; a transcript's lines come before, as `Lines`.
+    Read {
+        request: ActId,
+        read: Read,
+    },
+    /// Keeps the settings (`~/.config/edualc/settings.json`).
+    SaveSettings(Settings),
+    /// Tells the window, as `Changed`, when what `target` names changes, until `Unwatch`.
+    Watch {
+        watched: Watched,
+        target: Target,
+    },
+    Unwatch(Watched),
+}
+
+/// A watch, named by the window that asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct Watched(uuid::Uuid);
+
+impl Watched {
+    pub(crate) fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+/// What a window watches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Target {
+    /// The records of the sessions running (`~/.claude/sessions`).
+    Records,
+    /// A transcript being written to; while it isn't there yet, the folders it will be in.
+    Transcript(Place),
+}
+
+/// Where a transcript is, as a window knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Place {
+    /// Found already.
+    Path(PathBuf),
+    /// A session's, wherever it is: a worktree it entered may have moved it.
+    Session { cwd: PathBuf, id: SessionId },
+    /// A subagent's, beside its session's in the home its process writes in.
+    Subagent {
+        sandboxed: bool,
+        cwd: PathBuf,
+        id: SessionId,
+        task: TaskId,
+    },
+}
+
+/// What a window reads through the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Read {
+    /// The sessions running now: `Answer::Live`.
+    Live,
+    /// The folders Claude Code worked in: `Answer::Projects`.
+    Projects,
+    /// A folder's sessions, newest first, those `known` summed up again only if their
+    /// transcript changed: `Answer::Sessions`.
+    Sessions {
+        cwd: PathBuf,
+        limit: usize,
+        known: Vec<SessionInfo>,
+    },
+    /// A transcript's whole lines from `from` on: `Lines`, then `Answer::Transcript`.
+    Transcript { place: Place, from: u64 },
+    /// The worktree a session's transcript says it entered: `Answer::Worktree`.
+    WorktreeOf { cwd: PathBuf, id: SessionId },
+    /// `cwd` as a git worktree, if it is a linked one: `Answer::Worktree`.
+    LinkedWorktree { cwd: PathBuf },
+    /// The folder a path typed names, made whole, `~` at its start the home folder:
+    /// `Answer::Folder`.
+    TypedFolder(String),
+    /// The folder at a path (the picker's, a worktree's), made whole, if it is one:
+    /// `Answer::Folder`.
+    Folder(PathBuf),
+}
+
+/// What the daemon read for a window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Answer {
+    Live(Vec<LiveSession>),
+    Projects(Vec<ProjectInfo>),
+    Sessions(Vec<SessionInfo>),
+    /// The end of a transcript's lines: where it was found, and the offset after its last
+    /// whole line, or why it couldn't be read.
+    Transcript {
+        path: PathBuf,
+        read: Result<u64, String>,
+    },
+    Worktree(Option<Worktree>),
+    Folder(Result<PathBuf, String>),
 }
 
 /// What the daemon tells the window.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum FromDaemon {
-    /// With the D-Bus the window is to use (see `buses`). `Hosted` follows, before anything
-    /// else.
-    Hello { protocol: u32, buses: Buses },
+    /// With the D-Bus the window is to use (see `buses`), the settings (or why they can't be
+    /// read), what folders open in here, and the sessions running now. `Hosted` follows,
+    /// before anything else.
+    Hello {
+        protocol: u32,
+        buses: Buses,
+        settings: Result<Settings, String>,
+        openers: Vec<Opener>,
+        live: Vec<LiveSession>,
+    },
     /// The process runs: started for the window, or running already as it attaches.
     Started {
         key: Generation,
@@ -234,6 +358,13 @@ pub(crate) enum FromDaemon {
     Hosted(Vec<Hosted>),
     /// The clipboard's image, or why there is none.
     Pasted { request: ActId, pasted: Pasted },
+    /// What was read, as asked by `Read`.
+    Answer { request: ActId, answer: Answer },
+    /// Whole lines of a transcript read, as asked by `Read::Transcript`, in pieces that fit a
+    /// message; its `Answer` follows the last.
+    Lines { request: ActId, lines: Vec<String> },
+    /// What a watch names changed.
+    Changed(Watched),
 }
 
 /// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.
