@@ -2296,6 +2296,7 @@ dependencies = [
  "edualc-core",
  "edualc-host",
  "futures-util",
+ "gloo-timers",
  "image",
  "lucide-static-svg",
  "pulldown-cmark",
