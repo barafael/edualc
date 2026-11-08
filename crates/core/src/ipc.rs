@@ -27,7 +27,7 @@ mod socket;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws;
 #[cfg(not(target_arch = "wasm32"))]
-pub use reach::{ReachError, reach};
+pub use reach::{ReachError, TOKEN_VARIABLE, reach};
 #[cfg(not(target_arch = "wasm32"))]
 pub use socket::{Error, Folder, Listener, accept, connect};
 

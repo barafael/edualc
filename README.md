@@ -79,8 +79,8 @@ The window in a browser:
 edualcd --listen 127.0.0.1:7878
 ```
 
-It prints the page's address with a token (`http://127.0.0.1:7878/#token=…`); add `&dir=/path`
-to open a folder other than your home. Only a page with the token gets through, but keep it on
+It prints the page's address with a token (`http://127.0.0.1:7878/#token=…`), a random one
+unless `EDUALC_TOKEN` gives it; add `&dir=/path` to open a folder other than your home. Only a page with the token gets through, but keep it on
 the loopback: the line isn't encrypted. The page and the window share the daemon, its sessions
 and the settings. `edualcd --demo` serves the demo instead, which needs no token. Settings live in `~/.config/edualc/settings.json`; to let the
 sandbox read or write more folders, add them to `sandbox_read` or `sandbox_write` there.

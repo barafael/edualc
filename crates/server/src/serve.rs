@@ -45,7 +45,8 @@ impl Access {
 #[command(
     name = "edualcd",
     version,
-    about = "edualc's daemon, and the server of its page"
+    about = "edualc's daemon, and the server of its page",
+    after_help = TOKEN_HELP
 )]
 struct Args {
     /// Run as the daemon (the windows start it so).
@@ -55,14 +56,15 @@ struct Args {
     /// otherwise) if not given. Keep it on the loopback: the line is not encrypted.
     #[arg(long, value_name = "ADDRESS")]
     listen: Option<std::net::SocketAddr>,
-    /// The token pages show; a new random one if not given (or `EDUALC_TOKEN`).
-    #[arg(long, env = "EDUALC_TOKEN", hide_env_values = true)]
-    token: Option<String>,
     /// Serve the demo instead: Claude Code played by a script, on a demo project, for anyone
     /// (no token); nothing runs and nothing on the disk is read.
-    #[arg(long, conflicts_with_all = ["daemon", "token"])]
+    #[arg(long, conflicts_with = "daemon")]
     demo: bool,
 }
+
+/// The `about` after the options: where the token comes from.
+const TOKEN_HELP: &str = "The token pages must show is EDUALC_TOKEN's, or a new random one if \
+it isn't set. It isn't taken on the command line, which every user of the machine can read.";
 
 pub fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -83,13 +85,25 @@ pub fn main() -> std::process::ExitCode {
     let Args {
         daemon,
         listen,
-        token,
         demo,
     } = clap::Parser::parse();
     if daemon {
         return edualc_host::daemon::run();
     }
+    let variable = edualc_host::ipc::TOKEN_VARIABLE;
+    let token = match std::env::var(variable) {
+        Ok(token) => Some(token),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("edualcd: {variable} isn't text");
+            return std::process::ExitCode::from(2);
+        }
+    };
     let access = match token {
+        Some(_) if demo => {
+            eprintln!("edualcd: the demo lets anyone in; {variable} is ignored");
+            Access::Demo
+        }
         _ if demo => Access::Demo,
         // An empty token would let every page through, a site's in the browser too.
         Some(token) if token.is_empty() => {

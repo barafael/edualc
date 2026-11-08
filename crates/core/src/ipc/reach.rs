@@ -36,12 +36,17 @@ pub fn reach(program: &Path) -> Result<UnixStream, ReachError> {
     }
 }
 
+/// Where edualcd's server takes the token its pages must show. The daemon is started without
+/// it: nothing it runs (Claude Code, and what Claude Code runs) is to reach the server's pages.
+pub const TOKEN_VARIABLE: &str = "EDUALC_TOKEN";
+
 /// Starts the daemon, `program --daemon`, in a process group of its own (a terminal's hangup
-/// doesn't reach it), its log in the private folder.
+/// doesn't reach it), its log in the private folder, without the server's token.
 fn start_daemon(folder: &Folder, program: &Path) -> Result<(), ReachError> {
     let log = folder.log_file()?;
     let mut daemon = Command::new(program)
         .arg("--daemon")
+        .env_remove(TOKEN_VARIABLE)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log)

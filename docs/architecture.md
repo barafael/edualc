@@ -48,9 +48,12 @@ pieces (`Lines`), and are parsed by the window. Neither the page nor the native 
 The page is the same app, built for `wasm32`: the presenter's frontend there writes Dioxus
 signals, which the components (`server/src/web/components/`, one per area of `ui/app.slint`)
 draw. `dx build -p edualc-server --platform web --fullstack` builds it; `edualcd` serves it, at
-`--listen ADDRESS` or Dioxus's address (127.0.0.1:8080), and prints its address with a token.
-The server lets a page's line through only with that token (compared in constant time): any
-user of the machine reaches the loopback, and a site in the browser could try it. Keep the
+`--listen ADDRESS` or Dioxus's address (127.0.0.1:8080), and prints its address with a token:
+`EDUALC_TOKEN`'s, or a random one. It is never taken on the command line, which every user of
+the machine can read, and the daemon is started without it, so nothing Claude Code runs can
+reach the pages' server with it. The server lets a page's line through only with that token
+(compared in constant time): any user of the machine reaches the loopback, and a site in the
+browser could try it. Keep the
 server on the loopback; the line is not encrypted. What a page asks of the desktop (opening a
 folder in an editor, the folder picker, the clipboard's image) happens on the machine the
 daemon runs on.
