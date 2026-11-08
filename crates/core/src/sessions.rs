@@ -313,21 +313,71 @@ fn all_sandboxed_projects() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Whether `path` is where Claude Code keeps a transcript: a `.jsonl` file under the user's own
-/// folder of projects or a sandboxed home's, without `..` past it. A path a window names to be
-/// read is checked so: the daemon reads it for the window, which its confinement keeps from the
-/// user's other files.
+/// Opens the transcript at `path`: a `.jsonl` file under the user's own folder of projects or
+/// a sandboxed home's, without `..` past it, reached one name at a time following no link, and
+/// a plain file with no other name. The daemon reads transcripts for windows its confinement
+/// keeps from the user's other files, and a sandboxed Claude writes its home's projects: a link
+/// planted there must not hand it, or a window, a file it couldn't read itself.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn holds_transcript(path: &Path) -> bool {
+pub fn open_transcript(path: &Path) -> std::io::Result<File> {
+    // The user's own home, which no sandbox writes, as it is (a link to it is the user's); a
+    // sandboxed home itself, which its sandbox can't replace, though it may write in it.
+    let users = config_dir();
+    let opened = std::fs::canonicalize(&users).unwrap_or_else(|_| users.clone());
+    let roots: Vec<(PathBuf, PathBuf)> = std::iter::once((users, opened))
+        .chain(
+            Home::all()
+                .into_iter()
+                .map(|home| (home.path().to_owned(), home.path().to_owned())),
+        )
+        .collect();
+    open_transcript_under(path, &roots)
+}
+
+/// Opens the transcript at `path` under one of `roots`: each a home as `path` names it, and as
+/// it is opened, its `projects` holding the transcripts.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_transcript_under(path: &Path, roots: &[(PathBuf, PathBuf)]) -> std::io::Result<File> {
+    use std::io::{Error, ErrorKind};
     use std::path::Component;
-    path.extension()
-        .is_some_and(|extension| extension == "jsonl")
-        && all_projects_dirs().iter().any(|projects| {
-            path.strip_prefix(projects).is_ok_and(|rest| {
-                rest.components()
-                    .all(|component| matches!(component, Component::Normal(_)))
-            })
-        })
+
+    let refused = |why: &str| {
+        Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{}: {why}", path.display()),
+        )
+    };
+    if path
+        .extension()
+        .is_none_or(|extension| extension != "jsonl")
+    {
+        return Err(refused("not a transcript"));
+    }
+    for (named, opened) in roots {
+        let Ok(rest) = path.strip_prefix(named.join("projects")) else {
+            continue;
+        };
+        if !rest
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        {
+            return Err(refused("not a transcript"));
+        }
+        let relative = Path::new("projects").join(rest.parent().unwrap_or(Path::new("")));
+        let name = rest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| refused("not a transcript"))?;
+        return match crate::home::open_existing(opened, &relative, name) {
+            Ok(Some(file)) => Ok(file),
+            Ok(None) => Err(Error::new(
+                ErrorKind::NotFound,
+                format!("{}: no such transcript", path.display()),
+            )),
+            Err(error) => Err(Error::new(ErrorKind::PermissionDenied, error.to_string())),
+        };
+    }
+    Err(refused("not one of Claude Code's transcripts"))
 }
 
 /// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
@@ -677,10 +727,13 @@ fn read_small(path: &Path, limit: u64) -> Option<String> {
 /// the last.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_lines_from(path: &Path, offset: u64) -> std::io::Result<(Vec<String>, u64)> {
-    if !std::fs::metadata(path)?.is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
-    let mut file = File::open(path)?;
+    read_lines_of(open_transcript(path)?, offset)
+}
+
+/// The whole lines of the opened transcript `file` from `offset` on, and the offset after the
+/// last.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_lines_of(mut file: File, offset: u64) -> std::io::Result<(Vec<String>, u64)> {
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::new();
     file.take(TRANSCRIPT_BYTES).read_to_end(&mut bytes)?;
@@ -723,8 +776,13 @@ fn parse_line(line: &str) -> Option<TranscriptLine> {
 const PEEK_BYTES: u64 = 128 * 1024;
 
 /// A session's title and the worktree it last worked in.
+#[cfg(not(target_arch = "wasm32"))]
 fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
-    let mut file = File::open(path).ok()?;
+    summary_of(path, open_transcript(path).ok()?)
+}
+
+/// The title and worktree the transcript at `path`, opened as `file`, says.
+fn summary_of(path: &Path, mut file: File) -> Option<(String, Option<Worktree>)> {
     let length = file.metadata().ok()?.len();
     let tail = read_range(&mut file, length.saturating_sub(PEEK_BYTES), length)?;
     let (mut custom, mut generated, mut summary, mut worktree) = (None, None, None, None);
@@ -796,6 +854,7 @@ fn peer_title(name: Option<&str>, body: Option<&str>) -> String {
 }
 
 /// The worktree a session works in now, as its transcript last said.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn worktree_of(transcript: &Path) -> Option<Worktree> {
     summary(transcript).and_then(|(_, worktree)| worktree)
 }
@@ -873,20 +932,41 @@ mod tests {
 
     use super::*;
 
-    /// What a window names to be read is a transcript only under Claude Code's projects, as a
-    /// `.jsonl` file, and without `..` leading out of them.
+    /// A transcript is opened only under a home's projects, as a `.jsonl` file with no other
+    /// name, reached without `..` and without following a link: a sandbox writing its home's
+    /// projects can't plant one that hands out another file.
     #[test]
-    fn only_transcripts_are_taken_for_transcripts() {
-        let projects = projects_dir();
-        let project = projects.join(project_name(Path::new("/home/someone/code")));
-        assert!(holds_transcript(&project.join("a-session.jsonl")));
-        assert!(holds_transcript(
-            &project.join("a-session/subagents/agent-1.jsonl")
-        ));
-        assert!(!holds_transcript(&project.join("a-session.txt")));
-        assert!(!holds_transcript(&project.join("../../../.ssh/id.jsonl")));
-        assert!(!holds_transcript(Path::new("/etc/passwd.jsonl")));
-        assert!(!holds_transcript(&projects.with_file_name("history.jsonl")));
+    fn only_transcripts_are_opened() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("edualc-open-{}", std::process::id()));
+        let home = dir.join("home");
+        let project = home.join("projects").join("-code");
+        std::fs::create_dir_all(&project).expect("a scratch project");
+        let secret = dir.join("secret.jsonl");
+        std::fs::write(&secret, "{}\n").expect("a file outside");
+        let session = project.join("a-session.jsonl");
+        std::fs::write(&session, "{}\n").expect("a transcript");
+        std::fs::create_dir_all(project.join("a-session/subagents")).expect("a subagents folder");
+        let agent = project.join("a-session/subagents/agent-1.jsonl");
+        std::fs::write(&agent, "{}\n").expect("an agent's transcript");
+        std::fs::write(project.join("notes.txt"), "").expect("a file of another kind");
+        symlink(&secret, project.join("linked.jsonl")).expect("a planted link");
+        std::fs::hard_link(&secret, project.join("hard.jsonl")).expect("a planted hard link");
+        symlink(&dir, home.join("projects").join("-elsewhere")).expect("a linked project");
+
+        let roots = [(home.clone(), home.clone())];
+        let opens = |path: &Path| open_transcript_under(path, &roots).is_ok();
+        assert!(opens(&session));
+        assert!(opens(&agent));
+        assert!(!opens(&project.join("notes.txt")));
+        assert!(!opens(&project.join("linked.jsonl")));
+        assert!(!opens(&project.join("hard.jsonl")));
+        assert!(!opens(&home.join("projects/-elsewhere/secret.jsonl")));
+        assert!(!opens(&project.join("../../../secret.jsonl")));
+        assert!(!opens(&secret));
+        assert!(!opens(&project.join("missing.jsonl")));
+        std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
     }
 
     /// A session keeps its name however often it is started: an adjective and a noun from its
@@ -1109,7 +1189,8 @@ mod tests {
         let next = json!({ "type": "summary", "summary": "b" }).to_string();
         let unfinished: String = next.chars().take(next.len() / 2).collect();
         std::fs::write(&path, format!("{whole}{unfinished}")).expect("a transcript");
-        let (lines, offset) = read_lines_from(&path, 0).expect("readable");
+        let (lines, offset) =
+            read_lines_of(File::open(&path).expect("a transcript"), 0).expect("readable");
         assert_eq!(lines.len(), 1);
         assert_eq!(offset, whole.len() as u64);
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
@@ -1131,7 +1212,7 @@ mod tests {
             ];
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             std::fs::write(&path, text).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary_of(&path, File::open(&path).expect("a transcript")).map(|(title, _)| title)
         };
         for name in [
             format!("edualc-{pet}"),
@@ -1161,7 +1242,7 @@ mod tests {
         let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490483.jsonl");
         let title_of = |line: serde_json::Value| {
             std::fs::write(&path, format!("{line}\n")).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary_of(&path, File::open(&path).expect("a transcript")).map(|(title, _)| title)
         };
         let prompt = json!({
             "type": "user",
@@ -1181,7 +1262,7 @@ mod tests {
         let title_of = |lines: &[serde_json::Value]| {
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             std::fs::write(&path, text).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary_of(&path, File::open(&path).expect("a transcript")).map(|(title, _)| title)
         };
         let peer = json!({
             "type": "user",

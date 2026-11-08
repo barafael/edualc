@@ -839,7 +839,11 @@ impl Follower {
 /// Opens the file `name` in the folder `relative` under `root`, one name at a time and
 /// following no link; none where something on the way is missing. Only a plain file with no
 /// other name, as a sandbox could otherwise hand in, by a link, a file it can't read itself.
-fn open_existing(root: &Path, relative: &Path, name: &str) -> Result<Option<std::fs::File>, Error> {
+pub(crate) fn open_existing(
+    root: &Path,
+    relative: &Path,
+    name: &str,
+) -> Result<Option<std::fs::File>, Error> {
     let full = root.join(relative).join(name);
     let mut folder = open_folder(CWD, root)?;
     for part in relative.components() {
