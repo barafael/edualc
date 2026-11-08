@@ -20,6 +20,7 @@ mod transcript;
 #[component]
 pub fn Window() -> Element {
     let view = use_context::<View>();
+    use_context_provider(|| panels::SettingsOpen(Signal::new(false)));
     let mut sidebar_shown = use_signal(|| true);
     let session = view.session.read();
     let prompt = view.prompt.read();
@@ -65,14 +66,15 @@ pub fn Window() -> Element {
                 if writes {
                     composer::Composer {}
                 }
+                // Over the conversation, as the native window lays them.
+                panels::Usage {}
+                panels::Settings {}
             }
             if peek.open {
                 panels::PeekPanel {}
             } else if side.view == SideView::Shown {
                 panels::SidePanel {}
             }
-            panels::Usage {}
-            panels::Settings {}
         }
     }
 }
