@@ -5,10 +5,12 @@ use dioxus::fullstack::{CborEncoding, TypedWebsocket};
 use edualc_host::ipc::{self, FromDaemon, ToDaemon, ws};
 use futures_util::{SinkExt, StreamExt};
 
-/// What a page must show to be let through: the token printed as the server starts.
+/// What a page must show to be let through: the token printed as the server starts; nothing,
+/// for the demo, which runs nothing.
 #[derive(Debug, Clone)]
 pub struct Access {
     token: String,
+    demo: bool,
 }
 
 impl Access {
@@ -19,15 +21,31 @@ impl Access {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        Self { token }
+        Self { token, demo: false }
     }
 
     fn given(token: String) -> Self {
-        Self { token }
+        Self { token, demo: false }
+    }
+
+    /// Anyone, to the demo's script.
+    fn demo() -> Self {
+        Self {
+            token: String::new(),
+            demo: true,
+        }
+    }
+
+    /// Whether the lines go to the demo's script, not the daemon.
+    pub fn is_demo(&self) -> bool {
+        self.demo
     }
 
     /// Whether `token` is the server's, compared in constant time.
     pub fn admits(&self, token: &str) -> bool {
+        if self.demo {
+            return true;
+        }
         let (ours, theirs) = (self.token.as_bytes(), token.as_bytes());
         ours.len() == theirs.len()
             && ours
@@ -56,6 +74,10 @@ struct Args {
     /// The token pages show; a new random one if not given (or `EDUALC_TOKEN`).
     #[arg(long, env = "EDUALC_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Serve the demo instead: Claude Code played by a script, on a demo project, for anyone
+    /// (no token); nothing runs and nothing on the disk is read.
+    #[arg(long, conflicts_with_all = ["daemon", "token"])]
+    demo: bool,
 }
 
 pub fn main() -> std::process::ExitCode {
@@ -78,21 +100,30 @@ pub fn main() -> std::process::ExitCode {
         daemon,
         listen,
         token,
+        demo,
     } = clap::Parser::parse();
     if daemon {
         return edualc_host::daemon::run();
     }
-    let access = token.map_or_else(Access::new, Access::given);
+    let access = if demo {
+        Access::demo()
+    } else {
+        token.map_or_else(Access::new, Access::given)
+    };
     serve(listen, access)
 }
 
 /// Serves the page, and the lines of pages that show `access`'s token, until stopped.
 fn serve(listen: Option<std::net::SocketAddr>, access: Access) -> std::process::ExitCode {
     let shown = |address: std::net::SocketAddr| {
-        eprintln!(
-            "edualcd: edualc's page is at http://{address}/#token={}",
-            access.token
-        );
+        if access.demo {
+            eprintln!("edualcd: edualc's demo is at http://{address}/");
+        } else {
+            eprintln!(
+                "edualcd: edualc's page is at http://{address}/#token={}",
+                access.token
+            );
+        }
     };
     match listen {
         Some(address) => {
@@ -134,6 +165,34 @@ fn serve(listen: Option<std::net::SocketAddr>, access: Access) -> std::process::
 /// The page, its assets and server functions, with the token every line is checked against.
 fn router(access: Access) -> dioxus::server::axum::Router {
     dioxus::server::router(crate::web::App).layer(dioxus::server::axum::Extension(access))
+}
+
+/// Carries a page's line to the demo's script, which answers as the daemon would.
+pub async fn play(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
+    let (requests, received) = async_channel::unbounded();
+    let (outbox, answers) = async_channel::unbounded();
+    tokio::spawn(edualc_host::demo::run(received, outbox));
+    let (mut to_page, mut from_page) = page.split();
+    loop {
+        tokio::select! {
+            asked = from_page.next() => match asked {
+                Some(Ok(message)) => {
+                    if requests.send(message).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Err(_)) | None => break,
+            },
+            said = answers.recv() => match said {
+                Ok(message) => {
+                    if to_page.send(message).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+        }
+    }
 }
 
 /// Carries a page's line on to the daemon (started if none runs), message by message, until

@@ -2,6 +2,7 @@
 //! and the page's own `EXTRA`) as a lookup for the page, so its wasm carries only those.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 /// Icons the page uses that the Slint window doesn't.
@@ -46,7 +47,7 @@ fn main() {
         let name = icon.to_string();
         if names.remove(&name) {
             let svg = std::str::from_utf8(icon.svg_bytes()).expect("an SVG is text");
-            code.push_str(&format!("        {name:?} => Some({svg:?}),\n"));
+            writeln!(code, "        {name:?} => Some({svg:?}),").expect("written to a string");
         }
     }
     assert!(names.is_empty(), "icons Lucide hasn't: {names:?}");

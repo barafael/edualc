@@ -7,6 +7,7 @@ pub use edualc_core::*;
 
 pub mod buses;
 pub mod daemon;
+pub mod demo;
 pub mod files;
 pub mod mirror;
 pub mod relay;

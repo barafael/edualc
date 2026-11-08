@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Value, json};
 
 use super::daemon::{Interrupted, Out, Turn};
-use super::demo;
+use super::world as demo;
 
 /// Plays the turn for `prompt`, to its end or an interrupt.
 pub(super) async fn play(turn: Turn, prompt: String) {

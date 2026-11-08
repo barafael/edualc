@@ -1,110 +1,193 @@
-//! The browser demo's daemon: Claude Code, played by a script. It takes what the window sends,
-//! as the daemon on Linux does, and answers as `claude -p` would in stream-json, from a
-//! scenario a word in the prompt picks (see `scenarios`), with pauses so the window shows the
-//! answer come. Nothing leaves the page.
+//! The demo's daemon (`edualcd --demo`): Claude Code, played by a script. It takes what a window
+//! sends, as the daemon does, and answers as `claude -p` would in stream-json, from a scenario
+//! a word in the prompt picks (see `scenarios`), with pauses so the window shows the answer
+//! come; what a window reads comes from the demo project (`demo`). Nothing runs, nothing on the
+//! disk is read or written.
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use std::time::Duration;
+
 use async_channel::{Receiver, Sender};
 use serde_json::{Value, json};
-use web_time::Duration;
 
-use super::demo;
 use super::scenarios;
-use crate::app::Event;
-use crate::claude::{Launch, Output};
-use crate::ipc::{Act, ActId, Generation, PasteFailure, ToDaemon};
+use super::world as demo;
+use crate::claude::Launch;
+use crate::ipc::{
+    Act, ActFailure, ActId, Answer, Buses, FromDaemon, Generation, PROTOCOL, PasteFailure, Place,
+    Read, StartFailure, Stream, ToDaemon,
+};
 use crate::sandbox::Enforcement;
+use crate::settings::Settings;
 
 /// What the demo's Claude says it runs as.
 const MODEL: &str = "claude-opus-5-5";
 /// The pid the demo's sessions run as, in the window's eyes.
 const PID: u32 = 4242;
 
-/// Answers the window until it closes.
-pub async fn run(requests: Receiver<ToDaemon>, events: Sender<Event>) {
+/// Answers a window until it hangs up.
+pub async fn run(requests: Receiver<ToDaemon>, outbox: Sender<FromDaemon>) {
     let mut sessions: HashMap<Generation, Session> = HashMap::new();
     while let Ok(request) = requests.recv().await {
         match request {
+            ToDaemon::Hello { .. } => {
+                greet(&outbox);
+            }
             ToDaemon::Start { key, launch } => {
-                let session = Session::start(key, events.clone(), &launch);
+                let session = Session::start(key, outbox.clone(), &launch);
                 sessions.insert(key, session);
             }
-            ToDaemon::Input { key, text, last } => {
+            ToDaemon::Input { key, line } => {
                 if let Some(session) = sessions.get_mut(&key) {
-                    session.pieces.push_str(&text);
-                    if last {
-                        let line = std::mem::take(&mut session.pieces);
-                        session.take(&line);
-                    }
+                    session.take(&line);
                 }
             }
             ToDaemon::End { key } => {
                 if sessions.remove(&key).is_some() {
-                    tell(&events, key, Output::Ended(Some(0)));
+                    tell(&outbox, FromDaemon::Ended { key, code: Some(0) });
                 }
             }
-            ToDaemon::Act { request, act } => acted(&events, request, act),
-            ToDaemon::Hello { .. }
-            | ToDaemon::Attach { .. }
+            ToDaemon::Attach { key, .. } => tell(
+                &outbox,
+                FromDaemon::Failed {
+                    key,
+                    failure: StartFailure::NotHosted,
+                },
+            ),
+            ToDaemon::Act { request, act } => acted(&outbox, request, act),
+            ToDaemon::Read { request, read } => read_for(&outbox, request, read),
+            // Nothing is kept, and nothing changes on its own.
+            ToDaemon::SaveSettings(_)
+            | ToDaemon::Watch { .. }
+            | ToDaemon::Unwatch(_)
             | ToDaemon::Detach { .. }
             | ToDaemon::Identify { .. } => {}
         }
     }
 }
 
-fn tell(events: &Sender<Event>, generation: Generation, output: Output) {
-    if events
-        .try_send(Event::Claude { generation, output })
-        .is_err()
-    {
+/// The hello, and the sessions the demo runs (none; four "run in other terminals").
+fn greet(outbox: &Sender<FromDaemon>) {
+    let settings = Settings {
+        trusted_folders: vec![std::path::PathBuf::from(demo::PROJECT)],
+        ..Settings::default()
+    };
+    tell(
+        outbox,
+        FromDaemon::Hello {
+            protocol: PROTOCOL,
+            buses: Buses::default(),
+            settings: Ok(settings),
+            openers: Vec::new(),
+            live: demo::running(),
+            claude_codes_sandbox: false,
+            finds_windows: false,
+            home: Some(std::path::PathBuf::from(demo::PROJECT)),
+        },
+    );
+    tell(outbox, FromDaemon::Hosted(Vec::new()));
+}
+
+/// What a window reads, from the demo project.
+fn read_for(outbox: &Sender<FromDaemon>, request: ActId, read: Read) {
+    let answer = match read {
+        Read::Live => Answer::Live(demo::running()),
+        Read::Projects => Answer::Projects(demo::projects()),
+        Read::Sessions { cwd, limit, .. } => {
+            let mut sessions = demo::saved(&cwd);
+            sessions.truncate(limit);
+            Answer::Sessions(sessions)
+        }
+        Read::Transcript { place, from } => {
+            let path = match place {
+                Place::Path(path) => path,
+                Place::Session { cwd, id } | Place::Subagent { cwd, id, .. } => {
+                    cwd.join(format!("{}.jsonl", id.as_str()))
+                }
+            };
+            let read = match demo::transcript(&path) {
+                Some(text) => {
+                    let rest = usize::try_from(from)
+                        .ok()
+                        .and_then(|at| text.get(at..))
+                        .unwrap_or_default();
+                    let lines: Vec<String> = rest.lines().map(str::to_owned).collect();
+                    if !lines.is_empty() {
+                        tell(outbox, FromDaemon::Lines { request, lines });
+                    }
+                    Ok(u64::try_from(text.len()).unwrap_or(u64::MAX))
+                }
+                None => Err("not in the demo".to_owned()),
+            };
+            Answer::Transcript { path, read }
+        }
+        Read::WorktreeOf { .. } | Read::LinkedWorktree { .. } => Answer::Worktree(None),
+        Read::TypedFolder(typed) => Answer::Folder(demo_folder(std::path::Path::new(typed.trim()))),
+        Read::Folder(path) => Answer::Folder(demo_folder(&path)),
+    };
+    tell(outbox, FromDaemon::Answer { request, answer });
+}
+
+/// One of the demo's folders, or why a path isn't one.
+fn demo_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    demo::projects()
+        .into_iter()
+        .map(|project| project.path)
+        .find(|project| project == path)
+        .ok_or_else(|| format!("{} isn't one of the demo's folders", path.display()))
+}
+
+fn tell(outbox: &Sender<FromDaemon>, message: FromDaemon) {
+    if outbox.try_send(message).is_err() {
         tracing::debug!("the window is gone");
     }
 }
 
-/// What the desktop is asked, answered as a browser can.
-fn acted(events: &Sender<Event>, request: ActId, act: Act) {
-    let event = match act {
+/// What the desktop is asked, answered as the demo can.
+fn acted(outbox: &Sender<FromDaemon>, request: ActId, act: Act) {
+    let message = match act {
         Act::CheckTrust { folder } => match demo::untrusted(&folder) {
-            Some(runs) => Event::Trusted {
+            Some(runs) => FromDaemon::Trusted {
                 request,
                 accepted: false,
                 runs,
             },
-            None => Event::Trusted {
+            None => FromDaemon::Trusted {
                 request,
                 accepted: true,
                 runs: Vec::new(),
             },
         },
-        Act::PickFolder(_) => Event::Picked {
+        Act::PickFolder(_) => FromDaemon::Picked {
             request,
             folder: None,
         },
-        Act::PasteImage => Event::Pasted {
+        Act::PasteImage => FromDaemon::Pasted {
             request,
             pasted: Err(PasteFailure::NoImage),
         },
+        Act::OpenUrl(link) => FromDaemon::Done {
+            request,
+            result: Err(ActFailure::NotAWebLink(link)),
+        },
         Act::OpenIn { .. }
-        | Act::OpenUrl(_)
         | Act::Notify { .. }
         | Act::FocusWindowOf { .. }
-        | Act::StopSession(_) => Event::Acted {
+        | Act::StopSession(_) => FromDaemon::Done {
             request,
             result: Ok(()),
         },
     };
-    if events.try_send(event).is_err() {
-        tracing::debug!("the window is gone");
-    }
+    tell(outbox, message);
 }
 
 /// Where the demo's Claude writes: the window, as one session's output.
 #[derive(Debug, Clone)]
 pub(super) struct Out {
     key: Generation,
-    events: Sender<Event>,
+    outbox: Sender<FromDaemon>,
     session: String,
     pub(super) cwd: String,
 }
@@ -112,7 +195,14 @@ pub(super) struct Out {
 impl Out {
     /// One stream-json line, as `claude -p` writes it.
     pub(super) fn line(&self, message: &Value) {
-        tell(&self.events, self.key, Output::of_line(message.to_string()));
+        tell(
+            &self.outbox,
+            FromDaemon::Output {
+                key: self.key,
+                stream: Stream::Out,
+                line: message.to_string(),
+            },
+        );
     }
 
     pub(super) fn session(&self) -> &str {
@@ -144,17 +234,15 @@ struct Session {
     turns: u32,
     /// The turn under way, to tell what the window says to it.
     turn: Option<Sender<Said>>,
-    /// A line coming in pieces.
-    pieces: String,
 }
 
 impl Session {
-    fn start(key: Generation, events: Sender<Event>, launch: &Launch) -> Self {
+    fn start(key: Generation, outbox: Sender<FromDaemon>, launch: &Launch) -> Self {
         let enforcement = launch.sandbox.as_ref().map(|_| Enforcement::Full);
         tell(
-            &events,
-            key,
-            Output::Started {
+            &outbox,
+            FromDaemon::Started {
+                key,
                 pid: PID,
                 enforcement,
                 turns: 0,
@@ -163,7 +251,7 @@ impl Session {
         Self {
             out: Out {
                 key,
-                events,
+                outbox,
                 session: launch.conversation.id().as_str().to_owned(),
                 cwd: launch.cwd.display().to_string(),
             },
@@ -171,7 +259,6 @@ impl Session {
             mode: "default".to_owned(),
             turns: 0,
             turn: None,
-            pieces: String::new(),
         }
     }
 
@@ -236,16 +323,13 @@ impl Session {
                 // Answered after a moment, as a model would; the window waits for it.
                 let out = self.out.clone();
                 let question = field("question");
-                let answered = slint::spawn_local(async move {
+                tokio::spawn(async move {
                     pause(Duration::from_millis(900)).await;
                     out.respond(
                         &request_id,
                         &json!({"response": scenarios::side_answer(&question), "synthetic": false}),
                     );
                 });
-                if let Err(error) = answered {
-                    tracing::warn!(%error, "no side answer");
-                }
                 return;
             }
             "get_context_usage" => {
@@ -284,9 +368,7 @@ impl Session {
             "model": self.model, "permissionMode": self.mode, "cwd": self.out.cwd,
             "tools": ["Bash", "Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": [],
         }));
-        if let Err(error) = slint::spawn_local(scenarios::play(turn, prompt)) {
-            tracing::warn!(%error, "the turn couldn't start");
-        }
+        tokio::spawn(scenarios::play(turn, prompt));
     }
 }
 
@@ -432,15 +514,7 @@ impl Turn {
     }
 }
 
-/// Waits `duration` on the page's clock.
+/// Waits `duration`.
 pub(super) async fn pause(duration: Duration) {
-    let (done, waited) = async_channel::bounded::<()>(1);
-    slint::Timer::single_shot(duration, move || {
-        if done.try_send(()).is_err() {
-            tracing::debug!("nobody waits any more");
-        }
-    });
-    if waited.recv().await.is_err() {
-        tracing::debug!("the timer went");
-    }
+    tokio::time::sleep(duration).await;
 }
