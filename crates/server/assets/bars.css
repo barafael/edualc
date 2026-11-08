@@ -1,0 +1,30 @@
+/* The bars over the composer (ui/app.slint's WatchBar, TrustBar, SignInBar). */
+
+.dock-bar {
+    display: flex; flex-direction: column; gap: var(--space-s); padding: var(--space-m);
+    border: 1px solid var(--divider); border-radius: var(--radius-l); background: var(--card);
+}
+.dock-bar.warned { border-color: var(--warning); }
+.dock-bar-heading { display: flex; align-items: center; gap: var(--space-s); }
+.dock-bar-heading > .icon { color: var(--text-secondary); }
+.dock-bar-heading > .icon.warning { color: var(--warning-text); }
+.dock-bar-text { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.dock-bar-text.secondary { color: var(--text-secondary); }
+.dock-bar-text.strong { font-weight: 600; }
+.dock-bar-note { font-size: var(--small); color: var(--text-tertiary); overflow-wrap: anywhere; }
+.dock-bar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-s); flex-wrap: wrap; }
+
+/* What a folder would run: plain text, as written in its settings; a long list scrolls. */
+.dock-bar-runs {
+    display: flex; flex-direction: column; gap: 2px; max-height: calc(var(--base) * 12); overflow-y: auto;
+    padding: var(--space-s); background: var(--code); border-radius: var(--radius-m);
+    font-family: var(--mono); font-size: var(--code-size); color: var(--text);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* The command that signs in, to copy. */
+.dock-bar-command {
+    display: flex; align-items: center; gap: var(--space-s);
+    padding: 0 var(--space-xs) 0 var(--space-m); background: var(--code); border-radius: var(--radius-m);
+}
+.dock-bar-command code { flex: 1; min-width: 0; font-family: var(--mono); font-size: var(--code-size); color: var(--text); }

@@ -31,13 +31,15 @@ tokio-tungstenite = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 clap = { workspace = true, optional = true, features = ["env"] }
 uuid = { workspace = true, optional = true }
+# The page's timers: the prompt's buttons arm a moment after a request shows.
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 
 [build-dependencies]
 lucide-static-svg = "1.55"
 
 [features]
 default = []
-web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures"]
+web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers"]
 server = [
     "dioxus/server",
     "dep:edualc-host",
