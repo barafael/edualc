@@ -1,6 +1,7 @@
 //! The usage panel (the CLI's `/usage` and `/context`), and bringing a session that runs in
 //! another window here.
 
+use crate::present::Frontend;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -10,7 +11,7 @@ use crate::desktop::Running;
 use crate::external::wire::{ContextReport, ControlRequest, LimitKind, SessionId, UsageReport};
 use crate::ipc::{Act, ActFailure};
 
-impl App {
+impl<F: Frontend> App<F> {
     pub(super) fn show_usage(&mut self) {
         self.usage.open = true;
         self.usage.error = None;

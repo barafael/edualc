@@ -51,8 +51,8 @@ struct Parts {
     usage: model::Usage,
 }
 
-pub struct Presenter {
-    frontend: Box<dyn Frontend>,
+pub struct Presenter<F: Frontend> {
+    frontend: F,
     session: model::Session,
     composer: model::Composer,
     sessions: model::Sessions,
@@ -82,8 +82,8 @@ pub struct Presenter {
     han: CjkLanguage,
 }
 
-impl Presenter {
-    pub fn new(frontend: Box<dyn Frontend>, openers: &[Opener], finds_windows: bool) -> Self {
+impl<F: Frontend> Presenter<F> {
+    pub fn new(frontend: F, openers: &[Opener], finds_windows: bool) -> Self {
         let openers: Vec<String> = std::iter::once("This window".to_owned())
             .chain(openers.iter().map(|opener| opener.label()))
             .collect();

@@ -5,7 +5,7 @@ message: A Deserialize type with named fields must carry #[serde(deny_unknown_fi
 note: "Without it serde skips keys it does not know: a misspelled key for an Option or defaulted field is dropped, and the field stays None or takes its default, without an error. Formats other programs write (Claude Code's, niri's) gain keys with each release, so their types live in src/external/ and take unknown keys by design."
 # edualc's change to the harness's rule: formats other programs write, kept apart in one module.
 ignores:
-  - src/external/**
+  - "**/src/external/**"
 utils:
   # Attributes and doc comments directly above an item.
   above-item:

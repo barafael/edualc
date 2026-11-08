@@ -30,12 +30,12 @@ pub struct PetName(String);
 
 impl PetName {
     pub fn of(id: &SessionId) -> Self {
-        let words = petname::Petnames::small();
-        let word = |list: &[&'static str], number: usize| {
+        fn word<'list>(list: &[&'list str], number: usize) -> &'list str {
             list.get(number % list.len().max(1))
                 .copied()
                 .unwrap_or("session")
-        };
+        }
+        let words = petname::Petnames::small();
         Self(format!(
             "{}-{}",
             word(&words.adjectives, id_number(id, 0)),
@@ -113,6 +113,7 @@ pub fn id_number(id: &SessionId, at: usize) -> usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionInfo {
     pub id: SessionId,
     pub title: String,
@@ -123,6 +124,7 @@ pub struct SessionInfo {
 
 /// A git worktree a session works in (`claude --worktree`, the EnterWorktree tool).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Worktree {
     pub path: PathBuf,
     pub name: String,
@@ -174,6 +176,7 @@ pub fn folder_name(path: &Path) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectInfo {
     pub path: PathBuf,
     pub modified: SystemTime,
@@ -182,6 +185,7 @@ pub struct ProjectInfo {
 /// A session some Claude Code process is running right now (a terminal, an editor, the
 /// background), as that process reports itself.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveSession {
     pub pid: u32,
     /// When its process started, to tell it from a later one with the same pid.

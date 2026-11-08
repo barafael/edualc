@@ -1,6 +1,7 @@
 //! What the process says, taken into the state: the conversation's messages and stream
 //! events, its own status, permission requests, and the answers to our control requests.
 
+use crate::present::Frontend;
 use serde::Deserialize;
 
 use super::{App, Doing, LimitUse, Mode, Request, Sandboxing, SignIn, TaskProgress};
@@ -13,7 +14,7 @@ use crate::external::wire::{
 };
 use crate::ipc::Generation;
 
-impl App {
+impl<F: Frontend> App<F> {
     /// Takes what process `generation` said; an earlier process's output is dropped.
     pub(super) fn take(&mut self, generation: Generation, output: Output) {
         if generation != self.generation {

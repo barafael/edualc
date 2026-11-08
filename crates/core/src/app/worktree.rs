@@ -1,10 +1,11 @@
 //! The worktree a session works in, and opening it: in this window, an editor, a terminal or
 //! the file manager.
 
-use super::{App, Event};
+use super::App;
+use crate::present::Frontend;
 use crate::sessions::Worktree;
 
-impl App {
+impl<F: Frontend> App<F> {
     /// The worktree of the session shown: the watched one's as its process reports it, or ours.
     pub(super) fn current_worktree(&self) -> Option<&Worktree> {
         match &self.watch {
@@ -48,12 +49,7 @@ impl App {
             cwd: self.cwd.clone(),
             id: id.clone(),
         };
-        self.read(read, move |answer, _| {
-            let crate::ipc::Answer::Worktree(worktree) = answer else {
-                return None;
-            };
-            Some(Event::WorktreeRead { id, worktree })
-        });
+        self.read(read, super::Reading::WorktreeOf { id });
     }
 
     pub(super) fn worktree_read(

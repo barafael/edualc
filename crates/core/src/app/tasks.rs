@@ -2,6 +2,7 @@
 //! sends whole on every change, and the subagents it waits for in the foreground, which no list
 //! names. Those are known from their `task_started`, until they end or move to the background.
 
+use crate::present::Frontend;
 use std::collections::BTreeMap;
 
 use crate::external::wire::{
@@ -10,7 +11,7 @@ use crate::external::wire::{
 
 use super::{App, Request};
 
-impl App {
+impl<F: Frontend> App<F> {
     /// The user stopped the turn, which ends only the turn: if tasks run on, their list opens
     /// and says so, for the user to stop them or leave them running.
     pub(super) fn tasks_after_stop(&mut self) {

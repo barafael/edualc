@@ -15,7 +15,7 @@ pub use presenter::{Presenter, short_count, short_duration};
 
 /// Text the window sets: plain, or with inline Markdown (emphasis, code, links) for the frontend
 /// to style.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Styled {
     #[default]
     Empty,
@@ -35,7 +35,7 @@ impl Styled {
 
 /// An image the window shows: one of the conversation's, by its key (its pixels come apart,
 /// through [`Frontend::show_image`]), or pixels at hand (a thumbnail).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Image {
     #[default]
     None,
@@ -44,7 +44,7 @@ pub enum Image {
 }
 
 /// The window's look: Gruvbox, or plain.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Look {
     #[default]
     Gruvbox,

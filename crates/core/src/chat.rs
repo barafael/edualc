@@ -44,7 +44,7 @@ pub struct Tool {
 
 /// An image in the conversation, known by its content: the same image twice is one image, and
 /// one's pixels, decoded late, can't come to another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageKey(u64);
 
 impl ImageKey {

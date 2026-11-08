@@ -22,9 +22,15 @@ pub const GAIN_CHART: &[u8] = include_bytes!("../../../../web/demo/gain.png");
 /// A session saved in the demo: its id, folder, how long ago it was last written, and its
 /// transcript.
 struct Saved {
+    // The demo's data, written out.
+    // ast-grep-ignore: static-str-wants-enum
     id: &'static str,
+    // The demo's data, written out.
+    // ast-grep-ignore: static-str-wants-enum
     cwd: &'static str,
     age: Duration,
+    // The demo's data, written out.
+    // ast-grep-ignore: static-str-wants-enum
     transcript: &'static str,
 }
 
@@ -81,9 +87,13 @@ const SAVED: &[Saved] = &[
 struct Running {
     saved: Saved,
     pid: u32,
+    // The demo's data, written out.
+    // ast-grep-ignore: static-str-wants-enum
     name: &'static str,
     status: LiveStatus,
     /// The git worktree it works in, by name.
+    // The demo's data, written out.
+    // ast-grep-ignore: static-str-wants-enum
     worktree: Option<&'static str>,
 }
 

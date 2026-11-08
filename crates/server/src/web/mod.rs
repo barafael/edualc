@@ -142,7 +142,7 @@ async fn run(view: View) {
     let text_size = view.page.peek().text_size;
     let frontend = view::PageFrontend::new(view);
     let mut app = App::new(
-        Box::new(frontend),
+        frontend,
         events.clone(),
         line,
         Desktop::of(&greeting, text_size),
@@ -154,7 +154,9 @@ async fn run(view: View) {
     spawn(app.run(received));
     let mut inbox = Inbox::default();
     loop {
-        match select(Box::pin(queue.recv()), Box::pin(socket.recv())).await {
+        let asked = std::pin::pin!(queue.recv());
+        let said = std::pin::pin!(socket.recv());
+        match select(asked, said).await {
             Either::Left((Ok(message), _)) => {
                 if let Err(error) = socket.send(message).await {
                     tracing::warn!(%error, "lost the daemon");

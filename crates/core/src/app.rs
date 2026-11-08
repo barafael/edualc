@@ -748,11 +748,82 @@ const NOTIFY_AGAIN: Duration = Duration::from_secs(60);
 const LISTEN: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_secs(30);
 
-/// What is done with an answer the daemon read (`App::read`).
-type Then = Box<dyn FnOnce(ipc::Answer, Vec<TranscriptLine>) -> Option<Event>>;
+/// What something asked of the daemon to read is for, to make its answer the event it means.
+#[derive(Debug)]
+enum Reading {
+    Projects,
+    Live,
+    Sessions {
+        cwd: PathBuf,
+    },
+    /// A session opened, read from its start.
+    Session {
+        id: SessionId,
+    },
+    /// A watched session's transcript, read on.
+    Grew {
+        id: SessionId,
+    },
+    /// The transcript of the subagent peeked into, read on.
+    Peek {
+        task: wire::TaskId,
+    },
+    WorktreeOf {
+        id: SessionId,
+    },
+    LinkedWorktree {
+        cwd: PathBuf,
+        replace: bool,
+    },
+    Folder {
+        typed: bool,
+    },
+}
 
-pub struct App {
-    view: Presenter,
+impl Reading {
+    /// The event the daemon's answer makes; none for an answer to another question.
+    fn answered(self, answer: ipc::Answer, lines: Vec<TranscriptLine>) -> Option<Event> {
+        use ipc::Answer;
+        Some(match (self, answer) {
+            (Self::Projects, Answer::Projects(projects)) => Event::ProjectsListed(projects),
+            (Self::Live, Answer::Live(live)) => Event::LiveListed(live),
+            (Self::Sessions { cwd }, Answer::Sessions(sessions)) => {
+                Event::SessionsListed { cwd, sessions }
+            }
+            (Self::Session { id }, Answer::Transcript { path, read }) => Event::SessionLoaded {
+                id,
+                path,
+                result: read.map(|offset| (Chat::from_transcript(&lines), offset)),
+            },
+            (Self::Grew { id }, Answer::Transcript { read, .. }) => Event::TranscriptGrew {
+                id,
+                result: read.map(|offset| (lines, offset)),
+            },
+            (Self::Peek { task }, Answer::Transcript { read, .. }) => Event::PeekGrew {
+                task,
+                result: read.map(|offset| (lines, offset)),
+            },
+            (Self::WorktreeOf { id }, Answer::Worktree(worktree)) => {
+                Event::WorktreeRead { id, worktree }
+            }
+            (Self::LinkedWorktree { cwd, replace }, Answer::Worktree(worktree)) => {
+                Event::LinkedWorktreeRead {
+                    cwd,
+                    worktree,
+                    replace,
+                }
+            }
+            (Self::Folder { typed }, Answer::Folder(result)) => Event::FolderRead { typed, result },
+            (reading, answer) => {
+                tracing::warn!(?reading, ?answer, "the daemon answered another question");
+                return None;
+            }
+        })
+    }
+}
+
+pub struct App<F: Frontend> {
+    view: Presenter<F>,
     events: Sender<Event>,
     chat: Chat,
     status: Status,
@@ -782,8 +853,8 @@ pub struct App {
     watch: Option<Watch>,
     /// The subagent whose conversation the side panel follows.
     peek: Option<Peek>,
-    /// What is done with the daemon's answers to what was read, by request.
-    answers: HashMap<ActId, Then>,
+    /// What was asked of the daemon to read, by request, for what its answer means.
+    reading: HashMap<ActId, Reading>,
     /// Why the settings couldn't be read, to say once the window is up.
     settings_problem: Option<String>,
     /// The watch on the running sessions' records.
@@ -830,9 +901,9 @@ pub struct App {
     redraw: Redraw,
 }
 
-impl App {
+impl<F: Frontend> App<F> {
     pub fn new(
-        frontend: Box<dyn Frontend>,
+        frontend: F,
         events: Sender<Event>,
         link: Link,
         desktop_found: Desktop,
@@ -892,7 +963,7 @@ impl App {
             notified: HashMap::new(),
             watch: None,
             peek: None,
-            answers: HashMap::new(),
+            reading: HashMap::new(),
             settings_problem,
             records: None,
             side: SideChat::default(),
@@ -996,8 +1067,8 @@ impl App {
                 answer,
                 lines,
             } => {
-                if let Some(then) = self.answers.remove(&request)
-                    && let Some(event) = then(answer, lines)
+                if let Some(reading) = self.reading.remove(&request)
+                    && let Some(event) = reading.answered(answer, lines)
                 {
                     return self.handle(event);
                 }
@@ -1104,12 +1175,7 @@ impl App {
             }
             Action::ListProjects => {
                 self.view.set_project_problem("");
-                self.read(Read::Projects, |answer, _| {
-                    let ipc::Answer::Projects(projects) = answer else {
-                        return None;
-                    };
-                    Some(Event::ProjectsListed(projects))
-                });
+                self.read(Read::Projects, Reading::Projects);
             }
             Action::ChooseModel(index) => self.choose_model(index),
             Action::ChooseMode(index) => self.choose_mode(index),
@@ -1366,17 +1432,12 @@ impl App {
         })
     }
 
-    /// Asks the daemon to read something; what `then` makes of its answer comes back as an
-    /// event, if anything.
-    fn read(
-        &mut self,
-        read: Read,
-        then: impl FnOnce(ipc::Answer, Vec<TranscriptLine>) -> Option<Event> + 'static,
-    ) {
+    /// Asks the daemon to read something; its answer comes back as the event `reading` means.
+    fn read(&mut self, read: Read, reading: Reading) {
         self.last_act = self.last_act.next();
         let request = self.last_act;
         if link::send(&self.link, ToDaemon::Read { request, read }).is_ok() {
-            self.answers.insert(request, Box::new(then));
+            self.reading.insert(request, reading);
         } else {
             tracing::warn!("the daemon is gone: nothing is read");
         }
@@ -1384,27 +1445,13 @@ impl App {
 
     /// Makes whole the folder to open, or says why it isn't one.
     fn read_folder(&mut self, read: Read, typed: bool) {
-        self.read(read, move |answer, _| {
-            let ipc::Answer::Folder(result) = answer else {
-                return None;
-            };
-            Some(Event::FolderRead { typed, result })
-        });
+        self.read(read, Reading::Folder { typed });
     }
 
     /// Reads whether the working folder is a linked git worktree.
     fn read_linked_worktree(&mut self, cwd: PathBuf, replace: bool) {
         let read = Read::LinkedWorktree { cwd: cwd.clone() };
-        self.read(read, move |answer, _| {
-            let ipc::Answer::Worktree(worktree) = answer else {
-                return None;
-            };
-            Some(Event::LinkedWorktreeRead {
-                cwd,
-                worktree,
-                replace,
-            })
-        });
+        self.read(read, Reading::LinkedWorktree { cwd, replace });
     }
 
     /// Has the daemon tell when what `target` names changes (`Event::Changed`).
@@ -1917,13 +1964,7 @@ impl App {
             cwd,
             id: id.clone(),
         };
-        self.read(Read::Transcript { place, from: 0 }, move |answer, lines| {
-            let ipc::Answer::Transcript { path, read } = answer else {
-                return None;
-            };
-            let result = read.map(|offset| (Chat::from_transcript(&lines), offset));
-            Some(Event::SessionLoaded { id, path, result })
-        });
+        self.read(Read::Transcript { place, from: 0 }, Reading::Session { id });
     }
 
     fn session_loaded(
@@ -2100,12 +2141,7 @@ impl App {
     /// Lists the running sessions again, once whatever listing is under way is done.
     fn list_live(&mut self) {
         if self.listing_live.wanted() {
-            self.read(Read::Live, |answer, _| {
-                let ipc::Answer::Live(live) = answer else {
-                    return None;
-                };
-                Some(Event::LiveListed(live))
-            });
+            self.read(Read::Live, Reading::Live);
         }
     }
 
@@ -2116,13 +2152,7 @@ impl App {
         };
         if watch.reading.wanted() {
             let (id, place, from) = (watch.session.id.clone(), watch.place.clone(), watch.offset);
-            self.read(Read::Transcript { place, from }, move |answer, lines| {
-                let ipc::Answer::Transcript { read, .. } = answer else {
-                    return None;
-                };
-                let result = read.map(|offset| (lines, offset));
-                Some(Event::TranscriptGrew { id, result })
-            });
+            self.read(Read::Transcript { place, from }, Reading::Grew { id });
         }
     }
 
@@ -2191,12 +2221,7 @@ impl App {
             limit: 200,
             known: self.sessions.clone(),
         };
-        self.read(read, move |answer, _| {
-            let ipc::Answer::Sessions(sessions) = answer else {
-                return None;
-            };
-            Some(Event::SessionsListed { cwd, sessions })
-        });
+        self.read(read, Reading::Sessions { cwd });
     }
 
     fn sessions_listed(&mut self, cwd: &Path, sessions: Vec<SessionInfo>) {

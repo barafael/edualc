@@ -2,6 +2,7 @@
 //! context, without joining it or running tools. They wait in a panel that can be folded away
 //! while something else needs the user, and brought back.
 
+use crate::present::Frontend;
 use serde_json::Value;
 
 use super::{App, Request};
@@ -83,7 +84,7 @@ impl SideChat {
     }
 }
 
-impl App {
+impl<F: Frontend> App<F> {
     /// Asks `question` on the side; an empty one only opens the panel to type it there.
     pub(super) fn ask_side(&mut self, question: &str) {
         let question = question.trim();
