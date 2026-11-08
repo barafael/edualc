@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use edualc_core::app::Action;
 
 use crate::web::View;
-use crate::web::widgets::{Button, Icon, IconButton};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide};
 
 /// What signs in to Claude Code, run in a terminal.
 const SIGN_IN_COMMAND: &str = "claude auth login";
@@ -30,7 +30,7 @@ pub fn WatchBar() -> Element {
         document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: if confirming() { "dock-bar warned" } else { "dock-bar" },
             div { class: "dock-bar-heading",
-                Icon { name: "eye" }
+                Icon { icon: Lucide::Eye }
                 if confirming() {
                     div { class: "dock-bar-text",
                         "Stop it in its window and continue it here? If it is working, its current step is interrupted."
@@ -63,13 +63,13 @@ pub fn WatchBar() -> Element {
                 div { class: "dock-bar-actions",
                     if session.can_go_to_window {
                         Button {
-                            icon: "app-window",
+                            icon: Lucide::AppWindow,
                             onclick: move |_| view.act(Action::GoToWindow),
                             "Go to its window"
                         }
                     }
                     Button {
-                        icon: "copy",
+                        icon: Lucide::Copy,
                         onclick: move |_| view.act(Action::ContinueHere),
                         "Continue here as a copy"
                     }
@@ -82,7 +82,7 @@ pub fn WatchBar() -> Element {
                             }
                         },
                         onclick: move |_| confirming.set(true),
-                        Icon { name: "arrow-down-to-line" }
+                        Icon { icon: Lucide::ArrowDownToLine }
                         "Bring it here"
                     }
                 }
@@ -101,7 +101,7 @@ pub fn TrustBar() -> Element {
         document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: "dock-bar warned",
             div { class: "dock-bar-heading",
-                Icon { name: "shield-alert", class: "warning" }
+                Icon { icon: Lucide::ShieldAlert, class: "warning" }
                 div { class: "dock-bar-text",
                     "Do you trust the files in {session.project}? Claude Code runs this folder's hooks and settings as soon as it starts here, before you send anything."
                 }
@@ -158,7 +158,7 @@ pub fn SignInBar() -> Element {
         document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: "dock-bar warned",
             div { class: "dock-bar-heading",
-                Icon { name: "log-in", class: "warning" }
+                Icon { icon: Lucide::LogIn, class: "warning" }
                 div { class: "dock-bar-text strong", "Sign in to Claude Code" }
             }
             div { class: "dock-bar-note",
@@ -167,7 +167,7 @@ pub fn SignInBar() -> Element {
             div { class: "dock-bar-command",
                 code { "{SIGN_IN_COMMAND}" }
                 IconButton {
-                    icon: "copy",
+                    icon: Lucide::Copy,
                     label: "Copy the command".to_owned(),
                     onclick: move |_| view.act(Action::Copy(SIGN_IN_COMMAND.to_owned())),
                 }

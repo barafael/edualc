@@ -14,7 +14,7 @@ use edualc_core::present::model::{
 };
 
 use crate::web::View;
-use crate::web::widgets::{Button, Icon, IconButton, Meter};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter};
 
 const STYLE: Asset = asset!("/assets/sidebar.css");
 /// The heron's drawings: standing, and the frames of what it does now and then.
@@ -110,7 +110,7 @@ pub fn LiveDot(state: LiveState) -> Element {
         LiveState::Waiting => {
             return rsx! {
                 span { class: "live-dot waiting", "aria-hidden": "true",
-                    Icon { name: "hand", class: "small" }
+                    Icon { icon: Lucide::Hand, class: "small" }
                 }
             };
         }
@@ -142,11 +142,11 @@ pub fn SandboxChip(
     let unasked = view.preferences.read().messages_unasked;
     // Checked only once the kernel is known to hold it.
     let (icon, ink) = if session.sandbox_pending {
-        ("shield", "ink-tertiary")
+        (Lucide::Shield, "ink-tertiary")
     } else if session.sandboxed {
-        ("shield-check", "ink-info")
+        (Lucide::ShieldCheck, "ink-info")
     } else {
-        ("shield-off", "ink-warning")
+        (Lucide::ShieldOff, "ink-warning")
     };
     let state = if session.sandboxed { "" } else { "open" };
     let explaining = if explains { "explains" } else { "" };
@@ -171,7 +171,7 @@ pub fn SandboxChip(
                 onmounted: move |element| chip.set(Some(element)),
                 onclick: move |_| open.set(true),
                 span { class: "{ink}",
-                    Icon { name: icon, class: "small" }
+                    Icon { icon: icon, class: "small" }
                 }
                 span { class: "sandbox-texts",
                     span { class: "sandbox-label", "{session.sandbox_label}" }
@@ -282,7 +282,7 @@ pub fn TasksChip(#[props(default)] class: String) -> Element {
                 onmounted: move |element| chip.set(Some(element)),
                 onclick: move |_| show(),
                 span { class: "ink-claude",
-                    Icon { name: "layers", class: "small" }
+                    Icon { icon: Lucide::Layers, class: "small" }
                 }
                 span { class: "tasks-summary trimmed", "{session.tasks_summary}" }
             }
@@ -332,11 +332,11 @@ pub fn TasksChip(#[props(default)] class: String) -> Element {
 fn TaskRow(task: TaskItem, onfollow: EventHandler<()>) -> Element {
     let view = use_context::<View>();
     let icon = match task.kind {
-        TaskKind::Agent => "bot",
-        TaskKind::Command => "square-terminal",
-        TaskKind::Workflow => "workflow",
-        TaskKind::Monitor => "radar",
-        TaskKind::Other => "circle-dashed",
+        TaskKind::Agent => Lucide::Bot,
+        TaskKind::Command => Lucide::SquareTerminal,
+        TaskKind::Workflow => Lucide::Workflow,
+        TaskKind::Monitor => Lucide::Radar,
+        TaskKind::Other => Lucide::CircleDashed,
     };
     let label = if task.peekable {
         format!("Follow {}", task.title)
@@ -361,7 +361,7 @@ fn TaskRow(task: TaskItem, onfollow: EventHandler<()>) -> Element {
                 "aria-label": "{label}",
                 disabled: !task.peekable,
                 span { class: "ink-secondary",
-                    Icon { name: icon, class: "small" }
+                    Icon { icon: icon, class: "small" }
                 }
                 span { class: "task-texts",
                     span { class: "task-title", "{task.title}" }
@@ -378,7 +378,7 @@ fn TaskRow(task: TaskItem, onfollow: EventHandler<()>) -> Element {
             span {
                 onclick: move |event| event.stop_propagation(),
                 IconButton {
-                    icon: "circle-stop",
+                    icon: Lucide::CircleStop,
                     label: format!("Stop {}", task.title),
                     onclick: move |_| view.act(Action::StopTask(TaskId::from(stop.clone()))),
                 }
@@ -386,7 +386,7 @@ fn TaskRow(task: TaskItem, onfollow: EventHandler<()>) -> Element {
             // The chevron's room either way, so that every row's stop button lines up.
             span { class: "task-end ink-tertiary",
                 if task.peekable {
-                    Icon { name: "chevron-right", class: "small" }
+                    Icon { icon: Lucide::ChevronRight, class: "small" }
                 }
             }
         }
@@ -417,7 +417,7 @@ fn SessionHeading(entry: SessionRow) -> Element {
 fn AgentCount(agents: i32) -> Element {
     rsx! {
         span { class: "agent-count", "aria-hidden": "true",
-            Icon { name: "bot", class: "small" }
+            Icon { icon: Lucide::Bot, class: "small" }
             "{agents}"
         }
     }
@@ -505,7 +505,7 @@ fn EarlierRow(entry: SessionRow) -> Element {
             onclick: move |_| open_session(view, &id),
             if !entry.worktree.is_empty() {
                 span { class: "ink-tertiary",
-                    Icon { name: "git-branch", class: "small" }
+                    Icon { icon: Lucide::GitBranch, class: "small" }
                 }
             }
             // The whole title, where the row cuts it off.
@@ -710,12 +710,12 @@ pub fn Sidebar(
                     // Gives way first: the buttons beside it keep their size.
                     div { class: "sidebar-name trimmed", "edualc" }
                     IconButton {
-                        icon: "palette",
+                        icon: Lucide::Palette,
                         label: if look == Look::Gruvbox { "Plain colours" } else { "Gruvbox colours" },
                         onclick: move |_| view.act(Action::SwitchLook),
                     }
                     IconButton {
-                        icon: "settings",
+                        icon: Lucide::Settings,
                         label: "Settings (Ctrl+,)",
                         onclick: move |_| {
                             view.act(Action::HideUsage);
@@ -725,13 +725,13 @@ pub fn Sidebar(
                         },
                     }
                     IconButton {
-                        icon: "square-pen",
+                        icon: Lucide::SquarePen,
                         label: "New session (Ctrl+N)",
                         onclick: move |_| view.act(Action::NewSession),
                     }
                     // Where the header's button to show it again then appears.
                     IconButton {
-                        icon: "panel-left-close",
+                        icon: Lucide::PanelLeftClose,
                         label: "Hide the sessions (Ctrl+B)",
                         onclick: move |_| onhide.call(()),
                     }
@@ -751,14 +751,14 @@ pub fn Sidebar(
                             projects_open.set(true);
                         },
                         span { class: "ink-secondary",
-                            Icon { name: "folder" }
+                            Icon { icon: Lucide::Folder }
                         }
                         span { class: "project-texts",
                             span { class: "project-name trimmed", title: "{session.project}", "{session.project}" }
                             span { class: "caption trimmed", title: "{session.cwd}", "{session.cwd}" }
                         }
                         span { class: "ink-secondary",
-                            Icon { name: "chevrons-up-down", class: "small" }
+                            Icon { icon: Lucide::ChevronsUpDown, class: "small" }
                         }
                     }
                     if projects_open() {
@@ -812,7 +812,7 @@ pub fn Sidebar(
                             "aria-expanded": "{account_open}",
                             onmounted: move |element| info_button.set(Some(element)),
                             onclick: move |_| account_open.set(true),
-                            Icon { name: "info" }
+                            Icon { icon: Lucide::Info }
                         }
                         // Above the row its button is on, from the sidebar's left margin.
                         if account_open() {

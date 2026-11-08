@@ -11,7 +11,7 @@ use edualc_core::present::model::{PlanSection, PromptKind, Question};
 
 use crate::web::View;
 use crate::web::text::Block;
-use crate::web::widgets::{Button, Icon, IconButton};
+use crate::web::widgets::{Button, Icon, IconButton, Lucide};
 
 /// How long a request shows before its buttons take clicks, in milliseconds.
 #[cfg(feature = "web")]
@@ -110,9 +110,9 @@ pub fn PromptBar() -> Element {
     let prompt = view.prompt.read();
     let armed = armed_for() == Some(prompt.serial);
     let icon = match prompt.kind {
-        PromptKind::Question => "message-circle-question-mark",
-        PromptKind::Plan => "list-checks",
-        PromptKind::Tool | PromptKind::None => "shield-question-mark",
+        PromptKind::Question => Lucide::MessageCircleQuestionMark,
+        PromptKind::Plan => Lucide::ListChecks,
+        PromptKind::Tool | PromptKind::None => Lucide::ShieldQuestionMark,
     };
     rsx! {
         document::Stylesheet { href: asset!("/assets/prompt.css") }
@@ -121,7 +121,7 @@ pub fn PromptBar() -> Element {
         }
         section { class: "prompt", "aria-labelledby": "prompt-title",
             div { class: "prompt-heading",
-                Icon { name: icon }
+                Icon { icon: icon }
                 div { id: "prompt-title", class: "prompt-title", "{prompt.title}" }
                 if prompt.queued > 0 {
                     div { class: "prompt-note", "{prompt.queued} more waiting" }
@@ -327,11 +327,11 @@ fn QuestionsPrompt(armed: bool, grab: Grab, current: Signal<usize>) -> Element {
 fn answered_mark(answered: bool) -> Element {
     if answered {
         rsx! {
-            Icon { name: "circle-check", class: "small answered" }
+            Icon { icon: Lucide::CircleCheck, class: "small answered" }
         }
     } else {
         rsx! {
-            Icon { name: "circle", class: "small" }
+            Icon { icon: Lucide::Circle, class: "small" }
         }
     }
 }
@@ -471,7 +471,7 @@ fn QuestionEntry(
                             onmousedown: move |event| event.prevent_default(),
                             onmouseenter: move |_| pointed.set(Some(o)),
                             onclick: move |_| pick(o),
-                            Icon { name: option_icon(multi, option.selected) }
+                            Icon { icon: option_icon(multi, option.selected) }
                             div { class: "prompt-option-text",
                                 div { class: "prompt-option-label", "{option.label}" }
                                 if !option.description.is_empty() {
@@ -532,12 +532,12 @@ fn option_class(selected: bool, ringed: bool) -> &'static str {
 }
 
 /// An option's mark: a box for one of any number, a circle for a single choice.
-fn option_icon(multi: bool, selected: bool) -> &'static str {
+fn option_icon(multi: bool, selected: bool) -> Lucide {
     match (multi, selected) {
-        (true, true) => "square-check",
-        (true, false) => "square",
-        (false, true) => "circle-check",
-        (false, false) => "circle",
+        (true, true) => Lucide::SquareCheck,
+        (true, false) => Lucide::Square,
+        (false, true) => Lucide::CircleCheck,
+        (false, false) => Lucide::Circle,
     }
 }
 
@@ -636,7 +636,7 @@ fn PlanReview() -> Element {
     rsx! {
         section { class: "plan-review", "aria-labelledby": "plan-review-title",
             div { class: "plan-review-header",
-                Icon { name: "list-checks", class: "plan-review-icon" }
+                Icon { icon: Lucide::ListChecks, class: "plan-review-icon" }
                 div { class: "plan-review-titles",
                     h2 { id: "plan-review-title", class: "plan-review-title", "Claude's plan" }
                     div { class: "caption plan-review-caption",
@@ -644,7 +644,7 @@ fn PlanReview() -> Element {
                     }
                 }
                 IconButton {
-                    icon: "x",
+                    icon: Lucide::X,
                     label: "Back to the conversation".to_owned(),
                     onclick: move |_| page.write().reviewing = false,
                 }
@@ -667,13 +667,13 @@ fn SectionRow(index: usize, section: PlanSection) -> Element {
     let excerpt = section.excerpt.clone();
     let (comment_icon, comment_class, comment_label) = if commented {
         (
-            "message-square-text",
+            Lucide::MessageSquareText,
             "plan-comment-button commented",
             format!("Edit the comment on: {excerpt}"),
         )
     } else {
         (
-            "message-square-plus",
+            Lucide::MessageSquarePlus,
             "plan-comment-button",
             format!("Comment on: {excerpt}"),
         )
@@ -684,16 +684,16 @@ fn SectionRow(index: usize, section: PlanSection) -> Element {
                 Block { block: section.block.clone() }
                 if commented && !section.editing {
                     div { class: "plan-comment",
-                        Icon { name: "message-square-text", class: "small plan-comment-mark" }
+                        Icon { icon: Lucide::MessageSquareText, class: "small plan-comment-mark" }
                         div { class: "plan-comment-text", "{section.comment}" }
                         IconButton {
-                            icon: "pencil",
+                            icon: Lucide::Pencil,
                             label: format!("Edit the comment on: {excerpt}"),
                             class: "small",
                             onclick: move |_| view.act(Action::EditComment(index)),
                         }
                         IconButton {
-                            icon: "trash",
+                            icon: Lucide::Trash,
                             label: format!("Remove the comment on: {excerpt}"),
                             class: "small",
                             onclick: move |_| {
