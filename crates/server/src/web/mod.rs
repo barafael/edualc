@@ -30,9 +30,10 @@ const MONO: Asset = asset!("/assets/fonts/FiraCode-Regular.ttf");
 pub fn App() -> Element {
     let view = use_hook(View::new);
     use_context_provider(|| view);
-    // In the browser only: the server renders the page as it is before the line opens.
-    #[cfg(feature = "web")]
+    // The line opens in the browser only: the server renders the page as it is before. The
+    // hook is there in both, so the page's hooks are the same ones, in the same order.
     use_hook(move || {
+        #[cfg(feature = "web")]
         spawn(run(view));
     });
     let page = view.page.read();
