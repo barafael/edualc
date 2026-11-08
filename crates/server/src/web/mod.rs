@@ -3,6 +3,9 @@
 //! signals, which the components draw; what the user does goes back as the app's actions. Its
 //! line to the daemon is the server's (`line`), carried on to the daemon's socket.
 
+// Dioxus's `rsx!` keeps its templates in `OnceLock`s on the server: its state, not ours.
+#![allow(clippy::disallowed_types)]
+
 use dioxus::prelude::*;
 
 mod components;
