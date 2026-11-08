@@ -95,6 +95,8 @@ slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5
 # The browser's clock and random numbers, for timestamps and ids.
 jiff = { version = "0.2.38", features = ["js"] }
 uuid = { version = "1.29", default-features = false, features = ["js"] }
+# The browser's timer, for what the app repeats (`repeat`).
+gloo-timers = "0.3"
 
 [build-dependencies]
 slint-build = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0" }

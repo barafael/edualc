@@ -30,6 +30,7 @@ mod markdown;
 mod plan;
 mod present;
 mod process;
+mod repeat;
 mod sessions;
 mod settings;
 mod sidebar;

@@ -27,6 +27,7 @@ use crate::ipc::{
 use crate::link::{self, Link};
 use crate::plan;
 use crate::present::{Command, Frontend, Presenter};
+use crate::repeat::Repeat;
 use crate::sessions::{
     self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
 };
@@ -850,11 +851,11 @@ pub(crate) struct App {
     /// What the daemon was asked to do, by request, for what its answer means.
     acting: HashMap<ActId, Acting>,
     last_act: ActId,
-    tick: slint::Timer,
+    tick: Repeat,
     /// Runs while a turn is under way (see `Event::Listen`).
-    listen: slint::Timer,
+    listen: Repeat,
     /// Runs while a command's output is followed (see `Event::PollOutput`).
-    polling: slint::Timer,
+    polling: Repeat,
     /// When the process last said something.
     heard: web_time::Instant,
     redraw: Redraw,
@@ -939,9 +940,9 @@ impl App {
             link,
             acting: HashMap::new(),
             last_act: ActId::default(),
-            tick: slint::Timer::default(),
-            listen: slint::Timer::default(),
-            polling: slint::Timer::default(),
+            tick: Repeat::default(),
+            listen: Repeat::default(),
+            polling: Repeat::default(),
             heard: web_time::Instant::now(),
             redraw: Redraw::default(),
         }
@@ -987,12 +988,7 @@ impl App {
             None => {}
         }
         self.records = self.watch(Target::Records);
-        let events = self.events.clone();
-        self.tick.start(slint::TimerMode::Repeated, TICK, move || {
-            if events.try_send(Event::Tick).is_err() {
-                tracing::debug!("a tick after the window closed");
-            }
-        });
+        self.tick.start(TICK, self.events.clone(), || Event::Tick);
         self.tick();
         self.render();
     }
@@ -2026,13 +2022,8 @@ impl App {
         if self.listen.running() {
             return;
         }
-        let events = self.events.clone();
         self.listen
-            .start(slint::TimerMode::Repeated, LISTEN, move || {
-                if events.try_send(Event::Listen).is_err() {
-                    tracing::debug!("listening after the window closed");
-                }
-            });
+            .start(LISTEN, self.events.clone(), || Event::Listen);
     }
 
     /// While a turn waits on the API (not on a tool, the user, compacting or a retry), says how
