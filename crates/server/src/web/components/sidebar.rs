@@ -25,6 +25,9 @@ const HERON_PREEN_2: Asset = asset!("/assets/heron/heron-preening-2.svg");
 const HERON_HALF: Asset = asset!("/assets/heron/heron-flapping-half.svg");
 const HERON_UP: Asset = asset!("/assets/heron/heron-flapping-up.svg");
 
+/// The sessions' filter: the sidebar's home for the keyboard (Ctrl+K, F6).
+pub(super) const FILTER: &str = "sidebar-filter";
+
 /// The widest the sidebar is dragged to, in CSS pixels.
 const WIDEST: f64 = 720.0;
 /// How far an arrow key widens or narrows it.
@@ -616,6 +619,15 @@ pub fn Sidebar(onhide: EventHandler<()>) -> Element {
     let mut drawn_width = use_signal(|| None::<f64>);
     let mut drag = use_signal(|| None::<Drag>);
     // The folder typed was opened: the list closes.
+    // Ctrl+K: the filter takes the focus, once the sidebar is drawn (it may just be shown).
+    let filter_wanted = use_memo(move || view.page.read().filter_wanted);
+    use_effect(move || {
+        if filter_wanted() {
+            let mut page = view.page;
+            page.write().filter_wanted = false;
+            crate::web::dom::focus(FILTER);
+        }
+    });
     let projects_opened = use_memo(move || view.page.read().projects_opened);
     use_effect(move || {
         projects_opened();
@@ -708,7 +720,7 @@ pub fn Sidebar(onhide: EventHandler<()>) -> Element {
                     }
                     IconButton {
                         icon: Lucide::SquarePen,
-                        label: "New session (Ctrl+N)",
+                        label: "New session",
                         onclick: move |_| view.act(Action::NewSession),
                     }
                     // Where the header's button to show it again then appears.
@@ -751,10 +763,12 @@ pub fn Sidebar(onhide: EventHandler<()>) -> Element {
                 // ones. The filter is the sidebar's home for the keyboard (Ctrl+K, F6).
                 input {
                     class: "field sidebar-filter",
-                    id: "sidebar-filter",
+                    id: FILTER,
                     r#type: "text",
                     placeholder: "Filter sessions",
                     "aria-label": "Filter sessions",
+                    "aria-keyshortcuts": "Control+K",
+                    title: "Filter sessions (Ctrl+K)",
                     oninput: move |event| view.act(Action::FilterSessions(event.value())),
                 }
                 if !sessions.empty.is_empty() {

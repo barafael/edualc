@@ -19,6 +19,7 @@ mod transcript;
 
 /// A shortcut that works wherever the focus is, as the page's listener names it.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 enum Shortcut {
     /// Ctrl+,
     Settings,
@@ -26,6 +27,60 @@ enum Shortcut {
     Sessions,
     /// Esc, unless what has the focus took it.
     Stop,
+    /// Ctrl+K: the sessions shown, and their filter focused.
+    Filter,
+    /// F6 (`forward`) or Shift+F6, from the area the focus is in, if any.
+    Area { forward: bool, from: Option<Area> },
+}
+
+/// The window's areas F6 goes round, in the native window's order (`ui/app.slint`'s
+/// `next-area`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+enum Area {
+    Sidebar,
+    Conversation,
+    Writing,
+    Side,
+}
+
+/// The area after `from` (or before, not `forward`), of those shown: the sidebar while it is,
+/// the side panel while it is. From nowhere, or from an area not shown, the round starts at
+/// what is written, as the native window's focus does.
+fn next_area(from: Option<Area>, forward: bool, sidebar: bool, side: bool) -> Area {
+    let shown: Vec<Area> = [Area::Sidebar, Area::Conversation, Area::Writing, Area::Side]
+        .into_iter()
+        .filter(|area| match area {
+            Area::Sidebar => sidebar,
+            Area::Side => side,
+            Area::Conversation | Area::Writing => true,
+        })
+        .collect();
+    let at = from
+        .and_then(|from| shown.iter().position(|area| *area == from))
+        .or_else(|| shown.iter().position(|area| *area == Area::Writing))
+        .unwrap_or_default();
+    let next = if forward {
+        (at + 1) % shown.len()
+    } else {
+        (at + shown.len() - 1) % shown.len()
+    };
+    shown.get(next).copied().unwrap_or(Area::Writing)
+}
+
+/// Puts the focus where `area` starts, as the native window's areas take it: the sessions'
+/// filter, the conversation, what the prompt asks for first or else the composer, the side
+/// panel's field.
+fn go_to(view: View, area: Area) {
+    let mut page = view.page;
+    match area {
+        Area::Sidebar => crate::web::dom::focus(sidebar::FILTER),
+        Area::Conversation => crate::web::dom::focus(transcript::LIST),
+        Area::Writing if view.prompt.peek().kind != PromptKind::None => {
+            page.write().focus_prompt += 1;
+        }
+        Area::Writing => page.write().focus_composer += 1,
+        Area::Side => crate::web::dom::focus(panels::SIDE_ASK),
+    }
 }
 
 /// Listens for the shortcuts on the whole page, and tells each.
@@ -39,6 +94,19 @@ const SHORTCUTS: &str = r#"document.addEventListener("keydown", (event) => {
     } else if (event.ctrlKey && (event.key === "b" || event.key === "B")) {
         event.preventDefault();
         dioxus.send("Sessions");
+    } else if (event.ctrlKey && !event.shiftKey && (event.key === "k" || event.key === "K")) {
+        event.preventDefault();
+        dioxus.send("Filter");
+    } else if (!event.ctrlKey && event.key === "F6") {
+        event.preventDefault();
+        const at = document.activeElement;
+        const from = !at ? null
+            : at.closest(".sidebar") ? "Sidebar"
+            : at.closest(".transcript-area") ? "Conversation"
+            : at.closest(".composer, .prompt") ? "Writing"
+            : at.closest(".side-panel") ? "Side"
+            : null;
+        dioxus.send({ Area: { forward: !event.shiftKey, from } });
     } else if (!event.ctrlKey && !event.shiftKey && event.key === "Escape" && !event.defaultPrevented) {
         dioxus.send("Stop");
     }
@@ -65,7 +133,8 @@ pub fn Window() -> Element {
     let settings = use_context_provider(|| panels::SettingsOpen(Signal::new(false)));
     let mut sidebar_shown = use_signal(|| true);
     // The shortcuts the native window takes wherever the focus is, and the page's controls name:
-    // the settings, the sessions shown or hidden, and Esc to stop.
+    // the settings, the sessions shown or hidden or filtered, F6 between areas, and Esc to stop.
+    // Ctrl+N and the zoom are the browser's own.
     use_hook(move || {
         spawn(async move {
             let mut keys = document::eval(SHORTCUTS);
@@ -74,6 +143,15 @@ pub fn Window() -> Element {
                     Shortcut::Settings => settings.open(view),
                     Shortcut::Sessions => sidebar_shown.toggle(),
                     Shortcut::Stop => stop(view, settings),
+                    Shortcut::Filter => {
+                        sidebar_shown.set(true);
+                        let mut page = view.page;
+                        page.write().filter_wanted = true;
+                    }
+                    Shortcut::Area { forward, from } => {
+                        let side = view.side.peek().view == SideView::Shown;
+                        go_to(view, next_area(from, forward, *sidebar_shown.peek(), side));
+                    }
                 }
             }
         });
@@ -134,5 +212,25 @@ pub fn Window() -> Element {
                 panels::SidePanel {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F6 goes round the areas shown, as in the native window; Shift+F6 the other way.
+    #[test]
+    fn f6_goes_round_the_areas_shown() {
+        use Area::{Conversation, Side, Sidebar, Writing};
+        assert_eq!(next_area(Some(Sidebar), true, true, false), Conversation);
+        assert_eq!(next_area(Some(Writing), true, true, false), Sidebar);
+        assert_eq!(next_area(Some(Writing), true, true, true), Side);
+        assert_eq!(next_area(Some(Side), true, true, true), Sidebar);
+        assert_eq!(next_area(Some(Writing), true, false, false), Conversation);
+        assert_eq!(next_area(Some(Conversation), false, false, false), Writing);
+        assert_eq!(next_area(Some(Sidebar), false, true, true), Side);
+        assert_eq!(next_area(None, true, true, false), Sidebar);
+        assert_eq!(next_area(Some(Side), true, true, false), Sidebar);
     }
 }

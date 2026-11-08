@@ -12,6 +12,7 @@
 use dioxus::prelude::*;
 
 mod components;
+pub mod dom;
 pub mod text;
 pub mod view;
 pub mod widgets;

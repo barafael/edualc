@@ -13,9 +13,12 @@ use edualc_core::present::{Command, EntriesChange, Frontend, Image, Look, model}
 /// What the app sets of the page itself, besides the presenter's state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Page {
-    /// Bumped to focus the composer, the side panel's field.
+    /// Bumped to focus the composer, the side panel's field, what the prompt asks for first.
     pub focus_composer: u32,
     pub focus_side: u32,
+    pub focus_prompt: u32,
+    /// The sidebar's filter is to take the focus, once it is drawn (Ctrl+K).
+    pub filter_wanted: bool,
     /// Bumped to go to the transcript's end.
     pub scroll_to_end: u32,
     /// Bumped as a session's transcript is loaded: shown at its end.

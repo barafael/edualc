@@ -19,7 +19,7 @@ use crate::web::view::{copy, image_url};
 use crate::web::widgets::{Icon, IconButton, Lucide};
 
 /// The scrolling list's id, by which the page finds it to scroll it.
-const LIST: &str = "transcript";
+pub(super) const LIST: &str = "transcript";
 
 /// How close to the end (in CSS pixels) still counts as at the end.
 const END_SLACK: f64 = 8.0;
@@ -260,7 +260,7 @@ pub fn Transcript() -> Element {
                 tabindex: "0",
                 role: "group",
                 "aria-label": "Conversation",
-                "aria-description": "The arrow keys, Page Up and Page Down scroll it",
+                "aria-description": "The arrow keys, Page Up and Page Down scroll it; F6 goes on to what is written",
                 onscroll,
                 onkeydown,
                 onresize,

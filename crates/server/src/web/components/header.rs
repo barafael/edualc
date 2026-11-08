@@ -67,7 +67,7 @@ fn Worktree() -> Element {
         !session.worktree_branch.is_empty() && session.worktree_branch != session.worktree_name;
     let mut close = move || {
         open.set(false);
-        dom::focus(WORKTREE);
+        crate::web::dom::focus(WORKTREE);
     };
     rsx! {
         div { class: "worktree",
@@ -153,16 +153,6 @@ mod dom {
         }
     }
 
-    /// Focuses the element with this id.
-    pub fn focus(id: &str) {
-        if let Some(element) = document()
-            .and_then(|document| document.get_element_by_id(id))
-            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
-        {
-            take_focus(&element);
-        }
-    }
-
     /// Moves the focus to the next of the menu's items (`forward`) or the one before, staying
     /// at the ends.
     pub fn focus_next(forward: bool) {
@@ -186,7 +176,5 @@ mod dom {
 /// Rendered on the server, the page has no focus to move yet.
 #[cfg(not(feature = "web"))]
 mod dom {
-    pub fn focus(_id: &str) {}
-
     pub fn focus_next(_forward: bool) {}
 }

@@ -51,6 +51,9 @@ pub fn use_settings_open() -> Signal<bool> {
     use_context::<SettingsOpen>().0
 }
 
+/// The side panel's field: its home for the keyboard (F6).
+pub(super) const SIDE_ASK: &str = "side-ask";
+
 /// The last request for the side panel's field to take the focus that a panel took: a panel
 /// just made takes one it missed, as the native window's `Side.focus-wanted` has it take it.
 static SIDE_FOCUS_TAKEN: GlobalSignal<u32> = Signal::global(|| 0);
@@ -148,7 +151,7 @@ pub fn SidePanel() -> Element {
             }
             div { class: "side-ask",
                 input {
-                    id: "side-ask",
+                    id: SIDE_ASK,
                     class: "field",
                     r#type: "text",
                     placeholder,

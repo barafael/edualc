@@ -10,6 +10,7 @@ use edualc_core::external::wire::RequestId;
 use edualc_core::present::model::{PlanSection, PromptKind, Question};
 
 use crate::web::View;
+use crate::web::dom::{focus, focus_at_end};
 use crate::web::text::Block;
 use crate::web::widgets::{Button, Icon, IconButton, Lucide};
 
@@ -22,26 +23,6 @@ const ARM_DELAY_MS: u32 = 700;
 async fn arm_delay() {
     #[cfg(feature = "web")]
     gloo_timers::future::TimeoutFuture::new(ARM_DELAY_MS).await;
-}
-
-/// Puts the focus on the element with `id` once it is drawn: it may only now be shown.
-fn focus(id: &str) {
-    document::eval(&format!(
-        "requestAnimationFrame(() => document.getElementById({id:?})?.focus())"
-    ));
-}
-
-/// Puts the focus on the text box with `id` once it is drawn, the cursor after its text.
-fn focus_at_end(id: &str) {
-    document::eval(&format!(
-        "requestAnimationFrame(() => {{
-            const input = document.getElementById({id:?});
-            if (input) {{
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }}
-        }})"
-    ));
 }
 
 /// The focus coming into the prompt: as it opens (unless a draft is being written, where the
@@ -112,6 +93,16 @@ pub fn PromptBar() -> Element {
             }
         });
         if view.draft.peek().is_empty() {
+            grab.ask();
+        }
+    });
+    // F6 coming into what is written: the prompt, while one is shown.
+    let wanted = use_memo(move || view.page.read().focus_prompt);
+    let mut seen = use_signal(|| *wanted.peek());
+    use_effect(move || {
+        let wanted = wanted();
+        if wanted != *seen.peek() {
+            seen.set(wanted);
             grab.ask();
         }
     });
