@@ -31,6 +31,8 @@ tokio-tungstenite = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 clap = { workspace = true, optional = true, features = ["env"] }
 uuid = { workspace = true, optional = true }
+# The page's line to the server: a plain WebSocket, so frames may be as large as messages.
+gloo-net = { version = "0.6", optional = true, default-features = false, features = ["websocket"] }
 # The page's timers: the prompt's buttons arm a moment after a request shows.
 gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 
@@ -39,7 +41,7 @@ lucide-static-svg = "1.55"
 
 [features]
 default = []
-web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers"]
+web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net"]
 server = [
     "dioxus/server",
     "dep:edualc-host",

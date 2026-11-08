@@ -120,7 +120,6 @@ fn decoded(value: &str) -> String {
 /// Opens the line, greets the daemon, and runs the app until the line is lost.
 #[cfg(feature = "web")]
 async fn run(view: View) {
-    use dioxus::fullstack::WebSocketOptions;
     use edualc_core::app::{App, Desktop, Event};
     use edualc_core::ipc::{PROTOCOL, ToDaemon};
     use edualc_core::link::{self, Inbox, QUEUE};
@@ -132,14 +131,16 @@ async fn run(view: View) {
     };
     let (token, dir) = address();
     tracing::debug!("opening the line to the daemon");
-    let socket = match crate::line::line(token, WebSocketOptions::new()).await {
-        Ok(socket) => socket,
+    let (mut sender, mut receiver) = match crate::line::open(&token) {
+        Ok(line) => line,
         Err(error) => return lost(format!("No line to edualc's daemon: {error}")),
     };
-    if let Err(error) = socket.send(ToDaemon::Hello { protocol: PROTOCOL }).await {
+    if let Err(error) = sender.send(&ToDaemon::Hello { protocol: PROTOCOL }).await {
         return lost(format!("The daemon didn't take the hello: {error}"));
     }
-    let (hello, hosted) = match (socket.recv().await, socket.recv().await) {
+    let hello = receiver.recv().await;
+    let hosted = receiver.recv().await;
+    let (hello, hosted) = match (hello, hosted) {
         (Ok(hello), Ok(hosted)) => (hello, hosted),
         (Err(error), _) | (_, Err(error)) => {
             return lost(format!(
@@ -176,10 +177,10 @@ async fn run(view: View) {
     let mut inbox = Inbox::default();
     loop {
         let asked = std::pin::pin!(queue.recv());
-        let said = std::pin::pin!(socket.recv());
+        let said = std::pin::pin!(receiver.recv());
         match select(asked, said).await {
             Either::Left((Ok(message), _)) => {
-                if let Err(error) = socket.send(message).await {
+                if let Err(error) = sender.send(&message).await {
                     tracing::warn!(%error, "lost the daemon");
                     break;
                 }

@@ -2298,6 +2298,7 @@ dependencies = [
  "edualc-core",
  "edualc-host",
  "futures-util",
+ "gloo-net",
  "gloo-timers",
  "image",
  "lucide-static-svg",

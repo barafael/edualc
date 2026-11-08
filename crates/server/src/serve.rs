@@ -1,9 +1,10 @@
 //! The server's side: its command line, the daemon it is or reaches, the token pages show, and
 //! carrying each page's line on to the daemon.
 
-use dioxus::fullstack::{CborEncoding, TypedWebsocket};
-use edualc_host::ipc::{self, FromDaemon, ToDaemon, ws};
+use dioxus::server::axum::extract::ws::{Message as PageMessage, WebSocket};
+use edualc_host::ipc::{self, ToDaemon, ws};
 use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message as DaemonMessage;
 
 /// What a page must show to be let through: the token printed as the server starts; nothing,
 /// for the demo, which runs nothing.
@@ -163,13 +164,18 @@ fn serve(listen: Option<std::net::SocketAddr>, access: Access) -> std::process::
     }
 }
 
-/// The page, its assets and server functions, with the token every line is checked against.
+/// The page and its assets, and its line, with the token every line is checked against.
 fn router(access: Access) -> dioxus::server::axum::Router {
-    dioxus::server::router(crate::web::App).layer(dioxus::server::axum::Extension(access))
+    dioxus::server::router(crate::web::App)
+        .route(
+            "/api/line",
+            dioxus::server::axum::routing::get(crate::line::line),
+        )
+        .layer(dioxus::server::axum::Extension(access))
 }
 
 /// Carries a page's line to the demo's script, which answers as the daemon would.
-pub async fn play(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
+pub async fn play(page: WebSocket) {
     let (requests, received) = async_channel::unbounded();
     let (outbox, answers) = async_channel::unbounded();
     tokio::spawn(edualc_host::demo::run(received, outbox));
@@ -177,28 +183,42 @@ pub async fn play(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
     loop {
         tokio::select! {
             asked = from_page.next() => match asked {
-                Some(Ok(message)) => {
-                    if requests.send(message).await.is_err() {
+                Some(Ok(PageMessage::Binary(bytes))) => match ipc::decode::<ToDaemon>(&bytes) {
+                    Ok(message) => {
+                        if requests.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::info!(%error, "a page said what isn't a message");
                         break;
                     }
-                }
-                Some(Err(_)) | None => break,
+                },
+                Some(Ok(PageMessage::Close(_)) | Err(_)) | None => break,
+                Some(Ok(_)) => {}
             },
             said = answers.recv() => match said {
-                Ok(message) => {
-                    if to_page.send(message).await.is_err() {
+                Ok(message) => match ipc::encode(&message) {
+                    Ok(bytes) => {
+                        if to_page.send(PageMessage::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "a demo message didn't encode");
                         break;
                     }
-                }
+                },
                 Err(_) => break,
             },
         }
     }
 }
 
-/// Carries a page's line on to the daemon (started if none runs), message by message, until
-/// either hangs up. What the page says is checked by the daemon as a native window's is.
-pub async fn carry(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
+/// Carries a page's line on to the daemon (started if none runs), frame by frame as it is,
+/// until either hangs up. What the page says is checked by the daemon as a native window's is,
+/// so the server doesn't read it.
+pub async fn carry(page: WebSocket) {
     // This program is the daemon too.
     let reached = tokio::task::spawn_blocking(|| {
         let program = std::env::current_exe().map_err(ipc::ReachError::Start)?;
@@ -237,31 +257,38 @@ pub async fn carry(page: TypedWebsocket<ToDaemon, FromDaemon, CborEncoding>) {
     let asked = async {
         loop {
             match from_page.next().await {
-                Some(Ok(message)) => {
-                    if let Err(error) = ws::send(&mut to_daemon, &message).await {
+                Some(Ok(PageMessage::Binary(bytes))) => {
+                    if let Err(error) = to_daemon.send(DaemonMessage::Binary(bytes)).await {
                         tracing::info!(%error, "the daemon hung up on a page");
                         return;
                     }
                 }
+                Some(Ok(PageMessage::Close(_))) | None => return,
+                // Pings are answered by the socket itself; a page sends no text.
+                Some(Ok(_)) => {}
                 Some(Err(error)) => {
                     tracing::info!(%error, "a page's line broke");
                     return;
                 }
-                None => return,
             }
         }
     };
     let said = async {
         loop {
-            match ws::recv::<_, FromDaemon>(&mut from_daemon).await {
-                Ok(message) => {
-                    if let Err(error) = to_page.send(message).await {
+            match from_daemon.next().await {
+                Some(Ok(DaemonMessage::Binary(bytes))) => {
+                    if let Err(error) = to_page.send(PageMessage::Binary(bytes)).await {
                         tracing::info!(%error, "a page stopped listening");
                         return;
                     }
                 }
-                Err(error) => {
-                    tracing::info!(%error, "the daemon hung up on a page");
+                Some(Ok(DaemonMessage::Close(_))) | None => {
+                    tracing::info!("the daemon hung up on a page");
+                    return;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    tracing::info!(%error, "the daemon's line broke");
                     return;
                 }
             }
