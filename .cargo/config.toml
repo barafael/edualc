@@ -1,0 +1,4 @@
+# `cargo edualcd`: the daemon and page server, which the window starts beside itself (the page
+# itself is built by `dx build -p edualc-server --platform web --fullstack`).
+[alias]
+edualcd = "build -p edualc-server --features server"

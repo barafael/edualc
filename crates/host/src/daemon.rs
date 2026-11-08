@@ -206,6 +206,7 @@ async fn window(
                 live,
                 claude_codes_sandbox,
                 finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
+                home: dirs::home_dir(),
             };
             if let Err(error) = ws::send(&mut socket, &answer).await {
                 tracing::warn!(%error, "a window left as it came");

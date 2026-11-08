@@ -29,7 +29,6 @@ strum = { version = "0.27", features = ["derive"] }
 open = "5"
 # The desktop's own folder picker, through its portal on Linux.
 rfd = "0.17"
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

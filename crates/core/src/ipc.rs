@@ -21,9 +21,13 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod reach;
+#[cfg(not(target_arch = "wasm32"))]
 mod socket;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws;
+#[cfg(not(target_arch = "wasm32"))]
+pub use reach::{ReachError, reach};
 #[cfg(not(target_arch = "wasm32"))]
 pub use socket::{Error, Folder, Listener, accept, connect};
 
@@ -322,6 +326,8 @@ pub enum FromDaemon {
         claude_codes_sandbox: bool,
         /// Other programs' windows can be found (niri runs).
         finds_windows: bool,
+        /// The user's home folder, where a page opens unless it names a folder.
+        home: Option<PathBuf>,
     },
     /// The process runs: started for the window, or running already as it attaches.
     Started {

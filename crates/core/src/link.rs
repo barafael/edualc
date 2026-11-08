@@ -9,7 +9,7 @@ use async_channel::{Sender, TrySendError};
 use crate::app::Event;
 use crate::claude::Output;
 use crate::desktop::Opener;
-use crate::ipc::{ActId, FromDaemon, Generation, Hosted, Stream, ToDaemon};
+use crate::ipc::{ActId, Buses, FromDaemon, Generation, Hosted, PROTOCOL, Stream, ToDaemon};
 use crate::sessions::{self, LiveSession};
 use crate::settings::Settings;
 
@@ -54,6 +54,52 @@ pub struct Greeting {
     pub claude_codes_sandbox: bool,
     /// Other programs' windows can be found.
     pub finds_windows: bool,
+    /// The user's home folder.
+    pub home: Option<std::path::PathBuf>,
+}
+
+/// Why a daemon's first messages don't greet this window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Ungreeted {
+    #[error(
+        "the edualc daemon running is another version; it ends once its windows and sessions do"
+    )]
+    Version,
+    #[error("the edualc daemon said something out of turn as the window connected")]
+    OutOfTurn,
+}
+
+/// What a daemon's first two messages, its hello and the sessions it runs, tell a window.
+pub fn greeted(hello: FromDaemon, hosted: FromDaemon) -> Result<(Buses, Greeting), Ungreeted> {
+    let FromDaemon::Hello {
+        protocol,
+        buses,
+        settings,
+        openers,
+        live,
+        claude_codes_sandbox,
+        finds_windows,
+        home,
+    } = hello
+    else {
+        return Err(Ungreeted::Version);
+    };
+    if protocol != PROTOCOL {
+        return Err(Ungreeted::Version);
+    }
+    let FromDaemon::Hosted(hosted) = hosted else {
+        return Err(Ungreeted::OutOfTurn);
+    };
+    let greeting = Greeting {
+        hosted,
+        live,
+        settings,
+        openers,
+        claude_codes_sandbox,
+        finds_windows,
+        home,
+    };
+    Ok((buses, greeting))
 }
 
 /// What the daemon says, made the app's events (sans-io): a transcript's lines are kept until

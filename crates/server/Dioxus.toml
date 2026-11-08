@@ -1,0 +1,6 @@
+[application]
+name = "edualc"
+asset_dir = "assets"
+
+[web.app]
+title = "edualc"
