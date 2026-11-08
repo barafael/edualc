@@ -2301,6 +2301,7 @@ dependencies = [
  "gloo-net",
  "gloo-timers",
  "image",
+ "js-sys",
  "lucide-static-svg",
  "pulldown-cmark",
  "serde",

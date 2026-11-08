@@ -171,17 +171,21 @@ impl Frontend for PageFrontend {
 
     fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>) {
         if let Ok(pixels) = shown
-            && let Some(url) = data_url(pixels)
+            && let Some(url) = object_url(pixels)
+            && let Some(old) = self.view.images.write().insert(key, url)
         {
-            self.view.images.write().insert(key, url);
+            let_go(&old);
         }
     }
 
     fn keep_images(&mut self, shown: &HashSet<ImageKey>) {
-        self.view
-            .images
-            .write()
-            .retain(|key, _| shown.contains(key));
+        self.view.images.write().retain(|key, url| {
+            let kept = shown.contains(key);
+            if !kept {
+                let_go(url);
+            }
+            kept
+        });
     }
 
     fn command(&mut self, command: Command) {
@@ -215,11 +219,42 @@ impl Frontend for PageFrontend {
 /// Pixels as a PNG `data:` URL, for an `<img>`.
 pub fn data_url(pixels: &Pixels) -> Option<String> {
     use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png(pixels)?);
+    Some(format!("data:image/png;base64,{encoded}"))
+}
+
+/// `pixels` as a PNG file's bytes.
+fn png(pixels: &Pixels) -> Option<Vec<u8>> {
     let image = image::RgbaImage::from_raw(pixels.width_px, pixels.height_px, pixels.rgba.clone())?;
     let mut png = std::io::Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).ok()?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
-    Some(format!("data:image/png;base64,{encoded}"))
+    Some(png.into_inner())
+}
+
+/// `pixels` as a PNG the browser holds, named by a short `blob:` URL: the conversation's images
+/// are drawn again as rows change, and copying a URL of megabytes each time would cost. Let go
+/// of with [`let_go`]. Off the browser, a `data:` URL.
+fn object_url(pixels: &Pixels) -> Option<String> {
+    #[cfg(feature = "web")]
+    {
+        let bytes = png(pixels)?;
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type("image/png");
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).ok()?;
+        web_sys::Url::create_object_url_with_blob(&blob).ok()
+    }
+    #[cfg(not(feature = "web"))]
+    data_url(pixels)
+}
+
+/// Lets go of an image [`object_url`] made: the browser frees it.
+#[cfg_attr(not(feature = "web"), expect(unused_variables))]
+fn let_go(url: &str) {
+    #[cfg(feature = "web")]
+    if url.starts_with("blob:") && web_sys::Url::revoke_object_url(url).is_err() {
+        tracing::debug!("an image's URL was let go of already");
+    }
 }
 
 /// An image of the presentation model as a URL to show; empty for none (yet).
