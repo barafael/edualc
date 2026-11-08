@@ -61,7 +61,7 @@ fn main() {
     }
     assert!(names.is_empty(), "icons Lucide hasn't: {names:?}");
     let code = format!(
-        "/// The Lucide icons the window uses.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Lucide {{\n{variants}}}\n\nimpl Lucide {{\n    /// Its SVG.\n    pub fn svg(self) -> &'static str {{\n        match self {{\n{svgs}        }}\n    }}\n}}\n"
+        "/// The Lucide icons the window uses (the native window's too, not all of them the page's).\n#[allow(dead_code)]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Lucide {{\n{variants}}}\n\nimpl Lucide {{\n    /// Its SVG.\n    pub fn svg(self) -> &'static str {{\n        match self {{\n{svgs}        }}\n    }}\n}}\n"
     );
     std::fs::write(out.join("icons.rs"), code).expect("write the icons");
 }

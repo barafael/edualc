@@ -231,7 +231,7 @@ fn Exchange(index: usize, exchange: SideExchange) -> Element {
 
 /// An answer still waited for: a dot in Claude's colour, and why it is waited for.
 #[component]
-fn Waiting(text: &'static str) -> Element {
+fn Waiting(#[props(into)] text: String) -> Element {
     rsx! {
         div { class: "waiting small", role: "status",
             span { class: "dot", "aria-hidden": "true" }
@@ -724,9 +724,9 @@ fn SettingsPanel() -> Element {
 /// One of a setting's choices: its name, what it means, and whether it is the one in use.
 #[component]
 fn Choice(
-    id: &'static str,
-    title: &'static str,
-    detail: &'static str,
+    #[props(into)] id: String,
+    #[props(into)] title: String,
+    #[props(into)] detail: String,
     chosen: bool,
     onclick: EventHandler,
     #[props(default)] onmounted: Option<EventHandler<MountedEvent>>,
@@ -761,9 +761,9 @@ fn Choice(
 /// nothing now (the display without the sandbox, say) is dimmed as a whole.
 #[component]
 fn Check(
-    id: &'static str,
+    #[props(into)] id: String,
     title: String,
-    detail: &'static str,
+    #[props(into)] detail: String,
     checked: bool,
     onclick: EventHandler,
     #[props(default)] disabled: bool,
@@ -794,8 +794,8 @@ fn Check(
 /// another picked.
 #[component]
 fn SandboxFolders(
-    title: &'static str,
-    detail: &'static str,
+    #[props(into)] title: String,
+    #[props(into)] detail: String,
     folders: Vec<String>,
     access: SandboxAccess,
 ) -> Element {

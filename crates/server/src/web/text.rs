@@ -36,7 +36,17 @@ pub fn markdown_html(source: &str) -> String {
         }
         // Images and the like aren't fetched: their text stands for them.
         Event::Start(Tag::Image { .. }) => Event::Text(CowStr::from("")),
-        other => other,
+        other @ (Event::Start(_)
+        | Event::End(_)
+        | Event::Text(_)
+        | Event::Code(_)
+        | Event::InlineMath(_)
+        | Event::DisplayMath(_)
+        | Event::FootnoteReference(_)
+        | Event::SoftBreak
+        | Event::HardBreak
+        | Event::Rule
+        | Event::TaskListMarker(_)) => other,
     });
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events);

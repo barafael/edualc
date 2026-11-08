@@ -16,7 +16,7 @@ use edualc_core::present::model::{
 use crate::web::View;
 use crate::web::text::{self, Block, Text};
 use crate::web::view::{copy, image_url};
-use crate::web::widgets::{Icon, IconButton};
+use crate::web::widgets::{Icon, IconButton, Lucide};
 
 /// The scrolling list's id, by which the page finds it to scroll it.
 const LIST: &str = "transcript";
@@ -274,7 +274,7 @@ pub fn Transcript() -> Element {
             Greeting {}
             if to_end_shown {
                 IconButton {
-                    icon: "arrow-down",
+                    icon: Lucide::ArrowDown,
                     label: "Go to the end",
                     class: "to-end",
                     onclick: move |_| go_to_end(),
@@ -327,7 +327,7 @@ fn Row(entry: Entry) -> Element {
         },
         EntryKind::Error => rsx! {
             div { class: "lane error",
-                Icon { name: "circle-alert", class: "small" }
+                Icon { icon: Lucide::CircleAlert, class: "small" }
                 div { class: "error-text {cjk_class(&entry.cjk)}", lang: text::lang(&entry.cjk),
                     Text { text: entry.body }
                 }
@@ -361,7 +361,7 @@ fn PeerBubble(entry: Entry) -> Element {
         div { class: "lane peer-row",
             div { class: "bubble peer",
                 div { class: "peer-sender",
-                    Icon { name: "messages-square", class: "small" }
+                    Icon { icon: Lucide::MessagesSquare, class: "small" }
                     span { "Message from {entry.sender}" }
                 }
                 div { class: "{cjk_class(&entry.cjk)}", lang: text::lang(&entry.cjk),
@@ -382,7 +382,7 @@ fn AssistantText(entry: Entry) -> Element {
             Markdown { blocks: entry.blocks }
             div { class: "lane",
                 IconButton {
-                    icon: "copy",
+                    icon: Lucide::Copy,
                     label: "Copy message",
                     class: "tiny",
                     onclick: move |_| act_on(view, index, Action::CopyEntry),
@@ -430,7 +430,7 @@ fn MarkdownBlock(block: MdBlock) -> Element {
                     div { class: "wide table-wide",
                         Block { block }
                         IconButton {
-                            icon: "copy",
+                            icon: Lucide::Copy,
                             label: "Copy table",
                             class: "tiny",
                             onclick: move |_| copy(raw.clone()),
@@ -448,9 +448,9 @@ fn Thinking(entry: Entry) -> Element {
     let view = use_context::<View>();
     let index = entry.index;
     let chevron = if entry.expanded {
-        "chevron-down"
+        Lucide::ChevronDown
     } else {
-        "chevron-right"
+        Lucide::ChevronRight
     };
     rsx! {
         div { class: "lane thinking",
@@ -458,9 +458,9 @@ fn Thinking(entry: Entry) -> Element {
                 class: "thinking-head",
                 "aria-expanded": "{entry.expanded}",
                 onclick: move |_| act_on(view, index, Action::Toggle),
-                Icon { name: "brain", class: "small" }
+                Icon { icon: Lucide::Brain, class: "small" }
                 span { class: "small", "Thinking" }
-                Icon { name: chevron, class: "small" }
+                Icon { icon: chevron, class: "small" }
             }
             if entry.expanded {
                 div { class: "thinking-body",
@@ -483,16 +483,16 @@ fn Thinking(entry: Entry) -> Element {
 fn StateMark(state: ToolState) -> Element {
     let (class, icon) = match state {
         ToolState::Streaming | ToolState::Running => ("working", None),
-        ToolState::Awaiting => ("awaiting", Some("hand")),
-        ToolState::Done => ("done", Some("check")),
-        ToolState::Failed => ("failed", Some("x")),
-        ToolState::Denied => ("faint", Some("ban")),
-        ToolState::Cancelled => ("faint", Some("circle-slash")),
+        ToolState::Awaiting => ("awaiting", Some(Lucide::Hand)),
+        ToolState::Done => ("done", Some(Lucide::Check)),
+        ToolState::Failed => ("failed", Some(Lucide::X)),
+        ToolState::Denied => ("faint", Some(Lucide::Ban)),
+        ToolState::Cancelled => ("faint", Some(Lucide::CircleSlash)),
     };
     rsx! {
         span { class: "state-mark {class}", "aria-hidden": "true",
             if let Some(name) = icon {
-                Icon { name, class: "small" }
+                Icon { icon: name, class: "small" }
             } else {
                 span { class: "dot" }
             }
@@ -506,9 +506,9 @@ fn RunLine(entry: Entry) -> Element {
     let view = use_context::<View>();
     let index = entry.index;
     let chevron = if entry.group_open {
-        "chevron-down"
+        Lucide::ChevronDown
     } else {
-        "chevron-right"
+        Lucide::ChevronRight
     };
     let failed = if entry.group_state == ToolState::Failed {
         "failed"
@@ -521,7 +521,7 @@ fn RunLine(entry: Entry) -> Element {
             "aria-label": "{entry.group_summary}",
             "aria-expanded": "{entry.group_open}",
             onclick: move |_| act_on(view, index, Action::ToggleRun),
-            Icon { name: chevron, class: "small faint" }
+            Icon { icon: chevron, class: "small faint" }
             StateMark { state: entry.group_state }
             span { class: "run-summary {failed}", "{entry.group_summary}" }
         }
@@ -573,9 +573,9 @@ fn ToolCard(entry: Entry) -> Element {
         "tool-summary mono"
     };
     let chevron = if entry.expanded {
-        "chevron-down"
+        Lucide::ChevronDown
     } else {
-        "chevron-right"
+        Lucide::ChevronRight
     };
     rsx! {
         div { class: card,
@@ -591,7 +591,7 @@ fn ToolCard(entry: Entry) -> Element {
                         "{state_label}"
                     }
                 }
-                Icon { name: chevron, class: "small" }
+                Icon { icon: chevron, class: "small" }
             }
             if entry.expanded {
                 div { class: "tool-body",
@@ -628,7 +628,7 @@ fn ToolCard(entry: Entry) -> Element {
 #[component]
 fn CodeBox(
     body: Styled,
-    ink: &'static str,
+    #[props(into)] ink: String,
     #[props(default)] note: String,
     #[props(default)] oncopy: Option<EventHandler<()>>,
 ) -> Element {
@@ -641,7 +641,7 @@ fn CodeBox(
             }
             if let Some(oncopy) = oncopy {
                 IconButton {
-                    icon: "copy",
+                    icon: Lucide::Copy,
                     label: "Copy",
                     class: "tiny codebox-copy",
                     onclick: move |_| oncopy.call(()),

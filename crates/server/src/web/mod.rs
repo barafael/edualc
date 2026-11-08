@@ -5,6 +5,9 @@
 
 // Dioxus's `rsx!` keeps its templates in `OnceLock`s on the server: its state, not ours.
 #![allow(clippy::disallowed_types)]
+// The server renders the page as it is before its line opens; what drives it (the frontend,
+// the line) runs only in the browser.
+#![cfg_attr(not(feature = "web"), allow(dead_code))]
 
 use dioxus::prelude::*;
 
