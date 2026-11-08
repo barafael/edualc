@@ -1,0 +1,234 @@
+/* The sidebar (src/web/components/sidebar.rs; ui/app.slint's Sidebar), and the sandbox's and
+   tasks' chips the header shows while it is hidden. */
+
+/* Narrow windows give up its width first, down to its header's buttons. Not clipped: its
+   popups reach over the conversation, as the native window's do. */
+aside.sidebar {
+    position: relative;
+    flex: 0 1 auto;
+    width: var(--sidebar);
+    min-width: max(200px, calc(4 * var(--button) + 24px + 4 * var(--space-s) + var(--space-xs) + 2 * var(--space-m)));
+    border-right: 1px solid var(--divider);
+    box-sizing: border-box;
+}
+.sidebar-body {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--space-s);
+    padding: var(--space-m);
+}
+
+/* Something to click that isn't a button: lit while hovered or pressed, tinted while selected,
+   with a bar of the accent so selection isn't told by tint alone. */
+.sidebar-press {
+    position: relative; display: flex; align-items: center; border: none; background: transparent;
+    border-radius: var(--radius-s); padding: 0; text-align: left; cursor: pointer; color: var(--text);
+    min-width: 0; transition: background 0.1s ease-out;
+}
+.sidebar-press:hover { background: var(--hover); }
+.sidebar-press:active { background: var(--pressed); }
+.sidebar-press.selected { background: var(--selected); }
+.sidebar-press.selected::before {
+    content: ""; position: absolute; left: 0; top: var(--space-s); bottom: var(--space-s);
+    width: 3px; border-radius: 1.5px; background: var(--accent);
+}
+.sidebar-press:disabled { cursor: default; background: transparent; }
+
+.trimmed { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ink-claude { color: var(--claude); }
+.ink-warning { color: var(--warning-text); }
+.ink-info { color: var(--info); }
+.ink-secondary { color: var(--text-secondary); }
+.ink-tertiary { color: var(--text-tertiary); }
+
+/* Popups: over a backdrop that closes them on a click. */
+.sidebar-backdrop { position: fixed; inset: 0; z-index: 40; }
+.sidebar-popup { position: absolute; z-index: 50; box-sizing: border-box; }
+.sidebar-popup:focus { outline: none; }
+
+/* The head: the heron, the name, the window's buttons. */
+.sidebar-head { display: flex; align-items: center; gap: var(--space-s); padding-left: var(--space-xs); flex: none; }
+.sidebar-name { flex: 1; font-size: var(--title); font-weight: 600; color: var(--text); }
+
+/* edualc's heron, in Claude's colour. About once a minute, for a second or so, it looks over its
+   shoulder, preens or flaps its wings, in turn: 61 s, 83 s and 47 s apart. */
+.heron-mark {
+    width: 24px; height: 24px; flex: none; background: var(--claude);
+    mask: var(--heron) center / contain no-repeat;
+    animation: heron 194.71s step-end infinite;
+}
+@keyframes heron {
+    0% { mask-image: var(--heron); }
+    31.329% { mask-image: var(--heron-back); }
+    32.099% { mask-image: var(--heron); }
+    74.727% { mask-image: var(--heron-preen-1); }
+    74.850% { mask-image: var(--heron-preen-2); }
+    74.973% { mask-image: var(--heron-preen-1); }
+    75.096% { mask-image: var(--heron-preen-2); }
+    75.220% { mask-image: var(--heron-preen-1); }
+    75.343% { mask-image: var(--heron-preen-2); }
+    75.466% { mask-image: var(--heron); }
+    99.605% { mask-image: var(--heron-half); }
+    99.661% { mask-image: var(--heron-up); }
+    99.718% { mask-image: var(--heron-half); }
+    99.774% { mask-image: var(--heron); }
+    99.831% { mask-image: var(--heron-half); }
+    99.887% { mask-image: var(--heron-up); }
+    99.944% { mask-image: var(--heron-half); }
+    100% { mask-image: var(--heron); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .heron-mark { animation: none; }
+}
+
+/* The folder worked in, and the list of the others. */
+.project { position: relative; flex: none; }
+.project-button { width: 100%; padding: var(--space-s); gap: var(--space-s); }
+.project-texts { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.project-name { font-weight: 600; color: var(--text); }
+.folders {
+    left: 0; top: calc(100% + var(--space-xs)); width: 440px; height: 460px;
+    max-width: calc(100vw - 2 * var(--space-m)); max-height: calc(100vh - 120px);
+    background: var(--surface); border-radius: var(--radius-l);
+    padding: var(--space-s); display: flex; flex-direction: column; gap: var(--space-s);
+}
+.folders-path { display: flex; gap: var(--space-s); }
+.folders-path .field { flex: 1; min-width: 0; }
+.folders-path .field:focus { outline: none; border-color: var(--accent); }
+.folders-problem { color: var(--danger-text); font-size: var(--small); overflow-wrap: anywhere; }
+.folders-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.folder-row {
+    height: var(--row-tall); flex: none; padding: 0 var(--space-s); gap: var(--space-s);
+}
+.folder-texts { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+
+/* The filter, and what is said where the list is empty. */
+.sidebar-filter { width: 100%; flex: none; }
+.sidebar-filter:focus { outline: none; border-color: var(--accent); }
+.sidebar-filter::placeholder { color: var(--text-faint); }
+.sessions-empty { color: var(--text-tertiary); font-size: var(--small); overflow-wrap: anywhere; flex: none; }
+
+/* The sessions: those running now, then this folder's earlier ones. */
+.session-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.session-heading {
+    display: flex; gap: var(--space-s); margin: 0; flex: none;
+    padding: var(--space-m) var(--space-s) var(--space-xs);
+    font-size: var(--small); font-weight: 600; color: var(--text-secondary);
+}
+.session-heading .heading-title { flex: 1; }
+.session-heading .heading-detail { font-weight: 400; color: var(--warning-text); flex: none; }
+.session-row { flex: none; padding-right: var(--space-s); gap: var(--space-s); cursor: pointer; }
+.session-row.running { height: var(--row-tall); }
+.session-row.earlier { height: var(--row); padding-left: var(--space-m); width: 100%; box-sizing: border-box; }
+/* A running row's own button holds all but the count of agents that opens the list of them. */
+.session-open {
+    flex: 1; align-self: stretch; display: flex; align-items: center; gap: var(--space-s); min-width: 0;
+    border: none; background: transparent; padding: 0 0 0 var(--space-m); text-align: left;
+    cursor: pointer; border-radius: var(--radius-s);
+}
+.session-texts { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.session-title { color: var(--text); }
+.session-row.earlier .session-title { flex: 1; color: var(--text-secondary); }
+.session-detail { color: var(--text-tertiary); font-size: var(--caption); }
+.session-detail.waiting { color: var(--warning-text); }
+.session-age { color: var(--text-tertiary); font-size: var(--caption); flex: none; }
+.agent-count { display: inline-flex; align-items: center; gap: var(--space-xs); color: var(--text-tertiary); font-size: var(--caption); flex: none; }
+.agent-count-button {
+    border: none; background: transparent; padding: var(--space-xs); border-radius: var(--radius-s);
+    cursor: pointer; flex: none;
+}
+.agent-count-button:hover { background: var(--hover); }
+
+/* How a session running elsewhere is doing: a hand, a dot, a ring. */
+.live-dot { display: inline-flex; align-items: center; justify-content: center; width: var(--icon-small); height: var(--icon-small); flex: none; }
+.live-dot.waiting { color: var(--warning-text); }
+.live-mark { width: 8px; height: 8px; border-radius: 4px; box-sizing: border-box; border: 1.5px solid var(--text-faint); }
+.live-mark.busy { background: var(--claude); border: none; }
+
+/* The foot: the sandbox, the account, the plan's limits used. */
+.sidebar-foot { flex: none; display: flex; flex-direction: column; gap: var(--space-xs); padding-top: var(--space-s); }
+.sidebar-rule { height: 1px; background: var(--divider); }
+.sidebar-foot .sandbox-chip { width: 100%; min-height: var(--chip); }
+.account-row { position: relative; display: flex; align-items: center; gap: var(--space-s); padding-top: var(--space-xs); }
+.account-row .product { flex: 1; font-weight: 600; font-size: var(--small); color: var(--text); }
+.account-row .icon-button { width: var(--chip); height: var(--chip); }
+.account-row .icon-button .icon { width: var(--icon-small); height: var(--icon-small); }
+.account {
+    left: 0; bottom: calc(100% + var(--space-xs)); width: 300px;
+    background: var(--surface-raised); border: 1px solid var(--control-border); border-radius: var(--radius-m);
+    box-shadow: 0 6px 24px var(--shadow);
+    padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-xs);
+}
+.account-line { display: flex; gap: var(--space-s); font-size: var(--small); }
+.account-line .label { width: 90px; flex: none; color: var(--text-tertiary); }
+.account-line .value { flex: 1; color: var(--text); }
+.usage-button {
+    flex-direction: column; align-items: stretch; width: 100%;
+    padding: 0 var(--space-xs) var(--space-s); color: var(--text-tertiary);
+}
+.usage-bar { display: flex; align-items: center; gap: var(--space-s); height: calc(var(--base) * 1.5); }
+.usage-bar .usage-label { width: calc(var(--base) * 2.2); flex: none; }
+.usage-bar .meter { flex: 1; min-width: 0; }
+.usage-bar .usage-share { width: calc(var(--base) * 2.4); flex: none; text-align: right; }
+.usage-resets { text-align: right; }
+
+/* The right edge: dragged, or with the arrow keys, it sets the width. A line in the accent
+   while it is hovered, dragged or has the focus. */
+.sidebar-edge {
+    position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: ew-resize;
+    display: flex; justify-content: flex-end; touch-action: none;
+}
+.sidebar-edge:focus-visible { outline: none; }
+.sidebar-edge .edge-line { width: 0; background: var(--accent); }
+.sidebar-edge:hover .edge-line, .sidebar-edge:focus-visible .edge-line, .sidebar-edge.dragging .edge-line { width: 3px; }
+/* While dragged: over the whole window, so the pointer stays with the edge. */
+.edge-cover { position: fixed; inset: 0; z-index: 60; cursor: ew-resize; }
+
+/* What keeps Claude Code in. */
+.sandbox { position: relative; display: inline-flex; }
+.sandbox-chip {
+    gap: var(--space-xs); padding: 0 var(--space-s); border: 1px solid var(--divider);
+    border-radius: var(--radius-m); width: 100%; height: 100%; box-sizing: border-box;
+}
+.sandbox-chip.open { border-color: var(--warning); }
+.sandbox-chip.explains { padding-top: var(--space-xs); padding-bottom: var(--space-xs); }
+.sandbox-chip.explains.open { align-items: flex-start; }
+.sandbox-texts { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.sandbox-label { font-size: var(--small); color: var(--text-secondary); }
+.sandbox-chip.open .sandbox-label { color: var(--warning-text); font-weight: 600; }
+.sandbox-chip.explains.open .icon { margin-top: 2px; }
+.sandbox-menu {
+    width: 340px; max-width: calc(100vw - 2 * var(--space-m));
+    background: var(--surface); border-radius: var(--radius-m);
+    padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-s);
+}
+.sandbox-menu.up { left: 0; bottom: calc(100% + var(--space-xs)); }
+.sandbox-menu.down { right: 0; top: calc(100% + var(--space-xs)); }
+.sandbox-menu .menu-heading { font-weight: 600; color: var(--text); }
+.sandbox-menu .small { color: var(--text-tertiary); }
+.sandbox-menu .button { justify-content: center; }
+.sandbox-menu .warning { color: var(--warning-text); }
+
+/* What runs besides the turn's own steps. */
+.tasks { position: relative; display: inline-flex; min-width: 0; }
+.tasks-chip { height: var(--chip); gap: var(--space-xs); padding: 0 var(--space-s); border-radius: var(--radius-m); max-width: 100%; }
+.tasks-chip .tasks-summary { font-size: var(--small); color: var(--text-secondary); }
+.tasks-menu {
+    left: 0; bottom: calc(100% + var(--space-xs)); width: 380px; max-width: calc(100vw - 2 * var(--space-m));
+    background: var(--surface); border-radius: var(--radius-m); overflow-y: auto;
+    padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-s);
+}
+.tasks-head { display: flex; align-items: center; gap: var(--space-s); }
+.tasks-head .menu-heading { flex: 1; font-weight: 600; color: var(--text); }
+.tasks-note { font-size: var(--small); color: var(--text-secondary); }
+.task-row { padding: var(--space-xs); gap: var(--space-s); align-items: flex-start; flex: none; }
+.task-row.peekable { cursor: pointer; }
+.task-follow {
+    flex: 1; display: flex; gap: var(--space-s); min-width: 0; border: none; background: transparent;
+    padding: 0; text-align: left; cursor: inherit; border-radius: var(--radius-s);
+}
+.task-follow > .icon { margin-top: calc(var(--space-xs) / 2); }
+.task-texts { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.task-title { color: var(--text); overflow-wrap: anywhere; }
+.task-row .icon-button, .task-row .task-end { align-self: center; }
+.task-row .icon-button { width: auto; height: auto; padding: var(--space-xs); }
+.task-row .icon-button .icon { width: var(--icon-small); height: var(--icon-small); }
+.task-end { width: var(--icon-small); height: var(--icon-small); flex: none; display: inline-flex; }
