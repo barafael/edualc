@@ -23,3 +23,16 @@ pub fn focus_at_end(id: &str) {
         }})"
     ));
 }
+
+/// Puts the focus on the element with `id` as something opens by itself (a prompt): on a touch
+/// screen, not on a text field, where it would bring the keyboard up over what just opened; the
+/// field takes it as it is tapped.
+pub fn grab_focus(id: &str) {
+    document::eval(&format!(
+        "requestAnimationFrame(() => {{
+            const element = document.getElementById({id:?});
+            const typed = element?.matches('input, textarea, [contenteditable]');
+            if (!(typed && matchMedia('(pointer: coarse)').matches)) {{ element?.focus(); }}
+        }})"
+    ));
+}

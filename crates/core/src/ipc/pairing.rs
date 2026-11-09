@@ -1,7 +1,8 @@
 //! What a window needs to reach an edualcd and know it: its address, its certificate's
 //! fingerprint (pinned: the certificate is edualcd's own, signed by no one), and the token it
 //! lets windows in with. edualcd prints it as an address a browser opens too
-//! (`https://host:port/#token=…&fingerprint=…`); `edualc --pair` takes the same.
+//! (`https://host:port/#token=…&fingerprint=…`); `edualc --pair` takes the same. A demo
+//! (`edualcd --demo`) is reached by its plain address instead (`http://host:port/`).
 
 use std::fmt;
 
@@ -94,7 +95,10 @@ impl fmt::Debug for Pairing {
 /// Why an address doesn't pair.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PairingError {
-    #[error("an edualcd's address starts with https:// (edualcd prints it as it starts)")]
+    #[error(
+        "an edualcd's address starts with https:// (edualcd prints it as it starts), a demo's \
+         with http://"
+    )]
     NotHttps,
     #[error("the address names no host and port")]
     NoAddress,
@@ -121,11 +125,7 @@ impl Pairing {
 
     /// `host:port`, an IPv6 address in brackets.
     pub fn authority(&self) -> String {
-        if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
+        authority(&self.host, self.port)
     }
 
     /// The window's line: the WebSocket's address, the token and the protocol it speaks in its
@@ -146,26 +146,7 @@ impl Pairing {
             .trim()
             .strip_prefix("https://")
             .ok_or(PairingError::NotHttps)?;
-        let (authority, fragment) = match rest.split_once('#') {
-            Some((before, fragment)) => (before, fragment),
-            None => (rest, ""),
-        };
-        let authority = authority.split('/').next().unwrap_or_default();
-        let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-            let (host, after) = bracketed.split_once(']').ok_or(PairingError::NoAddress)?;
-            (
-                host,
-                after.strip_prefix(':').ok_or(PairingError::NoAddress)?,
-            )
-        } else {
-            authority.rsplit_once(':').ok_or(PairingError::NoAddress)?
-        };
-        if host.is_empty() {
-            return Err(PairingError::NoAddress);
-        }
-        let port = port
-            .parse()
-            .map_err(|_not_a_number| PairingError::NotAPort(port.to_owned()))?;
+        let (host, port, fragment) = split_address(rest)?;
         let mut token = None;
         let mut fingerprint = None;
         for pair in fragment.split('&') {
@@ -176,13 +157,121 @@ impl Pairing {
             }
         }
         Ok(Self {
-            host: host.to_owned(),
+            host,
             port,
             token: token
                 .filter(|token| !token.is_empty())
                 .ok_or(PairingError::NoToken)?,
             fingerprint: fingerprint.ok_or(PairingError::NoFingerprint)?,
         })
+    }
+}
+
+/// An address's host, port and fragment, from what follows its scheme (`host:port/…#…`).
+fn split_address(rest: &str) -> Result<(String, u16, &str), PairingError> {
+    let (authority, fragment) = match rest.split_once('#') {
+        Some((before, fragment)) => (before, fragment),
+        None => (rest, ""),
+    };
+    let authority = authority.split('/').next().unwrap_or_default();
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, after) = bracketed.split_once(']').ok_or(PairingError::NoAddress)?;
+        (
+            host,
+            after.strip_prefix(':').ok_or(PairingError::NoAddress)?,
+        )
+    } else {
+        authority.rsplit_once(':').ok_or(PairingError::NoAddress)?
+    };
+    if host.is_empty() {
+        return Err(PairingError::NoAddress);
+    }
+    let port = port
+        .parse()
+        .map_err(|_not_a_number| PairingError::NotAPort(port.to_owned()))?;
+    Ok((host.to_owned(), port, fragment))
+}
+
+/// `host:port`, an IPv6 address in brackets.
+fn authority(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// The demo (`edualcd --demo`), as a window reaches it: Claude Code played by a script, over
+/// plain HTTP, which lets anyone in. It runs nothing and holds nothing, so neither end has
+/// anything to keep secret; what is typed to it is the script's to read, and whoever stands
+/// between's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Demo {
+    pub host: String,
+    pub port: u16,
+}
+
+/// An edualcd a window reaches: one paired with, or a demo.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Server {
+    Paired(Pairing),
+    Demo(Demo),
+}
+
+impl Server {
+    /// An address as edualcd prints it: `https://…#token=…&fingerprint=…` pairs, and the
+    /// demo's `http://host:port/` reaches the demo.
+    pub fn parse(url: &str) -> Result<Self, PairingError> {
+        match url.trim().strip_prefix("http://") {
+            Some(rest) => {
+                let (host, port, _fragment) = split_address(rest)?;
+                Ok(Self::Demo(Demo { host, port }))
+            }
+            None => Pairing::parse(url).map(Self::Paired),
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        match self {
+            Self::Paired(Pairing { host, .. }) | Self::Demo(Demo { host, .. }) => host,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Paired(Pairing { port, .. }) | Self::Demo(Demo { port, .. }) => *port,
+        }
+    }
+
+    /// `host:port`, an IPv6 address in brackets.
+    pub fn authority(&self) -> String {
+        authority(self.host(), self.port())
+    }
+
+    /// The window's line: a paired edualcd's over TLS, with its token; the demo's in plain.
+    pub fn line_url(&self) -> String {
+        match self {
+            Self::Paired(pairing) => pairing.line_url(),
+            Self::Demo(demo) => format!(
+                "ws://{}/api/line?token=&protocol={}",
+                authority(&demo.host, demo.port),
+                super::PROTOCOL
+            ),
+        }
+    }
+
+    /// The address edualcd printed, which pairs again.
+    pub fn url(&self) -> String {
+        match self {
+            Self::Paired(pairing) => pairing.url(),
+            Self::Demo(demo) => format!("http://{}/", authority(&demo.host, demo.port)),
+        }
+    }
+
+    pub fn is_demo(&self) -> bool {
+        matches!(self, Self::Demo(_))
     }
 }
 
@@ -299,8 +388,32 @@ mod tests {
         ));
     }
 
+    /// The demo's address reaches it in plain; a paired edualcd's pairs; each prints back as
+    /// it was read, and is kept so.
+    #[test]
+    fn a_demo_is_reached_by_its_plain_address() {
+        let demo = Server::parse("http://10.0.2.2:7878/").expect("the demo's address");
+        assert_eq!(
+            demo,
+            Server::Demo(Demo {
+                host: "10.0.2.2".to_owned(),
+                port: 7878
+            })
+        );
+        assert!(demo.line_url().starts_with("ws://10.0.2.2:7878/api/line?"));
+        assert_eq!(Server::parse(&demo.url()), Ok(demo.clone()));
+        let paired = Server::Paired(pairing("box"));
+        assert_eq!(Server::parse(&paired.url()), Ok(paired.clone()));
+        assert!(paired.line_url().starts_with("wss://box:7878/"));
+        for server in [demo, paired] {
+            let kept = serde_json::to_string(&server).expect("written");
+            assert_eq!(serde_json::from_str::<Server>(&kept).ok(), Some(server));
+        }
+    }
+
     #[test]
     fn the_token_stays_out_of_the_log() {
         assert!(!format!("{:?}", pairing("h")).contains("to ken"));
+        assert!(!format!("{:?}", Server::Paired(pairing("h"))).contains("to ken"));
     }
 }

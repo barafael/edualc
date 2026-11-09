@@ -17,6 +17,8 @@ pub mod grouping;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod home;
 pub mod ipc;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod line;
 pub mod link;
 pub mod markdown;
 pub mod plan;

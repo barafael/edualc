@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pairing;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod servers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tls;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws;

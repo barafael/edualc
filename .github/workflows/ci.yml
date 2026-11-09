@@ -87,6 +87,29 @@ jobs:
           cargo clippy --locked --target wasm32-unknown-unknown -p edualc-core -p edualc-server
           --features edualc-server/web -- -D warnings -A dead_code
 
+  # The Android app (edualc-server's `mobile` feature), as phones run it (aarch64). The runner's
+  # NDK compiles what is C in it (ring). Built with dx and tried in an emulator by hand (README).
+  android:
+    name: The Android app
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy \
+            --target aarch64-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: |
+          ndk="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$ndk/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$ndk/llvm-ar"
+          cargo clippy --locked --target aarch64-linux-android -p edualc-core -p edualc-server \
+            --features edualc-server/mobile -- -D warnings
+
   deny:
     name: cargo deny
     runs-on: ubuntu-24.04

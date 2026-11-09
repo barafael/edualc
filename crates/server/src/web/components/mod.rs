@@ -83,6 +83,13 @@ fn go_to(view: View, area: Area) {
     }
 }
 
+/// Tells whether the window is narrow (a phone's), as it starts and as that changes; the
+/// stylesheet's own breakpoint (`edualc.css`).
+const NARROW: &str = r#"const query = matchMedia("(max-width: 640px)");
+dioxus.send(query.matches);
+query.addEventListener("change", (event) => dioxus.send(event.matches));
+await new Promise(() => {});"#;
+
 /// Listens for the shortcuts on the whole page, and tells each.
 const SHORTCUTS: &str = r#"document.addEventListener("keydown", (event) => {
     if (event.altKey || event.metaKey || event.isComposing) {
@@ -132,6 +139,31 @@ pub fn Window() -> Element {
     let view = use_context::<View>();
     let settings = use_context_provider(|| panels::SettingsOpen(Signal::new(false)));
     let mut sidebar_shown = use_signal(|| true);
+    // Narrow, the sidebar comes over the conversation: hidden as the window starts or narrows,
+    // shown again as it widens.
+    let mut narrow = use_signal(|| false);
+    use_hook(move || {
+        spawn(async move {
+            let mut changes = document::eval(NARROW);
+            while let Ok(now) = changes.recv::<bool>().await {
+                if now != *narrow.peek() {
+                    narrow.set(now);
+                    sidebar_shown.set(!now);
+                }
+            }
+        });
+    });
+    // Narrow, a session opened or a new one begun goes on without the sidebar over it.
+    let opened = use_memo(move || {
+        let page = view.page.read();
+        (page.opened, page.focus_composer)
+    });
+    use_effect(move || {
+        opened();
+        if *narrow.peek() && *sidebar_shown.peek() {
+            sidebar_shown.set(false);
+        }
+    });
     // The shortcuts the native window takes wherever the focus is, and the page's controls name:
     // the settings, the sessions shown or hidden or filtered, F6 between areas, and Esc to stop.
     // Ctrl+N and the zoom are the browser's own.
@@ -170,6 +202,13 @@ pub fn Window() -> Element {
     rsx! {
         div { class: "layout",
             if sidebar_shown() {
+                if narrow() {
+                    div {
+                        class: "scrim",
+                        "aria-hidden": "true",
+                        onclick: move |_| sidebar_shown.set(false),
+                    }
+                }
                 sidebar::Sidebar {
                     onhide: move |()| sidebar_shown.set(false),
                 }

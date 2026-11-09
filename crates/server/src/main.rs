@@ -9,12 +9,17 @@
 //! - It is a Dioxus fullstack server: it serves the page (`web`), the same window as the native
 //!   one, drawn by Dioxus from the same presenter, whose line is a window's like any other.
 //! - `edualcd --decode-image` and `--show-image` are the confined image decoder (see `decode`).
+//!
+//! Built with the `mobile` feature instead (`dx build --android`), it is the Android app
+//! (`android`): the same window, which reaches an edualcd as the native one does.
 
 #[cfg(feature = "server")]
 mod serve;
 #[cfg(feature = "server")]
 mod state;
 
+#[cfg(feature = "mobile")]
+mod android;
 mod line;
 mod web;
 
@@ -23,7 +28,13 @@ fn main() -> std::process::ExitCode {
     serve::main()
 }
 
-#[cfg(not(feature = "server"))]
+#[cfg(not(any(feature = "server", feature = "mobile")))]
 fn main() {
     dioxus::launch(web::App);
+}
+
+/// The Android app: the same window, its line native (`android`).
+#[cfg(all(feature = "mobile", not(feature = "server")))]
+fn main() {
+    dioxus::launch(android::App);
 }

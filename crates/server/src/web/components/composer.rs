@@ -106,6 +106,23 @@ pub fn CommandList() -> Element {
 #[component]
 pub fn Composer() -> Element {
     let view = use_context::<View>();
+    // Where a tap lands is the WebView's to see; the app's script keeps it (see `dom::clicked`).
+    #[cfg(feature = "mobile")]
+    use_hook(dom::watch_presses);
+    // The app's text box holds what is typed itself: set from here as each keystroke comes back,
+    // it would lose those typed meanwhile (the WebView answers later than a browser's page
+    // does). The draft is put in it only as the app changes it otherwise (sent, a command
+    // picked, a draft restored).
+    #[cfg(feature = "mobile")]
+    let mut typed = use_signal(String::new);
+    #[cfg(feature = "mobile")]
+    use_effect(move || {
+        let text = view.draft.read().clone();
+        if text != *typed.peek() {
+            dom::set_text(&text);
+            typed.set(text);
+        }
+    });
     let mut draft = view.draft;
     let mut command_index = use_command_index();
     // Esc dismisses a command's hint, until the next edit.
@@ -137,7 +154,7 @@ pub fn Composer() -> Element {
         let serial = focus_serial();
         if serial != *focus_seen.peek() {
             focus_seen.set(serial);
-            dom::focus_end(&draft.peek());
+            dom::focus_asked(&draft.peek());
         }
     });
 
@@ -345,13 +362,17 @@ pub fn Composer() -> Element {
     // The top edge: dragged, the box takes that height and keeps it.
     let onpointerdown = move |event: PointerEvent| {
         event.prevent_default();
-        let from_height = dom::scroll_height().unwrap_or_else(|| (*chosen.peek()).max(2.0 * line));
-        let tallest = dom::column_height().map_or(TALLEST_DRAGGED, |height| height * 0.8);
-        drag.set(Some(Drag {
-            from_y: event.client_coordinates().y,
-            from_height,
-            tallest,
-        }));
+        let from_y = event.client_coordinates().y;
+        spawn(async move {
+            let (scroll, column) = dom::heights().await;
+            let from_height = scroll.unwrap_or_else(|| (*chosen.peek()).max(2.0 * line));
+            let tallest = column.map_or(TALLEST_DRAGGED, |height| height * 0.8);
+            drag.set(Some(Drag {
+                from_y,
+                from_height,
+                tallest,
+            }));
+        });
     };
     let onpointermove = move |event: PointerEvent| {
         if let Some(Drag {
@@ -376,6 +397,24 @@ pub fn Composer() -> Element {
         }
     };
 
+    let oninput = move |event: FormEvent| {
+        let edited = event.value();
+        #[cfg(feature = "mobile")]
+        typed.set(edited.clone());
+        draft.set(edited.clone());
+        command_index.set(0);
+        hint_dismissed.set(false);
+        view.act(Action::DraftEdited(edited));
+    };
+    // Images pasted go with the next message; text is pasted as ever.
+    let onpaste = move |_event: ClipboardEvent| {
+        #[cfg(feature = "web")]
+        dom::paste_images(&_event, view);
+        // The app reads Android's clipboard for an image itself.
+        #[cfg(feature = "mobile")]
+        view.act(Action::PasteImage);
+    };
+
     rsx! {
         document::Stylesheet { href: STYLE }
         div {
@@ -383,11 +422,7 @@ pub fn Composer() -> Element {
             class: "composer {size_class} {state_class}",
             style: "--glow: {glow};",
             // A click anywhere but on its controls writes.
-            onclick: move |event| {
-                if !dom::on_control(&event) {
-                    dom::focus_end(&draft.peek());
-                }
-            },
+            onclick: move |event| dom::clicked(&event, &draft.peek()),
             // Made taller, Tab goes round within it.
             if stretched {
                 div {
@@ -476,29 +511,37 @@ pub fn Composer() -> Element {
                             "{composer.argument_hint}"
                         }
                     }
-                    textarea {
-                        id: INPUT,
-                        class: "composer-input",
-                        rows: "1",
-                        value: "{text}",
-                        "aria-label": "Message to Claude",
-                        "aria-placeholder": "Message Claude, or start with ! for a shell command",
-                        "aria-autocomplete": "list",
-                        "aria-controls": (commands > 0).then_some(COMMANDS),
-                        "aria-activedescendant": active_command,
-                        oninput: move |event| {
-                            let edited = event.value();
-                            draft.set(edited.clone());
-                            command_index.set(0);
-                            hint_dismissed.set(false);
-                            view.act(Action::DraftEdited(edited));
-                        },
-                        onkeydown,
-                        // Images pasted go with the next message; text is pasted as ever.
-                        onpaste: move |_event| {
-                            #[cfg(feature = "web")]
-                            dom::paste_images(&_event, view);
-                        },
+                    // In the app, the text box has no value of the draft's: Dioxus would set it
+                    // again with every change (see `typed`).
+                    if cfg!(feature = "mobile") {
+                        textarea {
+                            id: INPUT,
+                            class: "composer-input",
+                            rows: "1",
+                            "aria-label": "Message to Claude",
+                            "aria-placeholder": "Message Claude, or start with ! for a shell command",
+                            "aria-autocomplete": "list",
+                            "aria-controls": (commands > 0).then_some(COMMANDS),
+                            "aria-activedescendant": active_command,
+                            oninput,
+                            onkeydown,
+                            onpaste,
+                        }
+                    } else {
+                        textarea {
+                            id: INPUT,
+                            class: "composer-input",
+                            rows: "1",
+                            value: "{text}",
+                            "aria-label": "Message to Claude",
+                            "aria-placeholder": "Message Claude, or start with ! for a shell command",
+                            "aria-autocomplete": "list",
+                            "aria-controls": (commands > 0).then_some(COMMANDS),
+                            "aria-activedescendant": active_command,
+                            oninput,
+                            onkeydown,
+                            onpaste,
+                        }
                     }
                 }
                 div { class: "composer-tools",
@@ -551,6 +594,15 @@ pub fn Composer() -> Element {
                                 label: "Context used",
                             }
                             span { class: "caption", "{session.context}" }
+                        }
+                    }
+                    // A phone's keyboard has no Ctrl+V: the clipboard's image is pasted here.
+                    if cfg!(feature = "mobile") {
+                        IconButton {
+                            icon: Lucide::ImagePlus,
+                            label: "Paste the clipboard's image",
+                            class: "tint-faint",
+                            onclick: move |_| view.act(Action::PasteImage),
                         }
                     }
                     IconButton {
@@ -836,6 +888,11 @@ mod dom {
         }
     }
 
+    /// The app asks for the focus (a session opened, a new one begun).
+    pub fn focus_asked(text: &str) {
+        focus_end(text);
+    }
+
     /// The caret is at the end of the draft, nothing selected.
     pub fn caret_at_end() -> bool {
         text_box().is_some_and(|input| {
@@ -862,8 +919,20 @@ mod dom {
         }
     }
 
+    /// A click on the composer: on its ground, not one of its controls, it writes.
+    pub fn clicked(event: &MouseEvent, draft: &str) {
+        if !on_control(event) {
+            focus_end(draft);
+        }
+    }
+
+    /// The text's box's height and the conversation's column's.
+    pub async fn heights() -> (Option<f64>, Option<f64>) {
+        (scroll_height(), column_height())
+    }
+
     /// The click landed on one of the composer's controls, not on its ground.
-    pub fn on_control(event: &MouseEvent) -> bool {
+    fn on_control(event: &MouseEvent) -> bool {
         event
             .data()
             .try_as_web_event()
@@ -874,7 +943,7 @@ mod dom {
     }
 
     /// The text's box's height now, in CSS pixels.
-    pub fn scroll_height() -> Option<f64> {
+    fn scroll_height() -> Option<f64> {
         let scroll: HtmlElement = document()?
             .get_element_by_id("composer-scroll")?
             .dyn_into()
@@ -883,7 +952,7 @@ mod dom {
     }
 
     /// The conversation's column's height, in CSS pixels.
-    pub fn column_height() -> Option<f64> {
+    fn column_height() -> Option<f64> {
         let column = document()?
             .get_element_by_id("composer")?
             .closest(".column")
@@ -914,12 +983,148 @@ mod dom {
     }
 }
 
+/// The Android app's WebView, reached by its script; what it answers comes later, so what the
+/// browser's page reads at once is read here as the script answers (the heights), or left to
+/// the WebView (→ taking a command, which Tab and a tap still do).
+#[cfg(feature = "mobile")]
+mod dom {
+    use dioxus::prelude::{MouseEvent, document};
+
+    /// What a click on doesn't write: the composer's controls and menus.
+    const CONTROLS: &str =
+        "button, a, textarea, input, [role='combobox'], [role='listbox'], [role='option']";
+    /// What Tab reaches in the composer made taller.
+    const FOCUSABLE: &str =
+        "#composer .composer-body :is(button:not(:disabled), textarea, [tabindex='0'])";
+
+    /// Focuses the text box, the caret at the end of `text`, the draft; set first if it isn't
+    /// shown yet.
+    pub fn focus_end(text: &str) {
+        let eval = document::eval(&format!(
+            "const text = await dioxus.recv();
+            const input = document.getElementById({:?});
+            if (input) {{
+                if (input.value !== text) {{ input.value = text; }}
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }}",
+            super::INPUT
+        ));
+        if eval.send(text).is_err() {
+            tracing::debug!("the text box took no focus");
+        }
+    }
+
+    /// The app asks for the focus (a session opened, a new one begun): on a touch screen, where
+    /// the focus brings up the keyboard over half the conversation, the text box takes it as it
+    /// is tapped instead.
+    pub fn focus_asked(text: &str) {
+        let eval = document::eval(&format!(
+            "const text = await dioxus.recv();
+            if (matchMedia('(pointer: coarse)').matches) {{ return; }}
+            const input = document.getElementById({:?});
+            if (input) {{
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }}",
+            super::INPUT
+        ));
+        if eval.send(text).is_err() {
+            tracing::debug!("the text box took no focus");
+        }
+    }
+
+    /// Puts `text` in the text box, the caret after it, as the app set the draft.
+    pub fn set_text(text: &str) {
+        let eval = document::eval(&format!(
+            "const text = await dioxus.recv();
+            const input = document.getElementById({:?});
+            if (input && input.value !== text) {{
+                input.value = text;
+                input.setSelectionRange(text.length, text.length);
+            }}",
+            super::INPUT
+        ));
+        if eval.send(text).is_err() {
+            tracing::debug!("the text box wasn't set");
+        }
+    }
+
+    pub fn caret_at_end() -> bool {
+        false
+    }
+
+    /// Ctrl+Enter: a line break in place of the selection, as typed.
+    pub fn break_line() {
+        document::eval("document.execCommand('insertText', false, '\\n');");
+    }
+
+    /// A click on the composer: on its ground, not one of its controls, it writes. Where it
+    /// landed is the script's to see: the pointer's last press, which a listener the composer
+    /// sets up keeps.
+    pub fn clicked(_event: &MouseEvent, draft: &str) {
+        let eval = document::eval(&format!(
+            "const text = await dioxus.recv();
+            if (window.edualcPressed?.closest({CONTROLS:?})) {{ return; }}
+            const input = document.getElementById({:?});
+            if (input) {{
+                if (input.value !== text) {{ input.value = text; }}
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }}",
+            super::INPUT
+        ));
+        if eval.send(draft).is_err() {
+            tracing::debug!("the text box took no focus");
+        }
+    }
+
+    /// Keeps where the pointer last pressed, for [`clicked`].
+    pub fn watch_presses() {
+        document::eval(
+            "if (!window.edualcPressesWatched) {
+                window.edualcPressesWatched = true;
+                document.addEventListener('pointerdown', (event) => {
+                    window.edualcPressed = event.target instanceof Element ? event.target : null;
+                }, true);
+            }",
+        );
+    }
+
+    /// The text's box's height and the conversation's column's, in CSS pixels.
+    pub async fn heights() -> (Option<f64>, Option<f64>) {
+        let asked = document::eval(
+            "const scroll = document.getElementById('composer-scroll');
+            const column = document.getElementById('composer')?.closest('.column');
+            return [scroll?.offsetHeight ?? null, column?.clientHeight ?? null];",
+        );
+        asked
+            .join::<(Option<f64>, Option<f64>)>()
+            .await
+            .unwrap_or((None, None))
+    }
+
+    /// Tab reached an end of the composer made taller: the focus goes round.
+    pub fn focus_edge(first: bool) {
+        let pick = if first {
+            "found[0]"
+        } else {
+            "found[found.length - 1]"
+        };
+        document::eval(&format!(
+            "const found = document.querySelectorAll({FOCUSABLE:?}); {pick}?.focus();"
+        ));
+    }
+}
+
 /// Rendered on the server, the page has no parts to reach yet.
-#[cfg(not(feature = "web"))]
+#[cfg(not(any(feature = "web", feature = "mobile")))]
 mod dom {
     use dioxus::prelude::MouseEvent;
 
     pub fn focus_end(_text: &str) {}
+
+    pub fn focus_asked(_text: &str) {}
 
     pub fn caret_at_end() -> bool {
         false
@@ -927,16 +1132,10 @@ mod dom {
 
     pub fn break_line() {}
 
-    pub fn on_control(_event: &MouseEvent) -> bool {
-        false
-    }
+    pub fn clicked(_event: &MouseEvent, _draft: &str) {}
 
-    pub fn scroll_height() -> Option<f64> {
-        None
-    }
-
-    pub fn column_height() -> Option<f64> {
-        None
+    pub async fn heights() -> (Option<f64>, Option<f64>) {
+        (None, None)
     }
 
     pub fn focus_edge(_first: bool) {}

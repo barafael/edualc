@@ -4,3 +4,11 @@ asset_dir = "assets"
 
 [web.app]
 title = "edualc"
+
+# The Android app (`dx build --android --features mobile`, see `src/android`).
+[bundle]
+identifier = "io.github.felintusun.edualc"
+publisher = "edualc"
+
+[permissions]
+notifications = { description = "Tells when Claude Code is done, or waits for you, while the app is away." }

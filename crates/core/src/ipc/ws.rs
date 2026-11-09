@@ -1,27 +1,79 @@
 //! The messages on a line between a window and edualcd: WebSocket over TLS (see `tls`), each
 //! message one binary frame of CBOR (see the parent module), to edualcd's `/api/line`, as a
-//! page's are.
+//! page's are. A demo's line is plain (see `pairing::Demo`).
 
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use super::MAX_MESSAGE;
-use super::pairing::Pairing;
+use super::pairing::{Pairing, Server};
 
 /// How long reaching edualcd may take: the connection, TLS and the WebSocket's handshake.
 const REACH: Duration = Duration::from_secs(10);
 
 /// A window's line to edualcd, its handshakes done.
-pub type Line = WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+pub type Line = WebSocketStream<Stream>;
+
+/// What a line runs over: TLS, or, to a demo, the connection itself.
+// One per line, made once and never moved after: its size costs nothing.
+#[expect(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Stream {
+    Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+    Plain(tokio::net::TcpStream),
+}
+
+impl AsyncRead for Stream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Stream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
+            Self::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
+            Self::Plain(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -63,29 +115,42 @@ fn config() -> WebSocketConfig {
         .max_frame_size(Some(MAX_MESSAGE))
 }
 
-/// The addresses `pairing` names, looked up now: a window does it before it is confined, which
-/// leaves it no way to ask DNS.
-pub fn resolve(pairing: &Pairing) -> Result<Vec<SocketAddr>, Error> {
+/// The addresses `server` names, looked up now: a window does it before it is confined, which
+/// leaves it no way to ask DNS. The system's lookup may take its time over a name no one
+/// answers for: it is waited for as long as reaching edualcd is, on a thread of its own, which
+/// is left to end by itself after that.
+pub fn resolve(server: &Server) -> Result<Vec<SocketAddr>, Error> {
     use std::net::ToSocketAddrs as _;
-    (pairing.host.as_str(), pairing.port)
-        .to_socket_addrs()
-        .map(Iterator::collect)
-        .map_err(|source| Error::Unreachable {
-            address: pairing.authority(),
+    let (host, port, authority) = (server.host().to_owned(), server.port(), server.authority());
+    let (found, looked_up) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let addresses = (host.as_str(), port)
+            .to_socket_addrs()
+            .map(Iterator::collect::<Vec<_>>);
+        if found.send(addresses).is_err() {
+            tracing::debug!(%host, "a name was found after it was given up on");
+        }
+    });
+    match looked_up.recv_timeout(REACH) {
+        Ok(Ok(addresses)) => Ok(addresses),
+        Ok(Err(source)) => Err(Error::Unreachable {
+            address: authority,
             source,
-        })
+        }),
+        Err(_late) => Err(Error::Slow(authority)),
+    }
 }
 
-/// The window's end of the line to the edualcd `pairing` names, at one of `addresses`.
-pub async fn connect(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Error> {
-    let authority = pairing.authority();
-    tokio::time::timeout(REACH, reach(pairing, addresses))
+/// The window's end of the line to `server`, at one of `addresses`.
+pub async fn connect(server: &Server, addresses: &[SocketAddr]) -> Result<Line, Error> {
+    let authority = server.authority();
+    tokio::time::timeout(REACH, reach(server, addresses))
         .await
         .map_err(|_elapsed| Error::Slow(authority))?
 }
 
-async fn reach(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Error> {
-    let authority = pairing.authority();
+async fn reach(server: &Server, addresses: &[SocketAddr]) -> Result<Line, Error> {
+    let authority = server.authority();
     let stream = tokio::net::TcpStream::connect(addresses)
         .await
         .map_err(|source| Error::Unreachable {
@@ -93,15 +158,11 @@ async fn reach(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Erro
             source,
         })?;
     stream.set_nodelay(true).map_err(Error::Io)?;
-    let name =
-        rustls::pki_types::ServerName::try_from(pairing.host.clone()).map_err(|_not_a_name| {
-            rustls::Error::General(format!("{:?} isn't a host", pairing.host))
-        })?;
-    let stream = super::tls::connector(pairing.fingerprint)?
-        .connect(name, stream)
-        .await
-        .map_err(|error| refused_certificate(error, &authority))?;
-    match tokio_tungstenite::client_async_with_config(pairing.line_url(), stream, Some(config()))
+    let stream = match server {
+        Server::Paired(pairing) => Stream::Tls(secured(pairing, stream, &authority).await?),
+        Server::Demo(_) => Stream::Plain(stream),
+    };
+    match tokio_tungstenite::client_async_with_config(server.line_url(), stream, Some(config()))
         .await
     {
         Ok((socket, _response)) => Ok(socket),
@@ -121,8 +182,24 @@ async fn reach(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Erro
     }
 }
 
+/// TLS over `stream`, trusting the certificate paired with alone.
+async fn secured(
+    pairing: &Pairing,
+    stream: tokio::net::TcpStream,
+    authority: &str,
+) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, Error> {
+    let name =
+        rustls::pki_types::ServerName::try_from(pairing.host.clone()).map_err(|_not_a_name| {
+            rustls::Error::General(format!("{:?} isn't a host", pairing.host))
+        })?;
+    super::tls::connector(pairing.fingerprint)?
+        .connect(name, stream)
+        .await
+        .map_err(|error| refused_certificate(error, authority))
+}
+
 /// A TLS handshake's failure, the pinned certificate's mismatch named.
-fn refused_certificate(error: std::io::Error, authority: &str) -> Error {
+fn refused_certificate(error: io::Error, authority: &str) -> Error {
     let mismatch = error
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<rustls::Error>())
@@ -186,6 +263,42 @@ where
 mod tests {
     use super::*;
     use crate::ipc::{FromDaemon, Generation, Stream, ToDaemon};
+
+    /// A demo is reached in plain, at its line, with no token.
+    // tungstenite's handshake callback returns its whole response as the error.
+    #[expect(clippy::result_large_err)]
+    #[tokio::test]
+    async fn a_demo_is_reached_without_tls() {
+        use crate::ipc::pairing::Demo;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = listener.local_addr().expect("its address");
+        let demo = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("a connection");
+            let mut asked = None;
+            let socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    asked = request.uri().query().map(str::to_owned);
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("handshake");
+            drop(socket);
+            asked
+        });
+        let server = Server::Demo(Demo {
+            host: "127.0.0.1".to_owned(),
+            port: address.port(),
+        });
+        connect(&server, &[address]).await.expect("reached");
+        assert_eq!(
+            demo.await.expect("the demo ran"),
+            Some(format!("token=&protocol={}", crate::ipc::PROTOCOL))
+        );
+    }
 
     /// Messages go both ways whole over a socket pair, a long line among them; one bigger than
     /// a message may be ends the line.

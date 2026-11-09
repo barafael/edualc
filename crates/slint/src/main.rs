@@ -8,9 +8,7 @@ use edualc_core::*;
 mod appearance;
 mod buses;
 mod confine;
-mod connect;
 mod seat;
-mod servers;
 mod start;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).

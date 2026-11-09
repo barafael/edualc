@@ -16,6 +16,9 @@ the same window as a page, drawn from the same code, for when you'd rather have 
 (see [Use](#use)). `edualcd --demo` serves it on a demo project with Claude played by a script,
 for trying it out: nothing runs there.
 
+**And on Android.** The same window again, as an app that pairs with an edualcd as the native
+window does (see [Use](#use)).
+
 ## What it does differently
 
 - **Sandboxed.** Claude Code and everything it starts (commands, hooks, MCP servers) run under
@@ -99,6 +102,13 @@ check that its SHA-256 is the address's `fingerprint`. The page and the windows 
 its sessions and the settings. `edualcd --demo` serves the demo instead, over plain HTTP, which
 needs no token.
 
+**On Android.** The app lists the edualcds it is paired with, and pairs with another by the
+address `edualcd --pair` prints there (on edualcd's network: `--listen` and `--name` as above);
+it reaches the one it reached last as it starts. A demo's address (`http://host:port/`) works
+too. The settings' "Choose another edualcd" goes back to that list. Links open in Android's
+browser, notifications are Android's (it asks you once), and the composer's image button pastes
+the clipboard's image.
+
 Settings live in `~/.config/edualc/settings.json` on edualcd's machine; to let the sandbox read
 or write more folders, add them in the settings, or to `sandbox_read` or `sandbox_write` there.
 edualcd keeps its certificate and token in `~/.local/state/edualcd`; remove that folder to make
@@ -116,6 +126,9 @@ them anew (every window then pairs again).
 - A window whose line is lost reaches edualcd again by itself and opens its session again; what
   was typed while the line was down isn't sent.
 - Slint comes from a fork at an unreleased commit, until the features edualc needs are released.
+- The Android app keeps its line only while it is shown: Android stops an app in the background,
+  and the app reaches edualcd again as it comes back. Its name on the launcher is "Edualcd" (dx
+  names it after the binary), and there is no release of it yet: build it as below.
 
 ## Building
 
@@ -124,6 +137,13 @@ them anew (every window then pairs again).
 go beside the window as `edualcd` and `public/` (`cargo edualcd` builds the daemon alone, without
 the page). How the code is laid out, and how a
 release is made, is in [docs/architecture.md](docs/architecture.md).
+
+The Android app is built by dx too, with the Android SDK and NDK (`ANDROID_HOME`,
+`ANDROID_NDK_HOME`, a JDK 17 or later as `JAVA_HOME`) and the Rust target:
+`dx build --android -p edualc-server --features mobile --target aarch64-linux-android` (for the
+emulator, `x86_64-linux-android`); `dx serve` with the same arguments installs and starts it on
+a running emulator or a connected phone. In the emulator, the machine it runs on is `10.0.2.2`:
+`edualcd --demo` there is `http://10.0.2.2:7878/`.
 
 ## License
 

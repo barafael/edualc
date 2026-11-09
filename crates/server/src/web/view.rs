@@ -36,6 +36,8 @@ pub struct Page {
     pub sidebar_width: Option<u16>,
     /// The base text size, in CSS pixels.
     pub text_size: f32,
+    /// Device pixels to a CSS pixel, as the app reads it (a browser's page asks the browser).
+    pub pixel_ratio: f64,
     pub look: Look,
     /// The window closed (the app quit): the page says so.
     pub closed: bool,
@@ -85,6 +87,7 @@ impl View {
             draft: Signal::new(String::new()),
             page: Signal::new(Page {
                 text_size: 15.0,
+                pixel_ratio: 1.0,
                 ..Page::default()
             }),
             events: Signal::new(None),
@@ -195,11 +198,12 @@ impl Frontend for PageFrontend {
 
     /// On the browser's desktop: a link in a new tab, a notification if the browser lets the
     /// page show them. A pasted image comes with the paste (see the composer), not from here.
+    /// In the Android app, Android's: the browser, its notifications, its clipboard.
     fn seat(&mut self, seat: Seat) {
         match seat {
             Seat::OpenUrl(url) => open_tab(&url),
             Seat::Notify { summary, body } => notify(&summary, &body),
-            Seat::PasteImage => {}
+            Seat::PasteImage => paste_image(self.view),
         }
     }
 
@@ -281,8 +285,13 @@ pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {
     }
 }
 
-/// Opens `url` in a new tab, which can't reach back to the page.
+/// Opens `url` in a new tab, which can't reach back to the page; in the app, in Android's
+/// browser.
 fn open_tab(url: &str) {
+    #[cfg(feature = "mobile")]
+    if let Err(error) = webbrowser::open(url) {
+        tracing::warn!(%error, "Android opened no browser");
+    }
     #[cfg(feature = "web")]
     if let Some(window) = web_sys::window()
         && window
@@ -291,12 +300,22 @@ fn open_tab(url: &str) {
     {
         tracing::warn!("the browser opened no tab");
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(any(feature = "web", feature = "mobile")))]
     let _: &str = url;
 }
 
-/// Shows a notification, if the browser lets the page; asks it once, for the next.
+/// Shows a notification, if the browser lets the page; asks it once, for the next. In the app,
+/// Android's, asked for alike.
 fn notify(summary: &str, body: &str) {
+    #[cfg(feature = "mobile")]
+    {
+        let (summary, body) = (summary.to_owned(), body.to_owned());
+        std::thread::spawn(move || {
+            if let Err(error) = crate::android::java::notify(summary, body) {
+                tracing::warn!(%error, "Android showed no notification");
+            }
+        });
+    }
     #[cfg(feature = "web")]
     {
         use web_sys::{Notification, NotificationOptions, NotificationPermission};
@@ -316,12 +335,45 @@ fn notify(summary: &str, body: &str) {
             NotificationPermission::Denied | _ => {}
         }
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(any(feature = "web", feature = "mobile")))]
     let _: (&str, &str) = (summary, body);
 }
 
-/// Puts `text` on the browser's clipboard.
+/// The clipboard's image, read and made ready to send in the app (the decoder's sandbox is
+/// Linux's), for the next message; the page's comes with the paste itself.
+fn paste_image(view: View) {
+    #[cfg(feature = "mobile")]
+    {
+        use edualc_core::decode::{self, PasteFailure};
+        let Some(events) = view.events.peek().clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let pasted = match crate::android::java::clipboard_image(decode::MAX_INPUT_BYTES) {
+                Ok(Some(bytes)) => decode::to_send(&bytes).map_err(PasteFailure::Refused),
+                Ok(None) => Err(PasteFailure::NoImage),
+                Err(error) => Err(PasteFailure::Clipboard(error.to_string())),
+            };
+            if events.send_blocking(Event::Pasted(pasted)).is_err() {
+                tracing::debug!("the app ended");
+            }
+        });
+    }
+    #[cfg(not(feature = "mobile"))]
+    let _: View = view;
+}
+
+/// Puts `text` on the browser's clipboard; in the app, on Android's.
 pub fn copy(text: &str) {
+    #[cfg(feature = "mobile")]
+    {
+        let copied = text.to_owned();
+        std::thread::spawn(move || {
+            if let Err(error) = crate::android::java::copy(copied) {
+                tracing::warn!(%error, "the clipboard refused the text");
+            }
+        });
+    }
     // Only a secure context (https, or the loopback) has a clipboard: elsewhere
     // `navigator.clipboard` is undefined, and calling it would throw through the page's code.
     #[cfg(feature = "web")]
@@ -337,6 +389,6 @@ pub fn copy(text: &str) {
             }
         });
     }
-    #[cfg(not(feature = "web"))]
+    #[cfg(not(any(feature = "web", feature = "mobile")))]
     let _: &str = text;
 }

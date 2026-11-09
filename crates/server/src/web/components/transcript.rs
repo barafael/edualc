@@ -93,7 +93,7 @@ mod dom {
     }
 
     /// Device pixels to a CSS pixel.
-    pub fn pixel_ratio() -> f64 {
+    pub fn pixel_ratio(_view: crate::web::View) -> f64 {
         web_sys::window().map_or(1.0, |window| window.device_pixel_ratio())
     }
 
@@ -115,9 +115,61 @@ mod dom {
     }
 }
 
+/// The list in the Android app's WebView, reached by its script. Keys move the list as a
+/// focused list moves in a browser of itself; the window doesn't take them over here.
+#[cfg(feature = "mobile")]
+mod dom {
+    use dioxus::prelude::{ReadableExt as _, document};
+
+    /// Runs `script` on the list, as `list`, if it is there.
+    fn on_list(script: &str) {
+        document::eval(&format!(
+            "const list = document.getElementById({:?}); if (list) {{ {script} }}",
+            super::LIST
+        ));
+    }
+
+    pub fn to_end() {
+        on_list("list.scrollTop = list.scrollHeight;");
+    }
+
+    pub fn to_start() {
+        on_list("list.scrollTop = 0;");
+    }
+
+    pub fn by(delta: f64) {
+        on_list(&format!("list.scrollBy(0, {delta});"));
+    }
+
+    pub fn height() -> f64 {
+        0.0
+    }
+
+    pub fn focused() -> bool {
+        false
+    }
+
+    /// Now, in milliseconds.
+    pub fn now() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+    }
+
+    /// Device pixels to a CSS pixel, as the app read it from the WebView.
+    pub fn pixel_ratio(view: crate::web::View) -> f64 {
+        view.page.peek().pixel_ratio
+    }
+
+    pub async fn sleep(ms: i32) {
+        let ms = u64::try_from(ms).unwrap_or_default();
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+}
+
 /// Off the browser (the server renders the page once, before any of this could run): nothing
 /// to scroll, no time passing.
-#[cfg(not(feature = "web"))]
+#[cfg(not(any(feature = "web", feature = "mobile")))]
 mod dom {
     pub fn to_end() {}
     pub fn to_start() {}
@@ -131,7 +183,7 @@ mod dom {
     pub fn now() -> f64 {
         0.0
     }
-    pub fn pixel_ratio() -> f64 {
+    pub fn pixel_ratio(_view: crate::web::View) -> f64 {
         1.0
     }
     pub async fn sleep(_ms: i32) {}
@@ -708,7 +760,7 @@ fn ImageView(shown: ShownImage, #[props(default)] origin: String) -> Element {
             }
         };
     }
-    let width = f64::from(shown.width_px) / dom::pixel_ratio();
+    let width = f64::from(shown.width_px) / dom::pixel_ratio(view);
     let height = shown.height_px.max(1);
     let named = if origin.is_empty() {
         "Image".to_owned()

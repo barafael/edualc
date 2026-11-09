@@ -676,6 +676,20 @@ fn SettingsPanel() -> Element {
                                 onclick: move |()| view.act(Action::HanLanguage(CjkLanguage::Korean)),
                             }
                         }
+                        // The app reaches one edualcd at a time; the start screen lists the others.
+                        if cfg!(feature = "mobile") {
+                            h3 { class: "settings-heading spaced", "edualcd" }
+                            p { class: "small",
+                                "edualcd runs Claude Code, and keeps its sessions going while the app is away. Choosing another closes this window; its sessions go on."
+                            }
+                            div { class: "settings-actions",
+                                Button {
+                                    icon: Lucide::RefreshCw,
+                                    onclick: move |_| view.act(Action::Quit),
+                                    "Choose another edualcd"
+                                }
+                            }
+                        }
                     }
                 }
                 div {

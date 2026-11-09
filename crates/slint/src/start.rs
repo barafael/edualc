@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use slint::ComponentHandle;
 
 use crate::external::wire::SessionId;
-use crate::ipc::pairing::Pairing;
+use crate::ipc::pairing::Server;
+use crate::ipc::servers::{self, Servers};
 use crate::ipc::{Answer, Read};
-use crate::servers::Servers;
+use crate::line;
 use crate::sessions::Saved;
-use crate::{app, buses, confine, connect, decode, desktop, generated, ui};
+use crate::{app, buses, confine, decode, desktop, generated, ui};
 
 /// A native desktop window for Claude Code.
 ///
@@ -33,7 +34,8 @@ struct Args {
     /// The edualcd to reach, by the name it was paired as; the last one paired if not given.
     #[arg(long, value_name = "NAME")]
     server: Option<String>,
-    /// Pair with an edualcd, by the address it prints (`edualcd --pair`), and end.
+    /// Pair with an edualcd, by the address it prints (`edualcd --pair`), and end. A demo's
+    /// address (`edualcd --demo`) pairs too.
     #[arg(long, value_name = "ADDRESS", conflicts_with_all = ["resume", "dir", "prompt"])]
     pair: Option<String>,
     /// The name to pair it as: its host's, if not given.
@@ -74,7 +76,7 @@ enum WhereError {
     #[error("There is no session {0}")]
     NoSession(SessionId),
     #[error(transparent)]
-    Line(#[from] connect::Error),
+    Line(#[from] line::Error),
 }
 
 /// `path` made whole against where edualc was started, without looking at this machine's files:
@@ -88,14 +90,14 @@ fn whole(path: &std::path::Path) -> PathBuf {
 /// started from, its tools working there); else where edualc was started, if that is a folder
 /// there, or the home folder there. A session to continue that no transcript has is refused.
 fn working_folder(
-    connected: &mut connect::Connected,
+    connected: &mut line::Connected,
     dir: Option<PathBuf>,
     resume: Option<&SessionId>,
 ) -> Result<PathBuf, WhereError> {
     let saved = match resume {
         Some(id) => {
             let Answer::Saved(saved) = connected.ask(Read::Saved(id.clone()))? else {
-                return Err(connect::Error::Unanswered.into());
+                return Err(line::Error::Unanswered.into());
             };
             match saved {
                 Saved::Nowhere => return Err(WhereError::NoSession(id.clone())),
@@ -137,18 +139,32 @@ fn working_folder(
 
 /// The folder at `path` on edualcd's machine, made whole, or why it isn't one.
 fn folder(
-    connected: &mut connect::Connected,
+    connected: &mut line::Connected,
     path: PathBuf,
 ) -> Result<Result<PathBuf, String>, WhereError> {
     let Answer::Folder(found) = connected.ask(Read::Folder(path))? else {
-        return Err(connect::Error::Unanswered.into());
+        return Err(line::Error::Unanswered.into());
     };
     Ok(found)
 }
 
-/// Pairs with the edualcd at `address`, as `name` or its host's.
+/// Where the paired edualcds are kept: `~/.config/edualc/servers.json`.
+fn servers_file() -> Result<PathBuf, servers::Error> {
+    Ok(dirs::config_dir()
+        .ok_or(servers::Error::NoConfig)?
+        .join("edualc")
+        .join("servers.json"))
+}
+
+/// The paired edualcds, and where they are kept.
+fn paired() -> Result<(Servers, PathBuf), servers::Error> {
+    let path = servers_file()?;
+    Ok((Servers::load(&path)?, path))
+}
+
+/// Pairs with the edualcd at `address` (or the demo there), as `name` or its host's.
 fn pair(address: &str, name: Option<String>) -> std::process::ExitCode {
-    let pairing = match Pairing::parse(address) {
+    let pairing = match Server::parse(address) {
         Ok(pairing) => pairing,
         Err(error) => {
             eprintln!("edualc: {error}");
@@ -156,17 +172,17 @@ fn pair(address: &str, name: Option<String>) -> std::process::ExitCode {
         }
     };
     // Reached once, so that a wrong address or token is said now rather than as a window opens.
-    if let Err(error) = connect::connect(&pairing) {
+    if let Err(error) = line::connect(&pairing) {
         eprintln!("edualc: {error}");
         return std::process::ExitCode::FAILURE;
     }
-    let name = name.unwrap_or_else(|| pairing.host.clone());
-    let saved = Servers::load().and_then(|mut servers| {
+    let saved = paired().and_then(|(mut servers, path)| {
+        let name = name.unwrap_or_else(|| servers.name_for(&pairing));
         servers.pair(name.clone(), pairing);
-        servers.save()
+        servers.save(&path).map(|()| (name, path))
     });
     match saved {
-        Ok(path) => {
+        Ok((name, path)) => {
             eprintln!("edualc: paired with {name} (kept in {})", path.display());
             std::process::ExitCode::SUCCESS
         }
@@ -218,7 +234,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     if !buses::end_with_first_process() {
         return Ok(std::process::ExitCode::FAILURE);
     }
-    let chosen = Servers::load().and_then(|servers| servers.chosen(server.as_deref()));
+    let chosen = paired().and_then(|(servers, _path)| servers.chosen(server.as_deref()));
     let (name, pairing) = match chosen {
         Ok(chosen) => chosen,
         Err(error) => {
@@ -228,7 +244,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     };
     // In this order: edualcd is reached and the desktop asked while the window is free; then it
     // is confined, and all it makes after keeps that.
-    let mut connected = match connect::connect(&pairing) {
+    let mut connected = match line::connect(&pairing) {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("edualc: {name}: {error}");
@@ -260,7 +276,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     }
     let (events, received) = async_channel::unbounded();
-    let (link, greeting) = connect::run(connected, events.clone());
+    let (link, greeting) = line::run(connected, events.clone());
     let window = generated::AppWindow::new()?;
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;

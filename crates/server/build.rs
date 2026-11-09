@@ -13,6 +13,7 @@ const EXTRA: &[&str] = &[
     "check",
     "chevron-down",
     "chevron-up",
+    "image-plus",
 ];
 
 fn main() {

@@ -384,8 +384,10 @@ fn merge_memory(
             (Some(_), Some(was)) => *was == stamp,
             // Seeded before stamps were kept: the newer of the two stays.
             (Some(ours), None) => {
-                let users_ns = u64::try_from(metadata.mtime_nsec()).unwrap_or_default();
-                (ours.st_mtime, ours.st_mtime_nsec) > (metadata.mtime(), users_ns)
+                // The nanoseconds are signed on one target and not on another (Android's).
+                let ours_ns = i128::from(ours.st_mtime_nsec);
+                let users_ns = i128::from(metadata.mtime_nsec());
+                (ours.st_mtime, ours_ns) > (metadata.mtime(), users_ns)
             }
         };
         if !keep_the_sessions {

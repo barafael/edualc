@@ -6,10 +6,10 @@ edualc is a Cargo workspace of four crates:
 
 | | |
 |---|---|
-| `crates/core` (`edualc-core`) | what every window shares: the conversation, the app that owns its state, what of it a window shows (`present`), the protocol and the line to edualcd (TLS, pairing). Builds for Linux and for `wasm32` (a page); what only Linux has is behind `#[cfg(not(target_arch = "wasm32"))]` |
+| `crates/core` (`edualc-core`) | what every window shares: the conversation, the app that owns its state, what of it a window shows (`present`), the protocol and the line to edualcd (TLS, pairing). Builds for Linux, Android (the app) and `wasm32` (a page); what a page hasn't is behind `#[cfg(not(target_arch = "wasm32"))]` |
 | `crates/host` (`edualc-host`) | the daemon: runs `claude` (sandboxed) for the windows, reads Claude Code's files for them, stops sessions running elsewhere; and the demo's scripted Claude (`demo`) |
 | `crates/slint` (`edualc`) | the native window: Slint (`ui/*.slint`), its frontend of the presenter (`src/ui/`), its desktop (`seat`: links, notifications, the clipboard), its D-Bus proxies, its confinement, its paired edualcds and its line to one |
-| `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon run in a Dioxus fullstack server, over TLS, which also serves the same window as a page (`src/web/`) |
+| `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon run in a Dioxus fullstack server, over TLS, which also serves the same window as a page (`src/web/`); with the `mobile` feature, the Android app instead (`src/android/`), which draws the page's components |
 
 Within them:
 
@@ -17,8 +17,9 @@ Within them:
 |---|---|
 | `core/src/app.rs`, `core/src/app/` | `App`, the one owner of all state; UI actions, edualcd's messages, timers (`repeat`) and what was read reach it as `Event`s on one channel |
 | `core/src/present/` | the `Presenter`: the app's state made into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `scripts/present_gen.py`), handed to a `Frontend` once per batch, each part only when it changed; and what the frontend does on its own desktop (`Seat`) |
-| `core/src/ipc.rs`, `core/src/ipc/` | the messages between the windows and edualcd, the window's end of the line (`ws`), its TLS with the certificate pinned (`tls`), and the address a window pairs with (`pairing`) |
+| `core/src/ipc.rs`, `core/src/ipc/` | the messages between the windows and edualcd, the window's end of the line (`ws`), its TLS with the certificate pinned (`tls`), the address a window pairs with (`pairing`; a demo's is plain), and the edualcds a native window is paired with (`servers`) |
 | `core/src/link.rs` | a window's line, whatever carries it: the channel to whatever writes it, the daemon's greeting, the `Inbox` that makes its messages the app's events |
+| `core/src/line.rs` | a native window's line (the Slint window's, the Android app's): reaching edualcd, carrying the line on a thread of its own, and reaching it again as it is lost |
 | `core/src/claude.rs` | a session's process as the window sees it |
 | `core/src/chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `sidebar.rs` | the conversation, how tool calls, Markdown and plans read, runs of tool calls folded, the session list |
 | `core/src/sessions.rs`, `trust.rs`, `settings.rs`, `sandbox.rs`, `home.rs`, `process.rs`, `desktop.rs` | Claude Code's files, trust, the settings, the Landlock sandbox; their reading and writing is the daemon's |
@@ -26,8 +27,9 @@ Within them:
 | `core/src/external/` | formats other programs write, as types; they take keys they don't know |
 | `host/src/daemon.rs`, `spawn.rs`, `relay.rs`, `mirror.rs` | the daemon's actors (sans-io cores), starting `claude`, the session messaging relay, the sandboxed transcript's mirror |
 | `host/src/files.rs` | what the daemon reads and watches for windows (inotify), and keeping the settings |
-| `slint/src/start.rs`, `connect.rs`, `servers.rs`, `buses.rs`, `seat.rs`, `confine.rs`, `ui/` | the window's start, its line (and reaching it again), its paired edualcds, its D-Bus proxies, its desktop, its confinement, its Slint frontend and callbacks |
+| `slint/src/start.rs`, `buses.rs`, `seat.rs`, `confine.rs`, `ui/` | the window's start, its D-Bus proxies, its desktop, its confinement, its Slint frontend and callbacks |
 | `server/src/serve.rs`, `state.rs`, `line.rs`, `web/` | edualcd's command line, TLS and the lines it hands the daemon; its certificate and token; the line's route; the page: its frontend (`web/view.rs`) and components |
+| `server/src/android/` | the Android app: its start screen (the paired edualcds, pairing), its line (`edualc_core::line`), and Android's own through JNI (`java.rs`: the clipboard, notifications, its files) |
 | `ui/*.slint`, `assets/` | the native window, the heron, the app's icon, edualcd's user service |
 
 ## The protocol
@@ -71,7 +73,8 @@ in `$XDG_STATE_HOME/edualcd`, a folder of the user's alone; `EDUALC_TOKEN` can g
 instead, which is never taken on the command line (every user of the machine reads that) and is
 taken out of each session's environment. `edualcd --pair` prints the address windows pair with
 and pages open: `https://host:port/#token=…&fingerprint=…`. A native window keeps the edualcds it
-paired with in `~/.config/edualc/servers.json` (the user's alone) and trusts exactly the
+paired with in `~/.config/edualc/servers.json` (the user's alone; the Android app in its own
+files) and trusts exactly the
 certificate paired with, by its SHA-256, whatever it names or is signed by (`ipc::tls`); a
 browser asks the user first. The token lets whoever holds it run Claude Code as the user, outside
 the sandbox too: the server compares it in constant time, refuses a wrong one (HTTP 403) before
@@ -92,12 +95,32 @@ draw. `dx build -p edualc-server --platform web --fullstack` builds it; `edualcd
 TLS, at `--listen ADDRESS` (127.0.0.1:7878 by default), and under `dx serve` at Dioxus's address
 over plain HTTP, for working on it.
 
+## The Android app
+
+The app is the page's components drawn by Dioxus in Android's WebView, run by native code (dx's
+`--android`, the `mobile` feature): the same app and presenter, the page's frontend
+(`web/view.rs`), and the native window's line (`core/src/line.rs`), so that it reaches edualcd as
+the Slint window does, TLS with the certificate pinned, and again as the network comes back. What
+the page does through the browser it does through the WebView's script (`document::eval`: the
+focus, scrolling, the composer's caret) and through Android (`android/java.rs`, over JNI from the
+activity `ndk-context` holds: the clipboard's text and image, notifications, its files folder);
+links open in Android's browser. Its composer's text box is the WebView's own, which the app sets
+only as the draft changes otherwise than by typing: set back with each keystroke, as the page
+does, it would lose those typed in between. It starts no programs: images are decoded in it, on
+the thread the native window starts its confined decoder from.
+
+A narrow window (a phone's, or a browser's on one) lays the window out for it (`edualc.css`): the
+sidebar comes over the conversation, starts hidden and hides as a session opens; the side panel
+takes the whole width.
+
 ## The demo
 
 `edualcd --demo` serves the page, over plain HTTP, with a script in place of the daemon and
 Claude Code (`host/src/demo`): its scenarios answer as `claude -p` would, from a word in the
 prompt, and the demo project's sessions (`web/demo/`, as Claude Code writes them) stand in for
-`~/.claude`. Nothing runs and nothing on the disk is read, so it needs no token.
+`~/.claude`. Nothing runs and nothing on the disk is read, so it needs no token. A native window
+reaches it by its plain address (`http://host:port/`), which pairs like any other
+(`ipc::pairing::Demo`): the Android app in its emulator, say.
 
 ## The window
 

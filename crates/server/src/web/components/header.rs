@@ -173,8 +173,24 @@ mod dom {
     }
 }
 
+/// The Android app's WebView, reached by its script.
+#[cfg(feature = "mobile")]
+mod dom {
+    pub fn focus_next(forward: bool) {
+        let step = if forward {
+            "nextElementSibling"
+        } else {
+            "previousElementSibling"
+        };
+        dioxus::prelude::document::eval(&format!(
+            "const next = document.activeElement?.{step};
+            if (next && next.getAttribute('role') === 'menuitem') {{ next.focus(); }}"
+        ));
+    }
+}
+
 /// Rendered on the server, the page has no focus to move yet.
-#[cfg(not(feature = "web"))]
+#[cfg(not(any(feature = "web", feature = "mobile")))]
 mod dom {
     pub fn focus_next(_forward: bool) {}
 }

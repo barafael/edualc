@@ -354,14 +354,23 @@ async fn handshakes(
     }
 }
 
-/// Carries a page's line to the demo's script, which answers as the daemon would.
+/// Carries a page's line to the demo's script, which answers as the daemon would. It pings
+/// the window every [`PING`], as `carry` does: a window that hears nothing for [`SILENT`], not
+/// even the answers to its own pings (which go out only with what is written next), takes the
+/// line as lost.
 pub async fn play(page: WebSocket) {
     let (requests, received) = async_channel::unbounded();
     let (outbox, answers) = async_channel::unbounded();
     tokio::spawn(edualc_host::demo::run(received, outbox));
     let (mut to_page, mut from_page) = page.split();
+    let mut ping = tokio::time::interval(PING);
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if to_page.send(PageMessage::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            },
             asked = from_page.next() => match asked {
                 Some(Ok(PageMessage::Binary(bytes))) => match ipc::decode::<ToDaemon>(&bytes) {
                     Ok(message) => {
@@ -468,7 +477,7 @@ pub async fn carry(line: WebSocket, daemon: Daemon) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edualc_host::ipc::pairing::Fingerprint;
+    use edualc_host::ipc::pairing::{Fingerprint, Server};
 
     /// An edualcd's TLS and WebSocket, on the loopback: a certificate made as edualcd makes
     /// its own, and a line taken the way a window's is, whose query it hands back.
@@ -519,7 +528,7 @@ mod tests {
             fingerprint,
             token: "t/k".to_owned(),
         };
-        ipc::ws::connect(&pairing, &[address])
+        ipc::ws::connect(&Server::Paired(pairing.clone()), &[address])
             .await
             .expect("reached");
         let query = taken.await.expect("the server ran").expect("a line");
@@ -531,7 +540,7 @@ mod tests {
             fingerprint: Fingerprint::of(b"another certificate"),
             ..pairing
         };
-        let refused = ipc::ws::connect(&impostor, &[address]).await;
+        let refused = ipc::ws::connect(&Server::Paired(impostor), &[address]).await;
         assert!(
             matches!(refused, Err(ipc::Error::Certificate(_))),
             "{refused:?}"

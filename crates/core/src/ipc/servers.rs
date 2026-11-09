@@ -1,23 +1,22 @@
-//! The edualcds this window is paired with (`~/.config/edualc/servers.json`), each by a name:
-//! its address, its certificate's fingerprint, and its token. The file is the user's alone, and
-//! is to be kept as an SSH key is: a token lets whoever holds it run Claude Code as the user on
-//! that edualcd's machine. Claude Code's sandbox doesn't reach it (see `sandbox`).
+//! The edualcds a window is paired with, each by a name: its address, its certificate's
+//! fingerprint, and its token (or a demo's address). The native window keeps them in
+//! `~/.config/edualc/servers.json`, the Android app in its own files. The file is the user's
+//! alone, and is to be kept as an SSH key is: a token lets whoever holds it run Claude Code as
+//! the user on that edualcd's machine. Claude Code's sandbox doesn't reach it (see `sandbox`).
 //!
-//! The window reaches its edualcd the same way whether it runs on this machine or another; the
+//! A window reaches its edualcd the same way whether it runs on this machine or another; the
 //! one on this machine, a user service, is paired with like any other
 //! (`edualc --pair "$(edualcd --pair)"`).
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::ipc::pairing::Pairing;
-
-const FILE: &str = "servers.json";
+use super::pairing::Server;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error("there is no config folder to keep the paired edualcds in")]
     NoConfig,
     #[error("{path}: {source}")]
@@ -44,25 +43,18 @@ pub(crate) enum Error {
 /// What the file holds.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Servers {
+pub struct Servers {
     /// The one reached unless another is named; the last paired.
     #[serde(default)]
     default: Option<String>,
     #[serde(default)]
-    servers: BTreeMap<String, Pairing>,
+    servers: BTreeMap<String, Server>,
 }
 
 impl Servers {
-    fn path() -> Result<PathBuf, Error> {
-        Ok(dirs::config_dir()
-            .ok_or(Error::NoConfig)?
-            .join("edualc")
-            .join(FILE))
-    }
-
-    /// What is kept; nothing, if there is no file yet.
-    pub(crate) fn load() -> Result<Self, Error> {
-        let path = Self::path()?;
+    /// What is kept at `path`; nothing, if there is no file yet.
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        let path = path.to_owned();
         match std::fs::read(&path) {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|source| Error::Unreadable { path, source })
@@ -72,14 +64,43 @@ impl Servers {
         }
     }
 
-    /// Pairs with `pairing` as `name`, which becomes the one reached unless another is named.
-    pub(crate) fn pair(&mut self, name: String, pairing: Pairing) {
-        self.servers.insert(name.clone(), pairing);
+    /// Pairs with `server` as `name`, which becomes the one reached unless another is named.
+    pub fn pair(&mut self, name: String, server: Server) {
+        self.servers.insert(name.clone(), server);
         self.default = Some(name);
     }
 
+    /// The name to pair `server` as when none is given: its host's, unless an edualcd elsewhere
+    /// (another port there, say: a demo beside the real one) is paired by that name already,
+    /// which `host:port` then tells apart. Pairing again with the same address takes its name.
+    pub fn name_for(&self, server: &Server) -> String {
+        let host = server.host();
+        match self.servers.get(host) {
+            Some(paired) if paired.authority() != server.authority() => server.authority(),
+            Some(_) | None => host.to_owned(),
+        }
+    }
+
+    /// Forgets the edualcd paired as `name`; the default, if it was, becomes another.
+    pub fn forget(&mut self, name: &str) {
+        self.servers.remove(name);
+        if self.default.as_deref() == Some(name) {
+            self.default = self.servers.keys().next().cloned();
+        }
+    }
+
+    /// Those paired, by name.
+    pub fn paired(&self) -> impl Iterator<Item = (&String, &Server)> {
+        self.servers.iter()
+    }
+
+    /// The one reached unless another is named.
+    pub fn default_name(&self) -> Option<&str> {
+        self.default.as_deref()
+    }
+
     /// The edualcd named, or the default one.
-    pub(crate) fn chosen(&self, name: Option<&str>) -> Result<(String, Pairing), Error> {
+    pub fn chosen(&self, name: Option<&str>) -> Result<(String, Server), Error> {
         let name = name
             .map(str::to_owned)
             .or_else(|| self.default.clone())
@@ -95,9 +116,9 @@ impl Servers {
         }
     }
 
-    /// Writes the file anew, the user's alone.
-    pub(crate) fn save(&self) -> Result<PathBuf, Error> {
-        let path = Self::path()?;
+    /// Writes the file at `path` anew, the user's alone.
+    pub fn save(&self, path: &Path) -> Result<(), Error> {
+        let path = path.to_owned();
         let io = |source| Error::Io {
             path: path.clone(),
             source,
@@ -129,22 +150,22 @@ impl Servers {
         file.write_all(&text).map_err(io)?;
         file.sync_all().map_err(io)?;
         std::fs::rename(&fresh, &path).map_err(io)?;
-        Ok(path)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::pairing::Fingerprint;
+    use crate::ipc::pairing::{Demo, Fingerprint, Pairing};
 
-    fn pairing(host: &str) -> Pairing {
-        Pairing {
+    fn pairing(host: &str) -> Server {
+        Server::Paired(Pairing {
             host: host.to_owned(),
             port: 7878,
             fingerprint: Fingerprint::of(host.as_bytes()),
             token: "t".to_owned(),
-        }
+        })
     }
 
     /// The last paired is reached unless another is named; a name not paired is said, with
@@ -162,7 +183,7 @@ mod tests {
         assert_eq!(
             servers
                 .chosen(Some("here"))
-                .map(|(_, pairing)| pairing.host)
+                .map(|(_, server)| server.host().to_owned())
                 .ok(),
             Some("127.0.0.1".to_owned())
         );
@@ -172,10 +193,44 @@ mod tests {
         ));
     }
 
+    /// A server is named by its host, or by its address where another is paired by its host.
+    #[test]
+    fn a_name_taken_by_another_address_is_told_apart() {
+        let mut servers = Servers::default();
+        let demo = Server::Demo(Demo {
+            host: "box".to_owned(),
+            port: 7979,
+        });
+        assert_eq!(servers.name_for(&demo), "box");
+        servers.pair(servers.name_for(&demo), demo.clone());
+        assert_eq!(servers.name_for(&pairing("box")), "box:7878");
+        assert_eq!(servers.name_for(&demo), "box");
+    }
+
+    /// Forgetting the default makes another the default; forgetting the last leaves none.
+    #[test]
+    fn forgetting_the_default_moves_it() {
+        let mut servers = Servers::default();
+        servers.pair("here".to_owned(), pairing("127.0.0.1"));
+        servers.pair("box".to_owned(), pairing("box"));
+        servers.forget("box");
+        assert_eq!(servers.default_name(), Some("here"));
+        servers.forget("here");
+        assert_eq!(servers.default_name(), None);
+        assert!(matches!(servers.chosen(None), Err(Error::Unpaired)));
+    }
+
     #[test]
     fn the_file_reads_back_and_refuses_unknown_keys() {
         let mut servers = Servers::default();
         servers.pair("box".to_owned(), pairing("box"));
+        servers.pair(
+            "demo".to_owned(),
+            Server::Demo(Demo {
+                host: "10.0.2.2".to_owned(),
+                port: 7878,
+            }),
+        );
         let text = serde_json::to_string(&servers).expect("written");
         let back: Servers = serde_json::from_str(&text).expect("read back");
         assert_eq!(back.chosen(None).ok(), servers.chosen(None).ok());

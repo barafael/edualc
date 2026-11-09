@@ -149,3 +149,13 @@
 }
 .sandbox-folder { display: flex; align-items: center; gap: var(--space-s); }
 .folder-path { flex: 1; font-family: var(--mono); font-size: var(--code-size); color: var(--text); }
+.settings-actions { display: flex; margin-top: var(--space-s); }
+/* A phone's width: the panels over the conversation take more of it, and their heading may wrap
+   to a second line. */
+@media (max-width: 640px) {
+    .overlay-panel {
+        top: var(--space-m); width: calc(100% - 2 * var(--space-m));
+        max-height: calc(100% - 2 * var(--space-m));
+    }
+    .overlay-head { height: auto; min-height: var(--header); padding: var(--space-s) var(--space-s) var(--space-s) var(--space-m); }
+}

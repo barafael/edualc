@@ -1,8 +1,8 @@
-//! The window's line to its edualcd, which runs Claude Code and does what the window's sandbox
-//! keeps it from: on this machine or another, the same way (see `ipc`). The line is a WebSocket
-//! over TLS, edualcd's certificate pinned, carried by a thread of its own with a small runtime:
-//! it writes what the window asks, in order, and hands what edualcd says to the app as events
-//! (`link::Inbox`).
+//! A native window's line to its edualcd (the Slint window's, the Android app's), which runs
+//! Claude Code and does what the window can't: on this machine or another, the same way (see
+//! `ipc`). The line is a WebSocket over TLS, edualcd's certificate pinned (a demo's is plain),
+//! carried by a thread of its own with a small runtime: it writes what the window asks, in
+//! order, and hands what edualcd says to the app as events (`link::Inbox`).
 //!
 //! A line the network loses is reached again, at the addresses looked up before the window was
 //! confined, waiting longer each time it fails; the app is told it was lost
@@ -17,7 +17,7 @@ use futures_util::SinkExt as _;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::app::Event;
-use crate::ipc::pairing::Pairing;
+use crate::ipc::pairing::Server;
 use crate::ipc::{self, ActId, Answer, FromDaemon, PROTOCOL, Read, ToDaemon, WindowKey, ws};
 use crate::link::{self, Greeting, Inbox, Link, QUEUE, Ungreeted};
 
@@ -30,7 +30,7 @@ const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error(transparent)]
     Line(#[from] ipc::Error),
     #[error("couldn't start the window's line to edualcd: {0}")]
@@ -44,7 +44,7 @@ pub(crate) enum Error {
 impl Error {
     /// Whether reaching edualcd again could go otherwise: not if it refused the window's token
     /// or version, nor shows another certificate.
-    fn passes(&self) -> bool {
+    pub fn passes(&self) -> bool {
         match self {
             Self::Line(ipc::Error::Token | ipc::Error::Version(_) | ipc::Error::Certificate(_))
             | Self::Ungreeted(_) => false,
@@ -55,14 +55,14 @@ impl Error {
 
 /// A line to edualcd, greeted, its thread not started yet.
 #[derive(Debug)]
-pub(crate) struct Connected {
-    pub(crate) runtime: tokio::runtime::Runtime,
-    pub(crate) socket: ws::Line,
+pub struct Connected {
+    runtime: tokio::runtime::Runtime,
+    socket: ws::Line,
     /// What edualcd tells as the window connects.
-    pub(crate) greeting: Greeting,
+    pub greeting: Greeting,
     /// Where edualcd was reached, looked up before the window was confined.
-    pub(crate) addresses: Vec<SocketAddr>,
-    pairing: Pairing,
+    pub addresses: Vec<SocketAddr>,
+    server: Server,
     /// Which window this is, the same each time its line is reached again.
     key: WindowKey,
     /// What edualcd said while the window waited for an answer (`ask`), for the app, in order.
@@ -72,7 +72,7 @@ pub(crate) struct Connected {
 impl Connected {
     /// Asks edualcd to read something, and waits for its answer: before the app runs, for
     /// where it is to work, which is on edualcd's machine.
-    pub(crate) fn ask(&mut self, read: Read) -> Result<Answer, Error> {
+    pub fn ask(&mut self, read: Read) -> Result<Answer, Error> {
         let request = ActId::default();
         let Self {
             runtime,
@@ -106,22 +106,21 @@ impl Connected {
     }
 }
 
-/// Connects to the edualcd `pairing` names: before the window is confined, which then can't ask
-/// DNS.
-pub(crate) fn connect(pairing: &Pairing) -> Result<Connected, Error> {
-    let addresses = ws::resolve(pairing)?;
+/// Connects to `server`: before the window is confined, which then can't ask DNS.
+pub fn connect(server: &Server) -> Result<Connected, Error> {
+    let addresses = ws::resolve(server)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(Error::Runtime)?;
     let key = WindowKey::new();
-    let (socket, greeting) = runtime.block_on(greet(pairing, &addresses, key))?;
+    let (socket, greeting) = runtime.block_on(greet(server, &addresses, key))?;
     Ok(Connected {
         runtime,
         socket,
         greeting,
         addresses,
-        pairing: pairing.clone(),
+        server: server.clone(),
         key,
         early: Vec::new(),
     })
@@ -129,11 +128,11 @@ pub(crate) fn connect(pairing: &Pairing) -> Result<Connected, Error> {
 
 /// The handshakes and hello, then the sessions edualcd runs, which come first.
 async fn greet(
-    pairing: &Pairing,
+    server: &Server,
     addresses: &[SocketAddr],
     key: WindowKey,
 ) -> Result<(ws::Line, Greeting), Error> {
-    let mut socket = ws::connect(pairing, addresses).await?;
+    let mut socket = ws::connect(server, addresses).await?;
     let hello = ToDaemon::Hello {
         protocol: PROTOCOL,
         window: key,
@@ -153,13 +152,13 @@ async fn greet(
 }
 
 /// Starts the thread that carries the line; what edualcd says comes to the app as `events`.
-pub(crate) fn run(connected: Connected, events: Sender<Event>) -> (Link, Greeting) {
+pub fn run(connected: Connected, events: Sender<Event>) -> (Link, Greeting) {
     let Connected {
         runtime,
         socket,
         greeting,
         addresses,
-        pairing,
+        server,
         key,
         early,
     } = connected;
@@ -176,7 +175,7 @@ pub(crate) fn run(connected: Connected, events: Sender<Event>) -> (Link, Greetin
                     return;
                 }
                 let Some((again, greeting)) =
-                    reach_again(&pairing, &addresses, key, &queue, &events).await
+                    reach_again(&server, &addresses, key, &queue, &events).await
                 else {
                     return;
                 };
@@ -199,7 +198,7 @@ pub(crate) fn run(connected: Connected, events: Sender<Event>) -> (Link, Greetin
 /// meanwhile; none once the window closed, or edualcd refuses it for good (the app is told
 /// why).
 async fn reach_again(
-    pairing: &Pairing,
+    server: &Server,
     addresses: &[SocketAddr],
     key: WindowKey,
     queue: &Receiver<ToDaemon>,
@@ -218,7 +217,7 @@ async fn reach_again(
                 },
             }
         }
-        match greet(pairing, addresses, key).await {
+        match greet(server, addresses, key).await {
             Ok(reached) => {
                 tracing::info!("reached edualcd again");
                 return Some(reached);

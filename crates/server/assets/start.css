@@ -1,0 +1,41 @@
+/* The Android app's start screen (src/android): the edualcds paired with, and pairing with
+   another. In the window's look, a column down the middle. */
+
+.start {
+    height: 100%; overflow-y: auto; box-sizing: border-box;
+    padding: var(--space-xl) var(--space-l); max-width: 36em; margin: 0 auto;
+    display: flex; flex-direction: column; gap: var(--space-l);
+}
+.start h1 { font-size: calc(var(--base) * 1.6); margin: 0; }
+.start h2 { font-size: var(--title); margin: 0 0 var(--space-s); }
+.start p { margin: 0 0 var(--space-s); }
+.start-header { display: flex; align-items: center; gap: var(--space-m); }
+.start-heron {
+    width: calc(var(--base) * 3); height: calc(var(--base) * 3); flex: none;
+    background: var(--claude); mask: var(--heron) center / contain no-repeat;
+    -webkit-mask: var(--heron) center / contain no-repeat;
+}
+.start-reaching {
+    margin: auto; display: flex; flex-direction: column; align-items: center; gap: var(--space-m);
+    color: var(--text-secondary);
+}
+.start-problem {
+    background: var(--danger-fill); color: var(--danger-text); border: 1px solid var(--danger);
+    border-radius: var(--radius-m); padding: var(--space-m); overflow-wrap: anywhere;
+}
+.start-section { display: flex; flex-direction: column; gap: var(--space-xs); }
+.start-servers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.start-server { display: flex; align-items: center; gap: var(--space-xs); }
+.start-server-reach {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-m); text-align: left;
+    padding: var(--space-m); border: 1px solid var(--divider); border-radius: var(--radius-m);
+    background: var(--surface-raised); cursor: pointer;
+}
+.start-server-reach:hover { background: var(--hover); }
+.start-server-reach:active { background: var(--pressed); }
+.start-server-texts { display: flex; flex-direction: column; min-width: 0; }
+.start-server-texts > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start-server-name { font-weight: 600; }
+.start-label { margin-top: var(--space-s); color: var(--text-secondary); font-size: var(--small); }
+.start-address { font-family: var(--mono); font-size: var(--code-size); resize: vertical; overflow-wrap: anywhere; }
+.start-actions { display: flex; justify-content: flex-end; margin-top: var(--space-s); }

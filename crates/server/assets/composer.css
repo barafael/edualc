@@ -137,7 +137,7 @@
 /* The mode and model: an icon and the choice's name, no frame until hovered; the menu opens
    upwards. */
 .composer-menu-holder { position: relative; display: flex; min-width: 0; }
-.composer-menu-holder.mode-menu { max-width: 220px; }
+.composer-menu-holder.mode-menu { max-width: 220px; flex: none; }
 .composer-menu-holder.model-menu { max-width: 240px; }
 .composer-menu-button {
     display: inline-flex; align-items: center; gap: var(--space-xs); min-width: 0;
@@ -158,6 +158,10 @@
     .mode-menu .menu-current {
         position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
     }
+}
+/* A phone's width: the context's count without its bar, the model's name shortened first. */
+@container composer (max-width: 479px) {
+    .context-meter .meter { display: none; }
 }
 .composer-menu {
     position: absolute; left: 0; bottom: 100%; margin-bottom: var(--space-xs); z-index: 50;

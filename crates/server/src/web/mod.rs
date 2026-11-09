@@ -1,13 +1,14 @@
 //! The page: edualc's window, drawn by Dioxus. It runs the same app as the native window
 //! (`edualc-core`): the presenter's frontend here (`view::PageFrontend`) puts what it shows in
-//! signals, which the components draw; what the user does goes back as the app's actions. Its
-//! line to the daemon is the server's (`line`), carried on to the daemon's socket.
+//! signals, which the components draw; what the user does goes back as the app's actions. In a
+//! browser its line is a WebSocket to the server that served it (`line`); in the Android app
+//! (`android`), which draws the same components, the native window's line (`edualc_core::line`).
 
 // Dioxus's `rsx!` keeps its templates in `OnceLock`s on the server: its state, not ours.
 #![allow(clippy::disallowed_types)]
 // The server renders the page as it is before its line opens; what drives it (the frontend,
-// the line) runs only in the browser.
-#![cfg_attr(not(feature = "web"), allow(dead_code))]
+// the line) runs only in the browser and the app.
+#![cfg_attr(not(any(feature = "web", feature = "mobile")), allow(dead_code))]
 
 use dioxus::prelude::*;
 
@@ -37,6 +38,16 @@ pub fn App() -> Element {
         #[cfg(feature = "web")]
         spawn(run(view));
     });
+    rsx! {
+        Shell {}
+    }
+}
+
+/// The window, in the page's look and text size, and what keeps it from working, if anything
+/// does.
+#[component]
+pub fn Shell() -> Element {
+    let view = use_context::<View>();
     let page = view.page.read();
     let theme = match page.look {
         edualc_core::present::Look::Gruvbox => "gruvbox",
@@ -45,12 +56,13 @@ pub fn App() -> Element {
     let style = format!("--base-size: {}px;", page.text_size);
     rsx! {
         document::Stylesheet { href: STYLE }
+        Stylesheets {}
         Fonts {}
         document::Title { "edualc" }
         div { class: "window {theme}", style,
             if let Some(lost) = &page.lost {
                 div { class: "lost", role: "alert", "{lost}" }
-            } else if page.closed {
+            } else if page.closed && cfg!(not(feature = "mobile")) {
                 div { class: "lost", "This window was closed. Reload the page to open it again." }
             }
             components::Window {}
@@ -58,10 +70,27 @@ pub fn App() -> Element {
     }
 }
 
+/// Every part's stylesheet, from the start. Each part names its own too, but a link is put in
+/// the page by an effect of the part that names it first, and only once: a part shown and
+/// hidden in the same moment (the sidebar, as a narrow window starts) would leave its
+/// stylesheet out for good.
+#[component]
+fn Stylesheets() -> Element {
+    rsx! {
+        document::Stylesheet { href: asset!("/assets/sidebar.css") }
+        document::Stylesheet { href: asset!("/assets/header.css") }
+        document::Stylesheet { href: asset!("/assets/transcript.css") }
+        document::Stylesheet { href: asset!("/assets/prompt.css") }
+        document::Stylesheet { href: asset!("/assets/bars.css") }
+        document::Stylesheet { href: asset!("/assets/composer.css") }
+        document::Stylesheet { href: asset!("/assets/panels.css") }
+    }
+}
+
 /// The fonts' faces, declared once: their own component, so the page's changes don't touch
 /// them.
 #[component]
-fn Fonts() -> Element {
+pub fn Fonts() -> Element {
     rsx! {
         document::Style {
             "@font-face {{ font-family: 'Fira Sans'; src: url({SANS}); font-weight: 400; }}
