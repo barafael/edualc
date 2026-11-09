@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::chat::{Change, Chat, ImageKey, ToolState};
 use crate::claude::{self, Claude, FolderConfiguration, Launch, Output, Resume, SandboxWish};
-use crate::decode::{Picture, Pixels};
+use crate::decode::{PasteFailure, Pasted, Picture, Pixels};
 use crate::desktop;
 use crate::external::wire::{
     self, ControlRequest, Destination, PermissionResult, PermissionUpdate, RequestId, SessionId,
@@ -21,12 +21,12 @@ use crate::external::wire::{
 };
 use crate::folder::Folder;
 use crate::ipc::{
-    self, Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Read, Runs,
-    SandboxAccess, Target, ToDaemon, Watched,
+    self, Act, ActFailure, ActId, Generation, Hosted, Read, Runs, SandboxAccess, Target, ToDaemon,
+    Watched,
 };
 use crate::link::{self, Link};
 use crate::plan;
-use crate::present::{Frontend, Presenter};
+use crate::present::{Frontend, Presenter, Seat};
 use crate::repeat::Repeat;
 use crate::sandbox;
 use crate::sessions::{LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree};
@@ -155,10 +155,10 @@ pub enum Event {
         request: ActId,
         result: Result<(), ActFailure>,
     },
-    /// The folder the daemon's picker came back with.
-    Picked {
-        request: ActId,
-        folder: Option<PathBuf>,
+    /// The folder a path typed for the sandbox names on edualcd's machine, or why it names none.
+    SandboxFolderRead {
+        access: SandboxAccess,
+        result: Result<PathBuf, String>,
     },
     /// Whether the terminal's trust dialog was accepted for the folder asked about.
     Trusted {
@@ -167,18 +167,24 @@ pub enum Event {
         /// What the folder would run, if it isn't trusted.
         runs: Vec<Runs>,
     },
-    /// The clipboard's image, decoded in the confined helper, or why there is none.
-    Pasted {
-        request: ActId,
-        pasted: Pasted,
-    },
+    /// The clipboard's image, read by the frontend on its desktop and made ready to send, or
+    /// why there is none.
+    Pasted(Pasted),
+    /// The frontend couldn't do something on its desktop (see `present::Seat`): why.
+    SeatFailed(String),
     /// An image of the conversation, decoded in the confined helper to show, or why it isn't.
     ImageShown {
         key: ImageKey,
         shown: Result<Pixels, images::ShowError>,
     },
-    /// The daemon is gone, and the sessions it ran for this window.
+    /// The line to edualcd is lost: what was asked on it isn't answered, and the sessions it
+    /// ran for this window are no longer shown here (they run on there).
     DaemonLost,
+    /// The line to edualcd was reached again: the sessions it runs and those running now.
+    Reconnected {
+        hosted: Vec<Hosted>,
+        live: Vec<LiveSession>,
+    },
     /// The sessions the daemon runs, anew.
     Hosted(Vec<Hosted>),
     /// The worktree a session's transcript says it works in.
@@ -310,18 +316,8 @@ impl TrustGate {
 /// What a request to the daemon was for.
 #[derive(Debug)]
 enum Acting {
-    /// Something for the desktop the user asked for; only its failure is told.
-    Desktop,
-    /// A notification about a session elsewhere, which the user didn't ask for: its failure is
-    /// only logged, not put in the conversation (a desktop without a notification service
-    /// would have an error there for each).
-    Notifying,
     /// Stopping a session elsewhere, to continue it here.
     Bringing(SessionId),
-    /// Reading the clipboard's image, for the next message.
-    Pasting,
-    /// The folder picker, for a folder to be used so.
-    Picking(FolderUse),
 }
 
 /// What the user did in the window.
@@ -333,7 +329,6 @@ pub enum Action {
     OpenSession(SessionId),
     /// A folder typed into the list of folders, to open.
     OpenProject(String),
-    BrowseProject,
     ListProjects,
     ChooseModel(usize),
     ChooseMode(usize),
@@ -377,7 +372,6 @@ pub enum Action {
     },
     CancelComment,
     ContinueHere,
-    GoToWindow,
     AskSide(String),
     ToggleSide,
     DismissSide,
@@ -389,7 +383,8 @@ pub enum Action {
     StopAllTasks,
     SideToConversation,
     BranchSide,
-    /// Opens the session's worktree with the opener at this place in the menu (0: here).
+    /// Does with the session's worktree what the menu has at this place: 0 opens it here, 1
+    /// copies its path.
     OpenWorktree(usize),
     Zoom(Zoom),
     /// The other look (Gruvbox or plain).
@@ -400,8 +395,11 @@ pub enum Action {
     HanLanguage(crate::cjk::CjkLanguage),
     /// Whether a sandboxed session's messages to other sessions go without asking, flipped.
     ToggleMessagesUnasked,
-    /// Picks a folder for the sandbox to let Claude into so.
-    AddSandboxFolder(SandboxAccess),
+    /// A folder typed for the sandbox to let Claude into so, as a path on edualcd's machine.
+    AddSandboxFolder {
+        access: SandboxAccess,
+        typed: String,
+    },
     /// Takes a folder, as shown, from those the sandbox lets Claude into so.
     ForgetSandboxFolder {
         access: SandboxAccess,
@@ -411,7 +409,8 @@ pub enum Action {
     ComposerHeight(Option<u16>),
     /// The sidebar's width as dragged, in logical pixels; none for the default again.
     SidebarWidth(Option<u16>),
-    /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
+    /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message;
+    /// the frontend reads its desktop's clipboard (`Seat::PasteImage`).
     PasteImage,
     /// An image taken off the next message, by its place.
     RemoveImage(usize),
@@ -778,6 +777,9 @@ enum Reading {
     Folder {
         typed: bool,
     },
+    SandboxFolder {
+        access: SandboxAccess,
+    },
 }
 
 impl Reading {
@@ -814,6 +816,9 @@ impl Reading {
                 }
             }
             (Self::Folder { typed }, Answer::Folder(result)) => Event::FolderRead { typed, result },
+            (Self::SandboxFolder { access }, Answer::Folder(result)) => {
+                Event::SandboxFolderRead { access, result }
+            }
             (reading, answer) => {
                 tracing::warn!(?reading, ?answer, "the daemon answered another question");
                 return None;
@@ -860,8 +865,6 @@ pub struct App<F: Frontend> {
     /// The watch on the running sessions' records.
     records: Option<Watched>,
     side: SideChat,
-    /// What a worktree can be opened in here, as the menu lists them after "this window".
-    openers: Vec<desktop::Opener>,
     /// Claude Code's own sandbox is on in its settings: edualc's stays off.
     claude_codes_sandbox: bool,
     settings: Settings,
@@ -912,12 +915,10 @@ impl<F: Frontend> App<F> {
         model: Option<String>,
     ) -> Self {
         let Desktop {
-            openers,
             claude_codes_sandbox,
-            finds_windows,
             text_size: desktop_text_size,
         } = desktop_found;
-        let mut view = Presenter::new(frontend, &openers, finds_windows);
+        let mut view = Presenter::new(frontend);
         let (settings, settings_problem) = match settings {
             Ok(settings) => (settings, None),
             Err(problem) => {
@@ -967,7 +968,6 @@ impl<F: Frontend> App<F> {
             settings_problem,
             records: None,
             side: SideChat::default(),
-            openers,
             claude_codes_sandbox,
             settings,
             desktop_text_size,
@@ -1094,19 +1094,15 @@ impl<F: Frontend> App<F> {
                 Err(problem) if typed => self.view.set_project_problem(&problem),
                 Err(problem) => self.chat.error(problem),
             },
-            Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
-                (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
-                    self.read_folder(Read::Folder(folder));
-                }
-                (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
+            Event::SandboxFolderRead { access, result } => match result {
+                Ok(folder) => {
                     let folders = self.settings.sandbox_folders(access);
                     if !folders.contains(&folder) {
                         folders.push(folder);
                         self.sandbox_folders_changed();
                     }
                 }
-                // Nothing picked, or for a request since forgotten.
-                (Some(_) | None, _) => {}
+                Err(problem) => self.chat.error(problem),
             },
             Event::Trusted {
                 request,
@@ -1120,8 +1116,7 @@ impl<F: Frontend> App<F> {
                     self.chat.image_shown(key);
                 }
             }
-            Event::Pasted { request, pasted } => {
-                self.acting.remove(&request);
+            Event::Pasted(pasted) => {
                 match pasted {
                     Ok(picture) => {
                         self.attached.push(picture);
@@ -1132,13 +1127,20 @@ impl<F: Frontend> App<F> {
                     Err(failure) => self.chat.error(failure.to_string()),
                 }
             }
+            Event::SeatFailed(failure) => {
+                tracing::warn!(%failure, "the desktop didn't do it");
+                self.chat.error(failure);
+            }
             Event::DaemonLost => {
                 self.process = None;
                 self.forget_process();
-                self.chat.error(
-                    "Lost the edualc daemon, which runs Claude Code. Open edualc again to go on.",
-                );
+                // Asked on the lost line: no answer comes.
+                self.reading.clear();
+                self.acting.clear();
+                self.chat
+                    .error("Lost the line to edualcd, which runs Claude Code; reaching it again.");
             }
+            Event::Reconnected { hosted, live } => self.reconnected(hosted, live),
             Event::Hosted(hosted) => {
                 self.hosted = hosted;
                 self.redraw.sessions = true;
@@ -1158,7 +1160,6 @@ impl<F: Frontend> App<F> {
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
             Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed)),
-            Action::BrowseProject => self.pick_folder(FolderUse::Project),
             // The relay is told as the sandboxed process starts (`SandboxWish`).
             Action::ToggleMessagesUnasked => {
                 self.settings.sandbox_messages_unasked = !self.settings.sandbox_messages_unasked;
@@ -1166,7 +1167,9 @@ impl<F: Frontend> App<F> {
                     .set_messages_unasked(self.settings.sandbox_messages_unasked);
                 self.sandbox_changed();
             }
-            Action::AddSandboxFolder(access) => self.pick_folder(FolderUse::Sandbox(access)),
+            Action::AddSandboxFolder { access, typed } => {
+                self.read(Read::TypedFolder(typed), Reading::SandboxFolder { access });
+            }
             Action::ForgetSandboxFolder { access, folder } => {
                 self.settings
                     .sandbox_folders(access)
@@ -1189,7 +1192,7 @@ impl<F: Frontend> App<F> {
                 }
             }
             Action::Copy(text) => self.view.copy(&text),
-            Action::OpenUrl(url) => self.ask_desktop(Act::OpenUrl(url), Acting::Desktop),
+            Action::OpenUrl(url) => self.open_url(url),
             Action::Allow(request) => self.allow(&request, false),
             Action::AllowAlways(request) => self.allow(&request, true),
             Action::Deny { request, feedback } => self.deny(&request, &feedback),
@@ -1206,7 +1209,6 @@ impl<F: Frontend> App<F> {
             Action::CancelComment => self.edit_comment(None),
             Action::SetComment { section, text } => self.set_comment(section, &text),
             Action::ContinueHere => self.continue_here(),
-            Action::GoToWindow => self.go_to_window(),
             Action::AskSide(question) => self.ask_side(&question),
             Action::ToggleSide => self.toggle_side(),
             Action::DismissSide => self.dismiss_side(),
@@ -1285,7 +1287,7 @@ impl<F: Frontend> App<F> {
                 self.settings.sidebar_width_px = width_px;
                 self.save_settings();
             }
-            Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
+            Action::PasteImage => self.view.seat(Seat::PasteImage),
             Action::RemoveImage(index) => {
                 if index < self.attached.len() {
                     self.attached.remove(index);
@@ -1588,37 +1590,29 @@ impl<F: Frontend> App<F> {
         self.last_act = self.last_act.next();
         let request = self.last_act;
         if link::send(&self.link, ToDaemon::Act { request, act }).is_err() {
-            self.chat.error("Lost the edualc daemon.");
+            self.chat.error("Lost the line to edualcd.");
             return;
         }
         self.acting.insert(request, acting);
     }
 
     fn acted(&mut self, request: ActId, result: Result<(), ActFailure>) {
-        match (self.acting.remove(&request), result) {
-            (Some(Acting::Bringing(id)), result) => self.brought(&id, result),
-            (Some(Acting::Desktop), Err(failure)) => {
-                tracing::warn!(%failure, "the desktop didn't do it");
-                self.chat.error(failure.to_string());
-            }
-            (Some(Acting::Notifying), Err(failure)) => {
-                tracing::warn!(%failure, "couldn't notify");
-            }
-            // A paste is answered as `Pasted`, a folder picked as `Picked`.
-            (
-                Some(Acting::Desktop | Acting::Notifying | Acting::Pasting | Acting::Picking(_)),
-                Ok(()),
-            )
-            | (None, _) => {}
-            (Some(Acting::Pasting | Acting::Picking(_)), Err(failure)) => {
-                self.chat.error(failure.to_string());
-            }
+        match self.acting.remove(&request) {
+            Some(Acting::Bringing(id)) => self.brought(&id, result),
+            None => {}
         }
     }
 
-    /// The desktop's folder picker, for a folder to be used so; `Event::Picked` answers.
-    fn pick_folder(&mut self, folder_use: FolderUse) {
-        self.ask_desktop(Act::PickFolder(folder_use), Acting::Picking(folder_use));
+    /// Opens a link from the conversation in the desktop's browser: only web pages and mail
+    /// (see `desktop::is_web_link`); another link could run what Claude wrote.
+    fn open_url(&mut self, url: String) {
+        if desktop::is_web_link(&url) {
+            self.view.seat(Seat::OpenUrl(url));
+        } else {
+            self.chat.error(format!(
+                "not opened: {url}\nOnly web links open from here; copy it to open it yourself."
+            ));
+        }
     }
 
     /// Keeps the changed folders the sandbox lets Claude into, shows them, and starts a
@@ -2081,12 +2075,23 @@ impl<F: Frontend> App<F> {
         self.view.focus_composer();
     }
 
-    fn go_to_window(&mut self) {
-        let Some(watch) = &self.watch else {
-            return;
-        };
-        let pid = watch.session.pid;
-        self.ask_desktop(Act::FocusWindowOf { pid }, Acting::Desktop);
+    /// The line to edualcd is back: what was watched is watched again, and the session shown
+    /// is opened again, from its transcript, which has what was said meanwhile. One this window
+    /// ran was let go of as the window came again (see the daemon's hub), and is attached to.
+    fn reconnected(&mut self, hosted: Vec<Hosted>, live: Vec<LiveSession>) {
+        self.hosted = hosted;
+        self.live = live;
+        self.redraw.sessions = true;
+        self.records = self.watch(Target::Records);
+        match self.status.session_id.take() {
+            Some(id) => {
+                self.watch = None;
+                self.open_session(id);
+            }
+            None => self.new_session(),
+        }
+        self.load_sessions();
+        self.render();
     }
 
     fn tick(&mut self) {
@@ -2191,7 +2196,7 @@ impl<F: Frontend> App<F> {
                 self.notified.insert(session.id.clone(), now);
                 let summary = format!("{} needs you", session.name);
                 let body = session.cwd.display().to_string();
-                self.ask_desktop(Act::Notify { summary, body }, Acting::Notifying);
+                self.view.seat(Seat::Notify { summary, body });
             }
         }
         if let Some(watch) = self.watch.as_mut()
@@ -2891,26 +2896,21 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
     }
 }
 
-/// What the desktop has and says: the daemon's word, and what the window's desktop says.
-#[derive(Debug)]
+/// What the desktop has and says: edualcd's word, and what the window's desktop says.
+#[derive(Debug, Clone, Copy)]
 pub struct Desktop {
-    openers: Vec<desktop::Opener>,
-    /// Claude Code's own sandbox is on in its settings, as the daemon read them.
+    /// Claude Code's own sandbox is on in its settings, as edualcd read them.
     claude_codes_sandbox: bool,
-    /// Other programs' windows can be found, as the daemon says.
-    finds_windows: bool,
     /// In logical pixels.
     text_size: f32,
 }
 
 impl Desktop {
-    /// What the daemon told, and the text size of the desktop the window is on, in logical
+    /// What edualcd told, and the text size of the desktop the window is on, in logical
     /// pixels.
     pub fn of(greeting: &link::Greeting, text_size: f32) -> Self {
         Self {
-            openers: greeting.openers.clone(),
             claude_codes_sandbox: greeting.claude_codes_sandbox,
-            finds_windows: greeting.finds_windows,
             text_size,
         }
     }

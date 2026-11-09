@@ -1,8 +1,8 @@
-//! The daemon (`edualc --daemon`): runs Claude Code's processes for the windows, and does for
-//! them what their sandbox keeps them from (opening editors, notifying, stopping sessions that
-//! run elsewhere). One per user, started by the first window, gone a while after the last window
-//! and session are. Sessions outlive the window that started them: closing it leaves them
-//! running, and a window opened later attaches to them.
+//! The daemon: runs Claude Code's processes for the windows, and does for them what their
+//! sandbox keeps them from (stopping sessions that run elsewhere). It runs inside edualcd's
+//! server, which hands it each window's line (`Daemon::window`), from this machine or another
+//! alike. Sessions outlive the window that started them: closing it leaves them running, and a
+//! window opened later attaches to them.
 //!
 //! Its parts are actors in the manner of "More Actors with Tokio": each is its data, run by an
 //! event loop that is given its channels and gives its data back, and spawned by its caller.
@@ -10,14 +10,14 @@
 //! make no cycle:
 //!
 //! ```text
-//! socket ─▶ Connection (a window) ─▶ Hub (the sessions) ─▶ Session ─▶ a window's outbox ─▶ socket
+//! line ─▶ Connection (a window) ─▶ Hub (the sessions) ─▶ Session ─▶ a window's outbox ─▶ line
 //!                │                        └──────────── Hosted (the list) ─────────▶ outboxes
-//!                └──────────────────── Done (what the desktop did) ────────────────▶ outbox
+//!                └──────────────────── Done (what was done) ────────────────────────▶ outbox
 //! ```
 //!
 //! The hub learns that a session ended as its task does, not by a message back. A window
 //! hanging up detaches its sessions, which run on; one left alone and quiet for [`QUIET`] ends,
-//! its input closing. When no window and no session are left for [`IDLE`], the daemon ends.
+//! its input closing.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,27 +25,23 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::ChildStdin;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::buses;
 use crate::claude::{Conversation, Launch};
-use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Buses, FolderUse, FromDaemon, Generation, Hosted, HostedId,
-    LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon, ws,
+    self, Act, ActFailure, ActId, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
+    StartFailure, Stream, ToDaemon, WindowKey,
 };
 use crate::mirror::{self, Mirror};
 use crate::relay::{self, FromProcess, Relay, Work};
 use crate::{files, home, sessions, settings, spawn, trust};
 
-/// How long the daemon waits, with no window and no session, before it ends.
-const IDLE: Duration = Duration::from_secs(5);
 /// How long a window has to say hello.
-const HELLO: Duration = Duration::from_secs(2);
+const HELLO: Duration = Duration::from_secs(10);
 /// How long a process whose input closed gets to end before it is killed.
 const GRACE: Duration = Duration::from_secs(3);
 /// How long a session no window shows may stay quiet before it is ended.
@@ -53,216 +49,91 @@ const QUIET: Duration = Duration::from_secs(60 * 60);
 /// How often a sandboxed session's transcript is followed into the user's copy: a stat of it
 /// when nothing changed.
 const FOLLOW_EVERY: Duration = Duration::from_secs(2);
-/// Messages queued for a window, requests from it, commands for a session.
-const QUEUE: usize = 1024;
+/// Requests queued from a window, commands for a session.
+pub const QUEUE: usize = 1024;
+
+/// What goes to a window, as its line takes it. Unbounded, so that a window slow to read holds
+/// up neither the hub nor a session's output (and with it the other windows): its line is
+/// pinged, and one that stops reading stops answering and is let go of (see edualcd's
+/// `serve::carry`), and what was queued for it with it.
+pub type Outbox = mpsc::UnboundedSender<FromDaemon>;
 /// Permission requests kept for a window to come: more unanswered than this is a runaway.
 const MAX_PENDING: usize = 64;
-/// How long the clipboard's owner gets to hand over what it holds.
-const CLIPBOARD: Duration = Duration::from_secs(5);
-/// The most of the clipboard's list of types read: a few dozen names.
-const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
 
-/// Runs the daemon; it returns as it ends.
-pub fn run() -> std::process::ExitCode {
-    // What the daemon and its children make (its socket, the proxies') is the user's alone.
+/// What the process edualcd's server is must be, before its runtime starts: what it makes
+/// (the sessions' homes, the mirrors' sockets) the user's alone, and its memory and descriptors
+/// (the token, the sessions' pipes) closed to the user's other processes, Claude Code's among
+/// them.
+pub fn harden() {
     rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
-    // Closed to the user's other processes: its memory, and the descriptors it holds (the
-    // claude processes' and the image decoder's pipes). Windows check it by user, not program.
     if let Err(error) =
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
     {
-        tracing::warn!(%error, "the daemon stays open to the user's other processes");
-    }
-    let folder = match ipc::Folder::open() {
-        Ok(folder) => folder,
-        Err(error) => {
-            tracing::error!(%error, "no private place for the daemon");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    let listener = match ipc::Listener::bind(&folder) {
-        Ok(Some(listener)) => listener,
-        Ok(None) => {
-            tracing::info!("another daemon runs");
-            return std::process::ExitCode::SUCCESS;
-        }
-        Err(error) => {
-            tracing::error!(%error, "couldn't listen");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            tracing::error!(%error, "no runtime");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    match runtime.block_on(serve(listener, folder.path())) {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            tracing::error!(%error, "the daemon failed");
-            std::process::ExitCode::FAILURE
-        }
+        tracing::warn!(%error, "edualcd stays open to the user's other processes");
     }
 }
 
-/// Takes windows as they connect, until no window and no session is left for [`IDLE`].
-async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), ipc::Error> {
-    let (listener, _lock) = listener.into_tokio()?;
-    // Ended with the daemon.
-    let (buses, _proxies) = buses::start(folder).await;
-    let (hub, requests) = mpsc::channel(QUEUE);
-    let (running, mut sessions) = watch::channel(0usize);
-    let hub_task = tokio::spawn(Hub::default().event_loop(
-        requests,
-        running,
-        tokio::runtime::Handle::current(),
-    ));
-    let mut windows = JoinSet::new();
-    let mut last_window = WindowId::default();
-    let mut quiet_since = Some(Instant::now());
-    loop {
-        let idle = async {
-            match quiet_since {
-                Some(since) => tokio::time::sleep_until(since + IDLE).await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            accepted = ipc::accept(&listener) => match accepted {
-                Ok(stream) => {
-                    last_window = last_window.next();
-                    windows.spawn(window(stream, last_window, buses.clone(), hub.clone()));
-                    quiet_since = None;
-                }
-                Err(error) => tracing::warn!(%error, "refused a connection"),
-            },
-            Some(ended) = windows.join_next() => {
-                if let Err(error) = ended {
-                    tracing::error!(%error, "a window's connection failed");
-                }
-            },
-            changed = sessions.changed() => {
-                if changed.is_err() {
-                    tracing::error!("the hub ended");
-                    break;
-                }
-            },
-            () = idle => {
-                tracing::info!("no window and no session for a while: ending");
-                break;
-            },
-        }
-        let quiet = windows.is_empty() && *sessions.borrow() == 0;
-        quiet_since = match (quiet, quiet_since) {
-            (true, None) => Some(Instant::now()),
-            (true, since @ Some(_)) => since,
-            (false, _) => None,
-        };
-    }
-    // The hub's requests close; it ends its sessions, and is awaited.
-    drop(hub);
-    if let Err(error) = hub_task.await {
-        tracing::error!(%error, "the hub failed");
-    }
-    Ok(())
-}
-
-/// A window's connection: the WebSocket handshake and hello, then its requests to its
-/// [`Connection`], and what the hub, sessions and the desktop say back, until it hangs up.
-async fn window(
-    stream: tokio::net::UnixStream,
-    id: WindowId,
-    buses: Buses,
+/// The daemon, running: the hub of its sessions, which windows join by [`Daemon::window`]. It
+/// runs as long as one of these is held; as the last goes, its sessions end.
+#[derive(Debug, Clone)]
+pub struct Daemon {
     hub: mpsc::Sender<ToHub>,
-) {
-    let greeted = tokio::time::timeout(HELLO, async {
-        let mut socket = ws::accept(stream).await?;
-        let hello = ws::recv::<_, ToDaemon>(&mut socket).await?;
-        Ok::<_, ipc::Error>((socket, hello))
-    });
-    let socket = match greeted.await {
-        Ok(Ok((mut socket, ToDaemon::Hello { protocol }))) => {
-            let (settings, openers, live, claude_codes_sandbox) =
-                tokio::task::spawn_blocking(|| {
-                    (
-                        settings::load().map_err(|error| error.to_string()),
-                        desktop::openers(),
-                        sessions::live(),
-                        crate::sandbox::claude_codes_own_is_on(),
-                    )
-                })
-                .await
-                .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new(), false));
-            let answer = FromDaemon::Hello {
-                protocol: ipc::PROTOCOL,
-                buses,
-                settings,
-                openers,
-                live,
-                claude_codes_sandbox,
-                finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
-                home: dirs::home_dir(),
-            };
-            if let Err(error) = ws::send(&mut socket, &answer).await {
-                tracing::warn!(%error, "a window left as it came");
-                return;
-            }
-            if protocol != ipc::PROTOCOL {
+}
+
+impl Daemon {
+    /// Starts the hub on the runtime this is called in.
+    pub fn start() -> Self {
+        let (hub, requests) = mpsc::channel(QUEUE);
+        tokio::spawn(async move {
+            Hub::default()
+                .event_loop(requests, tokio::runtime::Handle::current())
+                .await;
+            tracing::info!("the hub ended, and its sessions with it");
+        });
+        Self { hub }
+    }
+
+    /// A window's line: its hello, then its requests to its [`Connection`], and what the hub,
+    /// sessions and the files say back, until it hangs up (`requests` closes) or stops
+    /// listening (`outbox` closes).
+    pub async fn window(&self, mut requests: mpsc::Receiver<ToDaemon>, outbox: Outbox) {
+        let key = match tokio::time::timeout(HELLO, requests.recv()).await {
+            Ok(Some(ToDaemon::Hello { protocol, window })) if protocol == ipc::PROTOCOL => window,
+            Ok(Some(ToDaemon::Hello { protocol, .. })) => {
                 tracing::warn!(protocol, "a window of another version");
+                tell(&outbox, hello().await).await;
                 return;
             }
-            socket
-        }
-        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-            tracing::warn!("a connection that didn't say hello");
-            return;
-        }
-    };
-    let (requests, received) = mpsc::channel(QUEUE);
-    let (outbox, mut answers) = mpsc::channel(QUEUE);
-    // The socket's two directions, each its own loop, polled together in one task: an answer
-    // waiting for the window to read doesn't stop requests being read, which would leave both
-    // ends writing to the other and neither reading.
-    let (mut writing, mut reading) = futures_util::StreamExt::split(socket);
-    let pump = tokio::spawn(async move {
-        let read = async {
-            loop {
-                match ws::recv::<_, ToDaemon>(&mut reading).await {
-                    Ok(request) => {
-                        if requests.send(request).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        tracing::info!(%error, "a window hung up");
-                        return;
-                    }
-                }
+            Ok(Some(_) | None) | Err(_) => {
+                tracing::warn!("a window that didn't say hello");
+                return;
             }
         };
-        // Until everything that could queue more is gone.
-        let write = async {
-            while let Some(answer) = answers.recv().await {
-                if let Err(error) = ws::send(&mut writing, &answer).await {
-                    tracing::info!(%error, "a window stopped listening");
-                    return;
-                }
-            }
-        };
-        tokio::select! {
-            () = read => {}
-            () = write => {}
-        }
-    });
-    let connection = Connection::new(id).event_loop(received, outbox, hub).await;
-    tracing::info!(window = ?connection.id, "a window's connection ended");
-    if let Err(error) = pump.await {
-        tracing::debug!(%error, "the pump ended");
+        tell(&outbox, hello().await).await;
+        let connection = Connection::new(WindowId::new(), key)
+            .event_loop(requests, outbox, self.hub.clone())
+            .await;
+        tracing::info!(window = ?connection.id, "a window's connection ended");
+    }
+}
+
+/// What a window is told as it comes: the settings, and the sessions running now.
+async fn hello() -> FromDaemon {
+    let (settings, live, claude_codes_sandbox) = tokio::task::spawn_blocking(|| {
+        (
+            settings::load().map_err(|error| error.to_string()),
+            sessions::live(),
+            crate::sandbox::claude_codes_own_is_on(),
+        )
+    })
+    .await
+    .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), false));
+    FromDaemon::Hello {
+        protocol: ipc::PROTOCOL,
+        settings,
+        live,
+        claude_codes_sandbox,
+        home: dirs::home_dir(),
     }
 }
 
@@ -303,12 +174,13 @@ enum Ask {
 }
 
 /// The daemon's id for a window's connection.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct WindowId(u64);
 
 impl WindowId {
-    fn next(self) -> Self {
-        Self(self.0 + 1)
+    /// A new one: random, as windows join from any task the server runs.
+    fn new() -> Self {
+        Self(uuid::Uuid::new_v4().as_u64_pair().0)
     }
 }
 
@@ -316,13 +188,16 @@ impl WindowId {
 #[derive(Debug, PartialEq, Eq)]
 struct Connection {
     id: WindowId,
+    /// Which window it is, as it names itself.
+    key: WindowKey,
     keys: std::collections::BTreeSet<Generation>,
 }
 
 impl Connection {
-    fn new(id: WindowId) -> Self {
+    fn new(id: WindowId, key: WindowKey) -> Self {
         Self {
             id,
+            key,
             keys: std::collections::BTreeSet::new(),
         }
     }
@@ -330,13 +205,14 @@ impl Connection {
     async fn event_loop(
         mut self,
         mut requests: mpsc::Receiver<ToDaemon>,
-        outbox: mpsc::Sender<FromDaemon>,
+        outbox: Outbox,
         hub: mpsc::Sender<ToHub>,
     ) -> Self {
         let window = self.id;
         if hub
             .send(ToHub::Joined {
                 window,
+                key: self.key,
                 outbox: outbox.clone(),
             })
             .await
@@ -443,173 +319,57 @@ impl Connection {
     }
 }
 
-/// Does what the desktop is asked, on a thread of its own (it may take a while), and tells the
-/// window.
-async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
-    if let Act::PickFolder(folder_use) = act {
-        let title = match folder_use {
-            FolderUse::Project => "Open a folder",
-            FolderUse::Sandbox(SandboxAccess::Read) => "A folder Claude may read in the sandbox",
-            FolderUse::Sandbox(SandboxAccess::Write) => "A folder Claude may change in the sandbox",
-        };
-        let picked = tokio::task::spawn_blocking(move || {
-            rfd::FileDialog::new().set_title(title).pick_folder()
-        })
-        .await;
-        let folder = picked.unwrap_or_else(|error| {
-            tracing::error!(%error, "the folder picker failed");
-            None
-        });
-        tell(&outbox, FromDaemon::Picked { request, folder }).await;
-        return;
-    }
-    if act == Act::PasteImage {
-        let pasted = paste_image().await;
-        tell_pasted(&outbox, request, &pasted).await;
-        return;
-    }
-    if let Act::CheckTrust { folder } = act {
-        // What the folder would run is read only for one that isn't trusted: it is asked about.
-        let read = tokio::task::spawn_blocking(move || {
-            let accepted = trust::accepted_in_terminal(&folder);
-            let runs = if accepted {
-                Vec::new()
-            } else {
-                trust::what_runs(&folder)
+/// Does what a window asked of this machine, on a thread of its own (it may take a while), and
+/// tells the window.
+async fn act_for(request: ActId, act: Act, outbox: Outbox) {
+    match act {
+        Act::CheckTrust { folder } => {
+            // What the folder would run is read only for one that isn't trusted: it is asked
+            // about.
+            let read = tokio::task::spawn_blocking(move || {
+                let accepted = trust::accepted_in_terminal(&folder);
+                let runs = if accepted {
+                    Vec::new()
+                } else {
+                    trust::what_runs(&folder)
+                };
+                (accepted, runs)
+            })
+            .await;
+            let (accepted, runs) = read.unwrap_or_else(|error| {
+                tracing::error!(%error, "reading the folder's trust failed");
+                (false, Vec::new())
+            });
+            tell(
+                &outbox,
+                FromDaemon::Trusted {
+                    request,
+                    accepted,
+                    runs,
+                },
+            )
+            .await;
+        }
+        Act::StopSession(running) => {
+            let stopped =
+                tokio::task::spawn_blocking(move || desktop::stop_session(&running)).await;
+            let result = match stopped {
+                Ok(stopped) => stopped.map_err(ActFailure::from),
+                Err(error) => {
+                    tracing::error!(%error, "stopping a session elsewhere failed");
+                    Err(ActFailure::Crashed)
+                }
             };
-            (accepted, runs)
-        })
-        .await;
-        let (accepted, runs) = read.unwrap_or_else(|error| {
-            tracing::error!(%error, "reading the folder's trust failed");
-            (false, Vec::new())
-        });
-        tell(
-            &outbox,
-            FromDaemon::Trusted {
-                request,
-                accepted,
-                runs,
-            },
-        )
-        .await;
-        return;
-    }
-    let done = tokio::task::spawn_blocking(move || perform(act)).await;
-    let result = done.unwrap_or_else(|error| {
-        tracing::error!(%error, "doing what the desktop was asked failed");
-        Err(ActFailure::Crashed)
-    });
-    tell(&outbox, FromDaemon::Done { request, result }).await;
-}
-
-/// The clipboard's image, read with `wl-paste` (the window, confined, never holds its raw
-/// bytes) and decoded in the confined helper (see `decode`).
-async fn paste_image() -> ipc::Pasted {
-    let listed = clipboard(&["--list-types"], MAX_CLIPBOARD_TYPES_BYTES).await?;
-    let format = String::from_utf8_lossy(&listed)
-        .lines()
-        .find_map(|line| line.trim().parse::<decode::Format>().ok())
-        .ok_or(PasteFailure::NoImage)?;
-    let limit = decode::MAX_INPUT_BYTES + 1;
-    let bytes = clipboard(&["--no-newline", "--type", format.as_ref()], limit).await?;
-    if bytes.len() > decode::MAX_INPUT_BYTES {
-        return Err(PasteFailure::Refused(Refusal::TooManyBytes));
-    }
-    decode::decode(&bytes).await.map_err(|error| match error {
-        decode::Error::Refused(refusal) => PasteFailure::Refused(refusal),
-        error @ (decode::Error::Start(_)
-        | decode::Error::NoPipes
-        | decode::Error::Hand(_)
-        | decode::Error::Read(_)
-        | decode::Error::Slow
-        | decode::Error::Failed(_)
-        | decode::Error::TooMuch
-        | decode::Error::Unreadable(_)
-        | decode::Error::Malformed) => PasteFailure::Decoder(error.to_string()),
-    })
-}
-
-/// What `wl-paste` gives with `args`, up to `limit` bytes (reading stops there).
-async fn clipboard(args: &[&str], limit: usize) -> Result<Vec<u8>, PasteFailure> {
-    let failed = |error: std::io::Error| PasteFailure::Clipboard(error.to_string());
-    let mut child = tokio::process::Command::new("wl-paste")
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(failed)?;
-    let Some(output) = child.stdout.take() else {
-        return Err(PasteFailure::Clipboard("wl-paste has no output".to_owned()));
-    };
-    let reading = async {
-        let mut bytes = Vec::new();
-        let cap = u64::try_from(limit).unwrap_or(u64::MAX);
-        output
-            .take(cap)
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(failed)?;
-        if bytes.len() >= limit {
-            // The caller refuses it; what is left isn't waited for (the child is killed as it
-            // is dropped).
-            return Ok(bytes);
+            tell(&outbox, FromDaemon::Done { request, result }).await;
         }
-        let status = child.wait().await.map_err(failed)?;
-        // It fails when the clipboard is empty, or holds nothing of the type asked.
-        if status.success() {
-            Ok(bytes)
-        } else {
-            Err(PasteFailure::NoImage)
-        }
-    };
-    tokio::time::timeout(CLIPBOARD, reading)
-        .await
-        .map_err(|_elapsed| {
-            PasteFailure::Clipboard("the clipboard's owner didn't hand it over in time".to_owned())
-        })?
-}
-
-/// The pasted image to a window.
-async fn tell_pasted(outbox: &mpsc::Sender<FromDaemon>, request: ActId, pasted: &ipc::Pasted) {
-    let pasted = pasted.clone();
-    tell(outbox, FromDaemon::Pasted { request, pasted }).await;
+    }
 }
 
 /// Tells a window something; a window gone isn't told.
-async fn tell(outbox: &mpsc::Sender<FromDaemon>, message: FromDaemon) {
-    if outbox.send(message).await.is_err() {
+async fn tell(outbox: &Outbox, message: FromDaemon) {
+    if outbox.send(message).is_err() {
         tracing::debug!("a window gone");
     }
-}
-
-/// Does what the desktop is asked (it may take a while: a session stopping elsewhere).
-fn perform(act: Act) -> Result<(), ActFailure> {
-    match act {
-        Act::OpenIn { opener, folder } => {
-            if !spawn::is_folder(&folder) {
-                return Err(ActFailure::NotAFolder(folder));
-            }
-            desktop::open_in(opener, &folder)?;
-        }
-        Act::Notify { summary, body } => desktop::notify(&summary, &body)?,
-        Act::OpenUrl(link) => {
-            if !desktop::is_web_link(&link) {
-                return Err(ActFailure::NotAWebLink(link));
-            }
-            open::that_detached(&link).map_err(|error| ActFailure::Open {
-                reason: error.to_string(),
-                link,
-            })?;
-        }
-        Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
-        Act::StopSession(running) => desktop::stop_session(&running)?,
-        // Answered as `Picked`, `Pasted` and `Trusted`, in `act_for`.
-        Act::PickFolder(_) | Act::PasteImage | Act::CheckTrust { .. } => {}
-    }
-    Ok(())
 }
 
 /// What the hub is told.
@@ -618,12 +378,13 @@ enum ToHub {
     /// A window connected: it hears the list of sessions from now on.
     Joined {
         window: WindowId,
-        outbox: mpsc::Sender<FromDaemon>,
+        key: WindowKey,
+        outbox: Outbox,
     },
     Asked {
         window: WindowId,
         ask: Ask,
-        outbox: mpsc::Sender<FromDaemon>,
+        outbox: Outbox,
     },
     /// A window hung up: its sessions run on, shown nowhere.
     Left { window: WindowId },
@@ -643,6 +404,8 @@ struct Kept {
 struct Hub {
     sessions: BTreeMap<HostedId, Kept>,
     last: HostedId,
+    /// The line each window is on, by the key it names itself with.
+    lines: BTreeMap<WindowKey, WindowId>,
 }
 
 /// What the hub's own decisions come to.
@@ -671,10 +434,9 @@ impl Hub {
     async fn event_loop(
         mut self,
         mut requests: mpsc::Receiver<ToHub>,
-        running: watch::Sender<usize>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
+        let mut windows: BTreeMap<WindowId, Outbox> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
         let mut tasks = JoinSet::new();
         // Who wrote to whom, for sandboxed sessions to answer (see `relay::Replies`); it ends
@@ -684,11 +446,16 @@ impl Hub {
         loop {
             let steps = tokio::select! {
                 request = requests.recv() => match request {
-                    Some(ToHub::Joined { window, outbox }) => {
+                    Some(ToHub::Joined { window, key, outbox }) => {
+                        // Before the list: it says the sessions let go of as no window's.
+                        let (earlier, steps) = self.joined(window, key);
+                        if let Some(earlier) = earlier {
+                            windows.remove(&earlier);
+                        }
                         let list = FromDaemon::Hosted(self.list());
                         tell(&outbox, list).await;
                         windows.insert(window, outbox);
-                        Vec::new()
+                        steps
                     }
                     Some(ToHub::Asked { window, ask, outbox }) => {
                         let steps = self.handle(window, ask);
@@ -756,7 +523,6 @@ impl Hub {
                     Step::Start { .. } | Step::Answer(_) => {}
                 }
             }
-            running.send_replace(self.sessions.len());
         }
         orders.clear();
         while tasks.join_next().await.is_some() {}
@@ -857,7 +623,18 @@ impl Hub {
     }
 
     /// A window hung up: what it showed is shown nowhere, and runs on.
+    /// A window joined, on line `window`; if the same window was on another line, which its
+    /// network lost and which may not be found dead for a while, that line's sessions are let
+    /// go of now, for the window to take back: that line, and the steps.
+    fn joined(&mut self, window: WindowId, key: WindowKey) -> (Option<WindowId>, Vec<Step>) {
+        match self.lines.insert(key, window) {
+            Some(earlier) if earlier != window => (Some(earlier), self.left(earlier)),
+            Some(_) | None => (None, Vec::new()),
+        }
+    }
+
     fn left(&mut self, window: WindowId) -> Vec<Step> {
+        self.lines.retain(|_, line| *line != window);
         let mut steps = Vec::new();
         for (id, kept) in &mut self.sessions {
             if kept.shown.is_some_and(|(shown_in, _)| shown_in == window) {
@@ -909,7 +686,7 @@ async fn host(
     launch: Launch,
     runtime: tokio::runtime::Handle,
     commands: mpsc::Receiver<Command>,
-    shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+    shown: Option<(Generation, Outbox)>,
     replies: mpsc::Sender<ToReplies>,
 ) -> Session {
     let session = Session::new(id);
@@ -935,7 +712,7 @@ enum Command {
     /// Shown in a window from now on, under its key.
     Attach {
         key: Generation,
-        outbox: mpsc::Sender<FromDaemon>,
+        outbox: Outbox,
     },
     Detach,
 }
@@ -1003,7 +780,7 @@ impl Session {
         mut self,
         spawned: spawn::Spawned,
         mut commands: mpsc::Receiver<Command>,
-        shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+        shown: Option<(Generation, Outbox)>,
         replies: mpsc::Sender<ToReplies>,
     ) -> Self {
         // The session's temporary folder goes when this ends.
@@ -1252,10 +1029,6 @@ impl Session {
     }
 }
 
-/// Tells the user of a conversation whose transcript went two ways in and out of the sandbox
-/// (see `home::Diverged`), in the window that shows it and on the desktop: the window shows
-/// only the copy the session goes on from, and what only the other has would otherwise go
-/// unnoticed.
 /// What the sessions tell or ask the keeper of who wrote to whom (see `relay::Replies`).
 #[derive(Debug)]
 enum ToReplies {
@@ -1318,27 +1091,17 @@ async fn named(to: &str) -> String {
         .unwrap_or_else(|_| to.to_owned())
 }
 
-async fn tell_diverged(
-    diverged: home::Diverged,
-    shown: Option<&(Generation, mpsc::Sender<FromDaemon>)>,
-) {
-    tracing::warn!(left = %diverged.left.display(), "a conversation went two ways");
+/// Tells the window that shows a conversation whose transcript went two ways in and out of the
+/// sandbox (see `home::Diverged`): it shows only the copy the session goes on from, and what
+/// only the other has would otherwise go unnoticed. The window tells its desktop.
+async fn tell_diverged(diverged: home::Diverged, shown: Option<&(Generation, Outbox)>) {
+    tracing::warn!(
+        left = %diverged.left.display(),
+        "a conversation went two ways: what only one copy has is kept there"
+    );
     if let Some((key, outbox)) = shown {
         let left = diverged.left.clone();
         tell(outbox, FromDaemon::Diverged { key: *key, left }).await;
-    }
-    let body = format!(
-        "Two copies of a session's transcript went on separately, in and out of edualc's \
-         sandbox. What only one of them has is kept in {}",
-        diverged.left.display()
-    );
-    let told =
-        tokio::task::spawn_blocking(move || desktop::notify("A conversation went two ways", &body))
-            .await;
-    match told {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!(%error, "couldn't tell of a conversation gone two ways"),
-        Err(error) => tracing::error!(%error, "telling of a conversation gone two ways failed"),
     }
 }
 
@@ -1525,13 +1288,13 @@ async fn pump(
 }
 
 /// A line to a window.
-async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: Stream, line: &str) {
+async fn send_line(outbox: &Outbox, key: Generation, stream: Stream, line: &str) {
     let output = FromDaemon::Output {
         key,
         stream,
         line: line.to_owned(),
     };
-    if outbox.send(output).await.is_err() {
+    if outbox.send(output).is_err() {
         tracing::debug!("a window gone");
     }
 }
@@ -1620,7 +1383,7 @@ mod tests {
     fn a_connection_works_out_what_requests_come_to() {
         let key = Generation::default().next();
         let unused_key = key.next();
-        let mut connection = Connection::new(WindowId(1));
+        let mut connection = Connection::new(WindowId(1), WindowKey::new());
         assert_eq!(
             connection.handle(ToDaemon::Start {
                 key,
@@ -1871,21 +1634,61 @@ mod tests {
         assert_eq!(pending.lines().count(), 0);
     }
 
+    /// A window that comes again on a new line, its network having lost the old one, takes
+    /// its sessions back at once: they are let go of from the old line, which is forgotten, and
+    /// listed as no window's. Another window, or the first time, lets go of nothing.
+    #[test]
+    fn a_window_coming_again_takes_its_sessions_back() {
+        let key = WindowKey::new();
+        let (old_line, new_line) = (WindowId(1), WindowId(2));
+        let session = HostedId::default().next();
+        let mut hub = Hub {
+            sessions: BTreeMap::from([(
+                session,
+                Kept {
+                    cwd: PathBuf::from("/p"),
+                    session: None,
+                    shown: Some((old_line, Generation::default().next())),
+                },
+            )]),
+            last: session,
+            lines: BTreeMap::new(),
+        };
+        assert_eq!(hub.joined(old_line, key), (None, Vec::new()));
+        assert_eq!(
+            hub.joined(WindowId(3), WindowKey::new()),
+            (None, Vec::new())
+        );
+        let (earlier, steps) = hub.joined(new_line, key);
+        assert_eq!(earlier, Some(old_line));
+        assert_eq!(
+            steps,
+            vec![
+                Step::Tell {
+                    id: session,
+                    command: Order::Detach,
+                },
+                Step::Changed,
+            ]
+        );
+        assert!(hub.list().iter().all(|hosted| !hosted.attached));
+        // The old line, found dead later, lets go of nothing more.
+        assert_eq!(hub.left(old_line), Vec::new());
+        assert_eq!(hub.lines.get(&key), Some(&new_line));
+    }
+
     /// A window joining hears the list of sessions before anything else: its handshake reads
     /// the list right after the hello, to attach to a session the daemon runs rather than start
     /// it a second time.
     #[tokio::test(flavor = "current_thread")]
     async fn a_window_joining_hears_the_list_first() {
         let (hub, requests) = mpsc::channel(8);
-        let (running, _sessions) = watch::channel(0usize);
-        let hub_task = tokio::spawn(Hub::default().event_loop(
-            requests,
-            running,
-            tokio::runtime::Handle::current(),
-        ));
-        let (outbox, mut told) = mpsc::channel(8);
+        let hub_task =
+            tokio::spawn(Hub::default().event_loop(requests, tokio::runtime::Handle::current()));
+        let (outbox, mut told) = mpsc::unbounded_channel();
         hub.send(ToHub::Joined {
             window: WindowId(1),
+            key: WindowKey::new(),
             outbox,
         })
         .await
@@ -1944,7 +1747,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_session_asks_again_what_a_window_missed() {
         let (orders, commands) = mpsc::channel(8);
-        let (outbox, mut answers) = mpsc::channel(32);
+        let (outbox, mut answers) = mpsc::unbounded_channel();
         let asked = r#"{"type":"control_request","request_id":"r1","request":{}}"#;
         let key = Generation::default().next();
         orders

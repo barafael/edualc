@@ -758,7 +758,7 @@ fn Check(
 }
 
 /// The folders the sandbox lets Claude into so, beyond its own: each can be taken off, and
-/// another picked.
+/// another added by its path on edualcd's machine, which edualcd checks.
 #[component]
 fn SandboxFolders(
     #[props(into)] title: String,
@@ -767,6 +767,7 @@ fn SandboxFolders(
     access: SandboxAccess,
 ) -> Element {
     let view = use_context::<View>();
+    let mut typed = use_signal(String::new);
     let none = if folders.is_empty() { " None yet." } else { "" };
     let add = format!("Add to {}", title.to_lowercase());
     rsx! {
@@ -776,13 +777,21 @@ fn SandboxFolders(
             for folder in folders {
                 SandboxFolder { key: "{folder}", folder, access }
             }
-            div {
-                button {
-                    class: "button",
-                    "aria-label": "{add}",
-                    onclick: move |_| view.act(Action::AddSandboxFolder(access)),
-                    "Add a folder…"
-                }
+            input {
+                class: "field",
+                r#type: "text",
+                placeholder: "Add a folder: its path, then Enter",
+                "aria-label": "{add}",
+                value: "{typed}",
+                oninput: move |event| typed.set(event.value()),
+                onkeydown: move |event| {
+                    if event.key() == Key::Enter && !typed.peek().trim().is_empty() {
+                        view.act(Action::AddSandboxFolder {
+                            access,
+                            typed: typed.take(),
+                        });
+                    }
+                },
             }
         }
     }

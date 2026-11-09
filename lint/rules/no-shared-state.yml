@@ -5,6 +5,10 @@ message: "State shared between tasks or threads (a reference count, a lock, a se
 note: "A reference count shares its value as much as a lock does, so Arc, Rc and Weak are matched too. Atomics are not matched: whether one fits is left to judgement. There is no exception: `no-shared-state-escape` refuses any suppression of this rule."
 files:
   - "**/src/**"
+# rustls takes its configuration and verifier only behind an Arc: the one module that builds
+# them, sharing configuration made once and never changed, is let off (see its header).
+ignores:
+  - "crates/core/src/ipc/tls.rs"
 rule:
   any:
     - kind: type_identifier

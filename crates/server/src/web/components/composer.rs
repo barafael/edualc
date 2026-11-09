@@ -285,8 +285,8 @@ pub fn Composer() -> Element {
     // Enter sends; Shift+Enter and Ctrl+Enter start a new line. With Ctrl+Enter chosen to send
     // (the settings), Enter starts a new line instead. While commands match the draft, Up and
     // Down choose one, Enter runs it, and → (at the end) or Tab put it in the draft. Esc
-    // dismisses a command's hint. Ctrl+V asks for the clipboard's image too, and pastes its
-    // text as ever. What an input method still composes is its own.
+    // dismisses a command's hint. What an input method still composes is its own. An image
+    // pasted comes with the paste (`onpaste`), from the browser's clipboard.
     let onkeydown = move |event: KeyboardEvent| {
         if event.is_composing() {
             return;
@@ -302,13 +302,6 @@ pub fn Composer() -> Element {
                 SendKey::CtrlEnter => send_draft(),
                 SendKey::Enter => dom::break_line(),
             }
-            return;
-        }
-        if let Key::Character(typed) = &key
-            && modifiers.ctrl()
-            && typed.eq_ignore_ascii_case("v")
-        {
-            view.act(Action::PasteImage);
             return;
         }
         if commands > 0 && key == Key::ArrowUp {
@@ -501,6 +494,11 @@ pub fn Composer() -> Element {
                             view.act(Action::DraftEdited(edited));
                         },
                         onkeydown,
+                        // Images pasted go with the next message; text is pasted as ever.
+                        onpaste: move |_event| {
+                            #[cfg(feature = "web")]
+                            dom::paste_images(&_event, view);
+                        },
                     }
                 }
                 div { class: "composer-tools",
@@ -781,6 +779,46 @@ mod dom {
 
     fn text_box() -> Option<HtmlTextAreaElement> {
         document()?.get_element_by_id(super::INPUT)?.dyn_into().ok()
+    }
+
+    /// The images among what was pasted, each read and made ready to send in the page (the
+    /// sandbox the decoder is on Linux), for the next message.
+    pub fn paste_images(event: &dioxus::prelude::ClipboardEvent, view: crate::web::View) {
+        use dioxus::prelude::ReadableExt as _;
+        use edualc_core::app::Event;
+        use edualc_core::decode::{self, PasteFailure};
+        let Ok(event) = event.as_web_event().dyn_into::<web_sys::ClipboardEvent>() else {
+            return;
+        };
+        let Some(files) = event.clipboard_data().and_then(|data| data.files()) else {
+            return;
+        };
+        for index in 0..files.length() {
+            let Some(file) = files.item(index) else {
+                continue;
+            };
+            if !file.type_().starts_with("image/") {
+                continue;
+            }
+            let Some(events) = view.events.peek().clone() else {
+                return;
+            };
+            wasm_bindgen_futures::spawn_local(async move {
+                let read = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await;
+                let pasted = match read {
+                    Ok(buffer) => {
+                        let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                        decode::to_send(&bytes).map_err(PasteFailure::Refused)
+                    }
+                    Err(_unread) => Err(PasteFailure::Clipboard(
+                        "the browser didn't hand over the image".to_owned(),
+                    )),
+                };
+                if events.send(Event::Pasted(pasted)).await.is_err() {
+                    tracing::debug!("the app ended");
+                }
+            });
+        }
     }
 
     /// Focuses the text box with the caret at the end of `text`, the draft: shown at once, as

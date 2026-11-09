@@ -725,9 +725,6 @@ pub(super) fn apply_session(
     if old.is_none_or(|old| old.watch_text != new.watch_text) {
         global.set_watch_text(new.watch_text.to_slint(images));
     }
-    if old.is_none_or(|old| old.can_go_to_window != new.can_go_to_window) {
-        global.set_can_go_to_window(new.can_go_to_window.to_slint(images));
-    }
     if old.is_none_or(|old| old.worktree_name != new.worktree_name) {
         global.set_worktree_name(new.worktree_name.to_slint(images));
     }

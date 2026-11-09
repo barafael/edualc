@@ -23,7 +23,6 @@ use crate::app::{
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
 use crate::decode::{Picture, Pixels};
-use crate::desktop::Opener;
 use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -83,12 +82,12 @@ pub struct Presenter<F: Frontend> {
 }
 
 impl<F: Frontend> Presenter<F> {
-    pub fn new(frontend: F, openers: &[Opener], finds_windows: bool) -> Self {
-        let openers: Vec<String> = std::iter::once("This window".to_owned())
-            .chain(openers.iter().map(|opener| opener.label()))
-            .collect();
+    pub fn new(frontend: F) -> Self {
+        // What the worktree's menu does (see `App::open_worktree`).
+        let openers = ["Open it in this window", "Copy its path"]
+            .map(str::to_owned)
+            .to_vec();
         let session = model::Session {
-            can_go_to_window: finds_windows,
             openers,
             limit_five_hour: -1.0,
             limit_seven_day: -1.0,
@@ -253,6 +252,11 @@ impl<F: Frontend> Presenter<F> {
 
     pub fn copy(&mut self, text: &str) {
         self.command(Command::Copy(text.to_owned()));
+    }
+
+    /// Has the frontend do something on its desktop, at once.
+    pub fn seat(&mut self, seat: super::Seat) {
+        self.frontend.seat(seat);
     }
 
     pub fn set_draft(&mut self, text: &str) {

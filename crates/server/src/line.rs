@@ -1,6 +1,6 @@
-//! A page's line to the daemon, at `/api/line?token=…`: a WebSocket, each message one binary
-//! frame of CBOR, the same messages the native window sends on the daemon's socket. The server
-//! carries the frames on to the daemon once the page shows the server's token.
+//! A window's or a page's line to the daemon, at `/api/line?token=…&protocol=…`: a WebSocket
+//! (over TLS), each message one binary frame of CBOR. The server hands the messages to the
+//! daemon it runs once the line shows the server's token and speaks its protocol.
 //!
 //! A plain route rather than a Dioxus server function: Dioxus's sockets keep axum's limits (16
 //! MiB a frame), and a message with a few pasted images is larger. Here a frame may be as large
@@ -18,7 +18,7 @@ mod server {
     use dioxus::server::axum::extract::ws::WebSocketUpgrade;
     use dioxus::server::axum::http::StatusCode;
     use dioxus::server::axum::response::{IntoResponse, Response};
-    use edualc_core::ipc::MAX_MESSAGE;
+    use edualc_core::ipc::{MAX_MESSAGE, PROTOCOL};
 
     use crate::serve::Access;
 
@@ -27,12 +27,15 @@ mod server {
     #[serde(deny_unknown_fields)]
     pub struct Asked {
         token: String,
+        /// The protocol the window speaks: one of another version is refused here, before
+        /// either side reads the other's messages, which may not parse.
+        protocol: Option<u32>,
     }
 
     /// Opens a line to the daemon (to the demo's script, for the demo), for a page holding the
     /// server's token.
     pub async fn line(
-        Query(Asked { token }): Query<Asked>,
+        Query(Asked { token, protocol }): Query<Asked>,
         Extension(access): Extension<Access>,
         upgrade: WebSocketUpgrade,
     ) -> Response {
@@ -43,12 +46,24 @@ mod server {
             )
                 .into_response();
         }
+        if let Some(theirs) = protocol.filter(|&theirs| theirs != PROTOCOL) {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "edualcd speaks protocol {PROTOCOL}, the window {theirs}: update the older of \
+                     the two"
+                ),
+            )
+                .into_response();
+        }
         let upgrade = upgrade
             .max_message_size(MAX_MESSAGE)
             .max_frame_size(MAX_MESSAGE);
         match access {
             Access::Demo => upgrade.on_upgrade(crate::serve::play),
-            Access::Token(_) => upgrade.on_upgrade(crate::serve::carry),
+            Access::Token(_, daemon) => {
+                upgrade.on_upgrade(move |line| crate::serve::carry(line, daemon))
+            }
         }
     }
 }
@@ -77,7 +92,11 @@ mod web {
             .protocol()
             .is_ok_and(|protocol| protocol == "https:");
         let scheme = if secure { "wss" } else { "ws" };
-        let url = format!("{scheme}://{host}/api/line?token={}", encoded(token));
+        let url = format!(
+            "{scheme}://{host}/api/line?token={}&protocol={}",
+            encoded(token),
+            ipc::PROTOCOL
+        );
         let socket = WebSocket::open(&url).map_err(|error| error.to_string())?;
         let (sink, stream) = socket.split();
         Ok((Sender(sink), Receiver(stream)))

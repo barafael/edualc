@@ -121,7 +121,6 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_choose_mode(actions.on_index(Action::ChooseMode));
     session.on_open_url(actions.on_text(Action::OpenUrl));
     session.on_continue_here(actions.on(|| Action::ContinueHere));
-    session.on_go_to_window(actions.on(|| Action::GoToWindow));
     session.on_bring_here(actions.on(|| Action::BringHere));
     session.on_try_sign_in_again(actions.on(|| Action::TrySignInAgain));
     session.on_dismiss_sign_in(actions.on(|| Action::DismissSignIn));
@@ -155,7 +154,12 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         .on_toggle_messages_unasked(actions.on(|| Action::ToggleMessagesUnasked));
     window.global::<Preferences>().on_add_sandbox_folder({
         let actions = actions.clone();
-        move |access| actions.send(Action::AddSandboxFolder(access_of(access)))
+        move |access, typed| {
+            actions.send(Action::AddSandboxFolder {
+                access: access_of(access),
+                typed: typed.into(),
+            });
+        }
     });
     window.global::<Preferences>().on_forget_sandbox_folder({
         let actions = actions.clone();
@@ -214,10 +218,9 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             actions.send(Action::SidebarWidth(kept));
         }
     });
-    // Checked by the daemon, while the list stays open: what is wrong is said there, with the
+    // Checked by edualcd, while the list stays open: what is wrong is said there, with the
     // path still in its field to correct (`View::set_project_problem`).
     sessions.on_open_project(actions.on_text(Action::OpenProject));
-    sessions.on_browse_project(actions.on(|| Action::BrowseProject));
     sessions.on_refresh_projects(actions.on(|| Action::ListProjects));
     sessions.on_filter_edited(actions.on_text(Action::FilterSessions));
 

@@ -1,5 +1,4 @@
-//! The worktree a session works in, and opening it: in this window, an editor, a terminal or
-//! the file manager.
+//! The worktree a session works in, and opening it in this window or copying its path.
 
 use super::App;
 use crate::present::Frontend;
@@ -18,26 +17,19 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    /// Opens the current worktree with the opener at `index` in the menu; 0 is this window.
+    /// Does with the current worktree what the menu has at `index`: 0 opens it in this window,
+    /// 1 copies its path (it is a folder on edualcd's machine, which an editor here may not
+    /// reach).
     pub(super) fn open_worktree(&mut self, index: usize) {
         let Some(worktree) = self.current_worktree().cloned() else {
             return;
         };
-        let Some(opener_index) = index.checked_sub(1) else {
+        match index {
             // A worktree may be gone since it was read.
-            self.read_folder(crate::ipc::Read::Folder(worktree.path));
-            return;
-        };
-        let Some(&opener) = self.openers.get(opener_index) else {
-            return;
-        };
-        self.ask_desktop(
-            crate::ipc::Act::OpenIn {
-                opener,
-                folder: worktree.path,
-            },
-            super::Acting::Desktop,
-        );
+            0 => self.read_folder(crate::ipc::Read::Folder(worktree.path)),
+            1 => self.view.copy(&worktree.path.to_string_lossy()),
+            _ => {}
+        }
     }
 
     /// Looks for the worktree the session entered, as its transcript says after a turn.

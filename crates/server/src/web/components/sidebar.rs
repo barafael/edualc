@@ -560,13 +560,6 @@ fn Folders(onclose: EventHandler<()>) -> Element {
                         }
                     },
                 }
-                Button {
-                    onclick: move |_| {
-                        view.act(Action::BrowseProject);
-                        onclose.call(());
-                    },
-                    "Browse…"
-                }
             }
             if !sessions.problem.is_empty() {
                 div { class: "folders-problem", role: "alert", "{sessions.problem}" }
@@ -632,6 +625,14 @@ pub fn Sidebar(onhide: EventHandler<()>) -> Element {
     use_effect(move || {
         projects_opened();
         projects_open.set(false);
+    });
+    // Asked for elsewhere (the trust bar): the list opens.
+    let projects_asked = use_memo(move || view.page.read().projects_asked);
+    use_effect(move || {
+        if projects_asked() > 0 {
+            view.act(Action::ListProjects);
+            projects_open.set(true);
+        }
     });
 
     let page = view.page.read();

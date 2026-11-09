@@ -1,17 +1,19 @@
-//! `edualcd`: edualc's daemon and the server that makes edualc's window a page.
+//! `edualcd`: edualc's daemon, and the server that makes edualc's window a page.
 //!
-//! - `edualcd --daemon` is the daemon (`edualc-host`): it runs Claude Code, sandboxed, for the
-//!   windows, reads its files for them and does what the desktop is asked, on a Unix socket
-//!   only edualc's programs of this user reach. The first window (or page server) starts it,
-//!   and it ends a few seconds after its last window and session.
-//! - `edualcd` is a Dioxus fullstack server: it serves the page (`web`), the same window as the
-//!   native one, drawn by Dioxus from the same presenter, and carries each page's line to the
-//!   daemon (`line`). A page proves itself with the token the server prints, so that no other
-//!   user of the machine, nor a site in the browser, drives Claude Code through it.
+//! - It runs Claude Code, sandboxed, for edualc's windows, reads its files for them and does
+//!   what they ask (`edualc-host`), for windows on this machine and others alike: each reaches
+//!   it at `/api/line` (`line`), over TLS with the certificate edualcd made itself, and shows
+//!   the token edualcd keeps (`state`), which lets whoever holds it run Claude Code as the user.
+//!   It runs as a user service (`edualcd.service`) and keeps its sessions while windows come and
+//!   go.
+//! - It is a Dioxus fullstack server: it serves the page (`web`), the same window as the native
+//!   one, drawn by Dioxus from the same presenter, whose line is a window's like any other.
 //! - `edualcd --decode-image` and `--show-image` are the confined image decoder (see `decode`).
 
 #[cfg(feature = "server")]
 mod serve;
+#[cfg(feature = "server")]
+mod state;
 
 mod line;
 mod web;

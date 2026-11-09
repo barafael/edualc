@@ -427,7 +427,6 @@ pub struct Session {
     pub sandbox_hardware: bool,
     pub watching: bool,
     pub watch_text: String,
-    pub can_go_to_window: bool,
     pub worktree_name: String,
     pub worktree_branch: String,
     pub openers: Vec<String>,

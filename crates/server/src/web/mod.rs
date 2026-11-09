@@ -136,7 +136,13 @@ async fn run(view: View) {
         Ok(line) => line,
         Err(error) => return lost(format!("No line to edualc's daemon: {error}")),
     };
-    if let Err(error) = sender.send(&ToDaemon::Hello { protocol: PROTOCOL }).await {
+    if let Err(error) = sender
+        .send(&ToDaemon::Hello {
+            protocol: PROTOCOL,
+            window: edualc_core::ipc::WindowKey::new(),
+        })
+        .await
+    {
         return lost(format!("The daemon didn't take the hello: {error}"));
     }
     let hello = receiver.recv().await;
@@ -151,7 +157,7 @@ async fn run(view: View) {
     };
     tracing::debug!("the daemon answered");
     let greeting = match link::greeted(hello, hosted) {
-        Ok((_buses, greeting)) => greeting,
+        Ok(greeting) => greeting,
         Err(error) => return lost(error.to_string()),
     };
     let cwd = dir

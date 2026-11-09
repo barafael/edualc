@@ -1,10 +1,11 @@
 //! The window, confined. It parses what Claude and other sessions write and draws it; for that
 //! it reads the system, fonts and the user's files but their secrets, writes only its settings
-//! and caches, reaches no socket but Wayland's (its daemon's it reached before), signals nothing
-//! outside, and gains no privileges (Landlock); its D-Bus is the daemon's filtering proxies (see
-//! `buses`); it opens no network socket at all, nor io_uring,
-//! which could open one past the filter (seccomp). What it can't do, it asks its daemon, which
-//! does a few things, checked.
+//! and caches, reaches no socket file but Wayland's and its D-Bus proxies' (see `buses`),
+//! signals nothing outside, and gains no privileges (Landlock). Of the network it reaches only
+//! its edualcd: TCP to edualcd's port and no other (Landlock), no UDP, raw or other sockets, so
+//! no DNS either (its edualcd's addresses were looked up before), nor io_uring, which could open
+//! one past the filter (seccomp). What it can't do, it asks its edualcd, which does a few
+//! things, checked.
 //!
 //! Applied to the main thread before any other thread or the window is made: what is made after
 //! keeps it.
@@ -12,9 +13,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use std::net::SocketAddr;
+
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd,
-    Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
+    PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
 };
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -77,8 +80,9 @@ pub(crate) enum Confinement {
     Partial,
 }
 
-/// Confines the calling thread, and what it starts from now on.
-pub(crate) fn confine() -> Result<Confinement, Error> {
+/// Confines the calling thread, and what it starts from now on; of the network, it reaches
+/// `edualcd`'s port alone.
+pub(crate) fn confine(edualcd: &[SocketAddr]) -> Result<Confinement, Error> {
     let home = dirs::home_dir().unwrap_or_default();
     let claude = crate::sessions::config_dir();
     let mut secrets: Vec<PathBuf> = SECRETS.iter().map(|secret| home.join(secret)).collect();
@@ -112,7 +116,7 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
         .iter()
         .map(PathBuf::from)
         .collect();
-    // Wayland's, and those in the daemon's folder: its own and its D-Bus proxies'.
+    // Wayland's, and its D-Bus proxies' (see `buses`).
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let sockets: Vec<PathBuf> = runtime
         .iter()
@@ -129,8 +133,8 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
     let status = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(all)?
-        // Handled, and nothing allowed: no TCP at all (and the socket filter below refuses the
-        // rest of the network besides).
+        // Handled, and only connecting to edualcd's port allowed (the socket filter below
+        // refuses the rest of the network besides).
         .handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp)?
         .scope(Scope::AbstractUnixSocket | Scope::Signal)?
         .create()?
@@ -138,6 +142,7 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
         .add_rules(rules(&write, writing))?
         .add_rules(rules(&devices, device))?
         .add_rules(rules(&sockets, AccessFs::ResolveUnix.into()))?
+        .add_rules(ports(edualcd))?
         .restrict_self()?;
     seccompiler::apply_filter(&socket_filter()?)?;
     Ok(match status.ruleset {
@@ -146,16 +151,54 @@ pub(crate) fn confine() -> Result<Confinement, Error> {
     })
 }
 
-/// Refuses every socket but Unix ones, and io_uring, for the calling thread and what it starts.
+/// Connecting to `edualcd`'s ports, by TCP.
+fn ports(
+    edualcd: &[SocketAddr],
+) -> impl Iterator<Item = Result<NetPort, landlock::RulesetError>> + '_ {
+    let mut ports: Vec<u16> = edualcd.iter().map(SocketAddr::port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+        .into_iter()
+        .map(|port| Ok(NetPort::new(port, AccessNet::ConnectTcp)))
+}
+
+/// Refuses every socket but Unix ones and TCP's (streams of IPv4 and IPv6), and io_uring, for
+/// the calling thread and what it starts.
 fn socket_filter() -> Result<BpfProgram, Error> {
-    let not_unix = SeccompRule::new(vec![SeccompCondition::new(
-        0,
-        SeccompCmpArgLen::Dword,
-        SeccompCmpOp::Ne,
-        u64::from(libc::AF_UNIX.unsigned_abs()),
-    )?])?;
+    let family = |op, family: i32| {
+        SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            op,
+            u64::from(family.unsigned_abs()),
+        )
+    };
+    // Neither Unix nor IP.
+    let mut refused = vec![SeccompRule::new(vec![
+        family(SeccompCmpOp::Ne, libc::AF_UNIX)?,
+        family(SeccompCmpOp::Ne, libc::AF_INET)?,
+        family(SeccompCmpOp::Ne, libc::AF_INET6)?,
+    ])?];
+    // IP, but not a stream: datagrams (UDP, DNS among them), raw sockets, and the rest. The
+    // type's low bits name it; its flags (non-blocking, close-on-exec) are above.
+    for ip in [libc::AF_INET, libc::AF_INET6] {
+        for kind in
+            (0..=0xf_u64).filter(|&kind| kind != u64::from(libc::SOCK_STREAM.unsigned_abs()))
+        {
+            refused.push(SeccompRule::new(vec![
+                family(SeccompCmpOp::Eq, ip)?,
+                SeccompCondition::new(
+                    1,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::MaskedEq(0xf),
+                    kind,
+                )?,
+            ])?);
+        }
+    }
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    rules.insert(libc::SYS_socket, vec![not_unix]);
+    rules.insert(libc::SYS_socket, refused);
     // No condition: refused whatever is asked.
     for io_uring in [
         libc::SYS_io_uring_setup,
@@ -266,16 +309,19 @@ mod tests {
         std::fs::remove_dir_all(&folder).expect("the scratch folder goes");
     }
 
-    /// Filtered, a thread opens Unix sockets but no network ones.
+    /// Filtered, a thread opens Unix sockets and TCP's (which Landlock keeps to edualcd's
+    /// port), but no UDP: no DNS, nor anything else.
     #[test]
-    fn the_filter_refuses_the_network() {
+    fn the_filter_refuses_all_but_tcp() {
         let filter = socket_filter().expect("a filter");
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
                     seccompiler::apply_filter(&filter).expect("applied");
-                    assert!(std::net::TcpListener::bind("127.0.0.1:0").is_err());
+                    assert!(std::net::TcpListener::bind("127.0.0.1:0").is_ok());
+                    assert!(std::net::TcpListener::bind("[::1]:0").is_ok() || !ipv6());
                     assert!(std::net::UdpSocket::bind("127.0.0.1:0").is_err());
+                    assert!(std::net::UdpSocket::bind("[::1]:0").is_err());
                     assert!(std::os::unix::net::UnixDatagram::unbound().is_ok());
                 })
                 .join()
@@ -283,5 +329,10 @@ mod tests {
         });
         // This thread is free.
         assert!(std::net::UdpSocket::bind("127.0.0.1:0").is_ok());
+    }
+
+    /// Whether this machine has IPv6's loopback.
+    fn ipv6() -> bool {
+        std::net::TcpListener::bind("[::1]:0").is_ok()
     }
 }

@@ -409,7 +409,7 @@ fn transcript_in_any(homes: &[PathBuf], id: &SessionId) -> Option<PathBuf> {
 }
 
 /// What the transcripts say of a session to continue.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Saved {
     /// No home keeps a transcript of it.
     Nowhere,

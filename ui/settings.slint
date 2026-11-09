@@ -4,7 +4,7 @@
 import { Theme } from "theme.slint";
 import { FocusArea, HanLanguage, SandboxAccess, SendKey } from "types.slint";
 import { Focus, Preferences, Session } from "state.slint";
-import { AreaFence, Caption, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
 
 // One of a setting's choices: its name, what it means, and whether it is the one in use.
 component Choice inherits Pressable {
@@ -122,12 +122,12 @@ component SandboxFolders inherits VerticalLayout {
             clicked => { Preferences.forget-sandbox-folder(root.access, folder); }
         }
     }
-    HorizontalLayout {
-        alignment: start;
-        TextButton {
-            text: "Add a folder…";
-            label: "Add to " + root.title.to-lowercase();
-            clicked => { Preferences.add-sandbox-folder(root.access); }
+    // A path on edualcd's machine, which edualcd checks is a folder there.
+    added := Field {
+        placeholder: "Add a folder: its path, then Enter";
+        accepted(text) => {
+            Preferences.add-sandbox-folder(root.access, text);
+            self.text = "";
         }
     }
 }

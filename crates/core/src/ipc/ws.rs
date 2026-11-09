@@ -1,6 +1,9 @@
-//! The messages on a line between a window and the daemon: WebSocket, each message one binary
-//! frame of CBOR (see the parent module). Over the daemon's Unix socket, as here, or over TCP
-//! for a page, as its server takes them.
+//! The messages on a line between a window and edualcd: WebSocket over TLS (see `tls`), each
+//! message one binary frame of CBOR (see the parent module), to edualcd's `/api/line`, as a
+//! page's are.
+
+use std::net::SocketAddr;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -8,12 +11,50 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
-use super::{Error, MAX_MESSAGE};
+use super::MAX_MESSAGE;
+use super::pairing::Pairing;
 
-/// The address a window asks for on the Unix socket; no name resolves, the socket is the place.
-const URL: &str = "ws://edualcd/ws";
+/// How long reaching edualcd may take: the connection, TLS and the WebSocket's handshake.
+const REACH: Duration = Duration::from_secs(10);
+
+/// A window's line to edualcd, its handshakes done.
+pub type Line = WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("couldn't reach edualcd at {address}: {source}")]
+    Unreachable {
+        address: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("edualcd at {0} didn't answer in time")]
+    Slow(String),
+    #[error(
+        "edualcd at {0} shows another certificate than the one paired with: if it was made anew, \
+         pair again (edualc --pair) with the address it prints; if not, something stands between"
+    )]
+    Certificate(String),
+    #[error("edualcd refused the token: pair again (edualc --pair) with the address it prints")]
+    Token,
+    #[error("edualcd runs another version of edualc ({0})")]
+    Version(String),
+    #[error("the line's TLS: {0}")]
+    Tls(#[from] rustls::Error),
+    #[error("the line: {0}")]
+    Io(#[source] std::io::Error),
+    #[error(transparent)]
+    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
+    #[error(transparent)]
+    Encode(#[from] super::EncodeError),
+    #[error(transparent)]
+    Unreadable(#[from] super::DecodeError),
+    #[error("the other side hung up")]
+    Closed,
+}
 
 /// How big a message and a frame may be: a peer sending more is broken or hostile.
 fn config() -> WebSocketConfig {
@@ -22,17 +63,88 @@ fn config() -> WebSocketConfig {
         .max_frame_size(Some(MAX_MESSAGE))
 }
 
-/// The window's end of the line, its handshake done.
-pub async fn connect<S>(stream: S) -> Result<WebSocketStream<S>, Error>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let (socket, _response) =
-        tokio_tungstenite::client_async_with_config(URL, stream, Some(config())).await?;
-    Ok(socket)
+/// The addresses `pairing` names, looked up now: a window does it before it is confined, which
+/// leaves it no way to ask DNS.
+pub fn resolve(pairing: &Pairing) -> Result<Vec<SocketAddr>, Error> {
+    use std::net::ToSocketAddrs as _;
+    (pairing.host.as_str(), pairing.port)
+        .to_socket_addrs()
+        .map(Iterator::collect)
+        .map_err(|source| Error::Unreachable {
+            address: pairing.authority(),
+            source,
+        })
 }
 
-/// The daemon's end of the line, its handshake done.
+/// The window's end of the line to the edualcd `pairing` names, at one of `addresses`.
+pub async fn connect(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Error> {
+    let authority = pairing.authority();
+    tokio::time::timeout(REACH, reach(pairing, addresses))
+        .await
+        .map_err(|_elapsed| Error::Slow(authority))?
+}
+
+async fn reach(pairing: &Pairing, addresses: &[SocketAddr]) -> Result<Line, Error> {
+    let authority = pairing.authority();
+    let stream = tokio::net::TcpStream::connect(addresses)
+        .await
+        .map_err(|source| Error::Unreachable {
+            address: authority.clone(),
+            source,
+        })?;
+    stream.set_nodelay(true).map_err(Error::Io)?;
+    let name =
+        rustls::pki_types::ServerName::try_from(pairing.host.clone()).map_err(|_not_a_name| {
+            rustls::Error::General(format!("{:?} isn't a host", pairing.host))
+        })?;
+    let stream = super::tls::connector(pairing.fingerprint)?
+        .connect(name, stream)
+        .await
+        .map_err(|error| refused_certificate(error, &authority))?;
+    match tokio_tungstenite::client_async_with_config(pairing.line_url(), stream, Some(config()))
+        .await
+    {
+        Ok((socket, _response)) => Ok(socket),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            let said = response
+                .body()
+                .as_deref()
+                .map(|body| String::from_utf8_lossy(body).into_owned())
+                .unwrap_or_default();
+            Err(match response.status() {
+                StatusCode::FORBIDDEN => Error::Token,
+                StatusCode::CONFLICT => Error::Version(said),
+                status => Error::Version(format!("it answered {status}: {said}")),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A TLS handshake's failure, the pinned certificate's mismatch named.
+fn refused_certificate(error: std::io::Error, authority: &str) -> Error {
+    let mismatch = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        .is_some_and(|tls| {
+            matches!(
+                tls,
+                rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure
+                )
+            )
+        });
+    if mismatch {
+        Error::Certificate(authority.to_owned())
+    } else {
+        Error::Unreachable {
+            address: authority.to_owned(),
+            source: error,
+        }
+    }
+}
+
+/// The other end of a line, its handshake done: the tests' edualcd.
 pub async fn accept<S>(stream: S) -> Result<WebSocketStream<S>, Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -86,7 +198,8 @@ mod tests {
             assert!(matches!(
                 hello,
                 ToDaemon::Hello {
-                    protocol: crate::ipc::PROTOCOL
+                    protocol: crate::ipc::PROTOCOL,
+                    ..
                 }
             ));
             let line = "x".repeat(1024 * 1024);
@@ -98,11 +211,18 @@ mod tests {
             send(&mut socket, &output).await.expect("sent");
             recv::<_, ToDaemon>(&mut socket).await
         });
-        let mut socket = connect(window_end).await.expect("handshake");
+        let (mut socket, _response) = tokio_tungstenite::client_async_with_config(
+            "ws://edualcd/",
+            window_end,
+            Some(config()),
+        )
+        .await
+        .expect("handshake");
         send(
             &mut socket,
             &ToDaemon::Hello {
                 protocol: crate::ipc::PROTOCOL,
+                window: crate::ipc::WindowKey::new(),
             },
         )
         .await

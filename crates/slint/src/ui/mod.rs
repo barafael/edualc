@@ -14,7 +14,7 @@ use crate::chat::ImageKey;
 use crate::decode::Pixels;
 use crate::generated::{self as slint_ui, AppWindow};
 use crate::present::model as present;
-use crate::present::{Command, EntriesChange, Frontend, Image, Look, Styled};
+use crate::present::{Command, EntriesChange, Frontend, Image, Look, Seat, Styled};
 
 mod callbacks;
 #[allow(clippy::wildcard_enum_match_arm)]
@@ -138,6 +138,8 @@ fn vec_model<T: ToSlint>(rows: &[T], images: &Images) -> ModelRc<T::Slint> {
 /// The Slint window, as the presenter's frontend.
 pub(crate) struct SlintFrontend {
     window: AppWindow,
+    /// The app's events, for what is done on the desktop (`seat`) to come back as.
+    events: async_channel::Sender<crate::app::Event>,
     images: Images,
     /// The transcript's rows: the model the list filters, and what they show.
     entries: ModelRc<slint_ui::Entry>,
@@ -145,7 +147,11 @@ pub(crate) struct SlintFrontend {
 }
 
 impl SlintFrontend {
-    pub(crate) fn new(window: AppWindow, fonts: crate::appearance::Fonts) -> Self {
+    pub(crate) fn new(
+        window: AppWindow,
+        fonts: crate::appearance::Fonts,
+        events: async_channel::Sender<crate::app::Event>,
+    ) -> Self {
         if let Some(family) = fonts.sans {
             window.global::<slint_ui::Theme>().set_sans(family.into());
         }
@@ -164,6 +170,7 @@ impl SlintFrontend {
             .set_entries(ModelRc::new(entries.clone().filter(|entry| !entry.hidden)));
         Self {
             window,
+            events,
             images: Images::new(),
             entries,
             shown: Vec::new(),
@@ -250,6 +257,10 @@ impl Frontend for SlintFrontend {
 
     fn keep_images(&mut self, shown: &HashSet<ImageKey>) {
         self.images.retain(|key, _| shown.contains(key));
+    }
+
+    fn seat(&mut self, seat: Seat) {
+        crate::seat::act(seat, &self.events);
     }
 
     fn command(&mut self, command: Command) {

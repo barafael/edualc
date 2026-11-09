@@ -54,13 +54,6 @@ pub fn WatchBar() -> Element {
                 }
             } else {
                 div { class: "dock-bar-actions",
-                    if session.can_go_to_window {
-                        Button {
-                            icon: Lucide::AppWindow,
-                            onclick: move |_| view.act(Action::GoToWindow),
-                            "Go to its window"
-                        }
-                    }
                     Button {
                         icon: Lucide::Copy,
                         onclick: move |_| view.act(Action::ContinueHere),
@@ -121,7 +114,10 @@ pub fn TrustBar() -> Element {
             }
             div { class: "dock-bar-actions",
                 Button {
-                    onclick: move |_| view.act(Action::BrowseProject),
+                    onclick: move |_| {
+                        let mut page = view.page;
+                        page.write().projects_asked += 1;
+                    },
                     "Open another folder"
                 }
                 // The focus comes here as the question shows, never to "Trust this folder": a

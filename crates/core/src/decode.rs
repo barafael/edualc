@@ -5,7 +5,7 @@
 //! (its metadata dropped, scaled to what Claude takes) and a thumbnail; asked to show, with
 //! pixels to show. A crafted image can take over that process, which can do no more than answer.
 //!
-//! The daemon starts it for a paste, the window for an image in the conversation. It is handed
+//! The window starts it, for a paste and for an image in the conversation. It is handed
 //! the bytes on its standard input and gives one postcard answer on its standard output, read
 //! to its end (no framing: the answer is all there is). The answer is untrusted like the image:
 //! bounded, parsed as its type, and checked.
@@ -162,6 +162,32 @@ fn decoded(bytes: &[u8], max_side_px: u32) -> Result<Picture, Refusal> {
             rgba: thumbnail.into_raw(),
         },
     })
+}
+
+/// What an image's bytes make to send, made in the page, which is the sandbox the helper is on
+/// Linux (sans-io, as [`decoded`]).
+pub fn to_send(bytes: &[u8]) -> Result<Picture, Refusal> {
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(Refusal::TooManyBytes);
+    }
+    decoded(bytes, MAX_SIDE_PX)
+}
+
+/// An image pasted, made ready to send, or why there is none.
+pub type Pasted = Result<Picture, PasteFailure>;
+
+/// Why the clipboard gave no image.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PasteFailure {
+    /// The clipboard holds something else (text, say): nothing to tell.
+    #[error("the clipboard holds no PNG, JPEG, GIF or WebP image")]
+    NoImage,
+    #[error("couldn't read the clipboard: {0}")]
+    Clipboard(String),
+    #[error("the image wasn't taken: {0}")]
+    Refused(Refusal),
+    #[error("{0}")]
+    Decoder(String),
 }
 
 /// What the helper makes of an image's bytes to show: its pixels, scaled down to fit

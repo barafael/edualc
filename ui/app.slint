@@ -550,6 +550,12 @@ component Sidebar inherits Rectangle {
         changed project-opened => {
             projects.close();
         }
+        // Asked for elsewhere: the list opens.
+        property <int> projects-asked: Sessions.asked-serial;
+        changed projects-asked => {
+            Sessions.refresh-projects();
+            projects.show();
+        }
         projects := PopupWindow {
             x: project-button.x;
             y: project-button.y + project-button.height + Theme.space-xs;
@@ -581,13 +587,6 @@ component Sidebar inherits Rectangle {
                             horizontal-stretch: 1;
                             placeholder: "Path to a folder";
                             accepted(text) => { folders.open(text); }
-                        }
-                        TextButton {
-                            text: "Browse…";
-                            clicked => {
-                                Sessions.browse-project();
-                                projects.close();
-                            }
                         }
                     }
                     if folders.problem != "": Text {
@@ -1953,7 +1952,7 @@ component Header inherits Rectangle {
                     menu := VerticalLayout {
                         padding: Theme.space-xs;
                         Caption {
-                            text: "Open the worktree in";
+                            text: "The worktree";
                         }
                         for opener[index] in Session.openers: Pressable {
                             height: Theme.control;
@@ -2081,7 +2080,7 @@ component TrustBar inherits Rectangle {
             alignment: end;
             TextButton {
                 text: "Open another folder";
-                clicked => { Sessions.browse-project(); }
+                clicked => { Sessions.asked-serial += 1; }
             }
             // The focus comes here as the question shows, never to "Trust this folder": a stray
             // Enter starts Claude Code with none of the folder's settings.
@@ -2197,12 +2196,6 @@ component WatchBar inherits Rectangle {
         if !root.confirming: HorizontalLayout {
             spacing: Theme.space-s;
             alignment: end;
-            if Session.can-go-to-window: TextButton {
-                text: "Go to its window";
-                has-icon: true;
-                icon: @image-url("@lucide/app-window.svg");
-                clicked => { Session.go-to-window(); }
-            }
             TextButton {
                 text: "Continue here as a copy";
                 has-icon: true;

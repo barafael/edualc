@@ -8,8 +8,7 @@ use async_channel::{Sender, TrySendError};
 
 use crate::app::Event;
 use crate::claude::Output;
-use crate::desktop::Opener;
-use crate::ipc::{ActId, Buses, FromDaemon, Generation, Hosted, PROTOCOL, Stream, ToDaemon};
+use crate::ipc::{ActId, FromDaemon, Generation, Hosted, PROTOCOL, Stream, ToDaemon};
 use crate::sessions::{self, LiveSession};
 use crate::settings::Settings;
 
@@ -48,12 +47,8 @@ pub struct Greeting {
     pub live: Vec<LiveSession>,
     /// The settings, or why they can't be read.
     pub settings: Result<Settings, String>,
-    /// What folders open in, besides the window.
-    pub openers: Vec<Opener>,
     /// Claude Code's own sandbox is on in its settings.
     pub claude_codes_sandbox: bool,
-    /// Other programs' windows can be found.
-    pub finds_windows: bool,
     /// The user's home folder.
     pub home: Option<std::path::PathBuf>,
 }
@@ -61,24 +56,19 @@ pub struct Greeting {
 /// Why a daemon's first messages don't greet this window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Ungreeted {
-    #[error(
-        "the edualc daemon running is another version; it ends once its windows and sessions do"
-    )]
+    #[error("edualcd runs another version of edualc: update the older of the two")]
     Version,
-    #[error("the edualc daemon said something out of turn as the window connected")]
+    #[error("edualcd said something out of turn as the window connected")]
     OutOfTurn,
 }
 
 /// What a daemon's first two messages, its hello and the sessions it runs, tell a window.
-pub fn greeted(hello: FromDaemon, hosted: FromDaemon) -> Result<(Buses, Greeting), Ungreeted> {
+pub fn greeted(hello: FromDaemon, hosted: FromDaemon) -> Result<Greeting, Ungreeted> {
     let FromDaemon::Hello {
         protocol,
-        buses,
         settings,
-        openers,
         live,
         claude_codes_sandbox,
-        finds_windows,
         home,
     } = hello
     else {
@@ -94,12 +84,10 @@ pub fn greeted(hello: FromDaemon, hosted: FromDaemon) -> Result<(Buses, Greeting
         hosted,
         live,
         settings,
-        openers,
         claude_codes_sandbox,
-        finds_windows,
         home,
     };
-    Ok((buses, greeting))
+    Ok(greeting)
 }
 
 /// What the daemon says, made the app's events (sans-io): a transcript's lines are kept until
@@ -136,7 +124,6 @@ impl Inbox {
             FromDaemon::Ended { key, code } => claude(key, Output::Ended(code)),
             FromDaemon::Diverged { key, left } => claude(key, Output::Diverged(left)),
             FromDaemon::Done { request, result } => Event::Acted { request, result },
-            FromDaemon::Picked { request, folder } => Event::Picked { request, folder },
             FromDaemon::Trusted {
                 request,
                 accepted,
@@ -147,7 +134,6 @@ impl Inbox {
                 runs,
             },
             FromDaemon::Hosted(sessions) => Event::Hosted(sessions),
-            FromDaemon::Pasted { request, pasted } => Event::Pasted { request, pasted },
             FromDaemon::Lines { request, lines } => {
                 self.lines.entry(request).or_default().extend(lines);
                 return None;

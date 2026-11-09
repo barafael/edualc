@@ -1,18 +1,23 @@
-//! How the window starts: its command line read, its daemon reached (or started), and the
-//! window confined before it opens.
+//! How the window starts: its command line read, its D-Bus proxies started (see `buses`), its
+//! edualcd reached, where it works found on edualcd's machine, and the window confined before it
+//! opens.
 
 use std::path::PathBuf;
 
 use slint::ComponentHandle;
 
 use crate::external::wire::SessionId;
-use crate::folder::{Folder, FolderError};
-use crate::{app, confine, connect, decode, desktop, generated, ipc, sessions, ui};
+use crate::ipc::pairing::Pairing;
+use crate::ipc::{Answer, Read};
+use crate::servers::Servers;
+use crate::sessions::Saved;
+use crate::{app, buses, confine, connect, decode, desktop, generated, ui};
 
 /// A native desktop window for Claude Code.
 ///
 /// Its arguments read as `claude`'s own: where to work, which model, a session to continue, and
-/// a first prompt. It needs `claude` (Claude Code) on the PATH.
+/// a first prompt. Claude Code runs where its edualcd does (this machine's, or another's it was
+/// paired with): the folder is one there.
 #[derive(Debug, clap::Parser)]
 #[command(name = "edualc", version, about)]
 struct Args {
@@ -25,9 +30,18 @@ struct Args {
     /// A session to continue, by its id.
     #[arg(short, long, value_name = "SESSION", value_parser = session_id)]
     resume: Option<SessionId>,
-    /// The folder to work in; where edualc was started, if none.
-    #[arg(value_parser = folder)]
-    dir: Option<Folder>,
+    /// The edualcd to reach, by the name it was paired as; the last one paired if not given.
+    #[arg(long, value_name = "NAME")]
+    server: Option<String>,
+    /// Pair with an edualcd, by the address it prints (`edualcd --pair`), and end.
+    #[arg(long, value_name = "ADDRESS", conflicts_with_all = ["resume", "dir", "prompt"])]
+    pair: Option<String>,
+    /// The name to pair it as: its host's, if not given.
+    #[arg(long = "as", value_name = "NAME", requires = "pair")]
+    pair_as: Option<String>,
+    /// The folder to work in, on edualcd's machine; where edualc was started, if that is a
+    /// folder there too, else the home folder there.
+    dir: Option<PathBuf>,
     /// A first prompt.
     prompt: Option<String>,
 }
@@ -43,99 +57,124 @@ fn permission_modes() -> impl clap::builder::TypedValueParser<Value = app::Permi
     .try_map(|name| name.parse::<app::PermissionMode>())
 }
 
-/// Why the folder named on the command line isn't worked in.
-#[derive(Debug, thiserror::Error)]
-enum DirError {
-    #[error(transparent)]
-    Folder(#[from] FolderError),
-    /// No folder by that name, nor a path: `claude` takes its prompt first, and this may be one.
-    #[error("{source}. A first prompt comes after the folder, as in: edualc . \"{prompt}\"")]
-    Prompt {
-        prompt: String,
-        #[source]
-        source: FolderError,
-    },
-}
-
-/// The folder a command line names, relative to where edualc was started.
-fn folder(text: &str) -> Result<Folder, DirError> {
-    Folder::at(PathBuf::from(text)).map_err(|error| match error {
-        FolderError::Missing(_) if !text.contains('/') => DirError::Prompt {
-            prompt: text.to_owned(),
-            source: error,
-        },
-        FolderError::Missing(_) | FolderError::NotAFolder(_) | FolderError::Unreadable { .. } => {
-            DirError::Folder(error)
-        }
-    })
-}
-
-/// Where edualc was started, or the home folder where that is gone.
-fn here() -> Result<Folder, FolderError> {
-    Folder::at(
-        std::env::current_dir()
-            .ok()
-            .or_else(dirs::home_dir)
-            .unwrap_or_default(),
-    )
-}
-
-/// Why edualc doesn't start where its command line points.
-#[derive(Debug, thiserror::Error)]
-enum WhereError {
-    #[error(transparent)]
-    Folder(#[from] FolderError),
-    #[error("There is no session {0}")]
-    NoSession(SessionId),
-}
-
-/// The folder to work in: as named; else, continuing a session, the one it was started in
-/// (`claude --resume` goes on in whatever folder it is started from, its tools working there);
-/// else where edualc was started. A session to continue that no transcript has is refused.
-fn working_folder(dir: Option<Folder>, resume: Option<&SessionId>) -> Result<Folder, WhereError> {
-    let saved = resume.map(|id| (id, sessions::saved(id)));
-    Ok(match (dir, saved) {
-        (_, Some((id, sessions::Saved::Nowhere))) => return Err(WhereError::NoSession(id.clone())),
-        (Some(folder), _) => folder,
-        (None, Some((_, sessions::Saved::StartedIn(started)))) => Folder::at(started)?,
-        (None, Some((_, sessions::Saved::Unplaced)) | None) => here()?,
-    })
-}
-
 /// A session's id, as Claude Code writes one; anything else is refused before it reaches
 /// claude's command line.
 fn session_id(id: &str) -> Result<SessionId, String> {
     SessionId::try_from(id.to_owned()).map_err(|error| error.to_string())
 }
 
-/// Set once the window was started again with its D-Bus proxies.
-const PROXIED: &str = "EDUALC_PROXIED";
+/// Why edualc doesn't start where its command line points.
+#[derive(Debug, thiserror::Error)]
+enum WhereError {
+    #[error("{0}")]
+    Folder(String),
+    /// No folder by that name, nor a path: `claude` takes its prompt first, and this may be one.
+    #[error("{problem}. A first prompt comes after the folder, as in: edualc . \"{prompt}\"")]
+    Prompt { prompt: String, problem: String },
+    #[error("There is no session {0}")]
+    NoSession(SessionId),
+    #[error(transparent)]
+    Line(#[from] connect::Error),
+}
 
-/// Starts this program again in this process, its bus the daemon's filtering proxies (none
-/// without them); returns only if that failed.
-fn proxied(buses: &ipc::Buses) -> std::io::Error {
-    use std::os::unix::process::CommandExt;
-    let program = match std::env::current_exe() {
-        Ok(program) => program,
-        Err(error) => return error,
+/// `path` made whole against where edualc was started, without looking at this machine's files:
+/// the folder is one on edualcd's machine.
+fn whole(path: &std::path::Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_no_current_folder| path.to_owned())
+}
+
+/// The folder to work in, as edualcd finds it on its machine: as named; else, continuing a
+/// session, the one it was started in (`claude --resume` goes on in whatever folder it is
+/// started from, its tools working there); else where edualc was started, if that is a folder
+/// there, or the home folder there. A session to continue that no transcript has is refused.
+fn working_folder(
+    connected: &mut connect::Connected,
+    dir: Option<PathBuf>,
+    resume: Option<&SessionId>,
+) -> Result<PathBuf, WhereError> {
+    let saved = match resume {
+        Some(id) => {
+            let Answer::Saved(saved) = connected.ask(Read::Saved(id.clone()))? else {
+                return Err(connect::Error::Unanswered.into());
+            };
+            match saved {
+                Saved::Nowhere => return Err(WhereError::NoSession(id.clone())),
+                Saved::StartedIn(folder) => Some(folder),
+                Saved::Unplaced => None,
+            }
+        }
+        None => None,
     };
-    let mut command = std::process::Command::new(program);
-    command.args(std::env::args_os().skip(1)).env(PROXIED, "1");
-    match &buses.session {
-        Some(socket) => command.env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", socket.display()),
-        ),
-        None => command.env_remove("DBUS_SESSION_BUS_ADDRESS"),
+    let (asked, named) = match (dir, saved) {
+        (Some(dir), _) => (whole(&dir), Some(dir)),
+        (None, Some(started)) => (started, None),
+        (None, None) => {
+            let here = std::env::current_dir().unwrap_or_default();
+            return Ok(match folder(connected, here)? {
+                Ok(folder) => folder,
+                // This machine's folder isn't edualcd's: its home folder, as a page opens.
+                Err(_not_there) => connected
+                    .greeting
+                    .home
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("/")),
+            });
+        }
     };
-    match &buses.accessibility {
-        Some(socket) => command.env(
-            "AT_SPI_BUS_ADDRESS",
-            format!("unix:path={}", socket.display()),
-        ),
-        None => command.env_remove("AT_SPI_BUS_ADDRESS"),
+    match folder(connected, asked)? {
+        Ok(folder) => Ok(folder),
+        Err(problem) => Err(match named {
+            Some(dir) if !dir.as_os_str().as_encoded_bytes().contains(&b'/') => {
+                WhereError::Prompt {
+                    prompt: dir.display().to_string(),
+                    problem,
+                }
+            }
+            Some(_) | None => WhereError::Folder(problem),
+        }),
+    }
+}
+
+/// The folder at `path` on edualcd's machine, made whole, or why it isn't one.
+fn folder(
+    connected: &mut connect::Connected,
+    path: PathBuf,
+) -> Result<Result<PathBuf, String>, WhereError> {
+    let Answer::Folder(found) = connected.ask(Read::Folder(path))? else {
+        return Err(connect::Error::Unanswered.into());
     };
-    command.exec()
+    Ok(found)
+}
+
+/// Pairs with the edualcd at `address`, as `name` or its host's.
+fn pair(address: &str, name: Option<String>) -> std::process::ExitCode {
+    let pairing = match Pairing::parse(address) {
+        Ok(pairing) => pairing,
+        Err(error) => {
+            eprintln!("edualc: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    // Reached once, so that a wrong address or token is said now rather than as a window opens.
+    if let Err(error) = connect::connect(&pairing) {
+        eprintln!("edualc: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    let name = name.unwrap_or_else(|| pairing.host.clone());
+    let saved = Servers::load().and_then(|mut servers| {
+        servers.pair(name.clone(), pairing);
+        servers.save()
+    });
+    match saved {
+        Ok(path) => {
+            eprintln!("edualc: paired with {name} (kept in {})", path.display());
+            std::process::ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("edualc: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
@@ -147,8 +186,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         .with_writer(std::io::stderr)
         .init();
 
-    // The image decoder the daemon and the window start, confined before it reads (see
-    // `decode`).
+    // The image decoder the window starts, confined before it reads (see `decode`).
     if let Some(job) = std::env::args()
         .nth(1)
         .and_then(|argument| argument.parse::<decode::Job>().ok())
@@ -161,39 +199,49 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         model,
         mode,
         resume,
+        server,
+        pair: pairing,
+        pair_as,
         dir,
         prompt,
     } = clap::Parser::parse();
-    let cwd = match working_folder(dir, resume.as_ref()) {
-        Ok(folder) => folder.into_path(),
-        Err(error) => {
-            eprintln!("edualc: {error}");
-            return Ok(std::process::ExitCode::from(2));
-        }
-    };
-
-    // In this order: the daemon is reached (and started) and the desktop asked while the window
-    // is free; then it is confined, and all it makes after keeps that.
-    let connected = match connect::connect() {
-        Ok(connected) => connected,
+    if let Some(address) = pairing {
+        return Ok(pair(&address, pair_as));
+    }
+    // The first process starts the D-Bus proxies and the window as its child, and waits for it.
+    if std::env::var_os(buses::PROXIED).is_none() {
+        return Ok(buses::run_window().unwrap_or_else(|error| {
+            eprintln!("edualc: couldn't start the window: {error}");
+            std::process::ExitCode::FAILURE
+        }));
+    }
+    if !buses::end_with_first_process() {
+        return Ok(std::process::ExitCode::FAILURE);
+    }
+    let chosen = Servers::load().and_then(|servers| servers.chosen(server.as_deref()));
+    let (name, pairing) = match chosen {
+        Ok(chosen) => chosen,
         Err(error) => {
             eprintln!("edualc: {error}");
             return Ok(std::process::ExitCode::FAILURE);
         }
     };
-    // Once: started again with the D-Bus proxies for its bus, which can't be changed later in a
-    // running process without `unsafe`.
-    if std::env::var_os(PROXIED).is_none() {
-        let error = proxied(&connected.buses);
-        eprintln!("edualc: couldn't start again with the D-Bus proxies: {error}");
-        return Ok(std::process::ExitCode::FAILURE);
-    }
-    let connect::Connected {
-        runtime,
-        socket,
-        greeting,
-        ..
-    } = connected;
+    // In this order: edualcd is reached and the desktop asked while the window is free; then it
+    // is confined, and all it makes after keeps that.
+    let mut connected = match connect::connect(&pairing) {
+        Ok(connected) => connected,
+        Err(error) => {
+            eprintln!("edualc: {name}: {error}");
+            return Ok(std::process::ExitCode::FAILURE);
+        }
+    };
+    let cwd = match working_folder(&mut connected, dir, resume.as_ref()) {
+        Ok(folder) => folder,
+        Err(error) => {
+            eprintln!("edualc: {error}");
+            return Ok(std::process::ExitCode::from(2));
+        }
+    };
     // Asked before the window is confined, of programs it may not run then.
     let (fonts, text_size) = std::thread::scope(|scope| {
         let fonts = scope.spawn(crate::appearance::fonts);
@@ -203,8 +251,8 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
         (fonts, text_size)
     });
-    let desktop = app::Desktop::of(&greeting, text_size);
-    match confine::confine() {
+    let desktop = app::Desktop::of(&connected.greeting, text_size);
+    match confine::confine(&connected.addresses) {
         Ok(confinement) => tracing::info!(?confinement, "the window is confined"),
         Err(error) => {
             eprintln!("edualc: {error}");
@@ -212,12 +260,12 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     }
     let (events, received) = async_channel::unbounded();
-    let link = connect::run(runtime, socket, events.clone());
+    let (link, greeting) = connect::run(connected, events.clone());
     let window = generated::AppWindow::new()?;
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
-    let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts);
+    let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts, events.clone());
     let mut app = app::App::new(
         frontend,
         events,
@@ -280,10 +328,8 @@ mod tests {
         assert_eq!(parsed.mode, Some(app::PermissionMode::Plan));
         assert_eq!(parsed.model.as_deref(), Some("haiku"));
         assert_eq!(parsed.resume, SessionId::try_from(id.to_owned()).ok());
-        assert_eq!(
-            parsed.dir.map(Folder::into_path),
-            PathBuf::from("/tmp").canonicalize().ok()
-        );
+        // A folder on edualcd's machine: taken as written, not looked for here.
+        assert_eq!(parsed.dir, Some(PathBuf::from("/tmp")));
         assert_eq!(parsed.prompt.as_deref(), Some("hello"));
         assert!(args("--resume").is_err());
         // Ids end up on claude's command line: one that reads as an option is refused.
@@ -297,33 +343,34 @@ mod tests {
         assert_eq!(joined.mode, Some(app::PermissionMode::AcceptEdits));
     }
 
-    /// A folder that can't be worked in is said as the folder list says it; a lone word that
-    /// names none may be a prompt, given first as `claude` takes it, and is told where it goes.
+    /// Pairing takes an address and, maybe, a name; it starts no window, so a folder or a
+    /// session beside it is refused.
     #[test]
-    fn a_wrong_folder_is_said_before_anything_starts() {
-        let said = |argument: &str| {
-            Args::try_parse_from(["edualc", argument])
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-                .expect_err(argument)
-        };
-        let prompt = said("explain this repository");
-        assert!(
-            prompt.contains("There is no folder explain this repository")
-                && prompt.contains("edualc . \"explain this repository\""),
-            "{prompt}"
+    fn pairing_stands_alone() {
+        let paired = args("--pair https://h:1/#token=t --as box").expect("valid arguments");
+        assert_eq!(paired.pair.as_deref(), Some("https://h:1/#token=t"));
+        assert_eq!(paired.pair_as.as_deref(), Some("box"));
+        assert!(args("--pair https://h:1/ /tmp").is_err());
+        assert!(args("--as box").is_err());
+        assert_eq!(
+            args("--server box")
+                .map(|parsed| parsed.server)
+                .ok()
+                .flatten(),
+            Some("box".to_owned())
         );
-        let missing = said("/no/such/edualc/folder");
-        assert!(
-            missing.contains("There is no folder /no/such/edualc/folder")
-                && !missing.contains("prompt"),
-            "{missing}"
+    }
+
+    /// A relative folder is made whole against where edualc started, without looking for it
+    /// here.
+    #[test]
+    fn a_relative_folder_is_made_whole_without_looking() {
+        let here = std::env::current_dir().expect("a current folder");
+        assert_eq!(
+            whole(std::path::Path::new("no/such/folder")),
+            here.join("no/such/folder")
         );
-        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        assert!(
-            said(manifest).contains(&format!("{manifest} is a file, not a folder")),
-            "{manifest}"
-        );
+        assert_eq!(whole(std::path::Path::new("/abs")), PathBuf::from("/abs"));
     }
 
     /// Help lists every permission mode by the name Claude Code takes, with what it lets through.

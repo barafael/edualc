@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use edualc_core::app::{Action, Event};
 use edualc_core::chat::ImageKey;
 use edualc_core::decode::Pixels;
-use edualc_core::present::{Command, EntriesChange, Frontend, Image, Look, model};
+use edualc_core::present::{Command, EntriesChange, Frontend, Image, Look, Seat, model};
 
 /// What the app sets of the page itself, besides the presenter's state.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -27,6 +27,8 @@ pub struct Page {
     pub show_tasks: u32,
     /// Bumped as the folder typed in the list of folders opened.
     pub projects_opened: u32,
+    /// Bumped to open the list of folders from elsewhere (the trust bar).
+    pub projects_asked: u32,
     pub model_index: i32,
     pub mode_index: i32,
     pub reviewing: bool,
@@ -191,6 +193,16 @@ impl Frontend for PageFrontend {
         });
     }
 
+    /// On the browser's desktop: a link in a new tab, a notification if the browser lets the
+    /// page show them. A pasted image comes with the paste (see the composer), not from here.
+    fn seat(&mut self, seat: Seat) {
+        match seat {
+            Seat::OpenUrl(url) => open_tab(&url),
+            Seat::Notify { summary, body } => notify(&summary, &body),
+            Seat::PasteImage => {}
+        }
+    }
+
     fn command(&mut self, command: Command) {
         let mut page = self.view.page;
         let mut draft = self.view.draft;
@@ -267,6 +279,45 @@ pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {
         Image::Key(key) => images.get(key).cloned().unwrap_or_default(),
         Image::Pixels(pixels) => data_url(pixels).unwrap_or_default(),
     }
+}
+
+/// Opens `url` in a new tab, which can't reach back to the page.
+fn open_tab(url: &str) {
+    #[cfg(feature = "web")]
+    if let Some(window) = web_sys::window()
+        && window
+            .open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer")
+            .is_err()
+    {
+        tracing::warn!("the browser opened no tab");
+    }
+    #[cfg(not(feature = "web"))]
+    let _: &str = url;
+}
+
+/// Shows a notification, if the browser lets the page; asks it once, for the next.
+fn notify(summary: &str, body: &str) {
+    #[cfg(feature = "web")]
+    {
+        use web_sys::{Notification, NotificationOptions, NotificationPermission};
+        match Notification::permission() {
+            NotificationPermission::Granted => {
+                let options = NotificationOptions::new();
+                options.set_body(body);
+                if Notification::new_with_options(summary, &options).is_err() {
+                    tracing::warn!("the browser showed no notification");
+                }
+            }
+            NotificationPermission::Default => {
+                if Notification::request_permission().is_err() {
+                    tracing::debug!("the browser wasn't asked to notify");
+                }
+            }
+            NotificationPermission::Denied | _ => {}
+        }
+    }
+    #[cfg(not(feature = "web"))]
+    let _: (&str, &str) = (summary, body);
 }
 
 /// Puts `text` on the browser's clipboard.

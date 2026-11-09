@@ -1,42 +1,38 @@
-//! The windows and their daemon (`edualc --daemon`), speaking over a Unix socket that only they
-//! reach.
+//! The windows and edualcd: what they say to each other, and the line it goes on.
 //!
-//! - The socket lives in `$XDG_RUNTIME_DIR/edualc`, a folder of the user's alone (0700), which is
-//!   checked through the descriptor it was opened by, never followed through a link, and used by
-//!   that descriptor from then on: binding and connecting go through `/proc/self/fd/<folder>`, so
-//!   no path can be swapped in between. Never an abstract socket, which anyone may take first.
-//! - Who is the daemon is decided by a lock held as long as it runs: only its holder removes a
-//!   stale socket and binds anew, so two starting at once can't both bind, nor one unbind the
-//!   other's.
-//! - Each peer is checked as it connects: a window, to be the same user running edualc; the
-//!   daemon, which makes itself non-dumpable (its `/proc` entries closed to the user's other
-//!   processes), to be the same user, in the place only the daemon binds.
-//! - On the socket, the two speak WebSocket (`ws`), as a browser does: each message is one
-//!   binary frame of CBOR, the framing Dioxus's typed websockets use, so a page and the native
-//!   window take the same messages. A frame longer than [`MAX_MESSAGE`] ends the connection, as
-//!   does a message that doesn't parse.
+//! - A window (the native one, or a page) reaches edualcd over the network, at `/api/line`,
+//!   the same way whether edualcd runs on this machine or another: WebSocket over TLS (`ws`,
+//!   `tls`), each message one binary frame of CBOR, [`ToDaemon`] one way and [`FromDaemon`]
+//!   the other. A frame longer than [`MAX_MESSAGE`] ends the line, as does a message that
+//!   doesn't parse.
+//! - edualcd's certificate is its own, made on its first start; a native window trusts exactly
+//!   the one it was paired with, by its SHA-256 (`pairing`). A window is let in by edualcd's
+//!   token, which lets it run Claude Code as the user, outside the sandbox too: it is kept as an
+//!   SSH key is.
+//! - The protocol's version goes in the line's address too, so that an edualcd of another
+//!   version refuses a window before either reads the other's messages.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
-mod reach;
+pub mod pairing;
 #[cfg(not(target_arch = "wasm32"))]
-mod socket;
+pub mod tls;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws;
 #[cfg(not(target_arch = "wasm32"))]
-pub use reach::{ReachError, TOKEN_VARIABLE, reach};
-#[cfg(not(target_arch = "wasm32"))]
-pub use socket::{Error, Folder, Listener, accept, connect};
+pub use ws::Error;
+
+/// Where edualcd takes the token windows must show, if not from the file it keeps it in.
+pub const TOKEN_VARIABLE: &str = "EDUALC_TOKEN";
 
 use crate::claude::Launch;
-use crate::decode::{Picture, Refusal};
-use crate::desktop::{Opener, Program, Running};
+use crate::desktop::{Program, Running};
 use crate::external::wire::{SessionId, TaskId};
 use crate::sandbox::Enforcement;
-use crate::sessions::{LiveSession, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{LiveSession, ProjectInfo, Saved, SessionInfo, Worktree};
 use crate::settings::Settings;
 
 /// The largest message either side sends: more is a broken or hostile peer. Room for the
@@ -116,17 +112,7 @@ pub struct DecodeError(String);
 
 /// Bumped with any change to the messages below, or to their framing: both ends must agree on
 /// every type, which are checked strictly (unknown fields refused).
-pub const PROTOCOL: u32 = 15;
-
-/// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Buses {
-    /// The session bus, filtered.
-    pub session: Option<PathBuf>,
-    /// The accessibility bus, filtered.
-    pub accessibility: Option<PathBuf>,
-}
+pub const PROTOCOL: u32 = 16;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -169,9 +155,11 @@ impl ActId {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ToDaemon {
-    /// The first message, and only it.
+    /// The first message, and only it: the protocol the window speaks, and which window it is,
+    /// the same each time its line is reached again.
     Hello {
         protocol: u32,
+        window: WindowKey,
     },
     /// Starts Claude Code for a session, known by `key` from then on.
     Start {
@@ -222,6 +210,24 @@ pub enum ToDaemon {
         target: Target,
     },
     Unwatch(Watched),
+}
+
+/// A window, as it names itself for as long as it is open: reaching edualcd again after its line
+/// was lost, it is known as the window the lost line was, whose sessions are let go of at once
+/// for it to take back (that line may not be found dead for a while).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct WindowKey(uuid::Uuid);
+
+impl WindowKey {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for WindowKey {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A watch, named by the window that asked for it.
@@ -291,9 +297,11 @@ pub enum Read {
     /// The folder a path typed names, made whole, `~` at its start the home folder:
     /// `Answer::Folder`.
     TypedFolder(String),
-    /// The folder at a path (the picker's, a worktree's), made whole, if it is one:
-    /// `Answer::Folder`.
+    /// The folder at a path (the picker's, a worktree's, a command line's), made whole, if it
+    /// is one: `Answer::Folder`.
     Folder(PathBuf),
+    /// Where a session to continue was started, as its transcript says: `Answer::Saved`.
+    Saved(SessionId),
 }
 
 /// What the daemon read for a window.
@@ -311,25 +319,21 @@ pub enum Answer {
     },
     Worktree(Option<Worktree>),
     Folder(Result<PathBuf, String>),
+    Saved(Saved),
 }
 
 /// What the daemon tells the window.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum FromDaemon {
-    /// With the D-Bus the window is to use (see `buses`), the settings (or why they can't be
-    /// read), what folders open in here, and the sessions running now. `Hosted` follows,
-    /// before anything else.
+    /// The settings (or why they can't be read), and the sessions running now. `Hosted`
+    /// follows, before anything else.
     Hello {
         protocol: u32,
-        buses: Buses,
         settings: Result<Settings, String>,
-        openers: Vec<Opener>,
         live: Vec<LiveSession>,
         /// Claude Code's own sandbox is on in its settings: edualc's stays off.
         claude_codes_sandbox: bool,
-        /// Other programs' windows can be found (niri runs).
-        finds_windows: bool,
         /// The user's home folder, where a page opens unless it names a folder.
         home: Option<PathBuf>,
     },
@@ -362,11 +366,6 @@ pub enum FromDaemon {
         request: ActId,
         result: Result<(), ActFailure>,
     },
-    /// The folder picked, if one was.
-    Picked {
-        request: ActId,
-        folder: Option<PathBuf>,
-    },
     /// Whether the terminal's trust dialog was accepted for the folder asked about; if not, what
     /// the folder's own configuration would have Claude Code run there.
     Trusted {
@@ -376,8 +375,6 @@ pub enum FromDaemon {
     },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
-    /// The clipboard's image, or why there is none.
-    Pasted { request: ActId, pasted: Pasted },
     /// What was read, as asked by `Read`.
     Answer { request: ActId, answer: Answer },
     /// Whole lines of a transcript read, as asked by `Read::Transcript`, in pieces that fit a
@@ -386,9 +383,6 @@ pub enum FromDaemon {
     /// What a watch names changed.
     Changed(Watched),
 }
-
-/// The clipboard's image, decoded in the confined helper (see `decode`), or why there is none.
-pub type Pasted = Result<Picture, PasteFailure>;
 
 /// Something a folder's own configuration (`.claude/settings.json`, `settings.local.json`,
 /// `.mcp.json`) would have Claude Code run or set there, read before the folder is trusted, for
@@ -415,20 +409,6 @@ pub enum Runs {
     Environment(Vec<String>),
     /// A file that couldn't be read, and why: what it would run is unknown.
     Unreadable { file: String, reason: String },
-}
-
-/// Why the clipboard gave no image, as the window is told.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-pub enum PasteFailure {
-    /// The clipboard holds something else (text, say): nothing to tell.
-    #[error("the clipboard holds no PNG, JPEG, GIF or WebP image")]
-    NoImage,
-    #[error("couldn't read the clipboard: {0}")]
-    Clipboard(String),
-    #[error("the image wasn't taken: {0}")]
-    Refused(Refusal),
-    #[error("{0}")]
-    Decoder(String),
 }
 
 /// A session the daemon runs.
@@ -476,24 +456,10 @@ pub enum ActFailure {
     Run { program: Program, reason: String },
     #[error("{program} failed: {stderr}")]
     Failed { program: Program, stderr: String },
-    #[error("{0}")]
-    Niri(String),
-    #[error(
-        "no window holds process {0}; it may run in the background or in a terminal multiplexer"
-    )]
-    NoWindow(u32),
-    #[error("finding a session's window needs niri (NIRI_SOCKET is unset)")]
-    NoNiri,
     #[error("process {0} was asked to stop but is still running")]
     StillRunning(u32),
     #[error("process {0} isn't that Claude Code session (any more)")]
     NotThatSession(u32),
-    #[error("{0} isn't a folder")]
-    NotAFolder(PathBuf),
-    #[error("not opened: {0}\nOnly web links open from here; copy it to open it yourself.")]
-    NotAWebLink(String),
-    #[error("couldn't open {link}: {reason}")]
-    Open { link: String, reason: String },
     #[error("the daemon failed doing it")]
     Crashed,
 }
@@ -501,21 +467,12 @@ pub enum ActFailure {
 impl From<crate::desktop::Error> for ActFailure {
     fn from(error: crate::desktop::Error) -> Self {
         use crate::desktop::Error;
-        use crate::external::niri;
         match error {
             Error::Run { program, source } => Self::Run {
                 program,
                 reason: source.to_string(),
             },
             Error::Failed { program, stderr } => Self::Failed { program, stderr },
-            Error::Niri(niri::Error::NotRunning) => Self::NoNiri,
-            Error::Niri(
-                error @ (niri::Error::Socket(_)
-                | niri::Error::Request(_)
-                | niri::Error::Answer(_)
-                | niri::Error::Refused(_)),
-            ) => Self::Niri(error.to_string()),
-            Error::NoWindow(pid) => Self::NoWindow(pid),
             Error::StillRunning(pid) => Self::StillRunning(pid),
             Error::NotThatSession(pid) => Self::NotThatSession(pid),
         }
@@ -528,15 +485,6 @@ pub enum Stream {
     Err,
 }
 
-/// What a folder is picked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FolderUse {
-    /// To open it, and work in it.
-    Project,
-    /// To let the sandbox's processes into it.
-    Sandbox(SandboxAccess),
-}
-
 /// How far the sandbox lets Claude into a folder the user added (`Settings::sandbox_read`,
 /// `Settings::sandbox_write`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,31 +493,14 @@ pub enum SandboxAccess {
     Write,
 }
 
-/// What the window can have the desktop do; it does nothing else outside its sandbox.
+/// What the window can have edualcd do on its machine, besides running sessions; the window's
+/// own desktop (links, notifications, the clipboard) is the window's to use.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Act {
-    OpenIn {
-        opener: Opener,
-        folder: PathBuf,
-    },
-    /// A link from the conversation: only web pages and mail are opened.
-    OpenUrl(String),
-    /// The desktop's folder picker, titled for what the folder is for; answered by `Picked`.
-    PickFolder(FolderUse),
-    /// The clipboard's image, if it holds one; answered by `Pasted`.
-    PasteImage,
     /// Whether the terminal's trust dialog was accepted for the folder, or one it is in, which
     /// the window can't read (see `trust`); answered by `Trusted`.
-    CheckTrust {
-        folder: PathBuf,
-    },
-    Notify {
-        summary: String,
-        body: String,
-    },
-    FocusWindowOf {
-        pid: u32,
-    },
+    CheckTrust { folder: PathBuf },
+    /// Stops a session running elsewhere on edualcd's machine, to continue it in the window.
     StopSession(Running),
 }

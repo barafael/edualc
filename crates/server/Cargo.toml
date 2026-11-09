@@ -21,7 +21,7 @@ base64 = "0.23"
 # Inline Markdown as HTML, raw HTML in it escaped.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # The page's own: its address (the token), the clipboard, opening links, encoding images.
-web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "HtmlDocument", "NodeList", "Event", "EventTarget", "MouseEvent", "Blob", "BlobPropertyBag", "Url"] }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "HtmlDocument", "NodeList", "Event", "EventTarget", "MouseEvent", "Blob", "BlobPropertyBag", "Url", "Notification", "NotificationOptions", "NotificationPermission", "ClipboardEvent", "DataTransfer", "FileList", "File"] }
 js-sys = { version = "0.3", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -32,6 +32,13 @@ tokio-tungstenite = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 clap = { workspace = true, optional = true, features = ["env"] }
 uuid = { workspace = true, optional = true }
+# The server's TLS: its certificate, made on its first start (rcgen), and its acceptor.
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"], optional = true }
 # The page's line to the server: a plain WebSocket, so frames may be as large as messages.
 gloo-net = { version = "0.6", optional = true, default-features = false, features = ["websocket"] }
 # The page's timers: the prompt's buttons arm a moment after a request shows.
@@ -51,6 +58,12 @@ server = [
     "dep:tracing-subscriber",
     "dep:clap",
     "dep:uuid",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rcgen",
+    "dep:rustix",
+    "dep:dirs",
+    "dep:thiserror",
 ]
 
 [lints]

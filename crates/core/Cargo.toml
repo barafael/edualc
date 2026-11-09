@@ -63,6 +63,9 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 postcard.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+sha2.workspace = true
 
 # A page: its clock, random numbers and timers.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

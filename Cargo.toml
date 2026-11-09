@@ -35,6 +35,11 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 dirs = "7"
 uuid = { version = "1.29", default-features = false, features = ["std", "v4", "serde"] }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
+# The line between a window and edualcd, over the network: TLS (ring, already built for
+# Dioxus's fullstack), the server's certificate pinned by its SHA-256.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+sha2 = "0.10"
 
 # "deny", not "forbid": Slint's generated code allows `unsafe` for itself, which "forbid" refuses.
 [workspace.lints.rust]

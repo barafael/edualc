@@ -62,6 +62,21 @@ pub enum EntriesChange {
     Set(usize, model::Entry),
 }
 
+/// What the window does on the desktop it is on, which is the user's: edualcd may run on another
+/// machine, whose desktop no one is at. What fails is told as `Event::SeatFailed`, but for a
+/// notification (a desktop without a notification service would have an error for each); a
+/// paste comes back as `Event::Pasted`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seat {
+    /// A web page or mail, in the desktop's browser (checked to be one, see
+    /// `desktop::is_web_link`).
+    OpenUrl(String),
+    /// A notification; its texts come from other sessions' records, and are taken as text.
+    Notify { summary: String, body: String },
+    /// The clipboard's image, if it holds one, made ready to send.
+    PasteImage,
+}
+
 /// What the window is told to do, rather than to show: its own state the app sets now and
 /// then (the draft, a menu's choice), focus, and moving about.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +128,8 @@ pub trait Frontend {
     /// Lets go of the images but those `shown` holds: the conversation was replaced.
     fn keep_images(&mut self, shown: &HashSet<ImageKey>);
     fn command(&mut self, command: Command);
+    /// Does something on the desktop the frontend is on, the user's (see [`Seat`]).
+    fn seat(&mut self, seat: Seat);
     /// What the composer holds now.
     fn draft(&self) -> String;
 }

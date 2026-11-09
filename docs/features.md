@@ -61,7 +61,8 @@ The README has the short version; this is every feature, as the window has it.
 - **Pasted images.** Ctrl+V in the composer takes the clipboard's PNG, JPEG, GIF or WebP along
   with the next message, shown as a thumbnail until it is sent. A GIF or WebP goes as a PNG (an
   animation as its first frame). The image is never decoded in the window:
-  the daemon reads the clipboard and hands the bytes to `edualc --decode-image`, a process that
+  the window reads its desktop's clipboard (`wl-paste`) and hands the bytes to
+  `edualc --decode-image`, a process that
   first confines itself (no file, socket or other process to reach, no executable memory, bounded
   memory and time, seccomp killing it on anything else) and answers with the image encoded again
   (its metadata gone), scaled to what the current models take (2,576 px on the long edge, 4,784
@@ -85,8 +86,9 @@ The README has the short version; this is every feature, as the window has it.
 - **Running sessions, everywhere.** Every Claude Code session running on the machine, in any
   terminal or folder, is in that list with what it's doing. You get a desktop notification when one
   starts waiting for its user. Opening one follows it live without touching it (or shows it here,
-  if this window's daemon runs it). From there, **Go to its window** (niri) or **Continue here as a
-  copy** (`--resume --fork-session`), since two processes shouldn't drive one session.
+  if this window's edualcd runs it). From there, **Continue here as a copy**
+  (`--resume --fork-session`), since two processes shouldn't drive one session, or **Bring it
+  here**, which stops it there first.
 - **Side questions (`/btw`), beside the conversation.** `/btw …` (or the header's button) asks through
   the CLI's own `side_question`: answered with the conversation's context, without joining it or
   running tools. The answers wait in a side panel instead of taking over the input, which stays free.
@@ -102,8 +104,8 @@ The README has the short version; this is every feature, as the window has it.
   shows it as a command, in monospace, and says what Enter will do. The `>_` button puts the `!` in
   front or takes it away. A draft starting with a Markdown image (`![…](…)`) stays a message.
 - **Worktrees.** When a session works in a git worktree (`claude --worktree`, the EnterWorktree
-  tool), the header shows its name and branch, and the session lists mark it. **Open in** offers this
-  window, Zed, VS Code, a terminal or the file manager, whichever are installed. Worktrees come from
+  tool), the header shows its name and branch, and the session lists mark it. Its menu opens it in
+  this window or copies its path (a folder on edualcd's machine). Worktrees come from
   the transcript's `worktree-state` and from a session's working directory being a linked worktree.
 - **The composer.** The bottom edge of the conversation is the text box, set apart by a line that
   takes the accent while writing. Under the text: the permission mode (coloured by how much it lets

@@ -50,6 +50,7 @@ package() {
   cp -r target/dx/edualcd/release/web/public "$pkgdir/usr/lib/edualc/public"
   install -Dm755 assets/bin/edualc assets/bin/edualcd -t "$pkgdir/usr/bin"
   install -Dm644 assets/edualc.desktop -t "$pkgdir/usr/share/applications"
+  install -Dm644 assets/edualcd.service -t "$pkgdir/usr/lib/systemd/user"
   install -Dm644 assets/edualc.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
   install -Dm644 THIRD_PARTY_LICENSES.md -t "$pkgdir/usr/share/licenses/$pkgname"

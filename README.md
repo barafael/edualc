@@ -59,49 +59,70 @@ The [releases](https://github.com/felintusun/edualc/releases) have packages for 
 - **Debian 12+, Ubuntu 24.04+:** `sudo apt install ./edualc_*.deb`
 - **Fedora, AlmaLinux 10:** `sudo dnf install ./edualc-*.rpm`
 - **Arch:** `makepkg -si` in [`dist/aur/edualc`](dist/aur/edualc)
-- **Anything else:** the tarball has the binary, its desktop entry and its icon.
+- **Anything else:** the tarball has the binaries, the page, edualcd's user service, the desktop
+  entry and the icon.
 
 `xdg-dbus-proxy` (for screen readers and the light or dark setting) and `wl-clipboard` (for pasting
 images) are recommended.
 
 ## Use
 
+edualc's window runs Claude Code through `edualcd`, a user service, on this machine or another.
+Once, start it and pair the window with it:
+
+```sh
+systemctl --user enable --now edualcd
+edualc --pair "$(edualcd --pair)"
+```
+
+Then:
+
 ```sh
 edualc [DIR] [PROMPT]
 edualc --resume SESSION
 ```
 
-`edualc --help` lists the rest.
+`edualc --help` lists the rest. The folder is one on edualcd's machine; with none given, it is
+where edualc was started if that is a folder there too, else the home folder there.
 
-The window in a browser:
+**On another machine.** Run edualcd there, listening on its network (`edualcd --listen
+0.0.0.0:7878`, or the service's override, see `assets/edualcd.service`), and pair with the address
+`edualcd --pair --listen 0.0.0.0:7878` prints there: `edualc --pair 'https://…' --as box`, then
+`edualc --server box`. The line is TLS, with a certificate edualcd made itself that the window
+pins; the address holds the token, which lets whoever has it run Claude Code as you on that
+machine: keep it as you keep an SSH key. Links, notifications and pasted images are the window's
+own desktop's; Claude Code, its files and the sandbox are edualcd's machine's.
 
-```sh
-edualcd --listen 127.0.0.1:7878
-```
+**In a browser.** The address `edualcd --pair` prints is the page's too (add `&dir=/path` for
+another folder than the home). The browser doesn't know edualcd's certificate and asks first:
+check that its SHA-256 is the address's `fingerprint`. The page and the windows share edualcd,
+its sessions and the settings. `edualcd --demo` serves the demo instead, over plain HTTP, which
+needs no token.
 
-It prints the page's address with a token (`http://127.0.0.1:7878/#token=…`), a random one
-unless `EDUALC_TOKEN` gives it; add `&dir=/path` to open a folder other than your home. Only a page with the token gets through, but keep it on
-the loopback: the line isn't encrypted. The page and the window share the daemon, its sessions
-and the settings. `edualcd --demo` serves the demo instead, which needs no token. Settings live in `~/.config/edualc/settings.json`; to let the
-sandbox read or write more folders, add them to `sandbox_read` or `sandbox_write` there.
+Settings live in `~/.config/edualc/settings.json` on edualcd's machine; to let the sandbox read
+or write more folders, add them in the settings, or to `sandbox_read` or `sandbox_write` there.
+edualcd keeps its certificate and token in `~/.local/state/edualcd`; remove that folder to make
+them anew (every window then pairs again).
 
 ## Known limits
 
 - A sandboxed session gets your sign-in once, as it starts, and Claude Code doesn't renew it from
   there. When it runs out (within 8 hours), the conversation says so, the session starts again
   with your current sign-in, and you send that message again.
-- Finding another session's window needs niri.
 - `@` file mentions aren't there yet, and images are pasted, not dropped in.
-- In the page, what is asked of the desktop (pasting an image, picking a folder, opening one in
-  an editor) happens on the machine edualcd runs on, and paths aren't shortened to `~`.
+- In the page, paths aren't shortened to `~`.
+- A window and its edualcd must be the same version. Restarting edualcd (to update it) ends the
+  sessions it runs; their conversations are kept, to be continued.
+- A window whose line is lost reaches edualcd again by itself and opens its session again; what
+  was typed while the line was down isn't sent.
 - Slint comes from a fork at an unreleased commit, until the features edualc needs are released.
 
 ## Building
 
 `cargo build --release` builds the window. edualcd and its page are built by Dioxus's CLI:
 `dx bundle -p edualc-server --platform web --fullstack --release`, whose `server` and `public/`
-go beside the window as `edualcd` and `public/` (the window starts `edualcd` beside itself;
-`cargo edualcd` builds the daemon alone, without the page). How the code is laid out, and how a
+go beside the window as `edualcd` and `public/` (`cargo edualcd` builds the daemon alone, without
+the page). How the code is laid out, and how a
 release is made, is in [docs/architecture.md](docs/architecture.md).
 
 ## License

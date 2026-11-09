@@ -1,13 +1,16 @@
 //! edualc's native window for Claude Code, drawn with Slint: a frontend of `edualc-core`'s app
-//! and presenter, its line to the daemon (`edualcd`) a WebSocket on the daemon's Unix socket.
+//! and presenter, its line to its edualcd (on this machine or another) a WebSocket over TLS.
 //! The window confines itself before it shows (see `confine`).
 
 // The app's modules, under the names this crate's modules know them by.
 use edualc_core::*;
 
 mod appearance;
+mod buses;
 mod confine;
 mod connect;
+mod seat;
+mod servers;
 mod start;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).

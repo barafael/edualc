@@ -99,7 +99,8 @@ jobs:
           name="edualc-$VERSION-$ARCH-linux"
           mkdir -p "out/$name"
           cp -r target/release/edualc target/release/edualcd target/release/public \
-            assets/edualc.desktop assets/edualc.svg README.md LICENSE THIRD_PARTY_LICENSES.md \
+            assets/edualc.desktop assets/edualcd.service assets/edualc.svg README.md LICENSE \
+            THIRD_PARTY_LICENSES.md \
             "out/$name/"
           tar -C out -czf "out/$name.tar.gz" "$name"
           rm -r "out/$name"

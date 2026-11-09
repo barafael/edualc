@@ -1,5 +1,5 @@
 #!/bin/sh
-# edualc and edualcd are installed together in /usr/lib/edualc, beside edualcd's page (public/),
-# where each finds the other: the window starts the daemon beside itself, and the daemon takes
-# only edualc's programs from that folder as windows.
+# edualc and edualcd are installed together in /usr/lib/edualc, edualcd beside its page (public/)
+# and the image decoder each starts as itself. The window reaches edualcd as a paired server, on
+# this machine (the edualcd user service) or another.
 exec /usr/lib/edualc/edualc "$@"

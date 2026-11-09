@@ -16,8 +16,8 @@ use super::scenarios;
 use super::world as demo;
 use crate::claude::Launch;
 use crate::ipc::{
-    Act, ActFailure, ActId, Answer, Buses, FromDaemon, Generation, PROTOCOL, PasteFailure, Place,
-    Read, StartFailure, Stream, ToDaemon,
+    Act, ActId, Answer, FromDaemon, Generation, PROTOCOL, Place, Read, StartFailure, Stream,
+    ToDaemon,
 };
 use crate::sandbox::Enforcement;
 use crate::settings::Settings;
@@ -78,12 +78,9 @@ fn greet(outbox: &Sender<FromDaemon>) {
         outbox,
         FromDaemon::Hello {
             protocol: PROTOCOL,
-            buses: Buses::default(),
             settings: Ok(settings),
-            openers: Vec::new(),
             live: demo::running(),
             claude_codes_sandbox: false,
-            finds_windows: false,
             home: Some(std::path::PathBuf::from(demo::PROJECT)),
         },
     );
@@ -129,6 +126,7 @@ fn read_for(outbox: &Sender<FromDaemon>, request: ActId, read: Read) {
         Read::WorktreeOf { .. } | Read::LinkedWorktree { .. } => Answer::Worktree(None),
         Read::TypedFolder(typed) => Answer::Folder(demo_folder(std::path::Path::new(typed.trim()))),
         Read::Folder(path) => Answer::Folder(demo_folder(&path)),
+        Read::Saved(_) => Answer::Saved(crate::sessions::Saved::Nowhere),
     };
     tell(outbox, FromDaemon::Answer { request, answer });
 }
@@ -148,7 +146,7 @@ fn tell(outbox: &Sender<FromDaemon>, message: FromDaemon) {
     }
 }
 
-/// What the desktop is asked, answered as the demo can.
+/// What the machine is asked, answered as the demo can.
 fn acted(outbox: &Sender<FromDaemon>, request: ActId, act: Act) {
     let message = match act {
         Act::CheckTrust { folder } => match demo::untrusted(&folder) {
@@ -163,22 +161,7 @@ fn acted(outbox: &Sender<FromDaemon>, request: ActId, act: Act) {
                 runs: Vec::new(),
             },
         },
-        Act::PickFolder(_) => FromDaemon::Picked {
-            request,
-            folder: None,
-        },
-        Act::PasteImage => FromDaemon::Pasted {
-            request,
-            pasted: Err(PasteFailure::NoImage),
-        },
-        Act::OpenUrl(link) => FromDaemon::Done {
-            request,
-            result: Err(ActFailure::NotAWebLink(link)),
-        },
-        Act::OpenIn { .. }
-        | Act::Notify { .. }
-        | Act::FocusWindowOf { .. }
-        | Act::StopSession(_) => FromDaemon::Done {
+        Act::StopSession(_) => FromDaemon::Done {
             request,
             result: Ok(()),
         },

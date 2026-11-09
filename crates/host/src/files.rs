@@ -12,6 +12,7 @@ use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 
+use crate::daemon::Outbox;
 use crate::folder::Folder;
 use crate::ipc::{ActId, Answer, FromDaemon, Place, Read, Target, Watched};
 use crate::sessions::{self, ClaudeHome};
@@ -44,7 +45,7 @@ pub fn resolve(place: &Place) -> PathBuf {
 }
 
 /// Reads what a window asked for, off the runtime's thread, and tells it.
-pub async fn answer(request: ActId, read: Read, outbox: mpsc::Sender<FromDaemon>) {
+pub async fn answer(request: ActId, read: Read, outbox: Outbox) {
     let pieces = outbox.clone();
     let answered = tokio::task::spawn_blocking(move || read_for(request, read, &pieces)).await;
     let answer = match answered {
@@ -54,17 +55,13 @@ pub async fn answer(request: ActId, read: Read, outbox: mpsc::Sender<FromDaemon>
             return;
         }
     };
-    if outbox
-        .send(FromDaemon::Answer { request, answer })
-        .await
-        .is_err()
-    {
+    if outbox.send(FromDaemon::Answer { request, answer }).is_err() {
         tracing::debug!("a window gone before its answer");
     }
 }
 
 /// What `read` comes to; a transcript's lines go to `pieces` as they are read, before.
-fn read_for(request: ActId, read: Read, pieces: &mpsc::Sender<FromDaemon>) -> Answer {
+fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
     match read {
         Read::Live => Answer::Live(sessions::live()),
         Read::Projects => Answer::Projects(sessions::projects()),
@@ -99,21 +96,19 @@ fn read_for(request: ActId, read: Read, pieces: &mpsc::Sender<FromDaemon>) -> An
                 .map(Folder::into_path)
                 .map_err(|problem| problem.to_string()),
         ),
+        Read::Saved(id) => Answer::Saved(sessions::saved(&id)),
     }
 }
 
 /// A transcript's lines to the window, in pieces that fit messages; a window gone isn't sent
 /// the rest.
-fn send_lines(request: ActId, lines: Vec<String>, pieces: &mpsc::Sender<FromDaemon>) {
+fn send_lines(request: ActId, lines: Vec<String>, pieces: &Outbox) {
     let mut piece = Vec::new();
     let mut bytes = 0;
     for line in lines {
         if bytes + line.len() > PIECE_BYTES && !piece.is_empty() {
             let lines = std::mem::take(&mut piece);
-            if pieces
-                .blocking_send(FromDaemon::Lines { request, lines })
-                .is_err()
-            {
+            if pieces.send(FromDaemon::Lines { request, lines }).is_err() {
                 return;
             }
             bytes = 0;
@@ -123,7 +118,7 @@ fn send_lines(request: ActId, lines: Vec<String>, pieces: &mpsc::Sender<FromDaem
     }
     if !piece.is_empty()
         && pieces
-            .blocking_send(FromDaemon::Lines {
+            .send(FromDaemon::Lines {
                 request,
                 lines: piece,
             })
@@ -163,7 +158,7 @@ struct Watch {
 /// A window's watches (an actor): one inotify instance, its watches named as the window named
 /// them, until the window's orders end. What inotify notices is read on a thread of its own,
 /// which ends as the actor does (the pipe it waits on beside inotify closes).
-pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: mpsc::Sender<FromDaemon>) {
+pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: Outbox) {
     // Not blocking, so the thread reads all there is each time `poll` wakes it.
     let started = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).and_then(|inotify| {
         let reading = rustix::io::fcntl_dupfd_cloexec(&inotify, 0)?;
@@ -210,7 +205,7 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: mpsc::Sender<FromD
                     .flat_map(|descriptor| touched(&inotify, &mut watches, descriptor))
                     .collect();
                 for watched in changed {
-                    if outbox.send(FromDaemon::Changed(watched)).await.is_err() {
+                    if outbox.send(FromDaemon::Changed(watched)).is_err() {
                         return;
                     }
                 }
@@ -366,7 +361,7 @@ mod tests {
     use super::*;
 
     /// The next watch told of as changed, if one is within a while.
-    async fn changed(outbox: &mut mpsc::Receiver<FromDaemon>) -> Option<Watched> {
+    async fn changed(outbox: &mut mpsc::UnboundedReceiver<FromDaemon>) -> Option<Watched> {
         match tokio::time::timeout(Duration::from_secs(5), outbox.recv()).await {
             Ok(Some(FromDaemon::Changed(watched))) => Some(watched),
             Ok(_) | Err(_) => None,
@@ -381,7 +376,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch folder");
         let path = dir.join("session.jsonl");
         let (orders, received) = mpsc::channel(8);
-        let (outbox, mut told) = mpsc::channel(8);
+        let (outbox, mut told) = mpsc::unbounded_channel();
         let actor = tokio::spawn(watch(received, outbox));
         let watched = Watched::new();
         let target = Target::Transcript(Place::Path(path.clone()));

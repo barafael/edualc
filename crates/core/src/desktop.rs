@@ -1,11 +1,9 @@
-//! The desktop around the window: notifications, the windows other programs run sessions in,
-//! and the editors, terminals and file manager a folder can be opened in. They go through the
-//! programs' own command lines, and niri through its socket.
+//! The desktop around the window and edualcd: notifications (shown by the window, on its
+//! desktop), and the sessions running elsewhere on edualcd's machine (stopped there, to go on in
+//! the window). They go through the programs' own command lines.
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::external::niri;
 use crate::sessions::{LiveKind, LiveSession};
 
 #[derive(
@@ -22,19 +20,6 @@ use crate::sessions::{LiveKind, LiveSession};
 #[strum(serialize_all = "kebab-case")]
 pub enum Program {
     NotifySend,
-    XdgOpen,
-    /// Zed, as Arch and others name it.
-    Zeditor,
-    Zed,
-    Code,
-    Codium,
-    Ghostty,
-    Foot,
-    Alacritty,
-    Kitty,
-    Wezterm,
-    Konsole,
-    GnomeTerminal,
     Kill,
     Claude,
     FcList,
@@ -43,27 +28,6 @@ pub enum Program {
     Git,
 }
 
-/// Something a folder can be opened in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Opener {
-    Editor(Program),
-    Terminal(Program),
-    Files,
-}
-
-impl Opener {
-    pub fn label(self) -> String {
-        match self {
-            Self::Editor(Program::Zeditor | Program::Zed) => "Zed".into(),
-            Self::Editor(Program::Code) => "VS Code".into(),
-            Self::Editor(Program::Codium) => "VSCodium".into(),
-            Self::Editor(program) | Self::Terminal(program) => program.to_string(),
-            Self::Files => "File manager".into(),
-        }
-    }
-}
-
-/// What this machine has to open a folder in: Zed, VS Code, a terminal, the file manager.
 /// Whether a link Claude wrote may open: a web page's, or mail. A file or another app's scheme
 /// could run what it wrote.
 pub fn is_web_link(link: &str) -> bool {
@@ -71,66 +35,6 @@ pub fn is_web_link(link: &str) -> bool {
         link.get(..scheme.len())
             .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
     })
-}
-
-pub fn openers() -> Vec<Opener> {
-    let first =
-        |candidates: &[Program]| candidates.iter().copied().find(|program| on_path(*program));
-    let editors = [
-        &[Program::Zeditor, Program::Zed][..],
-        &[Program::Code, Program::Codium][..],
-    ];
-    let terminals = [
-        Program::Ghostty,
-        Program::Foot,
-        Program::Alacritty,
-        Program::Kitty,
-        Program::Wezterm,
-        Program::Konsole,
-        Program::GnomeTerminal,
-    ];
-    let mut found: Vec<Opener> = editors
-        .iter()
-        .filter_map(|names| first(names))
-        .map(Opener::Editor)
-        .collect();
-    found.extend(first(&terminals).map(Opener::Terminal));
-    if on_path(Program::XdgOpen) {
-        found.push(Opener::Files);
-    }
-    found
-}
-
-fn on_path(program: Program) -> bool {
-    let name = program.to_string();
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir: PathBuf| dir.join(&name).is_file())
-    })
-}
-
-/// Opens `folder` in `opener`, and waits for the program so it is reaped when it ends.
-pub fn open_in(opener: Opener, folder: &Path) -> Result<(), Error> {
-    let program = match opener {
-        Opener::Editor(program) | Opener::Terminal(program) => program,
-        Opener::Files => Program::XdgOpen,
-    };
-    let mut command = Command::new(program.to_string());
-    match opener {
-        // Terminals start where they are started.
-        Opener::Terminal(_) => command.current_dir(folder),
-        Opener::Editor(_) | Opener::Files => command.arg(folder),
-    };
-    let mut child = command
-        .spawn()
-        .map_err(|source| Error::Run { program, source })?;
-    match child.wait() {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(Error::Failed {
-            program,
-            stderr: format!("ended with {status}"),
-        }),
-        Err(source) => Err(Error::Run { program, source }),
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -143,12 +47,6 @@ pub enum Error {
     },
     #[error("{program} failed: {stderr}")]
     Failed { program: Program, stderr: String },
-    #[error(transparent)]
-    Niri(#[from] niri::Error),
-    #[error(
-        "no window holds process {0}; it may run in the background or in a terminal multiplexer"
-    )]
-    NoWindow(u32),
     #[error("process {0} was asked to stop but is still running")]
     StillRunning(u32),
     #[error("process {0} isn't that Claude Code session (any more)")]
@@ -205,26 +103,6 @@ pub fn notify(summary: &str, body: &str) -> Result<(), Error> {
     .map(drop)
 }
 
-/// Focuses the window that process `pid` runs in: the one whose process is `pid` or one of
-/// its ancestors (a terminal, an editor). Only niri is asked.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn focus_window_of(pid: u32) -> Result<(), Error> {
-    let windows = match niri::ask(&niri::Request::Windows)? {
-        niri::Response::Windows(windows) => windows,
-        niri::Response::Handled => Vec::new(),
-    };
-    let window = ancestors(pid)
-        .into_iter()
-        .find_map(|ancestor| {
-            windows
-                .iter()
-                .find(|window| window.pid.and_then(|pid| u32::try_from(pid).ok()) == Some(ancestor))
-        })
-        .ok_or(Error::NoWindow(pid))?;
-    let focus = niri::Request::Action(niri::Action::FocusWindow { id: window.id });
-    niri::ask(&focus).map(drop).map_err(Error::Niri)
-}
-
 /// How long a stopped session gets to end (it writes its transcript and tidies up first).
 const STOP_GRACE_STEPS: u32 = 100;
 
@@ -272,35 +150,4 @@ pub fn stop_session(session: &Running) -> Result<(), Error> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     Err(Error::StillRunning(session.pid))
-}
-
-/// `pid` and its parents, nearest first, up to (not including) init.
-fn ancestors(pid: u32) -> Vec<u32> {
-    let mut chain = vec![pid];
-    let mut current = pid;
-    // Deep enough for any real chain; a cycle in a racing /proc can't loop forever.
-    for _ in 0..64 {
-        let Some(parent) = parent_of(current).filter(|&parent| parent > 1) else {
-            break;
-        };
-        chain.push(parent);
-        current = parent;
-    }
-    chain
-}
-
-fn parent_of(pid: u32) -> Option<u32> {
-    crate::process::stat(pid).map(|stat| stat.parent)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_process_has_ancestors() {
-        let chain = ancestors(std::process::id());
-        assert_eq!(chain.first(), Some(&std::process::id()));
-        assert!(chain.len() > 1, "the test runner has a parent");
-    }
 }

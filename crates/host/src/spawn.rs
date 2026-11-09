@@ -205,6 +205,9 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
     for name in INHERITED_SESSION {
         command.env_remove(name);
     }
+    // edualcd's token, if it was given one so: it lets whoever holds it run Claude Code as the
+    // user, and no session is to reach edualcd's line with it.
+    command.env_remove(crate::ipc::TOKEN_VARIABLE);
     let sandboxed = match &launch.sandbox {
         Some(wish) => Some(sandboxed(launch, wish, &cwd, &mut command)?),
         None => None,

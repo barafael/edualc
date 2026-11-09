@@ -5,7 +5,6 @@
 // The window's modules, under the names this crate's modules know them by.
 pub use edualc_core::*;
 
-pub mod buses;
 pub mod daemon;
 pub mod demo;
 pub mod files;

@@ -82,13 +82,11 @@ export global Session {
     // can be done about it.
     in property <bool> watching;
     in property <string> watch-text;
-    in property <bool> can-go-to-window;
     callback continue-here;
-    callback go-to-window;
     // Stops the watched session in its window and continues it here.
     callback bring-here;
-    // The git worktree the session works in (empty if none), and what it can be opened in:
-    // the first entry is this window.
+    // The git worktree the session works in (empty if none), and what can be done with it:
+    // open it in this window, or copy its path.
     in property <string> worktree-name;
     in property <string> worktree-branch;
     in property <[string]> openers;
@@ -154,12 +152,13 @@ export global Sessions {
     callback filter-edited(string);
     callback new-session;
     callback open(string);
-    // Turns to the folder a path names, as the daemon finds it: if it can't, `problem` says
-    // why; if it does, `opened-serial` is bumped.
+    // Turns to the folder a path names, as edualcd finds it on its machine: if it can't,
+    // `problem` says why; if it does, `opened-serial` is bumped.
     callback open-project(string);
     in property <string> problem;
     in property <int> opened-serial;
-    callback browse-project;
+    // The window's own: bumped to open the list of folders from elsewhere (the trust bar).
+    in-out property <int> asked-serial;
     callback refresh-projects;
 }
 
@@ -275,7 +274,8 @@ export global Preferences {
     // off as shown.
     in property <[string]> sandbox-read;
     in property <[string]> sandbox-write;
-    callback add-sandbox-folder(SandboxAccess);
+    // A path typed, to a folder on edualcd's machine.
+    callback add-sandbox-folder(SandboxAccess, string);
     callback forget-sandbox-folder(SandboxAccess, string);
     // A sandboxed session's messages to other sessions go without asking the user.
     in property <bool> messages-unasked;
