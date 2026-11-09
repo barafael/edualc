@@ -105,9 +105,12 @@ needs no token.
 **On Android.** The app lists the edualcds it is paired with, and pairs with another by the
 address `edualcd --pair` prints there (on edualcd's network: `--listen` and `--name` as above);
 it reaches the one it reached last as it starts. A demo's address (`http://host:port/`) works
-too. The settings' "Choose another edualcd" goes back to that list. Links open in Android's
-browser, notifications are Android's (it asks you once), and the composer's image button pastes
-the clipboard's image.
+too, and the window says its line isn't encrypted. The app opens the session it showed last
+there again, and the settings' "Choose another edualcd" goes back to the list. Its pairings are
+kept out of Android's backups. Links open in Android's browser, notifications are Android's (it
+asks you as the window first opens), and the composer's image button pastes the clipboard's
+image. Enter starts a new line on the screen's keyboard (the send button sends), and sends from
+a keyboard with keys.
 
 Settings live in `~/.config/edualc/settings.json` on edualcd's machine; to let the sandbox read
 or write more folders, add them in the settings, or to `sandbox_read` or `sandbox_write` there.
@@ -127,7 +130,9 @@ them anew (every window then pairs again).
   was typed while the line was down isn't sent.
 - Slint comes from a fork at an unreleased commit, until the features edualc needs are released.
 - The Android app keeps its line only while it is shown: Android stops an app in the background,
-  and the app reaches edualcd again as it comes back. Its name on the launcher is "Edualcd" (dx
+  and the app reaches edualcd again as it comes back; a session that waits for you meanwhile is
+  told only once the app runs again. Its images are drawn on the window's thread, which a
+  conversation of many large ones slows. Its name on the launcher is "Edualcd" (dx
   names it after the binary), and there is no release of it yet: build it as below.
 
 ## Building

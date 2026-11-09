@@ -43,10 +43,10 @@ pub fn App() -> Element {
     }
 }
 
-/// The window, in the page's look and text size, and what keeps it from working, if anything
-/// does.
+/// What everything the page shows is drawn in: the look and the text size chosen, the
+/// stylesheet and the fonts. The window draws in it, and the app's start screen.
 #[component]
-pub fn Shell() -> Element {
+pub fn Frame(children: Element) -> Element {
     let view = use_context::<View>();
     let page = view.page.read();
     let theme = match page.look {
@@ -56,10 +56,20 @@ pub fn Shell() -> Element {
     let style = format!("--base-size: {}px;", page.text_size);
     rsx! {
         document::Stylesheet { href: STYLE }
-        Stylesheets {}
         Fonts {}
         document::Title { "edualc" }
-        div { class: "window {theme}", style,
+        div { class: "window {theme}", style, {children} }
+    }
+}
+
+/// The window, and what keeps it from working, if anything does.
+#[component]
+pub fn Shell() -> Element {
+    let view = use_context::<View>();
+    let page = view.page.read();
+    rsx! {
+        Frame {
+            Stylesheets {}
             if let Some(lost) = &page.lost {
                 div { class: "lost", role: "alert", "{lost}" }
             } else if page.closed && cfg!(not(feature = "mobile")) {

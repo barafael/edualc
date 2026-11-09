@@ -5,7 +5,8 @@
 //! order, and hands what edualcd says to the app as events (`link::Inbox`).
 //!
 //! A line the network loses is reached again, at the addresses looked up before the window was
-//! confined, waiting longer each time it fails; the app is told it was lost
+//! confined (or looked up anew, for a window that isn't: see `Lookup`), waiting longer each
+//! time it fails; the app is told it was lost
 //! (`Event::DaemonLost`) and reached again (`Event::Reconnected`), and what it asked in between
 //! is dropped: it opens its session again as the line comes back.
 
@@ -25,6 +26,8 @@ use crate::link::{self, Greeting, Inbox, Link, QUEUE, Ungreeted};
 /// to edualcd's pings, is taken to be alive.
 const PING: Duration = Duration::from_secs(15);
 const SILENT: Duration = Duration::from_secs(45);
+/// How long edualcd may take to greet a window once its line is open.
+const GREETING: Duration = Duration::from_secs(10);
 /// How long the window waits before reaching edualcd again, first and at most.
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(30);
@@ -53,6 +56,17 @@ impl Error {
     }
 }
 
+/// Where the window reaches edualcd again, as its line is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lookup {
+    /// At the addresses looked up as it first connected: the Slint window, which is confined
+    /// after that and can't ask DNS.
+    Once,
+    /// At those its name has then, looked up again each time (the old ones if it isn't
+    /// found): the Android app, which isn't confined, on a phone that changes networks.
+    EachTime,
+}
+
 /// A line to edualcd, greeted, its thread not started yet.
 #[derive(Debug)]
 pub struct Connected {
@@ -63,6 +77,7 @@ pub struct Connected {
     /// Where edualcd was reached, looked up before the window was confined.
     pub addresses: Vec<SocketAddr>,
     server: Server,
+    lookup: Lookup,
     /// Which window this is, the same each time its line is reached again.
     key: WindowKey,
     /// What edualcd said while the window waited for an answer (`ask`), for the app, in order.
@@ -107,7 +122,7 @@ impl Connected {
 }
 
 /// Connects to `server`: before the window is confined, which then can't ask DNS.
-pub fn connect(server: &Server) -> Result<Connected, Error> {
+pub fn connect(server: &Server, lookup: Lookup) -> Result<Connected, Error> {
     let addresses = ws::resolve(server)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -121,33 +136,41 @@ pub fn connect(server: &Server) -> Result<Connected, Error> {
         greeting,
         addresses,
         server: server.clone(),
+        lookup,
         key,
         early: Vec::new(),
     })
 }
 
-/// The handshakes and hello, then the sessions edualcd runs, which come first.
+/// The handshakes and hello, then the sessions edualcd runs, which come first; each bounded
+/// in time, so that a line that opens and then says nothing (the network changing just then,
+/// say) is given up rather than waited on.
 async fn greet(
     server: &Server,
     addresses: &[SocketAddr],
     key: WindowKey,
 ) -> Result<(ws::Line, Greeting), Error> {
     let mut socket = ws::connect(server, addresses).await?;
-    let hello = ToDaemon::Hello {
-        protocol: PROTOCOL,
-        window: key,
+    let greeted = async {
+        let hello = ToDaemon::Hello {
+            protocol: PROTOCOL,
+            window: key,
+        };
+        ws::send(&mut socket, &hello).await?;
+        let hello = match ws::recv::<_, FromDaemon>(&mut socket).await {
+            Ok(hello) => hello,
+            // An edualcd of another version may speak otherwise, and hang up on ours.
+            Err(ipc::Error::Closed | ipc::Error::Unreadable(_) | ipc::Error::WebSocket(_)) => {
+                return Err(Ungreeted::Version.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let hosted = ws::recv::<_, FromDaemon>(&mut socket).await?;
+        Ok::<_, Error>(link::greeted(hello, hosted)?)
     };
-    ws::send(&mut socket, &hello).await?;
-    let hello = match ws::recv::<_, FromDaemon>(&mut socket).await {
-        Ok(hello) => hello,
-        // An edualcd of another version may speak otherwise, and hang up on ours.
-        Err(ipc::Error::Closed | ipc::Error::Unreadable(_) | ipc::Error::WebSocket(_)) => {
-            return Err(Ungreeted::Version.into());
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let hosted = ws::recv::<_, FromDaemon>(&mut socket).await?;
-    let greeting = link::greeted(hello, hosted)?;
+    let greeting = tokio::time::timeout(GREETING, greeted)
+        .await
+        .map_err(|_late| ipc::Error::Slow(server.authority()))??;
     Ok((socket, greeting))
 }
 
@@ -157,8 +180,9 @@ pub fn run(connected: Connected, events: Sender<Event>) -> (Link, Greeting) {
         runtime,
         socket,
         greeting,
-        addresses,
+        mut addresses,
         server,
+        lookup,
         key,
         early,
     } = connected;
@@ -175,7 +199,7 @@ pub fn run(connected: Connected, events: Sender<Event>) -> (Link, Greeting) {
                     return;
                 }
                 let Some((again, greeting)) =
-                    reach_again(&server, &addresses, key, &queue, &events).await
+                    reach_again(&server, &mut addresses, lookup, key, &queue, &events).await
                 else {
                     return;
                 };
@@ -199,7 +223,8 @@ pub fn run(connected: Connected, events: Sender<Event>) -> (Link, Greeting) {
 /// why).
 async fn reach_again(
     server: &Server,
-    addresses: &[SocketAddr],
+    addresses: &mut Vec<SocketAddr>,
+    lookup: Lookup,
     key: WindowKey,
     queue: &Receiver<ToDaemon>,
     events: &Sender<Event>,
@@ -215,6 +240,15 @@ async fn reach_again(
                     // The window closed.
                     return None;
                 },
+            }
+        }
+        if lookup == Lookup::EachTime {
+            // On this thread, which has nothing else to do meanwhile: what the window asks
+            // waits in its queue a moment, to be dropped as before.
+            match ws::resolve(server) {
+                Ok(found) if !found.is_empty() => *addresses = found,
+                Ok(_) => {}
+                Err(error) => tracing::info!(%error, "edualcd's name wasn't found again"),
             }
         }
         match greet(server, addresses, key).await {

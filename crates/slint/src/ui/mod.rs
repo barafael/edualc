@@ -327,6 +327,8 @@ impl Frontend for SlintFrontend {
                     tracing::warn!(%error, "the window didn't close");
                 }
             }
+            // The window's session is its command line's to name again (`--resume`).
+            Command::SessionShown(_) => {}
         }
     }
 

@@ -35,6 +35,16 @@ pub fn Header(sidebar_shown: bool, ontoggle: EventHandler<()>) -> Element {
             if !session.worktree_name.is_empty() {
                 Worktree {}
             }
+            // A demo's line is plain: what is typed crosses the network as it is.
+            if view.page.read().unencrypted {
+                span {
+                    class: "header-unencrypted",
+                    role: "status",
+                    title: "A demo's line isn't encrypted: whoever is on the network between can read and change what goes over it",
+                    Icon { icon: Lucide::ShieldAlert, class: "small" }
+                    "Unencrypted"
+                }
+            }
             // In the sidebar's foot while that shows; here while it is hidden.
             if !sidebar_shown {
                 super::sidebar::SandboxChip {}

@@ -38,6 +38,10 @@ pub struct Page {
     pub text_size: f32,
     /// Device pixels to a CSS pixel, as the app reads it (a browser's page asks the browser).
     pub pixel_ratio: f64,
+    /// The session shown, which the app opens again as Android starts it anew.
+    pub session: Option<edualc_core::external::wire::SessionId>,
+    /// The line is a demo's, unencrypted: the window says so for as long as it shows.
+    pub unencrypted: bool,
     pub look: Look,
     /// The window closed (the app quit): the page says so.
     pub closed: bool,
@@ -227,6 +231,7 @@ impl Frontend for PageFrontend {
             Command::TextSize(pixels) => page.write().text_size = pixels,
             Command::Look(look) => page.write().look = look,
             Command::Quit => page.write().closed = true,
+            Command::SessionShown(session) => page.write().session = session,
         }
     }
 
@@ -308,14 +313,7 @@ fn open_tab(url: &str) {
 /// Android's, asked for alike.
 fn notify(summary: &str, body: &str) {
     #[cfg(feature = "mobile")]
-    {
-        let (summary, body) = (summary.to_owned(), body.to_owned());
-        std::thread::spawn(move || {
-            if let Err(error) = crate::android::java::notify(summary, body) {
-                tracing::warn!(%error, "Android showed no notification");
-            }
-        });
-    }
+    crate::android::java::notify(summary.to_owned(), body.to_owned());
     #[cfg(feature = "web")]
     {
         use web_sys::{Notification, NotificationOptions, NotificationPermission};
@@ -348,8 +346,9 @@ fn paste_image(view: View) {
         let Some(events) = view.events.peek().clone() else {
             return;
         };
-        std::thread::spawn(move || {
-            let pasted = match crate::android::java::clipboard_image(decode::MAX_INPUT_BYTES) {
+        // Read and decoded beside the window, not on its thread.
+        crate::android::java::clipboard_image(decode::MAX_INPUT_BYTES, move |read| {
+            let pasted = match read {
                 Ok(Some(bytes)) => decode::to_send(&bytes).map_err(PasteFailure::Refused),
                 Ok(None) => Err(PasteFailure::NoImage),
                 Err(error) => Err(PasteFailure::Clipboard(error.to_string())),
@@ -366,14 +365,7 @@ fn paste_image(view: View) {
 /// Puts `text` on the browser's clipboard; in the app, on Android's.
 pub fn copy(text: &str) {
     #[cfg(feature = "mobile")]
-    {
-        let copied = text.to_owned();
-        std::thread::spawn(move || {
-            if let Err(error) = crate::android::java::copy(copied) {
-                tracing::warn!(%error, "the clipboard refused the text");
-            }
-        });
-    }
+    crate::android::java::copy(text.to_owned());
     // Only a secure context (https, or the loopback) has a clipboard: elsewhere
     // `navigator.clipboard` is undefined, and calling it would throw through the page's code.
     #[cfg(feature = "web")]

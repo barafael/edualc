@@ -39,3 +39,9 @@
 .start-label { margin-top: var(--space-s); color: var(--text-secondary); font-size: var(--small); }
 .start-address { font-family: var(--mono); font-size: var(--code-size); resize: vertical; overflow-wrap: anywhere; }
 .start-actions { display: flex; justify-content: flex-end; margin-top: var(--space-s); }
+.start-forgetting {
+    padding: var(--space-s) var(--space-m); border: 1px solid var(--danger); border-radius: var(--radius-m);
+    background: var(--danger-fill); flex-wrap: wrap;
+}
+.start-forgetting .start-server-texts { flex: 1 1 12em; }
+.start-reaching .button { margin-top: var(--space-m); }

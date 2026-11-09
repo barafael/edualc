@@ -2769,6 +2769,7 @@ dependencies = [
  "rustix 1.1.6",
  "rustls",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

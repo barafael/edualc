@@ -62,6 +62,11 @@
 /* Dragged, the box takes that height; a double click fits it to its text again. */
 .composer-grip { position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 3; cursor: ns-resize; touch-action: none; }
 .composer-drag { position: fixed; inset: 0; z-index: 100; cursor: ns-resize; touch-action: none; }
+/* A finger needs more than a pointer's few pixels to take the edge: on a touch screen it reaches
+   over the edge either way. */
+@media (pointer: coarse) {
+    .composer-grip { top: -14px; height: 28px; }
+}
 
 .composer-body {
     display: flex; flex-direction: column; gap: var(--space-s);

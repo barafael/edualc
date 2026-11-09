@@ -70,15 +70,25 @@ impl Servers {
         self.default = Some(name);
     }
 
-    /// The name to pair `server` as when none is given: its host's, unless an edualcd elsewhere
-    /// (another port there, say: a demo beside the real one) is paired by that name already,
-    /// which `host:port` then tells apart. Pairing again with the same address takes its name.
+    /// The name to pair `server` as when none is given: its host's, unless another is paired
+    /// by that name already (another port there, or a demo where an edualcd listened), which
+    /// `host:port` then tells apart, and `host:port demo` a demo from an edualcd there. Pairing
+    /// again with what is reached the same way takes its name: a token made anew replaces the
+    /// old, and a demo never replaces an edualcd's token.
     pub fn name_for(&self, server: &Server) -> String {
-        let host = server.host();
-        match self.servers.get(host) {
-            Some(paired) if paired.authority() != server.authority() => server.authority(),
-            Some(_) | None => host.to_owned(),
-        }
+        let authority = server.authority();
+        let names = [
+            server.host().to_owned(),
+            authority.clone(),
+            format!("{authority} demo"),
+            format!("{authority} paired"),
+        ];
+        let free = names.iter().find(|name| {
+            self.servers
+                .get(name.as_str())
+                .is_none_or(|paired| paired.same_place(server))
+        });
+        free.cloned().unwrap_or(authority)
     }
 
     /// Forgets the edualcd paired as `name`; the default, if it was, becomes another.
@@ -205,6 +215,17 @@ mod tests {
         servers.pair(servers.name_for(&demo), demo.clone());
         assert_eq!(servers.name_for(&pairing("box")), "box:7878");
         assert_eq!(servers.name_for(&demo), "box");
+        // A demo where an edualcd was paired doesn't take its name, nor its token's place.
+        let mut servers = Servers::default();
+        servers.pair("box".to_owned(), pairing("box"));
+        let there = Server::Demo(Demo {
+            host: "box".to_owned(),
+            port: 7878,
+        });
+        assert_eq!(servers.name_for(&there), "box:7878");
+        servers.pair(servers.name_for(&there), there.clone());
+        assert_eq!(servers.name_for(&pairing("box")), "box");
+        assert_eq!(servers.name_for(&there), "box:7878");
     }
 
     /// Forgetting the default makes another the default; forgetting the last leaves none.

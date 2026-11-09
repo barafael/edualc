@@ -172,7 +172,7 @@ fn pair(address: &str, name: Option<String>) -> std::process::ExitCode {
         }
     };
     // Reached once, so that a wrong address or token is said now rather than as a window opens.
-    if let Err(error) = line::connect(&pairing) {
+    if let Err(error) = line::connect(&pairing, line::Lookup::Once) {
         eprintln!("edualc: {error}");
         return std::process::ExitCode::FAILURE;
     }
@@ -244,7 +244,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     };
     // In this order: edualcd is reached and the desktop asked while the window is free; then it
     // is confined, and all it makes after keeps that.
-    let mut connected = match line::connect(&pairing) {
+    let mut connected = match line::connect(&pairing, line::Lookup::Once) {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("edualc: {name}: {error}");

@@ -85,13 +85,22 @@ fn go_to(view: View, area: Area) {
 
 /// Tells whether the window is narrow (a phone's), as it starts and as that changes; the
 /// stylesheet's own breakpoint (`edualc.css`).
-const NARROW: &str = r#"const query = matchMedia("(max-width: 640px)");
+/// A window made again (the app reaching an edualcd again) takes the place of the last one's
+/// listener.
+const NARROW: &str = r#"window.edualcNarrow?.abort();
+const listening = new AbortController();
+window.edualcNarrow = listening;
+const query = matchMedia("(max-width: 640px)");
 dioxus.send(query.matches);
-query.addEventListener("change", (event) => dioxus.send(event.matches));
+query.addEventListener("change", (event) => dioxus.send(event.matches), { signal: listening.signal });
 await new Promise(() => {});"#;
 
-/// Listens for the shortcuts on the whole page, and tells each.
-const SHORTCUTS: &str = r#"document.addEventListener("keydown", (event) => {
+/// Listens for the shortcuts on the whole page, and tells each; in place of the last window's
+/// listener, if one was made before (the app reaching an edualcd again).
+const SHORTCUTS: &str = r#"window.edualcShortcuts?.abort();
+const listening = new AbortController();
+window.edualcShortcuts = listening;
+document.addEventListener("keydown", (event) => {
     if (event.altKey || event.metaKey || event.isComposing) {
         return;
     }
@@ -117,7 +126,7 @@ const SHORTCUTS: &str = r#"document.addEventListener("keydown", (event) => {
     } else if (!event.ctrlKey && !event.shiftKey && event.key === "Escape" && !event.defaultPrevented) {
         dioxus.send("Stop");
     }
-});
+}, { signal: listening.signal });
 await new Promise(() => {});"#;
 
 /// Esc stops the turn while Claude works, asks nothing and nothing is written (with a draft,

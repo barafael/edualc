@@ -874,6 +874,8 @@ pub struct App<F: Frontend> {
     session_filter: String,
     /// How the own session was last listed in the sidebar; none while no process runs it here.
     own_listed: Option<OwnMark>,
+    /// The session the frontend was last told it shows (`Command::SessionShown`).
+    told_shown: Option<SessionId>,
     /// The runs of tool calls opened, by their first call; the others are folded.
     open_runs: HashSet<usize>,
     usage: UsagePanel,
@@ -973,6 +975,7 @@ impl<F: Frontend> App<F> {
             desktop_text_size,
             session_filter: String::new(),
             own_listed: None,
+            told_shown: None,
             open_runs: HashSet::new(),
             usage: UsagePanel::default(),
             trust_gate: TrustGate::Open,
@@ -1305,6 +1308,12 @@ impl<F: Frontend> App<F> {
 
     fn render(&mut self) {
         let redraw = std::mem::take(&mut self.redraw);
+        if self.status.session_id != self.told_shown {
+            self.told_shown.clone_from(&self.status.session_id);
+            self.view.command(crate::present::Command::SessionShown(
+                self.told_shown.clone(),
+            ));
+        }
         let changes = self.chat.take_changes();
         if changes.contains(&Change::Reset) {
             let shown = self.chat.image_keys();

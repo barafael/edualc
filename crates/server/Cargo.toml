@@ -49,6 +49,8 @@ gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 # Dioxus's WebView there (wry, dioxus-desktop).
 jni = { version = "0.21", optional = true }
 ndk-context = { version = "0.1", optional = true }
+# The app's own files: the session shown last.
+serde_json = { workspace = true, optional = true }
 webbrowser = { version = "1.2", optional = true }
 
 [build-dependencies]
@@ -62,6 +64,7 @@ mobile = [
     "dep:thiserror",
     "dep:jni",
     "dep:ndk-context",
+    "dep:serde_json",
     "dep:webbrowser",
 ]
 web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net", "dep:js-sys"]

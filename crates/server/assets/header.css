@@ -58,3 +58,7 @@
 
 /* Where the sidebar's chips go while it is hidden. */
 .header .chip-slot { display: inline-flex; flex: none; }
+.header-unencrypted {
+    display: inline-flex; align-items: center; gap: var(--space-xs); flex: none;
+    color: var(--warning-text); font-size: var(--small); white-space: nowrap;
+}

@@ -47,11 +47,16 @@ fn use_command_index() -> Signal<usize> {
     })
 }
 
-/// A drag of the top edge under way: where the pointer and the text box started, and the most
-/// it may grow to.
+/// A drag of the top edge under way: where the pointer started, and, once measured, where the
+/// text box started and the most it may grow to.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Drag {
     from_y: f64,
+    measured: Option<Measured>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Measured {
     from_height: f64,
     tallest: f64,
 }
@@ -353,32 +358,56 @@ pub fn Composer() -> Element {
             hint_dismissed.set(true);
             return;
         }
-        if key == Key::Enter && !modifiers.shift() && send_key == SendKey::Enter {
+        // A phone's own keyboard has no Shift+Enter: there Enter starts a new line, and the
+        // send button sends.
+        if key == Key::Enter
+            && !modifiers.shift()
+            && send_key == SendKey::Enter
+            && dom::enter_sends()
+        {
             event.prevent_default();
             send_draft();
         }
     };
 
-    // The top edge: dragged, the box takes that height and keeps it.
+    // The top edge: dragged, the box takes that height and keeps it. The drag begins at once,
+    // so that a release is never missed; it moves the box once the heights are measured (in
+    // the app, the WebView answers a moment later).
     let onpointerdown = move |event: PointerEvent| {
         event.prevent_default();
         let from_y = event.client_coordinates().y;
+        drag.set(Some(Drag {
+            from_y,
+            measured: None,
+        }));
         spawn(async move {
             let (scroll, column) = dom::heights().await;
-            let from_height = scroll.unwrap_or_else(|| (*chosen.peek()).max(2.0 * line));
-            let tallest = column.map_or(TALLEST_DRAGGED, |height| height * 0.8);
-            drag.set(Some(Drag {
-                from_y,
-                from_height,
-                tallest,
-            }));
+            let measured = Measured {
+                from_height: scroll.unwrap_or_else(|| (*chosen.peek()).max(2.0 * line)),
+                tallest: column.map_or(TALLEST_DRAGGED, |height| height * 0.8),
+            };
+            // Released meanwhile, or another drag begun: this one is over.
+            if *drag.peek()
+                == Some(Drag {
+                    from_y,
+                    measured: None,
+                })
+            {
+                drag.set(Some(Drag {
+                    from_y,
+                    measured: Some(measured),
+                }));
+            }
         });
     };
     let onpointermove = move |event: PointerEvent| {
         if let Some(Drag {
             from_y,
-            from_height,
-            tallest,
+            measured:
+                Some(Measured {
+                    from_height,
+                    tallest,
+                }),
         }) = *drag.peek()
         {
             let height = (from_height + from_y - event.client_coordinates().y)
@@ -443,6 +472,11 @@ pub fn Composer() -> Element {
                     class: "composer-grip",
                     "aria-hidden": "true",
                     onpointerdown,
+                    // A touch keeps to where it began (the pointer's implicit capture): its
+                    // moves and its end come here, not to the cover over the page.
+                    onpointermove,
+                    onpointerup: move |_| end_drag(),
+                    onpointercancel: move |_| end_drag(),
                     ondoubleclick: move |_| {
                         chosen.set(0.0);
                         size.set(ComposerSize::Fit);
@@ -893,6 +927,11 @@ mod dom {
         focus_end(text);
     }
 
+    /// Enter sends (as the settings say): a browser's page is typed into with keys.
+    pub fn enter_sends() -> bool {
+        true
+    }
+
     /// The caret is at the end of the draft, nothing selected.
     pub fn caret_at_end() -> bool {
         text_box().is_some_and(|input| {
@@ -1054,6 +1093,15 @@ mod dom {
         false
     }
 
+    /// Enter sends (as the settings say) from a keyboard with keys; from the screen's keyboard
+    /// alone, which has no Shift+Enter, it starts a new line.
+    pub fn enter_sends() -> bool {
+        crate::android::java::has_keyboard().unwrap_or_else(|error| {
+            tracing::debug!(%error, "no keyboard known of");
+            false
+        })
+    }
+
     /// Ctrl+Enter: a line break in place of the selection, as typed.
     pub fn break_line() {
         document::eval("document.execCommand('insertText', false, '\\n');");
@@ -1125,6 +1173,10 @@ mod dom {
     pub fn focus_end(_text: &str) {}
 
     pub fn focus_asked(_text: &str) {}
+
+    pub fn enter_sends() -> bool {
+        true
+    }
 
     pub fn caret_at_end() -> bool {
         false

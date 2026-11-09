@@ -11,4 +11,4 @@ identifier = "io.github.felintusun.edualc"
 publisher = "edualc"
 
 [permissions]
-notifications = { description = "Tells when Claude Code is done, or waits for you, while the app is away." }
+notifications = { description = "Tells when another Claude Code session waits for you." }

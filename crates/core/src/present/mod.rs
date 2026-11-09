@@ -109,6 +109,10 @@ pub enum Command {
     Look(Look),
     /// The window closes.
     Quit,
+    /// The session the window shows now, by its id; none for a new one not started yet. A
+    /// frontend that is ended and started again by its system (the Android app) opens it
+    /// again.
+    SessionShown(Option<crate::external::wire::SessionId>),
 }
 
 /// What draws the window: told the state of each of its parts as it changes (with what it was

@@ -273,6 +273,12 @@ impl Server {
     pub fn is_demo(&self) -> bool {
         matches!(self, Self::Demo(_))
     }
+
+    /// Whether `other` is reached the same way: at the same address, both a demo or both
+    /// paired (a demo can listen where an edualcd did, and must not take its place).
+    pub fn same_place(&self, other: &Self) -> bool {
+        self.authority() == other.authority() && self.is_demo() == other.is_demo()
+    }
 }
 
 /// `text` as a URL's query or fragment may hold it: all but letters, digits and `-._~`
