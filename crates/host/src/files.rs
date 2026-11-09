@@ -3,9 +3,11 @@
 //! window, confined, needn't: it asks (`ipc::Read`), and is told when what it watches changes
 //! (`ipc::Target`), noticed by inotify, never by looking every few seconds.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
@@ -147,14 +149,44 @@ pub enum Order {
     Unwatch(Watched),
 }
 
-/// A window's watch: the file or folder watched for it now.
+/// A window's watch: the folder watched for it now. A transcript is watched by its folder, not
+/// itself: a file watched follows the file, and the transcript is written anew by a rename over
+/// it (`home::copy_back_transcript`), which its folder sees. Before the folder is there, the
+/// nearest one above it is watched, until the next one down comes.
 #[derive(Debug)]
 struct Watch {
-    /// The file it names, if it names one.
+    /// The transcript it is for; none for the records' folder, any change in which is told.
     file: Option<PathBuf>,
+    folder: PathBuf,
     descriptor: i32,
-    /// Its file is watched, not a folder it will be in.
-    on_file: bool,
+}
+
+impl Watch {
+    /// Whether what inotify noticed in the watch's folder (in `name` there, or in the folder
+    /// itself) is about its file, or a folder on the way to it.
+    fn concerns(&self, name: Option<&OsStr>) -> bool {
+        match (&self.file, name) {
+            (None, _) | (_, None) => true,
+            (Some(file), Some(name)) => file.starts_with(self.folder.join(name)),
+        }
+    }
+
+    /// Whether a folder nearer its file than the one watched may have come.
+    fn above_its_folder(&self) -> bool {
+        self.file
+            .as_ref()
+            .is_some_and(|file| file.parent() != Some(self.folder.as_path()))
+    }
+}
+
+/// What inotify noticed, once read off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Noticed {
+    descriptor: i32,
+    /// In the folder watched; none for the folder itself.
+    name: Option<OsString>,
+    /// The watch is gone: its folder was removed, or moved off its file system.
+    gone: bool,
 }
 
 /// A window's watches (an actor): one inotify instance, its watches named as the window named
@@ -183,9 +215,12 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: Outbox) {
         tokio::select! {
             order = orders.recv() => match order {
                 Some(Order::Watch(watched, target)) => {
-                    if let Some(watch) = start(&inotify, &target)
-                        && let Some(old) = watches.insert(watched, watch)
-                    {
+                    let watch = start(&inotify, &target);
+                    let old = match watch {
+                        Some(watch) => watches.insert(watched, watch),
+                        None => watches.remove(&watched),
+                    };
+                    if let Some(old) = old {
                         forget_unused(&inotify, &watches, old.descriptor);
                     }
                 }
@@ -196,21 +231,22 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: Outbox) {
                 }
                 None => return,
             },
-            descriptors = noticed.recv() => {
-                let Some(descriptors) = descriptors else {
+            batch = noticed.recv() => {
+                let Some(batch) = batch else {
                     tracing::warn!("stopped noticing changes for a window");
                     return;
                 };
                 // A burst of writes tells each watch once. Events lost to a full queue (told as
                 // its overflow, on no watch) may have been any watch's: each is told.
-                let changed: HashSet<Watched> = if descriptors.contains(&OVERFLOW) {
-                    watches.keys().copied().collect()
-                } else {
-                    descriptors
-                        .into_iter()
-                        .flat_map(|descriptor| touched(&inotify, &mut watches, descriptor))
-                        .collect()
-                };
+                let changed: HashSet<Watched> =
+                    if batch.iter().any(|noticed| noticed.descriptor == OVERFLOW) {
+                        watches.keys().copied().collect()
+                    } else {
+                        batch
+                            .iter()
+                            .flat_map(|noticed| touched(&inotify, &mut watches, noticed))
+                            .collect()
+                    };
                 for watched in changed {
                     if outbox.send(FromDaemon::Changed(watched)).is_err() {
                         return;
@@ -226,9 +262,9 @@ const QUEUE: usize = 64;
 /// The watch descriptor inotify tells its queue's overflow on (`IN_Q_OVERFLOW`).
 const OVERFLOW: i32 = -1;
 
-/// Sends on the watches inotify names, each once for all it has to tell at a time, until the
-/// actor ends: its end of `ending` closes.
-fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<BTreeSet<i32>>) {
+/// Sends on what inotify notices, all it has to tell at a time, until the actor ends: its end
+/// of `ending` closes.
+fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<Vec<Noticed>>) {
     use rustix::event::{PollFd, PollFlags, poll};
     let mut buffer = [MaybeUninit::<u8>::uninit(); 4096];
     loop {
@@ -251,16 +287,25 @@ fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<BTreeSet<i3
             continue;
         }
         let mut reader = inotify::Reader::new(inotify, &mut buffer);
-        let mut descriptors = BTreeSet::new();
+        let mut batch = Vec::new();
         loop {
             match reader.next() {
                 Ok(event) => {
-                    descriptors.insert(event.wd());
+                    let noticed = Noticed {
+                        descriptor: event.wd(),
+                        name: event
+                            .file_name()
+                            .map(|name| OsStr::from_bytes(name.to_bytes()).to_owned()),
+                        gone: event.events().contains(inotify::ReadFlags::IGNORED),
+                    };
+                    if !batch.contains(&noticed) {
+                        batch.push(noticed);
+                    }
                 }
                 Err(Errno::INTR) => {}
                 // All read, for now.
                 Err(Errno::WOULDBLOCK) => {
-                    if !descriptors.is_empty() && noticing.blocking_send(descriptors).is_err() {
+                    if !batch.is_empty() && noticing.blocking_send(batch).is_err() {
                         return;
                     }
                     break;
@@ -274,73 +319,90 @@ fn read(inotify: &OwnedFd, ending: &OwnedFd, noticing: &mpsc::Sender<BTreeSet<i3
     }
 }
 
-/// The window's watches on `descriptor`; one on a folder its file has come to is moved to the
-/// file.
+/// The window's watches `noticed` is about. One whose folder went is watched again from the
+/// nearest one there; one above its file's folder moves down as folders on the way come.
 fn touched(
     inotify: &OwnedFd,
     watches: &mut HashMap<Watched, Watch>,
-    descriptor: i32,
+    noticed: &Noticed,
 ) -> Vec<Watched> {
-    let mut moved = Vec::new();
     let named: Vec<Watched> = watches
         .iter()
-        .filter(|(_, watch)| watch.descriptor == descriptor)
+        .filter(|(_, watch)| {
+            watch.descriptor == noticed.descriptor
+                && (noticed.gone || watch.concerns(noticed.name.as_deref()))
+        })
         .map(|(watched, _)| *watched)
         .collect();
+    let mut left = Vec::new();
     for watched in &named {
         let Some(watch) = watches.get_mut(watched) else {
             continue;
         };
-        if !watch.on_file
-            && let Some(file) = watch.file.as_ref().filter(|file| file.is_file())
-        {
-            match add(inotify, file, WatchFlags::MODIFY) {
-                Ok(on_file) => {
-                    moved.push(watch.descriptor);
-                    watch.descriptor = on_file;
-                    watch.on_file = true;
+        if !noticed.gone && !watch.above_its_folder() {
+            continue;
+        }
+        let Some(file) = watch.file.as_ref() else {
+            // The records' folder went: there is no other to watch for it.
+            continue;
+        };
+        match nearest_folder(file) {
+            Some(folder) if noticed.gone || folder != watch.folder => {
+                match add(inotify, &folder, FOLDER_FLAGS) {
+                    Ok(descriptor) => {
+                        if !noticed.gone {
+                            left.push(watch.descriptor);
+                        }
+                        watch.descriptor = descriptor;
+                        watch.folder = folder;
+                    }
+                    Err(error) => tracing::debug!(%error, ?folder, "a watch stays where it was"),
                 }
-                Err(error) => tracing::debug!(%error, "a transcript stays watched by its folder"),
             }
+            Some(_) => {}
+            None => tracing::debug!(?file, "nowhere left to watch a transcript from"),
         }
     }
-    for descriptor in moved {
+    for descriptor in left {
         forget_unused(inotify, watches, descriptor);
     }
     named
 }
 
+/// What a folder watched is watched for: anything written, made, removed or moved in it.
+const FOLDER_FLAGS: WatchFlags = WatchFlags::CREATE
+    .union(WatchFlags::MODIFY)
+    .union(WatchFlags::DELETE)
+    .union(WatchFlags::CLOSE_WRITE)
+    .union(WatchFlags::MOVED_TO)
+    .union(WatchFlags::MOVED_FROM);
+
+/// The nearest folder above `file` that is there.
+fn nearest_folder(file: &Path) -> Option<PathBuf> {
+    file.ancestors()
+        .skip(1)
+        .find(|folder| folder.is_dir())
+        .map(Path::to_path_buf)
+}
+
 /// Starts watching what `target` names.
 fn start(inotify: &OwnedFd, target: &Target) -> Option<Watch> {
-    let folder_flags = WatchFlags::CREATE
-        | WatchFlags::MODIFY
-        | WatchFlags::DELETE
-        | WatchFlags::CLOSE_WRITE
-        | WatchFlags::MOVED_TO
-        | WatchFlags::MOVED_FROM;
-    let started = match target {
-        Target::Records => add(inotify, &sessions::records_dir(), folder_flags)
-            .map(|descriptor| (None, descriptor, false)),
+    let (file, folder) = match target {
+        Target::Records => (None, sessions::records_dir()),
         Target::Transcript(place) => {
             let file = resolve(place);
-            if file.is_file() {
-                add(inotify, &file, WatchFlags::MODIFY)
-                    .map(|descriptor| (Some(file), descriptor, true))
-            } else {
-                // The nearest folder that will hold it.
-                match file.ancestors().skip(1).take(2).find(|dir| dir.is_dir()) {
-                    Some(folder) => add(inotify, folder, folder_flags),
-                    None => Err(Errno::NOENT),
-                }
-                .map(|descriptor| (Some(file), descriptor, false))
-            }
+            let Some(folder) = nearest_folder(&file) else {
+                tracing::debug!(?target, "nowhere to watch from");
+                return None;
+            };
+            (Some(file), folder)
         }
     };
-    match started {
-        Ok((file, descriptor, on_file)) => Some(Watch {
+    match add(inotify, &folder, FOLDER_FLAGS) {
+        Ok(descriptor) => Some(Watch {
             file,
+            folder,
             descriptor,
-            on_file,
         }),
         Err(error) => {
             tracing::debug!(%error, ?target, "couldn't watch");
@@ -411,5 +473,83 @@ mod tests {
         drop(orders);
         actor.await.expect("the actor ended");
         std::fs::remove_dir_all(&dir).expect("the scratch folder goes");
+    }
+
+    /// Nothing more told within a while.
+    async fn quiet(outbox: &mut mpsc::UnboundedReceiver<FromDaemon>) -> bool {
+        while let Ok(told) = tokio::time::timeout(Duration::from_millis(200), outbox.recv()).await {
+            if told.is_none() {
+                break;
+            }
+        }
+        tokio::time::timeout(Duration::from_millis(200), outbox.recv())
+            .await
+            .is_err()
+    }
+
+    /// A transcript whose folder isn't there yet is watched from above it, and moves down as the
+    /// folder comes; written anew by a rename over it, it is told; another file in its folder
+    /// isn't.
+    #[tokio::test]
+    async fn a_transcript_is_followed_through_its_folder() {
+        let dir = std::env::temp_dir().join(format!("edualc-follow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let project = dir.join("project");
+        let path = project.join("session.jsonl");
+        let (orders, received) = mpsc::channel(8);
+        let (outbox, mut told) = mpsc::unbounded_channel();
+        let actor = tokio::spawn(watch(received, outbox));
+        let watched = Watched::new();
+        let target = Target::Transcript(Place::Path(path.clone()));
+        orders
+            .send(Order::Watch(watched, target))
+            .await
+            .expect("ordered");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::create_dir(&project).expect("its folder made");
+        assert_eq!(changed(&mut told).await, Some(watched), "its folder came");
+        assert!(quiet(&mut told).await);
+        std::fs::write(&path, "{}\n").expect("written");
+        assert_eq!(
+            changed(&mut told).await,
+            Some(watched),
+            "made in its folder"
+        );
+        assert!(quiet(&mut told).await);
+        std::fs::write(project.join("another.jsonl"), "{}\n").expect("another written");
+        assert!(quiet(&mut told).await, "another file isn't it");
+        let staged = dir.join("staged.jsonl");
+        std::fs::write(&staged, "{}\n{}\n").expect("staged");
+        std::fs::rename(&staged, &path).expect("renamed over it");
+        assert_eq!(changed(&mut told).await, Some(watched), "renamed over");
+        assert!(quiet(&mut told).await);
+        std::fs::write(&path, "{}\n{}\n{}\n").expect("written to after");
+        assert_eq!(changed(&mut told).await, Some(watched), "written to after");
+        drop(orders);
+        actor.await.expect("the actor ended");
+        std::fs::remove_dir_all(&dir).expect("the scratch folder goes");
+    }
+
+    /// What is noticed in a folder is about a transcript if it names the transcript, or a folder
+    /// on the way to it.
+    #[test]
+    fn what_is_noticed_concerns_a_transcript_on_its_way() {
+        let watch = Watch {
+            file: Some(PathBuf::from("/h/projects/p/s.jsonl")),
+            folder: PathBuf::from("/h/projects"),
+            descriptor: 1,
+        };
+        assert!(watch.concerns(Some(OsStr::new("p"))));
+        assert!(!watch.concerns(Some(OsStr::new("q"))));
+        assert!(!watch.concerns(Some(OsStr::new("p2"))));
+        assert!(watch.concerns(None));
+        assert!(watch.above_its_folder());
+        let records = Watch {
+            file: None,
+            folder: PathBuf::from("/h/sessions"),
+            descriptor: 2,
+        };
+        assert!(records.concerns(Some(OsStr::new("anything"))));
+        assert!(!records.above_its_folder());
     }
 }
