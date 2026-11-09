@@ -15,16 +15,12 @@ use crate::web::text::Block;
 use crate::web::widgets::{Button, Icon, IconButton, Lucide};
 
 /// How long a request shows before its buttons take clicks, in milliseconds.
-#[cfg(any(feature = "web", feature = "mobile"))]
 const ARM_DELAY_MS: u32 = 700;
 
 /// Waits the moment before a request's buttons arm. Only the page and the app wait: the server
 /// draws the page as it is before anything is asked.
 async fn arm_delay() {
-    #[cfg(feature = "web")]
-    gloo_timers::future::TimeoutFuture::new(ARM_DELAY_MS).await;
-    #[cfg(feature = "mobile")]
-    tokio::time::sleep(std::time::Duration::from_millis(u64::from(ARM_DELAY_MS))).await;
+    crate::web::dom::sleep(ARM_DELAY_MS).await;
 }
 
 /// The focus coming into the prompt: as it opens (unless a draft is being written, where the
@@ -116,7 +112,6 @@ pub fn PromptBar() -> Element {
         PromptKind::Tool | PromptKind::None => Lucide::ShieldQuestionMark,
     };
     rsx! {
-        document::Stylesheet { href: asset!("/assets/prompt.css") }
         if prompt.kind == PromptKind::Plan && reviewing() {
             PlanReview {}
         }

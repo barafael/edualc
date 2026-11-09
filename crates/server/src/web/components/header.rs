@@ -21,7 +21,6 @@ pub fn Header(sidebar_shown: bool, ontoggle: EventHandler<()>) -> Element {
     let side_shown = side.view == SideView::Shown;
     let side_lit = side.view != SideView::Hidden;
     rsx! {
-        document::Stylesheet { href: asset!("/assets/header.css") }
         header { class: if sidebar_shown { "header" } else { "header sidebar-hidden" },
             // Hidden, the sidebar is brought back from here; shown, it has its own button.
             if !sidebar_shown {
@@ -111,7 +110,7 @@ fn Worktree() -> Element {
                         let key = event.key();
                         if key == Key::ArrowDown || key == Key::ArrowUp {
                             event.prevent_default();
-                            dom::focus_next(key == Key::ArrowDown);
+                            crate::web::dom::focus_next(key == Key::ArrowDown);
                         } else if key == Key::Escape {
                             event.prevent_default();
                             event.stop_propagation();
@@ -145,62 +144,4 @@ fn Worktree() -> Element {
             }
         }
     }
-}
-
-/// The page's own parts the header reaches: the focus, in its menu.
-#[cfg(feature = "web")]
-mod dom {
-    use web_sys::HtmlElement;
-    use web_sys::wasm_bindgen::JsCast as _;
-
-    fn document() -> Option<web_sys::Document> {
-        web_sys::window()?.document()
-    }
-
-    fn take_focus(element: &HtmlElement) {
-        if element.focus().is_err() {
-            tracing::debug!("the header's control took no focus");
-        }
-    }
-
-    /// Moves the focus to the next of the menu's items (`forward`) or the one before, staying
-    /// at the ends.
-    pub fn focus_next(forward: bool) {
-        let Some(at) = document().and_then(|document| document.active_element()) else {
-            return;
-        };
-        let next = if forward {
-            at.next_element_sibling()
-        } else {
-            at.previous_element_sibling()
-        };
-        if let Some(element) = next
-            .filter(|element| element.get_attribute("role").as_deref() == Some("menuitem"))
-            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
-        {
-            take_focus(&element);
-        }
-    }
-}
-
-/// The Android app's WebView, reached by its script.
-#[cfg(feature = "mobile")]
-mod dom {
-    pub fn focus_next(forward: bool) {
-        let step = if forward {
-            "nextElementSibling"
-        } else {
-            "previousElementSibling"
-        };
-        dioxus::prelude::document::eval(&format!(
-            "const next = document.activeElement?.{step};
-            if (next && next.getAttribute('role') === 'menuitem') {{ next.focus(); }}"
-        ));
-    }
-}
-
-/// Rendered on the server, the page has no focus to move yet.
-#[cfg(not(any(feature = "web", feature = "mobile")))]
-mod dom {
-    pub fn focus_next(_forward: bool) {}
 }

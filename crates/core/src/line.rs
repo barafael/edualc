@@ -18,9 +18,11 @@ use futures_util::SinkExt as _;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::app::Event;
+use crate::external::wire::SessionId;
 use crate::ipc::pairing::Server;
 use crate::ipc::{self, ActId, Answer, FromDaemon, PROTOCOL, Read, ToDaemon, WindowKey, ws};
 use crate::link::{self, Greeting, Inbox, Link, QUEUE, Ungreeted};
+use crate::sessions::Saved;
 
 /// How often the window pings edualcd, and how long a line that says nothing, not even a pong
 /// to edualcd's pings, is taken to be alive.
@@ -47,7 +49,7 @@ pub enum Error {
 impl Error {
     /// Whether reaching edualcd again could go otherwise: not if it refused the window's token
     /// or version, nor shows another certificate.
-    pub fn passes(&self) -> bool {
+    fn passes(&self) -> bool {
         match self {
             Self::Line(ipc::Error::Token | ipc::Error::Version(_) | ipc::Error::Certificate(_))
             | Self::Ungreeted(_) => false,
@@ -85,6 +87,15 @@ pub struct Connected {
 }
 
 impl Connected {
+    /// Where edualcd keeps the session `id`'s transcript, as it says: the folder it was started
+    /// in, if that is known, for a window that goes on with it.
+    pub fn saved(&mut self, id: &SessionId) -> Result<Saved, Error> {
+        let Answer::Saved(saved) = self.ask(Read::Saved(id.clone()))? else {
+            return Err(Error::Unanswered);
+        };
+        Ok(saved)
+    }
+
     /// Asks edualcd to read something, and waits for its answer: before the app runs, for
     /// where it is to work, which is on edualcd's machine.
     pub fn ask(&mut self, read: Read) -> Result<Answer, Error> {
@@ -243,9 +254,7 @@ async fn reach_again(
             }
         }
         if lookup == Lookup::EachTime {
-            // On this thread, which has nothing else to do meanwhile: what the window asks
-            // waits in its queue a moment, to be dropped as before.
-            match ws::resolve(server) {
+            match ws::lookup(server).await {
                 Ok(found) if !found.is_empty() => *addresses = found,
                 Ok(_) => {}
                 Err(error) => tracing::info!(%error, "edualcd's name wasn't found again"),

@@ -95,16 +95,11 @@ fn working_folder(
     resume: Option<&SessionId>,
 ) -> Result<PathBuf, WhereError> {
     let saved = match resume {
-        Some(id) => {
-            let Answer::Saved(saved) = connected.ask(Read::Saved(id.clone()))? else {
-                return Err(line::Error::Unanswered.into());
-            };
-            match saved {
-                Saved::Nowhere => return Err(WhereError::NoSession(id.clone())),
-                Saved::StartedIn(folder) => Some(folder),
-                Saved::Unplaced => None,
-            }
-        }
+        Some(id) => match connected.saved(id)? {
+            Saved::Nowhere => return Err(WhereError::NoSession(id.clone())),
+            Saved::StartedIn(folder) => Some(folder),
+            Saved::Unplaced => None,
+        },
         None => None,
     };
     let (asked, named) = match (dir, saved) {

@@ -23,7 +23,6 @@ use edualc_core::app::{App as WindowApp, Desktop};
 use edualc_core::external::wire::SessionId;
 use edualc_core::ipc::pairing::Server;
 use edualc_core::ipc::servers::Servers;
-use edualc_core::ipc::{Answer, Read};
 use edualc_core::line::{self, Lookup};
 use edualc_core::link::{Greeting, Link};
 use edualc_core::sessions::Saved;
@@ -89,28 +88,22 @@ impl Kept {
         let last = std::fs::read(dir.join(Self::LAST))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-        match Servers::load(&dir.join(Self::SERVERS)) {
-            Ok(servers) => (
-                Self {
-                    servers,
-                    last,
-                    dir: Some(dir),
-                    unreadable: false,
-                },
-                None,
-            ),
+        let (servers, problem) = match Servers::load(&dir.join(Self::SERVERS)) {
+            Ok(servers) => (servers, None),
             Err(error) => (
-                Self {
-                    servers: Servers::default(),
-                    last,
-                    dir: Some(dir),
-                    unreadable: true,
-                },
+                Servers::default(),
                 Some(format!(
                     "{error}. Nothing paired now is kept, so that it isn't written over."
                 )),
             ),
-        }
+        };
+        let kept = Self {
+            servers,
+            last,
+            dir: Some(dir),
+            unreadable: problem.is_some(),
+        };
+        (kept, problem)
     }
 
     /// Writes the paired edualcds; why they weren't, if they weren't.
@@ -438,10 +431,10 @@ fn reached(
         .clone()
         .unwrap_or_else(|| PathBuf::from("/"));
     let (resume, cwd) = match last {
-        Some(id) => match connected.ask(Read::Saved(id.clone())) {
-            Ok(Answer::Saved(Saved::StartedIn(folder))) => (Some(id), folder),
-            Ok(Answer::Saved(Saved::Unplaced)) => (Some(id), home),
-            Ok(_) => (None, home),
+        Some(id) => match connected.saved(&id) {
+            Ok(Saved::StartedIn(folder)) => (Some(id), folder),
+            Ok(Saved::Unplaced) => (Some(id), home),
+            Ok(Saved::Nowhere) => (None, home),
             Err(error) => {
                 tracing::info!(%error, "the session shown last wasn't found");
                 (None, home)

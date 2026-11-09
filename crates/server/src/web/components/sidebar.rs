@@ -16,7 +16,6 @@ use edualc_core::present::model::{
 use crate::web::View;
 use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter, focus, percent};
 
-const STYLE: Asset = asset!("/assets/sidebar.css");
 /// The heron's drawings: standing, and the frames of what it does now and then.
 const HERON: Asset = asset!("/assets/heron/heron.svg");
 const HERON_BACK: Asset = asset!("/assets/heron/heron-looking-back.svg");
@@ -152,7 +151,6 @@ pub fn SandboxChip(
         close(());
     };
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { class: "sandbox {class}",
             button {
                 class: "sidebar-press sandbox-chip {state} {explaining}",
@@ -263,7 +261,6 @@ pub fn TasksChip(#[props(default)] class: String) -> Element {
         .map(|top| format!("max-height: calc({top}px - var(--space-m));"))
         .unwrap_or_default();
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { class: "tasks {class}",
             button {
                 class: "sidebar-press tasks-chip",
@@ -693,7 +690,6 @@ pub fn Sidebar(onhide: EventHandler<()>) -> Element {
         "--heron: url('{HERON}'); --heron-back: url('{HERON_BACK}'); --heron-preen-1: url('{HERON_PREEN_1}'); --heron-preen-2: url('{HERON_PREEN_2}'); --heron-half: url('{HERON_HALF}'); --heron-up: url('{HERON_UP}');"
     );
     rsx! {
-        document::Stylesheet { href: STYLE }
         aside {
             class: "sidebar",
             "aria-label": "Sessions",

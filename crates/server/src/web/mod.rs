@@ -80,10 +80,10 @@ pub fn Shell() -> Element {
     }
 }
 
-/// Every part's stylesheet, from the start. Each part names its own too, but a link is put in
-/// the page by an effect of the part that names it first, and only once: a part shown and
-/// hidden in the same moment (the sidebar, as a narrow window starts) would leave its
-/// stylesheet out for good.
+/// Every part's stylesheet, linked here, from the start, rather than by each part: a link is
+/// put in the page by an effect of the part that names it first, and only once, so a part shown
+/// and hidden in the same moment (the sidebar, as a narrow window starts) would leave its
+/// stylesheet out for good. A part's new stylesheet goes in this list.
 #[component]
 fn Stylesheets() -> Element {
     rsx! {

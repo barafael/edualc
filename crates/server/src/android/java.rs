@@ -69,6 +69,34 @@ fn beside<T: 'static>(work: impl Work<T>, done: impl FnOnce(Result<T, Refused>) 
     std::thread::spawn(move || done(attached(work)));
 }
 
+/// What goes on beside the window with nothing to tell it: a failure is only logged.
+#[derive(Debug, Clone, Copy)]
+enum Beside {
+    Copying,
+    AskingToNotify,
+    Notifying,
+}
+
+impl Beside {
+    /// What it says as it fails.
+    fn failed(self) -> &'static str {
+        match self {
+            Self::Copying => "the clipboard refused the text",
+            Self::AskingToNotify => "couldn't ask to notify",
+            Self::Notifying => "Android showed no notification",
+        }
+    }
+}
+
+/// Does `work` with Java beside the window, logging how it failed, if it did.
+fn beside_logged(work: impl Work<()>, what: Beside) {
+    beside(work, move |done| {
+        if let Err(error) = done {
+            tracing::warn!(%error, "{}", what.failed());
+        }
+    });
+}
+
 /// A system service, by its name (`Context.CLIPBOARD_SERVICE`'s, say).
 fn service<'local>(
     env: &mut JNIEnv<'local>,
@@ -168,11 +196,7 @@ pub fn copy(copied: String) {
         )?;
         Ok(())
     };
-    beside(work, |copied| {
-        if let Err(error) = copied {
-            tracing::warn!(%error, "the clipboard refused the text");
-        }
-    });
+    beside_logged(work, Beside::Copying);
 }
 
 /// The clipboard's image, its bytes as its file has them, up to `limit` (reading stops just
@@ -235,19 +259,26 @@ pub fn clipboard_image(
                 &[JValue::Object(&uri)],
             )?
             .l()?;
-        let buffer = env.new_byte_array(64 * 1024)?;
+        // Java's buffer and ours, each made once and read through again.
+        let buffer = env.new_byte_array(i32::try_from(CHUNK).unwrap_or(i32::MAX))?;
+        let mut chunk = vec![0_i8; CHUNK];
         let mut bytes = Vec::new();
         while bytes.len() <= limit {
             let read = env
                 .call_method(&stream, "read", "([B)I", &[JValue::Object(&buffer)])?
                 .i()?;
-            let Ok(read) = usize::try_from(read) else {
-                // -1: the end.
+            // -1: the end.
+            let Some(read) = usize::try_from(read)
+                .ok()
+                .and_then(|read| chunk.get_mut(..read))
+            else {
                 break;
             };
-            let mut chunk = env.convert_byte_array(&buffer)?;
-            chunk.truncate(read);
-            bytes.extend_from_slice(&chunk);
+            env.get_byte_array_region(&buffer, 0, read)?;
+            bytes.extend(
+                read.iter()
+                    .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes())),
+            );
         }
         env.call_method(&stream, "close", "()V", &[])?;
         Ok(Some(bytes))
@@ -255,6 +286,8 @@ pub fn clipboard_image(
     beside(work, done);
 }
 
+/// How much of the clipboard's image is read at a time.
+const CHUNK: usize = 64 * 1024;
 /// The notification channel the app's notifications go to (Android 8 and later).
 const CHANNEL: &str = "claude";
 /// `NotificationManager.IMPORTANCE_DEFAULT`: a sound, no popping up.
@@ -284,11 +317,7 @@ pub fn ask_to_notify() {
         )?;
         Ok(())
     };
-    beside(work, |asked| {
-        if let Err(error) = asked {
-            tracing::warn!(%error, "couldn't ask to notify");
-        }
-    });
+    beside_logged(work, Beside::AskingToNotify);
 }
 
 /// Shows a notification, which opens the app as it is tapped; one for each `summary` (a
@@ -383,11 +412,7 @@ pub fn notify(summary: String, body: String) {
         )?;
         Ok(())
     };
-    beside(work, |shown| {
-        if let Err(error) = shown {
-            tracing::warn!(%error, "Android showed no notification");
-        }
-    });
+    beside_logged(work, Beside::Notifying);
 }
 
 /// A notification's id for `summary`: the same for the same session's, which replaces its

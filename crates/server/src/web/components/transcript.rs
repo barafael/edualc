@@ -27,14 +27,14 @@ const END_SLACK: f64 = 8.0;
 /// How long the rows' height must hold still before an opened transcript shows (ms), how often
 /// that is looked at, and how many looks at most (a moment and a half in all).
 const SETTLED_MS: f64 = 100.0;
-const SETTLE_LOOK_MS: i32 = 30;
+const SETTLE_LOOK_MS: u32 = 30;
 const SETTLE_LOOKS: u32 = 50;
 
 /// The heron's flight: how many wing beats it takes, each how long (ms), and the wait before it
 /// sets off to fly in, so that it starts from out of sight.
 const BEATS: u32 = 10;
-const BEAT_MS: i32 = 110;
-const APPROACH_MS: i32 = 50;
+const BEAT_MS: u32 = 110;
+const APPROACH_MS: u32 = 50;
 
 /// The heron's drawings: standing, and its wing beat's frames (up, down, level).
 const HERON: [Asset; 4] = [
@@ -44,7 +44,8 @@ const HERON: [Asset; 4] = [
     asset!("/assets/heron/heron-wings-level.svg"),
 ];
 
-/// The list, the page's clock and its pixel ratio, through the browser.
+/// The list, the page's clock and its pixel ratio, through the browser: read at once, as the
+/// list moves with each line streamed.
 #[cfg(feature = "web")]
 mod dom {
     use super::LIST;
@@ -96,50 +97,26 @@ mod dom {
     pub fn pixel_ratio(_view: crate::web::View) -> f64 {
         web_sys::window().map_or(1.0, |window| window.device_pixel_ratio())
     }
-
-    /// Waits `ms` milliseconds.
-    pub async fn sleep(ms: i32) {
-        use web_sys::js_sys::{Function, Promise};
-        let promise = Promise::new(&mut |resolve: Function, _reject: Function| {
-            if let Some(window) = web_sys::window()
-                && window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-                    .is_err()
-            {
-                tracing::debug!("the browser refused a timer");
-            }
-        });
-        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
-            tracing::debug!("a timer failed");
-        }
-    }
 }
 
-/// The list in the Android app's WebView, reached by its script. Keys move the list as a
-/// focused list moves in a browser of itself; the window doesn't take them over here.
-#[cfg(feature = "mobile")]
+/// The list in the Android app's WebView, reached by its script, which answers later than a
+/// keystroke: the WebView moves a focused list by its keys itself, so the window takes none
+/// (`focused` is never so). Rendered on the server, none of it runs.
+#[cfg(not(feature = "web"))]
 mod dom {
     use dioxus::prelude::{ReadableExt as _, document};
 
-    /// Runs `script` on the list, as `list`, if it is there.
-    fn on_list(script: &str) {
+    /// Goes to the list's end.
+    pub fn to_end() {
         document::eval(&format!(
-            "const list = document.getElementById({:?}); if (list) {{ {script} }}",
+            "const list = document.getElementById({:?}); if (list) {{ list.scrollTop = list.scrollHeight; }}",
             super::LIST
         ));
     }
 
-    pub fn to_end() {
-        on_list("list.scrollTop = list.scrollHeight;");
-    }
+    pub fn to_start() {}
 
-    pub fn to_start() {
-        on_list("list.scrollTop = 0;");
-    }
-
-    pub fn by(delta: f64) {
-        on_list(&format!("list.scrollBy(0, {delta});"));
-    }
+    pub fn by(_delta: f64) {}
 
     pub fn height() -> f64 {
         0.0
@@ -156,37 +133,10 @@ mod dom {
             .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
     }
 
-    /// Device pixels to a CSS pixel, as the app read it from the WebView.
+    /// Device pixels to a CSS pixel, as the app read it from the WebView (1 on the server).
     pub fn pixel_ratio(view: crate::web::View) -> f64 {
         view.page.peek().pixel_ratio
     }
-
-    pub async fn sleep(ms: i32) {
-        let ms = u64::try_from(ms).unwrap_or_default();
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-    }
-}
-
-/// Off the browser (the server renders the page once, before any of this could run): nothing
-/// to scroll, no time passing.
-#[cfg(not(any(feature = "web", feature = "mobile")))]
-mod dom {
-    pub fn to_end() {}
-    pub fn to_start() {}
-    pub fn by(_delta: f64) {}
-    pub fn height() -> f64 {
-        0.0
-    }
-    pub fn focused() -> bool {
-        false
-    }
-    pub fn now() -> f64 {
-        0.0
-    }
-    pub fn pixel_ratio(_view: crate::web::View) -> f64 {
-        1.0
-    }
-    pub async fn sleep(_ms: i32) {}
 }
 
 /// Hands the app an action on the entry at `index`.
@@ -244,7 +194,7 @@ pub fn Transcript() -> Element {
         go_to_end();
         spawn(async move {
             for _ in 0..SETTLE_LOOKS {
-                dom::sleep(SETTLE_LOOK_MS).await;
+                crate::web::dom::sleep(SETTLE_LOOK_MS).await;
                 if *opening.peek() != opened {
                     return;
                 }
@@ -304,7 +254,6 @@ pub fn Transcript() -> Element {
     let entries = view.entries;
     let to_end_shown = !follow() && !reviewing();
     rsx! {
-        document::Stylesheet { href: asset!("/assets/transcript.css") }
         div { class: "transcript-area",
             div {
                 id: LIST,
@@ -843,7 +792,7 @@ fn Heron() -> Element {
             if wanted {
                 // Out of sight first, unanimated, so that it flies in from there.
                 flight.set(Flight::Away);
-                dom::sleep(APPROACH_MS).await;
+                crate::web::dom::sleep(APPROACH_MS).await;
                 if *flown.peek() != this {
                     return;
                 }
@@ -852,7 +801,7 @@ fn Heron() -> Element {
                 flight.set(Flight::Leaving);
             }
             for _ in 0..BEATS {
-                dom::sleep(BEAT_MS).await;
+                crate::web::dom::sleep(BEAT_MS).await;
                 if *flown.peek() != this {
                     return;
                 }

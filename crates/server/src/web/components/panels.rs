@@ -23,8 +23,6 @@ use crate::web::View;
 use crate::web::text::Blocks;
 use crate::web::widgets::{Button, Icon, IconButton, Lucide, Meter, focus, level};
 
-const STYLE: Asset = asset!("/assets/panels.css");
-
 /// Whether the settings are open, over the conversation: the window's, as the native window's
 /// `Preferences.open` is.
 #[derive(Clone, Copy)]
@@ -109,7 +107,6 @@ pub fn SidePanel() -> Element {
     };
     let asks = side.can_ask && !side.pending;
     rsx! {
-        document::Stylesheet { href: STYLE }
         aside { class: "side side-panel", "aria-labelledby": "side-title",
             div { class: "panel-head",
                 Icon { icon: Lucide::MessageCircleQuestionMark, class: "claude" }
@@ -248,7 +245,6 @@ pub fn PeekPanel() -> Element {
     };
     let state = if peek.running { "running" } else { "ended" };
     rsx! {
-        document::Stylesheet { href: STYLE }
         aside { class: "side peek-panel", "aria-labelledby": "peek-title",
             div { class: "panel-head",
                 Icon { icon, class: "claude" }
@@ -331,7 +327,6 @@ pub fn Usage() -> Element {
     let view = use_context::<View>();
     let open = view.usage.read().open;
     rsx! {
-        document::Stylesheet { href: STYLE }
         if open {
             UsagePanel {}
         }
@@ -498,7 +493,6 @@ fn StatLine(row: StatRow) -> Element {
 pub fn Settings() -> Element {
     let open = use_settings_open();
     rsx! {
-        document::Stylesheet { href: STYLE }
         if open() {
             SettingsPanel {}
         }

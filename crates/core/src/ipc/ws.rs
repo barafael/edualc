@@ -141,6 +141,23 @@ pub fn resolve(server: &Server) -> Result<Vec<SocketAddr>, Error> {
     }
 }
 
+/// The addresses `server` names, looked up on the runtime's blocking threads, which keeps what
+/// else runs there going meanwhile: for a window that isn't confined, reaching edualcd again.
+pub async fn lookup(server: &Server) -> Result<Vec<SocketAddr>, Error> {
+    let authority = server.authority();
+    let found = tokio::time::timeout(
+        REACH,
+        tokio::net::lookup_host((server.host(), server.port())),
+    )
+    .await
+    .map_err(|_late| Error::Slow(authority.clone()))?
+    .map_err(|source| Error::Unreachable {
+        address: authority,
+        source,
+    })?;
+    Ok(found.collect())
+}
+
 /// The window's end of the line to `server`, at one of `addresses`.
 pub async fn connect(server: &Server, addresses: &[SocketAddr]) -> Result<Line, Error> {
     let authority = server.authority();

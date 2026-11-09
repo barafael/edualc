@@ -262,14 +262,6 @@ impl Server {
         }
     }
 
-    /// The address edualcd printed, which pairs again.
-    pub fn url(&self) -> String {
-        match self {
-            Self::Paired(pairing) => pairing.url(),
-            Self::Demo(demo) => format!("http://{}/", authority(&demo.host, demo.port)),
-        }
-    }
-
     pub fn is_demo(&self) -> bool {
         matches!(self, Self::Demo(_))
     }
@@ -407,13 +399,21 @@ mod tests {
             })
         );
         assert!(demo.line_url().starts_with("ws://10.0.2.2:7878/api/line?"));
-        assert_eq!(Server::parse(&demo.url()), Ok(demo.clone()));
+        assert_eq!(Server::parse(&url_of(&demo)), Ok(demo.clone()));
         let paired = Server::Paired(pairing("box"));
-        assert_eq!(Server::parse(&paired.url()), Ok(paired.clone()));
+        assert_eq!(Server::parse(&url_of(&paired)), Ok(paired.clone()));
         assert!(paired.line_url().starts_with("wss://box:7878/"));
         for server in [demo, paired] {
             let kept = serde_json::to_string(&server).expect("written");
             assert_eq!(serde_json::from_str::<Server>(&kept).ok(), Some(server));
+        }
+    }
+
+    /// The address `server` pairs by, as edualcd prints it.
+    fn url_of(server: &Server) -> String {
+        match server {
+            Server::Paired(pairing) => pairing.url(),
+            Server::Demo(demo) => format!("http://{}/", authority(&demo.host, demo.port)),
         }
     }
 

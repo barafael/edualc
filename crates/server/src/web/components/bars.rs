@@ -20,7 +20,6 @@ pub fn WatchBar() -> Element {
     let mut called_off = use_signal(|| false);
     let session = view.session.read();
     rsx! {
-        document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: if confirming() { "dock-bar warned" } else { "dock-bar" },
             div { class: "dock-bar-heading",
                 Icon { icon: Lucide::Eye }
@@ -84,7 +83,6 @@ pub fn TrustBar() -> Element {
     let session = view.session.read();
     let runs = !session.trust_runs.is_empty();
     rsx! {
-        document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: "dock-bar warned",
             div { class: "dock-bar-heading",
                 Icon { icon: Lucide::ShieldAlert, class: "warning" }
@@ -144,7 +142,6 @@ pub fn TrustBar() -> Element {
 pub fn SignInBar() -> Element {
     let view = use_context::<View>();
     rsx! {
-        document::Stylesheet { href: asset!("/assets/bars.css") }
         div { class: "dock-bar warned",
             div { class: "dock-bar-heading",
                 Icon { icon: Lucide::LogIn, class: "warning" }

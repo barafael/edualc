@@ -18,7 +18,6 @@ use crate::web::View;
 use crate::web::view::image_url;
 use crate::web::widgets::{Icon, IconButton, Lucide, Meter};
 
-const STYLE: Asset = asset!("/assets/composer.css");
 /// The text box's id, for focusing it and reading its caret.
 const INPUT: &str = "composer-input";
 /// The command list's id, which the text box names as what it completes from.
@@ -78,7 +77,6 @@ pub fn CommandList() -> Element {
     let composer = view.composer.read();
     let highlighted = index().min(composer.commands.len().saturating_sub(1));
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { id: COMMANDS, class: "commands", role: "listbox", "aria-label": "Commands",
             for (at, command) in composer.commands.iter().enumerate() {
                 div {
@@ -111,16 +109,13 @@ pub fn CommandList() -> Element {
 #[component]
 pub fn Composer() -> Element {
     let view = use_context::<View>();
-    // Where a tap lands is the WebView's to see; the app's script keeps it (see `dom::clicked`).
-    #[cfg(feature = "mobile")]
+    // Where a press lands is the script's to see; it keeps it (see `dom::clicked`).
     use_hook(dom::watch_presses);
-    // The app's text box holds what is typed itself: set from here as each keystroke comes back,
-    // it would lose those typed meanwhile (the WebView answers later than a browser's page
+    // The text box holds what is typed itself: set from here as each keystroke comes back, it
+    // would lose those typed meanwhile (the app's WebView answers later than a browser's page
     // does). The draft is put in it only as the app changes it otherwise (sent, a command
     // picked, a draft restored).
-    #[cfg(feature = "mobile")]
     let mut typed = use_signal(String::new);
-    #[cfg(feature = "mobile")]
     use_effect(move || {
         let text = view.draft.read().clone();
         if text != *typed.peek() {
@@ -144,6 +139,8 @@ pub fn Composer() -> Element {
         }
     });
     let mut drag = use_signal(|| None::<Drag>);
+    // Whether Enter sends: asked as the text box takes the focus (see `dom::keyboard_attached`).
+    let mut keyboard = use_signal(|| true);
     // The app sets the kept height as the settings are read.
     use_effect(move || match kept_height() {
         Some(height_px) => {
@@ -159,7 +156,8 @@ pub fn Composer() -> Element {
         let serial = focus_serial();
         if serial != *focus_seen.peek() {
             focus_seen.set(serial);
-            dom::focus_asked(&draft.peek());
+            // On a touch screen it waits to be tapped: the keyboard would cover what opened.
+            crate::web::dom::grab_focus_at_end(INPUT);
         }
     });
 
@@ -360,10 +358,7 @@ pub fn Composer() -> Element {
         }
         // A phone's own keyboard has no Shift+Enter: there Enter starts a new line, and the
         // send button sends.
-        if key == Key::Enter
-            && !modifiers.shift()
-            && send_key == SendKey::Enter
-            && dom::enter_sends()
+        if key == Key::Enter && !modifiers.shift() && send_key == SendKey::Enter && *keyboard.peek()
         {
             event.prevent_default();
             send_draft();
@@ -428,7 +423,6 @@ pub fn Composer() -> Element {
 
     let oninput = move |event: FormEvent| {
         let edited = event.value();
-        #[cfg(feature = "mobile")]
         typed.set(edited.clone());
         draft.set(edited.clone());
         command_index.set(0);
@@ -445,13 +439,12 @@ pub fn Composer() -> Element {
     };
 
     rsx! {
-        document::Stylesheet { href: STYLE }
         div {
             id: "composer",
             class: "composer {size_class} {state_class}",
             style: "--glow: {glow};",
             // A click anywhere but on its controls writes.
-            onclick: move |event| dom::clicked(&event, &draft.peek()),
+            onclick: move |_| dom::clicked(&draft.peek()),
             // Made taller, Tab goes round within it.
             if stretched {
                 div {
@@ -545,37 +538,20 @@ pub fn Composer() -> Element {
                             "{composer.argument_hint}"
                         }
                     }
-                    // In the app, the text box has no value of the draft's: Dioxus would set it
-                    // again with every change (see `typed`).
-                    if cfg!(feature = "mobile") {
-                        textarea {
-                            id: INPUT,
-                            class: "composer-input",
-                            rows: "1",
-                            "aria-label": "Message to Claude",
-                            "aria-placeholder": "Message Claude, or start with ! for a shell command",
-                            "aria-autocomplete": "list",
-                            "aria-controls": (commands > 0).then_some(COMMANDS),
-                            "aria-activedescendant": active_command,
-                            oninput,
-                            onkeydown,
-                            onpaste,
-                        }
-                    } else {
-                        textarea {
-                            id: INPUT,
-                            class: "composer-input",
-                            rows: "1",
-                            value: "{text}",
-                            "aria-label": "Message to Claude",
-                            "aria-placeholder": "Message Claude, or start with ! for a shell command",
-                            "aria-autocomplete": "list",
-                            "aria-controls": (commands > 0).then_some(COMMANDS),
-                            "aria-activedescendant": active_command,
-                            oninput,
-                            onkeydown,
-                            onpaste,
-                        }
+                    // Not set from the draft: see `typed`.
+                    textarea {
+                        id: INPUT,
+                        class: "composer-input",
+                        rows: "1",
+                        "aria-label": "Message to Claude",
+                        "aria-placeholder": "Message Claude, or start with ! for a shell command",
+                        "aria-autocomplete": "list",
+                        "aria-controls": (commands > 0).then_some(COMMANDS),
+                        "aria-activedescendant": active_command,
+                        onfocus: move |_| keyboard.set(dom::keyboard_attached()),
+                        oninput,
+                        onkeydown,
+                        onpaste,
                     }
                 }
                 div { class: "composer-tools",
@@ -844,13 +820,13 @@ fn MenuButton(
     }
 }
 
-/// The page's own parts the composer reaches: the text box's focus and caret, and sizes.
-#[cfg(feature = "web")]
+/// The page's own parts the composer reaches, through its script: the same in a browser and in
+/// the app's WebView, where what is read comes back a moment later (the heights). What must be
+/// read at once, inside a keystroke, is the browser's alone (the caret, the images pasted); the
+/// app leaves those to the WebView and to Android's clipboard. Rendered on the server, nothing
+/// here runs: it all answers what the user does.
 mod dom {
-    use dioxus::prelude::MouseEvent;
-    use dioxus::web::WebEventExt as _;
-    use web_sys::wasm_bindgen::JsCast as _;
-    use web_sys::{HtmlElement, HtmlTextAreaElement};
+    use dioxus::prelude::document;
 
     /// What a click on doesn't write: the composer's controls and menus.
     const CONTROLS: &str =
@@ -859,20 +835,141 @@ mod dom {
     const FOCUSABLE: &str =
         "#composer .composer-body :is(button:not(:disabled), textarea, [tabindex='0'])";
 
-    fn document() -> Option<web_sys::Document> {
-        web_sys::window()?.document()
+    /// Runs `script` on the text box, as `input`, with `text` (the draft) as `text`; unless
+    /// `skip`, a condition of the script's, holds.
+    fn on_input(skip: &str, script: &str, text: &str) {
+        let eval = document::eval(&format!(
+            "const text = await dioxus.recv();
+            if ({skip}) {{ return; }}
+            const input = document.getElementById({:?});
+            if (input) {{ {script} }}",
+            super::INPUT
+        ));
+        if eval.send(text).is_err() {
+            tracing::debug!("the text box wasn't reached");
+        }
     }
 
-    fn text_box() -> Option<HtmlTextAreaElement> {
-        document()?.get_element_by_id(super::INPUT)?.dyn_into().ok()
+    /// The draft in the text box, unless it is there, and the caret after it.
+    const SET: &str = "if (input.value !== text) {
+        input.value = text;
+        input.setSelectionRange(text.length, text.length);
+    }";
+    /// The focus in the text box, the caret at its end.
+    const FOCUS: &str =
+        "input.focus(); input.setSelectionRange(input.value.length, input.value.length);";
+
+    /// Puts `text` in the text box, the caret after it, as the app set the draft.
+    pub fn set_text(text: &str) {
+        on_input("false", SET, text);
+    }
+
+    /// Focuses the text box, the caret at the end of `text`, the draft; set first if it isn't
+    /// shown yet.
+    pub fn focus_end(text: &str) {
+        on_input("false", &format!("{SET} {FOCUS}"), text);
+    }
+
+    /// A click on the composer: on its ground, not one of its controls, it writes. Where it
+    /// landed is the script's to see: the pointer's last press, which [`watch_presses`] keeps.
+    pub fn clicked(draft: &str) {
+        on_input(
+            &format!("window.edualcPressed?.closest({CONTROLS:?})"),
+            &format!("{SET} {FOCUS}"),
+            draft,
+        );
+    }
+
+    /// Keeps where the pointer last pressed, for [`clicked`].
+    pub fn watch_presses() {
+        document::eval(
+            "if (!window.edualcPressesWatched) {
+                window.edualcPressesWatched = true;
+                document.addEventListener('pointerdown', (event) => {
+                    window.edualcPressed = event.target instanceof Element ? event.target : null;
+                }, true);
+            }",
+        );
+    }
+
+    /// Ctrl+Enter, which the text box itself ignores: a line break in place of the selection,
+    /// as typed (undone as typing is, and an edit like any other).
+    pub fn break_line() {
+        document::eval("document.execCommand('insertText', false, '\\n');");
+    }
+
+    /// The text's box's height and the conversation's column's, in CSS pixels.
+    pub async fn heights() -> (Option<f64>, Option<f64>) {
+        let asked = document::eval(
+            "const scroll = document.getElementById('composer-scroll');
+            const column = document.getElementById('composer')?.closest('.column');
+            return [scroll?.offsetHeight ?? null, column?.clientHeight ?? null];",
+        );
+        asked
+            .join::<(Option<f64>, Option<f64>)>()
+            .await
+            .unwrap_or((None, None))
+    }
+
+    /// Tab reached an end of the composer made taller: the focus goes round to the first of its
+    /// controls (`first`) or the last.
+    pub fn focus_edge(first: bool) {
+        let pick = if first {
+            "found[0]"
+        } else {
+            "found[found.length - 1]"
+        };
+        document::eval(&format!(
+            "const found = document.querySelectorAll({FOCUSABLE:?}); {pick}?.focus();"
+        ));
+    }
+
+    /// The caret is at the end of the draft, nothing selected; read in the keystroke, which the
+    /// app's WebView answers too late for (→ takes a command there only from Tab and a tap).
+    pub fn caret_at_end() -> bool {
+        #[cfg(feature = "web")]
+        {
+            use web_sys::wasm_bindgen::JsCast as _;
+            let input = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(super::INPUT))
+                .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok());
+            input.is_some_and(|input| {
+                let length =
+                    u32::try_from(input.value().encode_utf16().count()).unwrap_or(u32::MAX);
+                matches!(
+                    (input.selection_start(), input.selection_end()),
+                    (Ok(Some(start)), Ok(Some(end))) if start == end && start >= length
+                )
+            })
+        }
+        #[cfg(not(feature = "web"))]
+        false
+    }
+
+    /// Whether a keyboard with keys is there, so that Enter sends (as the settings say): a
+    /// browser's page is typed into with one; the app asks Android, whose screen keyboard alone
+    /// has no Shift+Enter (Enter starts a new line there). Asked as the text box takes the focus,
+    /// not with each key.
+    pub fn keyboard_attached() -> bool {
+        #[cfg(feature = "mobile")]
+        return crate::android::java::has_keyboard().unwrap_or_else(|error| {
+            tracing::debug!(%error, "no keyboard known of");
+            false
+        });
+        #[cfg(not(feature = "mobile"))]
+        true
     }
 
     /// The images among what was pasted, each read and made ready to send in the page (the
     /// sandbox the decoder is on Linux), for the next message.
+    #[cfg(feature = "web")]
     pub fn paste_images(event: &dioxus::prelude::ClipboardEvent, view: crate::web::View) {
         use dioxus::prelude::ReadableExt as _;
+        use dioxus::web::WebEventExt as _;
         use edualc_core::app::Event;
         use edualc_core::decode::{self, PasteFailure};
+        use web_sys::wasm_bindgen::JsCast as _;
         let Ok(event) = event.as_web_event().dyn_into::<web_sys::ClipboardEvent>() else {
             return;
         };
@@ -906,289 +1003,4 @@ mod dom {
             });
         }
     }
-
-    /// Focuses the text box with the caret at the end of `text`, the draft: shown at once, as
-    /// the draft just set is drawn only after this.
-    pub fn focus_end(text: &str) {
-        let Some(input) = text_box() else {
-            return;
-        };
-        if input.value() != text {
-            input.set_value(text);
-        }
-        let end = u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX);
-        if input.focus().is_err() || input.set_selection_range(end, end).is_err() {
-            tracing::debug!("the text box took no focus");
-        }
-    }
-
-    /// The app asks for the focus (a session opened, a new one begun).
-    pub fn focus_asked(text: &str) {
-        focus_end(text);
-    }
-
-    /// Enter sends (as the settings say): a browser's page is typed into with keys.
-    pub fn enter_sends() -> bool {
-        true
-    }
-
-    /// The caret is at the end of the draft, nothing selected.
-    pub fn caret_at_end() -> bool {
-        text_box().is_some_and(|input| {
-            let length = u32::try_from(input.value().encode_utf16().count()).unwrap_or(u32::MAX);
-            matches!(
-                (input.selection_start(), input.selection_end()),
-                (Ok(Some(start)), Ok(Some(end))) if start == end && start >= length
-            )
-        })
-    }
-
-    /// Ctrl+Enter, which the text box itself ignores: a line break in place of the selection,
-    /// as typed (undone as typing is, and an edit like any other).
-    pub fn break_line() {
-        let inserted = document()
-            .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
-            .and_then(|document| {
-                document
-                    .exec_command_with_show_ui_and_value("insertText", false, "\n")
-                    .ok()
-            });
-        if inserted != Some(true) {
-            tracing::debug!("the browser put no line break in");
-        }
-    }
-
-    /// A click on the composer: on its ground, not one of its controls, it writes.
-    pub fn clicked(event: &MouseEvent, draft: &str) {
-        if !on_control(event) {
-            focus_end(draft);
-        }
-    }
-
-    /// The text's box's height and the conversation's column's.
-    pub async fn heights() -> (Option<f64>, Option<f64>) {
-        (scroll_height(), column_height())
-    }
-
-    /// The click landed on one of the composer's controls, not on its ground.
-    fn on_control(event: &MouseEvent) -> bool {
-        event
-            .data()
-            .try_as_web_event()
-            .and_then(|event| event.target())
-            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            .and_then(|element| element.closest(CONTROLS).ok().flatten())
-            .is_some()
-    }
-
-    /// The text's box's height now, in CSS pixels.
-    fn scroll_height() -> Option<f64> {
-        let scroll: HtmlElement = document()?
-            .get_element_by_id("composer-scroll")?
-            .dyn_into()
-            .ok()?;
-        Some(f64::from(scroll.offset_height()))
-    }
-
-    /// The conversation's column's height, in CSS pixels.
-    fn column_height() -> Option<f64> {
-        let column = document()?
-            .get_element_by_id("composer")?
-            .closest(".column")
-            .ok()??;
-        Some(f64::from(column.client_height()))
-    }
-
-    /// Tab reached an end of the composer made taller: the focus goes round to the first of its
-    /// controls (`first`) or the last.
-    pub fn focus_edge(first: bool) {
-        let Some(found) =
-            document().and_then(|document| document.query_selector_all(FOCUSABLE).ok())
-        else {
-            return;
-        };
-        let at = if first {
-            0
-        } else {
-            found.length().saturating_sub(1)
-        };
-        if let Some(element) = found
-            .item(at)
-            .and_then(|node| node.dyn_into::<HtmlElement>().ok())
-            && element.focus().is_err()
-        {
-            tracing::debug!("the composer's control took no focus");
-        }
-    }
-}
-
-/// The Android app's WebView, reached by its script; what it answers comes later, so what the
-/// browser's page reads at once is read here as the script answers (the heights), or left to
-/// the WebView (→ taking a command, which Tab and a tap still do).
-#[cfg(feature = "mobile")]
-mod dom {
-    use dioxus::prelude::{MouseEvent, document};
-
-    /// What a click on doesn't write: the composer's controls and menus.
-    const CONTROLS: &str =
-        "button, a, textarea, input, [role='combobox'], [role='listbox'], [role='option']";
-    /// What Tab reaches in the composer made taller.
-    const FOCUSABLE: &str =
-        "#composer .composer-body :is(button:not(:disabled), textarea, [tabindex='0'])";
-
-    /// Focuses the text box, the caret at the end of `text`, the draft; set first if it isn't
-    /// shown yet.
-    pub fn focus_end(text: &str) {
-        let eval = document::eval(&format!(
-            "const text = await dioxus.recv();
-            const input = document.getElementById({:?});
-            if (input) {{
-                if (input.value !== text) {{ input.value = text; }}
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }}",
-            super::INPUT
-        ));
-        if eval.send(text).is_err() {
-            tracing::debug!("the text box took no focus");
-        }
-    }
-
-    /// The app asks for the focus (a session opened, a new one begun): on a touch screen, where
-    /// the focus brings up the keyboard over half the conversation, the text box takes it as it
-    /// is tapped instead.
-    pub fn focus_asked(text: &str) {
-        let eval = document::eval(&format!(
-            "const text = await dioxus.recv();
-            if (matchMedia('(pointer: coarse)').matches) {{ return; }}
-            const input = document.getElementById({:?});
-            if (input) {{
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }}",
-            super::INPUT
-        ));
-        if eval.send(text).is_err() {
-            tracing::debug!("the text box took no focus");
-        }
-    }
-
-    /// Puts `text` in the text box, the caret after it, as the app set the draft.
-    pub fn set_text(text: &str) {
-        let eval = document::eval(&format!(
-            "const text = await dioxus.recv();
-            const input = document.getElementById({:?});
-            if (input && input.value !== text) {{
-                input.value = text;
-                input.setSelectionRange(text.length, text.length);
-            }}",
-            super::INPUT
-        ));
-        if eval.send(text).is_err() {
-            tracing::debug!("the text box wasn't set");
-        }
-    }
-
-    pub fn caret_at_end() -> bool {
-        false
-    }
-
-    /// Enter sends (as the settings say) from a keyboard with keys; from the screen's keyboard
-    /// alone, which has no Shift+Enter, it starts a new line.
-    pub fn enter_sends() -> bool {
-        crate::android::java::has_keyboard().unwrap_or_else(|error| {
-            tracing::debug!(%error, "no keyboard known of");
-            false
-        })
-    }
-
-    /// Ctrl+Enter: a line break in place of the selection, as typed.
-    pub fn break_line() {
-        document::eval("document.execCommand('insertText', false, '\\n');");
-    }
-
-    /// A click on the composer: on its ground, not one of its controls, it writes. Where it
-    /// landed is the script's to see: the pointer's last press, which a listener the composer
-    /// sets up keeps.
-    pub fn clicked(_event: &MouseEvent, draft: &str) {
-        let eval = document::eval(&format!(
-            "const text = await dioxus.recv();
-            if (window.edualcPressed?.closest({CONTROLS:?})) {{ return; }}
-            const input = document.getElementById({:?});
-            if (input) {{
-                if (input.value !== text) {{ input.value = text; }}
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }}",
-            super::INPUT
-        ));
-        if eval.send(draft).is_err() {
-            tracing::debug!("the text box took no focus");
-        }
-    }
-
-    /// Keeps where the pointer last pressed, for [`clicked`].
-    pub fn watch_presses() {
-        document::eval(
-            "if (!window.edualcPressesWatched) {
-                window.edualcPressesWatched = true;
-                document.addEventListener('pointerdown', (event) => {
-                    window.edualcPressed = event.target instanceof Element ? event.target : null;
-                }, true);
-            }",
-        );
-    }
-
-    /// The text's box's height and the conversation's column's, in CSS pixels.
-    pub async fn heights() -> (Option<f64>, Option<f64>) {
-        let asked = document::eval(
-            "const scroll = document.getElementById('composer-scroll');
-            const column = document.getElementById('composer')?.closest('.column');
-            return [scroll?.offsetHeight ?? null, column?.clientHeight ?? null];",
-        );
-        asked
-            .join::<(Option<f64>, Option<f64>)>()
-            .await
-            .unwrap_or((None, None))
-    }
-
-    /// Tab reached an end of the composer made taller: the focus goes round.
-    pub fn focus_edge(first: bool) {
-        let pick = if first {
-            "found[0]"
-        } else {
-            "found[found.length - 1]"
-        };
-        document::eval(&format!(
-            "const found = document.querySelectorAll({FOCUSABLE:?}); {pick}?.focus();"
-        ));
-    }
-}
-
-/// Rendered on the server, the page has no parts to reach yet.
-#[cfg(not(any(feature = "web", feature = "mobile")))]
-mod dom {
-    use dioxus::prelude::MouseEvent;
-
-    pub fn focus_end(_text: &str) {}
-
-    pub fn focus_asked(_text: &str) {}
-
-    pub fn enter_sends() -> bool {
-        true
-    }
-
-    pub fn caret_at_end() -> bool {
-        false
-    }
-
-    pub fn break_line() {}
-
-    pub fn clicked(_event: &MouseEvent, _draft: &str) {}
-
-    pub async fn heights() -> (Option<f64>, Option<f64>) {
-        (None, None)
-    }
-
-    pub fn focus_edge(_first: bool) {}
 }
