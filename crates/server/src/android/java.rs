@@ -259,31 +259,49 @@ pub fn clipboard_image(
                 &[JValue::Object(&uri)],
             )?
             .l()?;
-        // Java's buffer and ours, each made once and read through again.
-        let buffer = env.new_byte_array(i32::try_from(CHUNK).unwrap_or(i32::MAX))?;
-        let mut chunk = vec![0_i8; CHUNK];
-        let mut bytes = Vec::new();
-        while bytes.len() <= limit {
-            let read = env
-                .call_method(&stream, "read", "([B)I", &[JValue::Object(&buffer)])?
-                .i()?;
-            // -1: the end.
-            let Some(read) = usize::try_from(read)
-                .ok()
-                .and_then(|read| chunk.get_mut(..read))
-            else {
-                break;
-            };
-            env.get_byte_array_region(&buffer, 0, read)?;
-            bytes.extend(
-                read.iter()
-                    .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes())),
-            );
+        if stream.is_null() {
+            return Ok(None);
+        }
+        let read = read_up_to(env, &stream, limit);
+        // Closed however the reading went: an open stream holds the image's file. What Java
+        // threw is cleared first, as no call may be made over it.
+        if read.is_err() && env.exception_check().unwrap_or(false) {
+            env.exception_clear()?;
         }
         env.call_method(&stream, "close", "()V", &[])?;
-        Ok(Some(bytes))
+        Ok(Some(read?))
     };
     beside(work, done);
+}
+
+/// What `stream` holds, up to `limit` bytes (reading stops just past it).
+fn read_up_to(
+    env: &mut JNIEnv<'_>,
+    stream: &JObject<'_>,
+    limit: usize,
+) -> Result<Vec<u8>, Refused> {
+    // Java's buffer and ours, each made once and read through again.
+    let buffer = env.new_byte_array(i32::try_from(CHUNK).unwrap_or(i32::MAX))?;
+    let mut chunk = vec![0_i8; CHUNK];
+    let mut bytes = Vec::new();
+    while bytes.len() <= limit {
+        let read = env
+            .call_method(stream, "read", "([B)I", &[JValue::Object(&buffer)])?
+            .i()?;
+        // -1: the end.
+        let Some(read) = usize::try_from(read)
+            .ok()
+            .and_then(|read| chunk.get_mut(..read))
+        else {
+            break;
+        };
+        env.get_byte_array_region(&buffer, 0, read)?;
+        bytes.extend(
+            read.iter()
+                .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes())),
+        );
+    }
+    Ok(bytes)
 }
 
 /// How much of the clipboard's image is read at a time.

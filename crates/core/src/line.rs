@@ -30,6 +30,8 @@ const PING: Duration = Duration::from_secs(15);
 const SILENT: Duration = Duration::from_secs(45);
 /// How long edualcd may take to greet a window once its line is open.
 const GREETING: Duration = Duration::from_secs(10);
+/// How long edualcd may take to answer what a window asks before it opens (`Connected::ask`).
+const ANSWER: Duration = Duration::from_secs(30);
 /// How long the window waits before reaching edualcd again, first and at most.
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(30);
@@ -96,24 +98,26 @@ impl Connected {
         Ok(saved)
     }
 
-    /// Asks edualcd to read something, and waits for its answer: before the app runs, for
-    /// where it is to work, which is on edualcd's machine.
+    /// Asks edualcd to read something, and waits for its answer, up to [`ANSWER`]: before the
+    /// app runs, for where it is to work, which is on edualcd's machine. A line gone silent
+    /// meanwhile isn't waited on for ever.
     pub fn ask(&mut self, read: Read) -> Result<Answer, Error> {
         let request = ActId::default();
         let Self {
             runtime,
             socket,
             early,
+            server,
             ..
         } = self;
-        runtime.block_on(async {
+        let asked = async {
             ws::send(socket, &ToDaemon::Read { request, read }).await?;
             loop {
                 match ws::recv::<_, FromDaemon>(socket).await? {
                     FromDaemon::Answer {
                         request: answered,
                         answer,
-                    } if answered == request => return Ok(answer),
+                    } if answered == request => return Ok::<_, Error>(answer),
                     message @ (FromDaemon::Hello { .. }
                     | FromDaemon::Started { .. }
                     | FromDaemon::Failed { .. }
@@ -128,6 +132,11 @@ impl Connected {
                     | FromDaemon::Changed(_)) => early.push(message),
                 }
             }
+        };
+        runtime.block_on(async {
+            tokio::time::timeout(ANSWER, asked)
+                .await
+                .map_err(|_late| Error::from(ipc::Error::Slow(server.authority())))?
         })
     }
 }
@@ -170,10 +179,10 @@ async fn greet(
         ws::send(&mut socket, &hello).await?;
         let hello = match ws::recv::<_, FromDaemon>(&mut socket).await {
             Ok(hello) => hello,
-            // An edualcd of another version may speak otherwise, and hang up on ours.
-            Err(ipc::Error::Closed | ipc::Error::Unreadable(_) | ipc::Error::WebSocket(_)) => {
-                return Err(Ungreeted::Version.into());
-            }
+            // An edualcd of another version may speak otherwise. One that only hangs up, or a
+            // line that breaks, is the network's doing (edualcd refuses another version before
+            // the line opens, HTTP 409): reached again, not given up on for good.
+            Err(ipc::Error::Unreadable(_)) => return Err(Ungreeted::Version.into()),
             Err(error) => return Err(error.into()),
         };
         let hosted = ws::recv::<_, FromDaemon>(&mut socket).await?;
@@ -327,14 +336,17 @@ async fn carry(
             }
         }
         loop {
-            match tokio::time::timeout(SILENT, ws::recv::<_, FromDaemon>(&mut reading)).await {
-                Ok(Ok(message)) => {
+            // Each frame, edualcd's pings and the pongs to the window's among them, says the
+            // line is alive: an idle line hears nothing else.
+            match tokio::time::timeout(SILENT, ws::next::<_, FromDaemon>(&mut reading)).await {
+                Ok(Ok(Some(message))) => {
                     if let Some(event) = inbox.take(message)
                         && events.send(event).await.is_err()
                     {
                         return false;
                     }
                 }
+                Ok(Ok(None)) => {}
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "lost edualcd");
                     return true;

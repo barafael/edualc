@@ -918,31 +918,17 @@ fn inbox_ok(places: &Places, record: &SessionRecord) -> bool {
 /// (`<pid>.<64 hex>.key`), whose start matches the record's.
 fn peer_token(places: &Places, record: &SessionRecord) -> Option<String> {
     let folder = open_folder(&places.sessions)?;
-    let prefix = format!("{}.", record.pid);
     std::fs::read_dir(&places.sessions)
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.file_name())
         .filter(|name| {
-            name.to_str().is_some_and(|name| {
-                name.strip_prefix(&prefix)
-                    .and_then(|rest| rest.strip_suffix(".key"))
-                    .is_some_and(|hash| {
-                        hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-            })
+            name.to_str()
+                .is_some_and(|name| mirror::is_key_of(name, record.pid))
         })
         .filter_map(|name| mirror::read_regular(&folder, &name, KEY_BYTES))
         .filter_map(|text| serde_json::from_str::<SessionKey>(&text).ok())
-        .find(|key| {
-            key.proc_start == record.proc_start
-                && !key.peer_token.is_empty()
-                && key.peer_token.len() <= 256
-                && key
-                    .peer_token
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        })
+        .find(|key| key.proc_start == record.proc_start && mirror::is_peer_token(&key.peer_token))
         .map(|key| key.peer_token)
 }
 

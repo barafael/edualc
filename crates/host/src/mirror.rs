@@ -116,20 +116,30 @@ fn checked_record(text: &str, expected: &Expected) -> Option<SessionRecord> {
     (ours && bounded).then_some(record)
 }
 
+/// Whether `name` is one of process `pid`'s key files, as Claude Code names them:
+/// `<pid>.<64 hex digits>.key`.
+pub fn is_key_of(name: &str, pid: u32) -> bool {
+    name.strip_prefix(&format!("{pid}."))
+        .and_then(|rest| rest.strip_suffix(".key"))
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Whether `token` is a peer token as a key holds one: short, of letters, digits, `-` and `_`.
+pub fn is_peer_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= FIELD_CHARS
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 /// The key as it may cross: named for the session's process, its start the same.
 fn checked_key(name: &OsStr, text: &str, expected: &Expected) -> Option<SessionKey> {
-    let name = name.to_str()?;
-    let hash = name
-        .strip_prefix(&format!("{}.", expected.pid))?
-        .strip_suffix(".key")?;
-    let named = hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let named = name
+        .to_str()
+        .is_some_and(|name| is_key_of(name, expected.pid));
     let key: SessionKey = serde_json::from_str(text).ok()?;
-    let token = !key.peer_token.is_empty()
-        && key.peer_token.len() <= FIELD_CHARS
-        && key
-            .peer_token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    let token = is_peer_token(&key.peer_token);
     let same = key.proc_start == expected.started
         && key.pid_domain.as_ref().is_none_or(|domain| short(domain));
     (named && token && same).then_some(key)

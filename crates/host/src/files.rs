@@ -20,8 +20,10 @@ use crate::settings::{self, Settings};
 
 /// The most sessions listed at once.
 const MOST_SESSIONS: usize = 1000;
-/// The most bytes of a transcript's lines sent in one message.
-const PIECE_BYTES: usize = 16 * 1024 * 1024;
+/// The most bytes of a transcript's lines sent in one message: small, so that a slow network
+/// carries each well within the time a line may go silent (a frame's pings wait behind it, and
+/// a window reading a piece hears nothing else meanwhile).
+const PIECE_BYTES: usize = 1024 * 1024;
 
 /// Where a transcript is.
 pub fn resolve(place: &Place) -> PathBuf {
@@ -199,11 +201,16 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: Outbox) {
                     tracing::warn!("stopped noticing changes for a window");
                     return;
                 };
-                // A burst of writes tells each watch once.
-                let changed: HashSet<Watched> = descriptors
-                    .into_iter()
-                    .flat_map(|descriptor| touched(&inotify, &mut watches, descriptor))
-                    .collect();
+                // A burst of writes tells each watch once. Events lost to a full queue (told as
+                // its overflow, on no watch) may have been any watch's: each is told.
+                let changed: HashSet<Watched> = if descriptors.contains(&OVERFLOW) {
+                    watches.keys().copied().collect()
+                } else {
+                    descriptors
+                        .into_iter()
+                        .flat_map(|descriptor| touched(&inotify, &mut watches, descriptor))
+                        .collect()
+                };
                 for watched in changed {
                     if outbox.send(FromDaemon::Changed(watched)).is_err() {
                         return;
@@ -216,6 +223,8 @@ pub async fn watch(mut orders: mpsc::Receiver<Order>, outbox: Outbox) {
 
 /// Batches of watches noticed and waiting for the actor.
 const QUEUE: usize = 64;
+/// The watch descriptor inotify tells its queue's overflow on (`IN_Q_OVERFLOW`).
+const OVERFLOW: i32 = -1;
 
 /// Sends on the watches inotify names, each once for all it has to tell at a time, until the
 /// actor ends: its end of `ending` closes.

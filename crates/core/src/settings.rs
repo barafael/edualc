@@ -242,7 +242,18 @@ fn save_to(path: PathBuf, settings: &Settings) -> Result<(), Error> {
         })?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(Error::Encode)?;
-    std::fs::write(&path, text).map_err(|source| Error::Write { path, source })
+    // Written beside, under a name of its own, and moved over it: a save cut short leaves the
+    // old file whole, and two windows saving at once don't write into each other's (a file
+    // half one and half the other wouldn't parse, and would be kept from then on, not written).
+    let fresh = path.with_file_name(format!(".settings.json.{}.new", uuid::Uuid::new_v4()));
+    let written = std::fs::write(&fresh, text).and_then(|()| std::fs::rename(&fresh, &path));
+    if written.is_err()
+        && let Err(error) = std::fs::remove_file(&fresh)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::debug!(%error, "a settings file not kept stays beside them");
+    }
+    written.map_err(|source| Error::Write { path, source })
 }
 
 #[cfg(test)]

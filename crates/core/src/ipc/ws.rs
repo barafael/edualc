@@ -265,14 +265,27 @@ where
     T: DeserializeOwned,
 {
     loop {
-        match socket.next().await {
-            Some(Ok(Message::Binary(bytes))) => return Ok(super::decode(&bytes)?),
-            Some(Ok(Message::Close(_))) | None => return Err(Error::Closed),
-            Some(Ok(
-                Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_),
-            )) => {}
-            Some(Err(error)) => return Err(error.into()),
+        if let Some(message) = next(socket).await? {
+            return Ok(message);
         }
+    }
+}
+
+/// What the next frame brings: a message, or none for a ping, a pong or a text frame, which
+/// say only that the other side is there (tungstenite answers pings itself). A line watched for
+/// silence counts each frame, not each message.
+pub async fn next<S, T>(socket: &mut S) -> Result<Option<T>, Error>
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    T: DeserializeOwned,
+{
+    match socket.next().await {
+        Some(Ok(Message::Binary(bytes))) => Ok(Some(super::decode(&bytes)?)),
+        Some(Ok(Message::Close(_))) | None => Err(Error::Closed),
+        Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {
+            Ok(None)
+        }
+        Some(Err(error)) => Err(error.into()),
     }
 }
 
@@ -315,6 +328,36 @@ mod tests {
             demo.await.expect("the demo ran"),
             Some(format!("token=&protocol={}", crate::ipc::PROTOCOL))
         );
+    }
+
+    /// A ping comes as no message, but comes: a line watched for silence hears an idle edualcd's
+    /// pings; what is said after it comes as said.
+    #[tokio::test]
+    async fn a_ping_is_heard_as_no_message() {
+        let (window_end, daemon_end) = tokio::net::UnixStream::pair().expect("a socket pair");
+        let daemon = tokio::spawn(async move {
+            let mut socket = accept(daemon_end).await.expect("handshake");
+            socket
+                .send(Message::Ping(Vec::new().into()))
+                .await
+                .expect("pinged");
+            send(&mut socket, &FromDaemon::Hosted(Vec::new()))
+                .await
+                .expect("sent");
+            socket
+        });
+        let (mut socket, _response) = tokio_tungstenite::client_async_with_config(
+            "ws://edualcd/",
+            window_end,
+            Some(config()),
+        )
+        .await
+        .expect("handshake");
+        let pinged = next::<_, FromDaemon>(&mut socket).await.expect("a frame");
+        assert!(pinged.is_none(), "{pinged:?}");
+        let said = next::<_, FromDaemon>(&mut socket).await.expect("a frame");
+        assert!(matches!(said, Some(FromDaemon::Hosted(_))), "{said:?}");
+        drop(daemon.await.expect("the daemon's end ran"));
     }
 
     /// Messages go both ways whole over a socket pair, a long line among them; one bigger than

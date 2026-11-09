@@ -60,8 +60,11 @@ pub fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
     } else {
         program.to_string().into()
     };
+    // edualcd's token, if it was given one so, goes to no program it runs (`claude stop`, git),
+    // as it goes to no session.
     let output = Command::new(name)
         .args(args)
+        .env_remove(crate::ipc::TOKEN_VARIABLE)
         .output()
         .map_err(|source| Error::Run { program, source })?;
     if output.status.success() {

@@ -62,6 +62,12 @@ pub enum Error {
     Encode(#[source] serde_json::Error),
     #[error("lost the edualc daemon, which runs Claude Code")]
     Lost,
+    #[error(
+        "the message comes to more than Claude Code's input takes ({} MiB): send fewer or \
+         smaller images with it",
+        crate::ipc::MAX_LINE / (1024 * 1024)
+    )]
+    TooLong,
 }
 
 /// What a session's process is started with; the daemon starts it.
@@ -219,18 +225,17 @@ impl Claude {
 
     /// Writes one line of JSON.
     fn send(&self, message: &Input<'_>) -> Result<(), Error> {
-        let line = serde_json::to_string(message).map_err(Error::Encode)?;
-        link::send_input(&self.link, self.key, &line).map_err(|_lost| Error::Lost)
+        self.write_line(line(message)?)
     }
 
-    /// A prompt, after the rows of the `!` commands run since the last (see
-    /// [`Input::prompt_with`]), with images as the confined helper encoded them (see `decode`).
-    pub fn prompt(&self, shell: &[String], images: &[Picture], text: &str) -> Result<(), Error> {
-        let blocks = images
-            .iter()
-            .map(|picture| ImageBlock::base64(picture.media_type, BASE64.encode(&picture.bytes)))
-            .collect();
-        self.send(&Input::prompt_with(shell, blocks, text))
+    /// Writes a line made already (see [`prompt_line`]).
+    fn write_line(&self, line: String) -> Result<(), Error> {
+        link::send_input(&self.link, self.key, line).map_err(|_lost| Error::Lost)
+    }
+
+    /// A prompt, its line made by [`prompt_line`].
+    pub fn prompt(&self, line: String) -> Result<(), Error> {
+        self.write_line(line)
     }
 
     /// A `!` command, for the CLI to run (see [`Input::BashCommand`]).
@@ -274,6 +279,29 @@ impl Claude {
     pub fn pid(&self) -> Option<u32> {
         self.pid
     }
+}
+
+/// A message as the line it is written as; one longer than the daemon takes is refused here,
+/// where nothing is sent yet: past the daemon's limit it would be refused as a start that
+/// failed, and past the line's it would end the line.
+fn line(message: &Input<'_>) -> Result<String, Error> {
+    let line = serde_json::to_string(message).map_err(Error::Encode)?;
+    if line.len() > crate::ipc::MAX_LINE {
+        return Err(Error::TooLong);
+    }
+    Ok(line)
+}
+
+/// A prompt's line, after the rows of the `!` commands run since the last (see
+/// [`Input::prompt_with`]), with images as the confined helper encoded them (see `decode`);
+/// made before anything of it is sent, so that one too long is refused while it can still be
+/// sent otherwise.
+pub fn prompt_line(shell: &[String], images: &[Picture], text: &str) -> Result<String, Error> {
+    let blocks = images
+        .iter()
+        .map(|picture| ImageBlock::base64(picture.media_type, BASE64.encode(&picture.bytes)))
+        .collect();
+    line(&Input::prompt_with(shell, blocks, text))
 }
 
 impl Drop for Claude {

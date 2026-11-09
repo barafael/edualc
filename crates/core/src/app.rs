@@ -1140,6 +1140,7 @@ impl<F: Frontend> App<F> {
                 // Asked on the lost line: no answer comes.
                 self.reading.clear();
                 self.acting.clear();
+                self.listing_live = Refresh::Idle;
                 self.chat
                     .error("Lost the line to edualcd, which runs Claude Code; reaching it again.");
             }
@@ -2090,6 +2091,9 @@ impl<F: Frontend> App<F> {
     fn reconnected(&mut self, hosted: Vec<Hosted>, live: Vec<LiveSession>) {
         self.hosted = hosted;
         self.live = live;
+        // A listing asked on the lost line, or while it was lost (dropped unsent), is answered
+        // never: waiting on it, the running sessions would be listed no more.
+        self.listing_live = Refresh::Idle;
         self.redraw.sessions = true;
         self.records = self.watch(Target::Records);
         match self.status.session_id.take() {
@@ -2300,6 +2304,16 @@ impl<F: Frontend> App<F> {
             self.wait_for_trust(text);
             return;
         }
+        // Made before anything is taken or shown: a message too long for Claude Code's input
+        // stays in the composer, its images with it, and no turn waits on it.
+        let line = match claude::prompt_line(&self.shell_rows, &self.attached, text) {
+            Ok(line) => line,
+            Err(error) => {
+                self.chat.error(error.to_string());
+                self.put_draft(text);
+                return;
+            }
+        };
         let images = std::mem::take(&mut self.attached);
         self.view.render_attached(&self.attached);
         self.chat.user_images(&images);
@@ -2322,8 +2336,9 @@ impl<F: Frontend> App<F> {
             self.redraw.tasks = true;
         }
         self.start_listening();
-        let shell_rows = std::mem::take(&mut self.shell_rows);
-        self.write(|process| process.prompt(&shell_rows, &images, text));
+        // In the line now.
+        self.shell_rows.clear();
+        self.write(|process| process.prompt(line));
         self.view.scroll_to_end();
     }
 

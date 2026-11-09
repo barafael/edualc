@@ -31,9 +31,8 @@ pub fn send(link: &Link, message: ToDaemon) -> Result<(), Lost> {
     }
 }
 
-/// A line for a session's input.
-pub fn send_input(link: &Link, key: Generation, line: &str) -> Result<(), Lost> {
-    let line = line.to_owned();
+/// A line for a session's input: taken, not copied (with images, it runs to megabytes).
+pub fn send_input(link: &Link, key: Generation, line: String) -> Result<(), Lost> {
     send(link, ToDaemon::Input { key, line })
 }
 
