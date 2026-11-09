@@ -794,6 +794,26 @@ impl Session {
         (self.phase == Phase::Running).then(|| alone.max(self.active) + QUIET)
     }
 
+    /// A line to the process's input, never waited on here: one that isn't reading holds up
+    /// none of the rest. One that has left [`QUEUE`] lines unread has hung, and is ended as a
+    /// closed input ends it.
+    fn write(&mut self, stdin: &mut Option<mpsc::Sender<String>>, line: String) {
+        let Some(input) = stdin.as_ref() else {
+            return;
+        };
+        match input.try_send(line) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!(id = ?self.id, "claude's input closed");
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(id = ?self.id, "claude isn't reading its input: ending it");
+                *stdin = None;
+                self.input_closed(Instant::now());
+            }
+        }
+    }
+
     /// Lines to the process's input, its output to the window that shows it, and its end, until
     /// it ends.
     async fn event_loop(
@@ -854,7 +874,7 @@ impl Session {
             )
             .await;
         }
-        let mut stdin = child.stdin.take();
+        let mut stdin = child.stdin.take().map(input);
         let (lines, mut output) = mpsc::channel(QUEUE);
         let pumps = [
             child
@@ -890,11 +910,7 @@ impl Session {
                             relaying.window_said(&line);
                         }
                         let line = initialize_with(&line, relaying.is_some()).unwrap_or(line);
-                        if let Some(writing) = stdin.as_mut()
-                            && write_line(writing, &line).await.is_err()
-                        {
-                            tracing::debug!(id = ?self.id, "claude's input closed");
-                        }
+                        self.write(&mut stdin, line);
                     }
                     Some(Command::Attach { key, outbox }) => {
                         self.alone_since = None;
@@ -964,11 +980,7 @@ impl Session {
                         };
                         if let Some(answer) = answer {
                             // The relay's own: answered to the process, shown to no window.
-                            if let Some(writing) = stdin.as_mut()
-                                && write_line(writing, &answer).await.is_err()
-                            {
-                                tracing::debug!(id = ?self.id, "claude's input closed");
-                            }
+                            self.write(&mut stdin, answer);
                             continue;
                         }
                         if stream == Stream::Out {
@@ -1262,6 +1274,22 @@ impl Pending {
             .chain(self.progress.values())
             .chain(self.asked.values())
     }
+}
+
+/// A process's input, written on a task of its own, line by line as they are queued. Dropped,
+/// the input closes once the lines queued are written; one the process doesn't read holds it
+/// open only until the process is killed, a grace after its input closed.
+fn input(mut stdin: ChildStdin) -> mpsc::Sender<String> {
+    let (lines, mut writing) = mpsc::channel::<String>(QUEUE);
+    tokio::spawn(async move {
+        while let Some(line) = writing.recv().await {
+            if let Err(error) = write_line(&mut stdin, &line).await {
+                tracing::debug!(%error, "claude's input closed");
+                return;
+            }
+        }
+    });
+    lines
 }
 
 async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
@@ -1742,8 +1770,13 @@ mod tests {
     }
 
     fn cat() -> spawn::Spawned {
-        let mut command = tokio::process::Command::new("cat");
+        running("cat", &[])
+    }
+
+    fn running(program: &str, args: &[&str]) -> spawn::Spawned {
+        let mut command = tokio::process::Command::new(program);
         command
+            .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1807,6 +1840,44 @@ mod tests {
         assert!(matches!(
             told.last(),
             Some(FromDaemon::Ended { key: ended, code: Some(0) }) if *ended == key
+        ));
+    }
+
+    /// A process that doesn't read its input holds up nothing else: a window attaching is
+    /// answered, and closing it ends it, killed a grace after.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_not_reading_its_input_goes_on() {
+        let (orders, commands) = mpsc::channel(8);
+        let (outbox, mut answers) = mpsc::unbounded_channel();
+        let key = Generation::default().next();
+        let (replies, _unheard) = mpsc::channel(QUEUE);
+        let session = tokio::spawn(Session::new(HostedId::default().next()).event_loop(
+            running("sleep", &["30"]),
+            commands,
+            None,
+            replies,
+        ));
+        // More than a pipe holds: its writing waits on the process for good.
+        let unread = "x".repeat(4 * 1024 * 1024);
+        orders.send(Command::Line(unread)).await.expect("queued");
+        orders
+            .send(Command::Attach { key, outbox })
+            .await
+            .expect("queued");
+        let started = tokio::time::timeout(Duration::from_secs(5), answers.recv()).await;
+        assert!(
+            matches!(started, Ok(Some(FromDaemon::Started { key: shown, .. })) if shown == key)
+        );
+        drop(orders);
+        let ended = tokio::time::timeout(GRACE * 3, session).await;
+        assert!(matches!(ended, Ok(Ok(Session { lines_in: 1, .. }))));
+        let mut told = Vec::new();
+        while let Some(answer) = answers.recv().await {
+            told.push(answer);
+        }
+        assert!(matches!(
+            told.last(),
+            Some(FromDaemon::Ended { key: ended, code: None }) if *ended == key
         ));
     }
 }
