@@ -149,7 +149,7 @@ pub(crate) enum Error {
 /// Runs a program to its end; what it printed, if it succeeded.
 pub(crate) fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
     let name = if program == Program::Claude {
-        crate::spawn::program()
+        crate::claude::program()
     } else {
         program.to_string().into()
     };
@@ -198,6 +198,7 @@ pub(crate) fn notify(summary: &str, body: &str) -> Result<(), Error> {
 
 /// Focuses the window that process `pid` runs in: the one whose process is `pid` or one of
 /// its ancestors (a terminal, an editor). Only niri is asked.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn focus_window_of(pid: u32) -> Result<(), Error> {
     let windows = match niri::ask(&niri::Request::Windows)? {
         niri::Response::Windows(windows) => windows,

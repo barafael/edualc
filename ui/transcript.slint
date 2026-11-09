@@ -111,11 +111,13 @@ export component BlockView inherits VerticalLayout {
         }
     }
     // Code and tables are never narrower than the prose, and wider as their content needs, up
-    // to the room there is.
+    // to `Theme.wide-measure` or the room there is. They start where the prose starts and grow
+    // to its right; only where that runs out of room do they move left, as far as they must.
     if root.block.kind == BlockKind.code: HorizontalLayout {
-        property <length> side: min(root.inset, max(0px, (root.room - code.preferred-width) / 2));
-        padding-left: self.side;
-        padding-right: self.side;
+        property <length> wide: max(root.room - 2 * root.inset, min(code.preferred-width, min(root.room, Theme.wide-measure)));
+        property <length> left: max(0px, min(root.inset, root.room - self.wide));
+        padding-left: self.left;
+        padding-right: max(0px, root.room - self.left - self.wide);
         code := CodeBox {
             body: root.block.body;
             key: root.key;
@@ -127,9 +129,10 @@ export component BlockView inherits VerticalLayout {
         }
     }
     if root.block.kind == BlockKind.table: HorizontalLayout {
-        property <length> side: min(root.inset, max(0px, (root.room - table.preferred-width) / 2));
-        padding-left: self.side;
-        padding-right: self.side;
+        property <length> wide: max(root.room - 2 * root.inset, min(table.preferred-width, min(root.room, Theme.wide-measure)));
+        property <length> left: max(0px, min(root.inset, root.room - self.wide));
+        padding-left: self.left;
+        padding-right: max(0px, root.room - self.left - self.wide);
         table := TableView {
             block: root.block;
             key: root.key;
@@ -572,6 +575,9 @@ export component EntryView inherits VerticalLayout {
     // prose's measure in it, centered on the same line (see `Theme.measure`).
     property <length> room: root.width - root.padding-left;
     property <length> prose: min(self.room, Theme.measure);
+    // How wide a card may get, and how far in the prose starts.
+    property <length> wide: min(self.room, Theme.wide-measure);
+    property <length> inset: (self.room - self.prose) / 2;
     if root.entry.kind == EntryKind.user: UserBubble {
         width: root.prose;
         cross-axis-self-alignment: center;
@@ -597,7 +603,7 @@ export component EntryView inherits VerticalLayout {
     if root.entry.kind == EntryKind.assistant: AssistantText {
         entry: root.entry;
         index: root.index;
-        inset: (root.room - root.prose) / 2;
+        inset: root.inset;
         room: root.room;
     }
     if root.entry.kind == EntryKind.thinking: Thinking {
@@ -613,17 +619,19 @@ export component EntryView inherits VerticalLayout {
         index: root.index;
     }
     // An open run's calls, indented under its line; a folded run shows only the line. A card
-    // is as wide as the prose, or as its content needs where there is room.
+    // is as wide as the prose, or as its content needs where there is room; it starts where
+    // the prose starts, moving left only where it runs out of room to the right, as code does.
     if root.entry.kind == EntryKind.tool && (root.entry.group == GroupRole.alone || root.entry.group-open): tool-row := HorizontalLayout {
         property <length> indent: root.entry.group == GroupRole.alone ? 0 : Theme.space-l;
-        cross-axis-self-alignment: center;
-        padding-left: self.indent;
+        property <length> card-width: max(root.prose - self.indent, min(card.natural-width, root.wide - self.indent));
+        alignment: start;
+        padding-left: max(0px, min(root.inset, root.room - self.card-width - self.indent)) + self.indent;
         padding-top: root.entry.group == GroupRole.head ? Theme.space-xs : 0;
-        ToolCard {
-            width: max(root.prose - tool-row.indent, min(self.natural-width, root.room - tool-row.indent));
+        card := ToolCard {
+            width: tool-row.card-width;
             entry: root.entry;
             index: root.index;
-            image-room: root.room - tool-row.indent - 2 * Theme.space-s;
+            image-room: root.wide - tool-row.indent - 2 * Theme.space-s;
         }
     }
     if root.entry.kind == EntryKind.info: Selectable {

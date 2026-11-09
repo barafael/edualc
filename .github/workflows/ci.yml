@@ -64,6 +64,24 @@ jobs:
           python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX"));
           os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
 
+  # The browser demo (src/web, pages.yml) builds from the same code. What only the daemon calls
+  # is left unused there, so dead code is no error in this build alone.
+  web:
+    name: Browser demo
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy \
+            --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings -A dead_code
+
   deny:
     name: cargo deny
     runs-on: ubuntu-24.04

@@ -24,16 +24,19 @@
 //! bubblewrap mounts, and Landlock forbids mounting to what it restricts. Whoever turned Claude
 //! Code's on in their own settings keeps it, and this one stays off.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use crate::external::claude_files::UserSettings;
+#[cfg(not(target_arch = "wasm32"))]
 use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
 };
 
 /// The newest Landlock this window knows: 9 controls connecting to socket files.
+#[cfg(not(target_arch = "wasm32"))]
 const ABI_KNOWN: ABI = ABI::V9;
 
 /// What `~/.claude` holds that Claude Code runs or obeys: readable to the sandbox, and copied
@@ -129,6 +132,7 @@ pub(crate) fn claude_codes_own_is_on() -> bool {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("couldn't set up the sandbox: {0}")]
@@ -163,6 +167,7 @@ pub(crate) struct Own<'a> {
     pub(crate) scratch: &'a Path,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Policy {
     /// The policy for working in `project`.
     pub(crate) fn for_project(project: &Path, own: Own<'_>, allowances: Allowances<'_>) -> Self {
@@ -388,6 +393,7 @@ fn serial_ports(dev: &Path) -> Vec<PathBuf> {
 /// A rule for each of `paths` that exists; one that doesn't is no rule (and needs none). A file
 /// gets only the rights a file can have: a folder's (making entries in it, say) on a file would
 /// count as not enforced, and the whole sandbox as only partly.
+#[cfg(not(target_arch = "wasm32"))]
 fn rules(
     paths: &[PathBuf],
     access: BitFlags<AccessFs>,
@@ -435,6 +441,7 @@ fn git_includes(home: &Path) -> Vec<PathBuf> {
 
 /// The folder Claude Code's sessions put their messaging sockets in, made as Claude Code makes
 /// it if no session has yet: the sandboxed one couldn't.
+#[cfg(not(target_arch = "wasm32"))]
 fn messaging_folder(runtime: &Path) -> Option<PathBuf> {
     let folder = runtime.join("cc-socks");
     match std::fs::DirBuilder::new().mode(0o700).create(&folder) {

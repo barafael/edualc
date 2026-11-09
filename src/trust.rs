@@ -6,10 +6,13 @@
 //! file holds MCP servers' environments, tokens among them, and Claude Code replaces it as it
 //! writes, so a Landlock rule for it would stop at the first rewrite anyway.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Read;
+#[cfg(not(target_arch = "wasm32"))]
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
 use rustix::fs::{Mode, OFlags};
 
 use crate::external::claude_files::{ClaudeJson, McpJson, ProjectSettings};
@@ -77,6 +80,7 @@ fn accepted_folders() -> Vec<PathBuf> {
 /// in it is followed (a repository could link to the user's own configuration), a file too
 /// large or not plain is said to be unreadable rather than left out, and every text is cut
 /// short and kept free of control characters.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn what_runs(folder: &Path) -> Vec<Runs> {
     let mut runs = Vec::new();
     let opened = rustix::fs::open(
@@ -213,6 +217,7 @@ fn shown(text: &str) -> String {
 
 /// `name` in the folder `at`, not followed if it is a link, nor waited on if it is a pipe;
 /// `None` if there is none, or why it couldn't be opened.
+#[cfg(not(target_arch = "wasm32"))]
 fn open_in(at: impl AsFd, name: &str, kind: OFlags) -> Result<Option<OwnedFd>, String> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC | kind;
     match rustix::fs::openat(at, name, flags, Mode::empty()) {
@@ -225,6 +230,7 @@ fn open_in(at: impl AsFd, name: &str, kind: OFlags) -> Result<Option<OwnedFd>, S
 
 /// The plain file `name` in the folder `at`, read whole; `None` if there is none, or why it
 /// couldn't be read (a link, not a plain file, too large, not text).
+#[cfg(not(target_arch = "wasm32"))]
 fn read_in(at: impl AsFd, name: &str) -> Result<Option<String>, String> {
     let Some(fd) = open_in(at, name, OFlags::empty())? else {
         return Ok(None);

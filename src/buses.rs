@@ -5,25 +5,17 @@
 //! accessibility bus's, a screen reader can read the window, but the window can't read or drive
 //! other programs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
+use crate::ipc::Buses;
+
 /// What a proxy took to listen, at most.
 const READY: Duration = Duration::from_secs(2);
-
-/// The proxies' sockets, for the windows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Buses {
-    /// The session bus, filtered.
-    pub(crate) session: Option<PathBuf>,
-    /// The accessibility bus, filtered.
-    pub(crate) accessibility: Option<PathBuf>,
-}
 
 /// The running proxies: they end with the daemon (killed with it, and stopping when their
 /// end of the sync socket closes, should it be killed itself).

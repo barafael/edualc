@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::external::wire::SessionId;
 use crate::home::Home;
-use crate::spawn::MessagingName;
+use crate::sessions::MessagingName;
 use crate::{process, sessions};
 
 /// A record runs to a kilobyte; anything far larger isn't one.

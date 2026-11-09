@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>edualc demo</title>
+  <link rel="icon" href="edualc.svg" type="image/svg+xml">
+  <meta name="description" content="edualc, a native Linux window for Claude Code, running in your browser on a demo project. Claude is scripted here; nothing leaves the page.">
+  <style>
+    html, body { margin: 0; height: 100%; background: #282828; color: #ebdbb2;
+                 font: 14px "Fira Sans", system-ui, sans-serif; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+    header { display: flex; gap: 1em; align-items: center; padding: 6px 14px;
+             background: #1d2021; border-bottom: 1px solid #3c3836; }
+    header strong { color: #fe8019; }
+    header span { color: #a89984; flex: 1; }
+    header a { color: #83a598; }
+    /* The page decides the window's size, not the window's preferred one, which winit would
+       otherwise write into the canvas's own style. */
+    canvas { display: block; flex: 1; width: 100% !important; height: auto !important;
+             min-height: 0; outline: none; }
+    #loading { position: fixed; inset: 0; top: 34px; display: grid; place-items: center; color: #a89984; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>edualc</strong>
+    <span>The real window, compiled to WebAssembly. Claude is played by a script: nothing you type leaves the page.</span>
+    <a href="https://github.com/felintusun/edualc">Install it on Linux</a>
+  </header>
+  <canvas id="canvas"></canvas>
+  <div id="loading">Loading edualc, about 4 MB.</div>
+  <script type="module">
+    import init from "./edualc.js";
+    const loading = document.getElementById("loading");
+    init().then(() => loading.remove(), (error) => {
+      // winit hands the page to the browser's event loop by throwing this
+      if (String(error).includes("Using exceptions for control flow")) {
+        loading.remove();
+        return;
+      }
+      loading.textContent = "The demo could not start: " + error;
+      throw error;
+    });
+  </script>
+</body>
+</html>

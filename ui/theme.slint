@@ -396,7 +396,7 @@ export global Theme {
     // The transcript's measure, in ems of its messages (`message`), as the user chose after the
     // typography review: prose, lists and headings at most 42 em (about 92 characters of Fira
     // Sans, 42 of CJK); code blocks, tables and tool output as wide as they need, up to 70 em
-    // (100 to 120 columns of code), centered on the same line. Only in ems, so a line holds as
+    // (100 to 120 columns of code), from the prose's left edge. Only in ems, so a line holds as
     // many characters at any zoom; with margins of `column-margin` at least.
     out property <length> measure: self.base-size * self.message * 42;
     out property <length> wide-measure: self.base-size * self.message * 70;

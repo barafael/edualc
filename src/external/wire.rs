@@ -217,6 +217,9 @@ pub(crate) enum Message {
     Assistant {
         message: ApiMessage,
         parent_tool_use_id: Option<ToolUseId>,
+        /// Set where Claude Code wrote the message itself, as a turn could not be answered.
+        #[serde(default)]
+        error: Option<AssistantError>,
     },
     User(UserLine),
     System(System),
@@ -364,6 +367,16 @@ pub(crate) struct UserMessage {
     pub(crate) content: UserContent,
 }
 
+/// Why Claude Code wrote an assistant message itself, as far as the window tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AssistantError {
+    /// Not signed in, or the API refused the sign-in.
+    AuthenticationFailed,
+    #[serde(other)]
+    Other,
+}
+
 /// A user-role message on the stream: a tool's result, a command's output, or (asked for with
 /// `--replay-user-messages`) Claude Code's echo of a message it took in.
 #[derive(Debug, Deserialize)]
@@ -415,9 +428,15 @@ impl UserLine {
                 name: name.as_deref(),
                 body: body.as_deref(),
             },
-            (Some(MessageOrigin::Other) | None, true) => Sender::Replayed,
-            (Some(MessageOrigin::Other) | None, false) => Sender::Session,
+            // A `!` command's rows come marked as replays, but nothing else shows them.
+            (Some(MessageOrigin::Other) | None, true) if !self.is_shell_row() => Sender::Replayed,
+            (Some(MessageOrigin::Other) | None, _) => Sender::Session,
         }
+    }
+
+    /// A `!` command's echo or what it printed, as Claude Code 2.1.316 writes them.
+    fn is_shell_row(&self) -> bool {
+        matches!(&self.message.content, UserContent::Text(text) if text.starts_with("<bash-"))
     }
 }
 
@@ -664,6 +683,12 @@ impl TurnResult {
     pub(crate) fn sign_in_refused(&self) -> bool {
         self.is_error && self.api_error_status == Some(401)
     }
+
+    /// Whether the turn was answered by a model, unlike a command Claude Code answers itself,
+    /// which says nothing about the sign-in.
+    pub(crate) fn reached_a_model(&self) -> bool {
+        !self.is_error && !self.model_usage.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -788,11 +813,13 @@ pub(crate) struct Account {
 /// The answer to `get_usage` (the CLI's `/usage`), as far as the window shows it.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UsageReport {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) session: SessionUsage,
-    #[serde(default)]
+    /// Null in a sandboxed session, whose sign-in may not ask for them (Claude Code 2.1.316).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) rate_limits: RateLimitReport,
-    #[serde(default)]
+    /// Null where nobody is signed in (Claude Code 2.1.316).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) behaviors: Behaviors,
 }
 
@@ -1084,6 +1111,13 @@ pub(crate) struct QuestionOption {
 /// Reads a field's value and drops it, so that it isn't kept as an unknown field either.
 fn dropped<'de, D: serde::Deserializer<'de>, T: Default>(deserializer: D) -> Result<T, D::Error> {
     serde::de::IgnoredAny::deserialize(deserializer).map(|_| T::default())
+}
+
+/// A field given as null reads as one left out, which `#[serde(default)]` alone doesn't cover.
+fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// ExitPlanMode's input, given back with the plan as the user annotated it.
@@ -1488,6 +1522,87 @@ mod tests {
         assert!(!done.sign_in_refused());
     }
 
+    /// What Claude Code 2.1.316 says with nobody signed in: an assistant message of its own,
+    /// then a result that is an error but names no HTTP status.
+    #[test]
+    fn being_signed_out_is_told_apart() {
+        let said = serde_json::from_value::<Message>(json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [
+                { "type": "text", "text": "Not logged in · Please run /login" }
+            ] },
+            "parent_tool_use_id": null,
+            "error": "authentication_failed",
+        }))
+        .expect("Claude Code's own line");
+        assert!(matches!(
+            said,
+            Message::Assistant {
+                error: Some(AssistantError::AuthenticationFailed),
+                ..
+            }
+        ));
+        let answer = serde_json::from_value::<Message>(json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [] },
+            "parent_tool_use_id": null,
+        }))
+        .expect("a model's line");
+        assert!(matches!(answer, Message::Assistant { error: None, .. }));
+        let unknown = serde_json::from_value::<Message>(json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [] },
+            "parent_tool_use_id": null,
+            "error": "something_new",
+        }))
+        .expect("an error this window doesn't know");
+        assert!(matches!(
+            unknown,
+            Message::Assistant {
+                error: Some(AssistantError::Other),
+                ..
+            }
+        ));
+    }
+
+    /// Only a model's answer shows that the sign-in works: `/context`, say, needs none.
+    #[test]
+    fn a_command_answered_by_claude_code_says_nothing_of_the_sign_in() {
+        let result = |line: Value| {
+            serde_json::from_value::<TurnResult>(line)
+                .expect("a result")
+                .reached_a_model()
+        };
+        assert!(result(json!({
+            "subtype": "success", "is_error": false,
+            "modelUsage": { "claude-haiku": { "inputTokens": 1, "contextWindow": 1000 } },
+        })));
+        assert!(!result(json!({
+            "subtype": "success", "is_error": false, "modelUsage": {},
+        })));
+        assert!(!result(json!({ "subtype": "success", "is_error": true })));
+    }
+
+    /// `get_usage` as Claude Code 2.1.316 answers it in a sandboxed session and with nobody
+    /// signed in: null where the numbers can't be had, unlike a field left out.
+    #[test]
+    fn usage_given_as_null_reads_as_no_usage() {
+        let report: UsageReport = serde_json::from_value(json!({
+            "session": null,
+            "rate_limits": null,
+            "behaviors": null,
+        }))
+        .expect("nothing known yet is no error");
+        assert!(report.rate_limits.limits.is_empty());
+        assert!(report.behaviors.day.is_none());
+
+        let report: UsageReport = serde_json::from_value(json!({
+            "rate_limits": { "limits": [{ "kind": "session", "percent": 8.0, "resets_at": null, "scope": null }] },
+        }))
+        .expect("a report");
+        assert_eq!(report.rate_limits.limits.len(), 1);
+    }
+
     /// User-role lines as Claude Code 2.1.316 sends them with `--replay-user-messages`
     /// (recorded on the bench): another session's message is told apart from the window's own
     /// echoed back, and from Claude Code's own tool results.
@@ -1539,6 +1654,18 @@ mod tests {
             "origin": { "kind": "task-notification" },
         }));
         assert_eq!(notice.sender(), Sender::Replayed);
+        for shell_row in [
+            "<bash-input>echo hi</bash-input>",
+            "<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr><bash-exit-code>0</bash-exit-code>",
+        ] {
+            let row = user_line(json!({
+                "type": "user",
+                "message": { "role": "user", "content": shell_row },
+                "parent_tool_use_id": null,
+                "isReplay": true,
+            }));
+            assert_eq!(row.sender(), Sender::Session, "{shell_row}");
+        }
         let result = user_line(json!({
             "type": "user",
             "message": { "role": "user", "content": [

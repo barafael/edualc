@@ -28,14 +28,16 @@ use crate::ipc::{
 use crate::link::{self, Link};
 use crate::plan;
 use crate::sandbox;
-use crate::sessions::{self, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{
+    self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
+};
 use crate::settings::{self, Settings, Zoom};
 use crate::sidebar;
-use crate::spawn::MessagingName;
 use crate::trust;
 use crate::ui::View;
 use crate::watcher::{Watched, Watcher};
 
+#[cfg_attr(target_arch = "wasm32", path = "web/images.rs")]
 mod images;
 mod peek;
 mod protocol;
@@ -177,6 +179,48 @@ pub(crate) enum Event {
     Listen,
     /// Every second while a command is followed: what it printed since.
     PollOutput,
+}
+
+/// A prompt as sent, to send again once the sign-in works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SentPrompt {
+    text: String,
+    images: Vec<Picture>,
+}
+
+/// What is known of Claude Code's sign-in. Behind a pipe it offers no `/login`, and a session
+/// signed in with a token handed over names no account, so this comes from how turns end.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum SignIn {
+    /// Nothing has told yet.
+    #[default]
+    Unknown,
+    /// It named an account, or a model answered.
+    SignedIn,
+    /// A sandboxed session's token ran out: Claude Code starts again with the sign-in there is
+    /// now, which needs no help unless that is refused too.
+    Renewing,
+    /// A turn failed for want of a sign-in; the prompt it failed on goes again with "Try again".
+    Refused { failed: Option<SentPrompt> },
+    /// The user asked with `/login`, and is shown how, whatever the state before.
+    Asked,
+}
+
+impl SignIn {
+    /// After a turn the sign-in failed on. A token that merely ran out (`renewable`) gets one
+    /// start again by itself.
+    fn after_refusal(&self, renewable: bool, failed: Option<SentPrompt>) -> Self {
+        if renewable && *self != Self::Renewing {
+            Self::Renewing
+        } else {
+            Self::Refused { failed }
+        }
+    }
+
+    /// Whether the user is being shown how to sign in.
+    pub(crate) fn waits_for_user(&self) -> bool {
+        matches!(self, Self::Refused { .. } | Self::Asked)
+    }
 }
 
 /// Where a start stands on its folder's trust.
@@ -365,6 +409,10 @@ pub(crate) enum Action {
     HideUsage,
     /// Stops the watched session in its window and continues it here.
     BringHere,
+    /// Signed in elsewhere: starts Claude Code again, and sends what failed for want of it.
+    TrySignInAgain,
+    /// Puts away how to sign in.
+    DismissSignIn,
     /// Trusts the folder shown, to start Claude Code in it.
     TrustFolder,
     /// Starts Claude Code in the folder shown this once, without its configuration.
@@ -394,6 +442,7 @@ pub(crate) struct Status {
     pub(crate) mode_choice: Option<PermissionMode>,
     pub(crate) commands: Vec<wire::CommandInfo>,
     pub(crate) account: wire::Account,
+    pub(crate) sign_in: SignIn,
     /// Claude Code's version, as it told at `initialize`.
     pub(crate) version: String,
     /// Prompts sent and not answered yet.
@@ -711,7 +760,7 @@ pub(crate) struct App {
     images: images::Images,
     listing_live: Refresh,
     /// When each session running elsewhere was last notified about.
-    notified: HashMap<SessionId, std::time::Instant>,
+    notified: HashMap<SessionId, web_time::Instant>,
     watch: Option<Watch>,
     /// The subagent whose conversation the side panel follows.
     peek: Option<Peek>,
@@ -739,6 +788,10 @@ pub(crate) struct App {
     /// ran out, while something was under way that starting it again would interrupt (a
     /// question waiting for its answers, say): it starts again once nothing is.
     restart_waits: bool,
+    /// The last prompt sent, for `SignIn::Refused` to keep if its turn fails for that.
+    last_prompt: Option<SentPrompt>,
+    /// Claude Code said the turn under way failed for want of a sign-in; its result ends it.
+    turn_refused_sign_in: bool,
     /// The line to the daemon, which runs Claude Code and does what the desktop is asked.
     link: Link,
     /// What the daemon was asked to do, by request, for what its answer means.
@@ -750,7 +803,7 @@ pub(crate) struct App {
     /// Runs while a command's output is followed (see `Event::PollOutput`).
     polling: slint::Timer,
     /// When the process last said something.
-    heard: std::time::Instant,
+    heard: web_time::Instant,
     redraw: Redraw,
 }
 
@@ -824,13 +877,15 @@ impl App {
             trust_gate: TrustGate::Open,
             accepted_in_terminal: HashSet::new(),
             restart_waits: false,
+            last_prompt: None,
+            turn_refused_sign_in: false,
             link,
             acting: HashMap::new(),
             last_act: ActId::default(),
             tick: slint::Timer::default(),
             listen: slint::Timer::default(),
             polling: slint::Timer::default(),
-            heard: std::time::Instant::now(),
+            heard: web_time::Instant::now(),
             redraw: Redraw::default(),
         }
     }
@@ -1049,6 +1104,12 @@ impl App {
                 self.redraw.usage = true;
             }
             Action::BringHere => self.bring_here(),
+            Action::TrySignInAgain => self.try_sign_in_again(),
+            Action::DismissSignIn => {
+                if self.status.sign_in.waits_for_user() {
+                    self.status.sign_in = SignIn::Unknown;
+                }
+            }
             Action::TrustFolder => self.trust_folder(),
             Action::StartWithoutFolderSettings => self.start_without_folder_settings(),
             Action::ToggleSandbox => {
@@ -1268,6 +1329,7 @@ impl App {
     }
 
     /// Runs `work` on a thread of its own; its result comes back as the event `done` makes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn in_background<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> T + Send + 'static,
@@ -1279,6 +1341,16 @@ impl App {
                 tracing::debug!("the window closed before background work finished");
             }
         });
+    }
+
+    /// Runs `work` now, in the browser demo, which has no threads (and whose work reads only
+    /// what is built into the page); its result comes back as the event `done` makes, after
+    /// what is handled now.
+    #[cfg(target_arch = "wasm32")]
+    fn in_background<T>(&self, work: impl FnOnce() -> T, done: impl FnOnce(T) -> Event) {
+        if self.events.try_send(done(work())).is_err() {
+            tracing::debug!("the window closed before background work finished");
+        }
     }
 
     /// Starts a process in the working directory once it is trusted: here, or in the terminal,
@@ -1521,6 +1593,43 @@ impl App {
         self.restart_waits = true;
     }
 
+    /// "Try again": Claude Code reads the sign-in as it starts, so it starts again, and what
+    /// failed goes again, leaving anything written in the composer since. With something under
+    /// way that a start would cut short, it waits for that, and what failed goes back to the
+    /// user to send.
+    fn try_sign_in_again(&mut self) {
+        let failed = match std::mem::take(&mut self.status.sign_in) {
+            SignIn::Refused { failed } => failed,
+            SignIn::Asked => None,
+            other @ (SignIn::Unknown | SignIn::SignedIn | SignIn::Renewing) => {
+                self.status.sign_in = other;
+                return;
+            }
+        };
+        if self.under_way() {
+            self.restart_waits = true;
+            if let Some(failed) = failed {
+                self.attached = failed.images;
+                self.view.render_attached(&self.attached);
+                self.put_draft(&failed.text);
+            }
+            return;
+        }
+        self.stop();
+        let Some(failed) = failed else {
+            self.ensure_process();
+            return;
+        };
+        let written = self.view.draft();
+        self.attached = failed.images;
+        self.view.render_attached(&self.attached);
+        self.send(&failed.text);
+        if !written.trim().is_empty() {
+            self.put_draft(&written);
+        }
+        self.view.focus_composer();
+    }
+
     /// Starts the process again under the settings as they are now, continuing the session.
     fn restart(&mut self) {
         let resume = self.status.session_id.clone().map(Resume::Continue);
@@ -1654,6 +1763,11 @@ impl App {
         self.status.worktree = None;
         self.open_runs.clear();
         self.shell_rows.clear();
+        // What failed belongs to the session it was sent in.
+        self.last_prompt = None;
+        if let SignIn::Refused { failed } = &mut self.status.sign_in {
+            *failed = None;
+        }
         // Side questions belong to the session they were asked in.
         self.side = SideChat::default();
         self.redraw.side = true;
@@ -1751,7 +1865,7 @@ impl App {
         match result {
             Ok((chat, offset)) => {
                 self.chat = chat;
-                self.view.scroll_to_end();
+                self.view.open_at_end();
                 if let Some(watch) = watching {
                     watch.watched = watch_transcript(self.watcher.as_ref(), &path);
                     watch.path = path;
@@ -1853,7 +1967,7 @@ impl App {
     /// Looks every little while whether Claude Code has gone quiet (see `listen`), from a turn's
     /// start on; what it said last counts from now.
     fn start_listening(&mut self) {
-        self.heard = std::time::Instant::now();
+        self.heard = web_time::Instant::now();
         if self.listen.running() {
             return;
         }
@@ -1951,7 +2065,7 @@ impl App {
                 && was.is_some_and(|was| was != LiveStatus::Waiting);
             // A session flipping between waiting and working doesn't make a notification each
             // time.
-            let now = std::time::Instant::now();
+            let now = web_time::Instant::now();
             let recently = self
                 .notified
                 .get(&session.id)
@@ -2025,6 +2139,11 @@ impl App {
             self.new_session();
             return;
         }
+        // Claude Code asks for this, but only its terminal has it.
+        if text == "/login" {
+            self.status.sign_in = SignIn::Asked;
+            return;
+        }
         // The terminal's `/btw` takes over the input; here it asks beside the conversation.
         if let Some(question) = text.strip_prefix("/btw")
             && (question.is_empty() || question.starts_with(char::is_whitespace))
@@ -2039,6 +2158,11 @@ impl App {
             self.run_shell(text, command.trim());
             return;
         }
+        // Sent past the card on how to sign in: the process running can't take up a new sign-in.
+        if self.status.sign_in.waits_for_user() && !self.under_way() {
+            self.status.sign_in = SignIn::Unknown;
+            self.stop();
+        }
         // A process starts if none runs; while one can't yet (its folder's trust is still read,
         // or asked about), the prompt waits in the composer.
         if !self.ensure_process() {
@@ -2051,6 +2175,10 @@ impl App {
         if !text.is_empty() {
             self.chat.user(text);
         }
+        self.last_prompt = Some(SentPrompt {
+            text: text.to_owned(),
+            images: images.clone(),
+        });
         // Until Claude Code names the session, its first prompt does.
         if self.status.title.is_none()
             && let Some(title) = provisional_title(text)
@@ -2682,6 +2810,20 @@ impl Desktop {
             }
         })
     }
+
+    /// The browser demo's: nothing to open a folder in, the theme's own fonts (built into the
+    /// page), and text of the size most desktops have.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn in_the_browser() -> Self {
+        Self {
+            openers: Vec::new(),
+            fonts: crate::appearance::Fonts {
+                sans: None,
+                mono: None,
+            },
+            text_size: crate::appearance::DEFAULT_TEXT_SIZE,
+        }
+    }
 }
 
 /// What a scoped thread made; its panic, if it panicked, goes on here.
@@ -2714,6 +2856,35 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Being signed out brings up how to sign in at once, keeping the prompt to send again. A
+    /// sandboxed session's token that ran out gets one start again by itself; refused after
+    /// that too, it needs the user.
+    #[test]
+    fn a_refused_sign_in_asks_the_user_unless_a_new_start_may_mend_it() {
+        let prompt = || SentPrompt {
+            text: "edit the notes".to_owned(),
+            images: Vec::new(),
+        };
+        let refused = SignIn::Refused {
+            failed: Some(prompt()),
+        };
+
+        assert_eq!(
+            SignIn::Unknown.after_refusal(false, Some(prompt())),
+            refused
+        );
+        assert!(refused.waits_for_user());
+
+        let renewing = SignIn::SignedIn.after_refusal(true, Some(prompt()));
+        assert_eq!(renewing, SignIn::Renewing);
+        assert!(!renewing.waits_for_user());
+        assert_eq!(renewing.after_refusal(true, Some(prompt())), refused);
+
+        assert!(SignIn::Asked.waits_for_user());
+        assert!(!SignIn::SignedIn.waits_for_user());
+        assert!(!SignIn::Unknown.waits_for_user());
+    }
 
     /// A prompt sent while the folder's trust is read (the command line's first prompt is
     /// always sent then) goes once the terminal is found to trust it; once the user is asked,

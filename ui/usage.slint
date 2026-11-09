@@ -93,6 +93,8 @@ export component UsagePanel inherits Rectangle {
         }
         // A tab for each section, one shown at a time, instead of one long list.
         HorizontalLayout {
+            // The section below takes the height, however little it shows.
+            vertical-stretch: 0;
             padding-left: Theme.space-xl;
             padding-right: Theme.space-xl;
             padding-top: Theme.space-m;
@@ -113,6 +115,15 @@ export component UsagePanel inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
+            }
+        }
+        if Usage.sections.length == 0: VerticalLayout {
+            vertical-stretch: 1;
+            padding: Theme.space-xl;
+            alignment: start;
+            Small {
+                text: Usage.loading ? "" : "Claude Code has no numbers to report yet.";
+                wrap: word-wrap;
             }
         }
         if Usage.sections.length > 0: Flickable {

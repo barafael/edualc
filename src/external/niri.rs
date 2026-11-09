@@ -3,16 +3,21 @@
 //! with just the fields read: niri's own types (the `niri-ipc` crate) require fields that older
 //! releases don't send (`layout` came in 25.08), and are pinned to one release.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::os::unix::net::UnixStream;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 /// How long niri gets to take a request or answer it; a compositor that doesn't answer in this
 /// time isn't waited for.
+#[cfg(not(target_arch = "wasm32"))]
 const PATIENCE: Duration = Duration::from_secs(2);
 /// The longest reply read: a window list of thousands of windows fits.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_REPLY_BYTES: u64 = 4 * 1024 * 1024;
 
 /// niri's id for a window, valid while it is open.
@@ -60,6 +65,7 @@ pub(crate) enum Error {
 }
 
 /// Asks niri one thing, on a connection of its own.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ask(request: &Request) -> Result<Response, Error> {
     let socket = std::env::var_os("NIRI_SOCKET").ok_or(Error::NotRunning)?;
     let mut stream = UnixStream::connect(socket).map_err(Error::Socket)?;
@@ -77,6 +83,7 @@ pub(crate) fn ask(request: &Request) -> Result<Response, Error> {
     parse_reply(&reply)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_reply(reply: &str) -> Result<Response, Error> {
     match serde_json::from_str::<Result<Response, String>>(reply).map_err(Error::Answer)? {
         Ok(response) => Ok(response),

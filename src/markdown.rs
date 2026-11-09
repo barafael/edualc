@@ -319,7 +319,23 @@ fn with_task_boxes(
         at = marker.end;
     }
     boxed.push_str(src.get(at..range.end)?);
-    Some(boxed)
+    Some(without_bullets(&boxed).unwrap_or(boxed))
+}
+
+/// A list of nothing but one-line tasks as lines of boxes, which need no bullet beside them
+/// (Slint draws one for any list item); none for a list holding anything else.
+fn without_bullets(list: &str) -> Option<String> {
+    let tasks: Option<Vec<&str>> = list
+        .lines()
+        .map(|line| {
+            let task = ["- ", "* ", "+ "]
+                .iter()
+                .find_map(|bullet| line.strip_prefix(bullet))?;
+            task.starts_with(['☐', '☑']).then_some(task)
+        })
+        .collect();
+    // A hard break keeps them on their own lines, where they aren't list items any more.
+    Some(tasks?.join("\\\n"))
 }
 
 /// A table as far as it is parsed.
@@ -567,8 +583,29 @@ mod tests {
         let [(Block::Text(shown), range)] = sections.as_slice() else {
             panic!("one item, not {sections:?}");
         };
-        assert_eq!(shown, "- ☑ Add the handle");
+        assert_eq!(shown, "☑ Add the handle");
         assert_eq!(plan.get(range.clone()), Some("- [x] Add the handle"));
+    }
+
+    /// A box stands in for the bullet in a list of tasks; where anything else is in the list,
+    /// the items keep their bullets and it stays a list.
+    #[test]
+    fn a_list_of_tasks_has_boxes_instead_of_bullets() {
+        let drawn = |src: &str| {
+            let blocks = blocks(src);
+            let [Block::Text(run)] = blocks.as_slice() else {
+                panic!("one run, not {blocks:?}");
+            };
+            drawn_lines(run)
+        };
+        assert_eq!(
+            drawn("- [ ] a task\n- [x] **done**"),
+            ["☐ a task", "☑ done"]
+        );
+        assert_eq!(
+            drawn("- [ ] a task\n  - [x] nested"),
+            ["• ☐ a task", "    ◦ ☑ nested"]
+        );
     }
 
     /// In a run, text Slint refuses would turn all of it into plain text, its joins included.

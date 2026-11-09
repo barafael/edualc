@@ -11,6 +11,10 @@ Claude Code to your project.
 
 ![A conversation: Claude explains why GPS noise inflates the elevation gain, its edits and commands folded into one line, and the result in a table](docs/screenshots/fixed.webp)
 
+**[Try it in your browser](https://felintusun.github.io/edualc/)**: the window itself, compiled to
+WebAssembly, on a demo project. Claude is played by a script there, so nothing you type leaves
+the page.
+
 ## What it does differently
 
 - **Sandboxed.** Claude Code and everything it starts (commands, hooks, MCP servers) run under

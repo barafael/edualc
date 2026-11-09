@@ -12,8 +12,8 @@ use strum::IntoEnumIterator;
 
 use crate::app::{
     Answer, Ask, AskKind, CommandOutput, Conversation, Doing, Followed, LimitUse, Mode, Peek,
-    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, Status, Tasks,
-    UsagePanel, Watch,
+    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, SignIn, Status,
+    Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
@@ -25,8 +25,8 @@ use crate::generated::{
     DiffLine, Entry, EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, Look,
     MdBlock, MenuItem, PeekStep, PermissionKind, PlanSection, Preferences, ProjectItem, Prompt,
     PromptKind, Question, QuestionOption, SendKey, Session, SessionRow, SessionRowKind, Sessions,
-    ShownImage, Side, SideExchange, SideState, StatRow, StatSection, StepKind, TableRow, TaskItem,
-    TaskKind, Theme, ToolState, Transcript, Usage,
+    ShownImage, Side, SideExchange, SideState, SignInState, StatRow, StatSection, StepKind,
+    TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
 use crate::highlight::{Highlighter, Progress};
@@ -374,6 +374,13 @@ impl View {
         transcript.set_scroll_to_end_serial(transcript.get_scroll_to_end_serial().wrapping_add(1));
     }
 
+    /// A session's transcript was loaded: shown at its end once the list has measured its way
+    /// there, not on the way.
+    pub(crate) fn open_at_end(&self) {
+        let transcript = self.window.global::<Transcript>();
+        transcript.set_opened_serial(transcript.get_opened_serial().wrapping_add(1));
+    }
+
     /// Brings the transcript in line with `chat`, touching only what `changes` name.
     /// Brings the transcript in line with `chat`: the rows `changes` name, and those whose place
     /// in a run of tool calls changed (`open_runs` holds the runs opened, by their first call).
@@ -685,6 +692,12 @@ impl View {
         let project = sessions::folder_name(cwd);
         session.set_project(project.into());
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
+        session.set_sign_in(match status.sign_in {
+            SignIn::SignedIn => SignInState::SignedIn,
+            SignIn::Refused { .. } | SignIn::Renewing => SignInState::SignedOut,
+            SignIn::Unknown | SignIn::Asked => SignInState::Unknown,
+        });
+        session.set_shows_sign_in(status.sign_in.waits_for_user());
         session.set_needs_trust(asking.is_some());
         let runs: Vec<String> = asking.unwrap_or_default().iter().map(run_line).collect();
         session.set_trust_runs(strings(&runs));
@@ -731,7 +744,7 @@ impl View {
         let account = &status.account;
         session.set_email(account.email.as_str().into());
         session.set_organization(account.organization.as_str().into());
-        session.set_provider(account.api_provider.as_str().into());
+        session.set_provider(provider_name(&account.api_provider).into());
         session.set_version(status.version.as_str().into());
         session.set_worktree_name(
             worktree
@@ -786,6 +799,8 @@ impl View {
                     .filter_map(|(title, period)| Some(period_section(title, period.as_ref()?))),
             );
         }
+        // A tab with nothing behind it says nothing.
+        sections.retain(|section| section.rows.row_count() > 0 || !section.note.is_empty());
         usage.set_sections(ModelRc::new(VecModel::from(sections)));
     }
 
@@ -1487,6 +1502,18 @@ fn stat(label: &str, value: String, detail: String, fraction: f32) -> StatRow {
         value: value.into(),
         detail: detail.into(),
         fraction,
+    }
+}
+
+/// Who answers, for people: Claude Code names them by its own ids, and one this window doesn't
+/// know stays as written.
+fn provider_name(provider: &str) -> &str {
+    match provider {
+        "firstParty" => "Anthropic",
+        "bedrock" => "Amazon Bedrock",
+        "vertex" => "Google Vertex AI",
+        "foundry" => "Microsoft Foundry",
+        other => other,
     }
 }
 

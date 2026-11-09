@@ -262,6 +262,9 @@ export component SettingsPanel inherits Rectangle {
                     chosen: Preferences.send-key == SendKey.ctrl-enter;
                     clicked => { Preferences.choose-send-key(SendKey.ctrl-enter); }
                 }
+                Rectangle {
+                    height: Theme.space-m;
+                }
                 // Kana and Hangul tell a text's language themselves; Han characters alone don't.
                 Text {
                     text: "Text in Han characters alone";

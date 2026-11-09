@@ -22,8 +22,8 @@ path = "src/main.rs"
 # `StyledText` again (once #14666), and a `language` property, with which Japanese and Chinese
 # text sets a quarter em where ideographs meet Latin letters (branch `text-language`).
 # Slint draws everything itself (winit and femtovg): the look is Gruvbox, not the desktop's
-# widgets, so Qt would only add a dependency (and, at this revision, garbled italics).
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
+# widgets, so Qt would only add a dependency (and, at this revision, garbled italics). Its
+# features differ for the browser demo, below.
 async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,31 +36,12 @@ two-face = { version = "0.4.5", default-features = false, features = ["syntect-f
 # Line diffs for Edit and Write tool calls.
 similar = "3"
 dirs = "7"
-# Opens links in the browser.
-open = "5"
-# The desktop's own folder picker, through its portal on Linux.
-rfd = "0.17"
 thiserror = "2"
-# The command line, derived: `--help`, `--version`, `--model=opus`, checked values. No colour.
-clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 jiff = { version = "0.2.38", features = ["serde"] }
-# inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
-# socket; already built for winit.
-rustix = { version = "1", features = ["fs", "net", "process"] }
-# The window refusing itself every socket but Unix ones (no network at all), and io_uring.
-seccompiler = "0.5"
-# The system calls and socket families that filter names; already built for most dependencies.
-libc = "0.2"
-# Sandboxing the claude process (and what it starts) with the kernel's Landlock.
-landlock = "0.4"
-# The daemon's actors (connections, sessions), their channels, its processes and sockets;
-# already built for a dependency.
-tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
-# The messages between the window and its daemon: compact, strictly checked serde.
-postcard = { version = "1", default-features = false, features = ["use-std"] }
+# `Instant`, which is std's on Linux and the page's clock in a browser; already built for Slint.
+web-time = "1.1"
 # Newtypes' `Display` and `From`; already built for Slint.
 derive_more = { version = "2", features = ["display", "from"] }
 # Images, decoded in a confined helper (see `decode`): pure-Rust PNG, JPEG, GIF and WebP, whose
@@ -76,6 +57,41 @@ uuid = { version = "1.29", default-features = false, features = ["std", "v4", "s
 petname = { version = "3.2", default-features = false, features = ["default-words"] }
 # The user's sign-in token, cleared from memory once a sandboxed session has it.
 zeroize = "1.9"
+
+# What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
+# Opens links in the browser.
+open = "5"
+# The desktop's own folder picker, through its portal on Linux.
+rfd = "0.17"
+# The command line, derived: `--help`, `--version`, `--model=opus`, checked values. No colour.
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# inotify (noticing files other processes write, instead of polling them) and the daemon's Unix
+# socket; already built for winit.
+rustix = { version = "1", features = ["fs", "net", "process"] }
+# The window refusing itself every socket but Unix ones (no network at all), and io_uring.
+seccompiler = "0.5"
+# The system calls and socket families that filter names; already built for most dependencies.
+libc = "0.2"
+# Sandboxing the claude process (and what it starts) with the kernel's Landlock.
+landlock = "0.4"
+# The daemon's actors (connections, sessions), their channels, its processes and sockets;
+# already built for a dependency.
+tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
+# The messages between the window and its daemon: compact, strictly checked serde.
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+
+# The browser demo (`web/`): the window, drawn with WebGL into the page's canvas, with a scripted
+# daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
+# The page's entry point.
+wasm-bindgen = "0.2"
+# The browser's clock and random numbers, for timestamps and ids.
+jiff = { version = "0.2.38", features = ["js"] }
+uuid = { version = "1.29", default-features = false, features = ["js"] }
 
 [build-dependencies]
 slint-build = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0" }
@@ -127,6 +143,17 @@ disallowed_types = "deny"
 [profile.release]
 lto = "thin"
 strip = true
+
+# The browser demo (`.github/workflows/pages.yml`): every byte is downloaded before the window
+# shows, so it is built for size, whole.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+# wasm-bindgen reads which wasm features are on from a section stripping removes; it drops the
+# names itself (`--remove-name-section`).
+strip = false
 
 # `cargo deb --no-build`, after a release build (see .github/workflows/release.yml). fontconfig is
 # linked, and dpkg-shlibdeps finds it; winit opens Wayland, xkbcommon and EGL as it starts.

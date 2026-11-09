@@ -112,6 +112,9 @@ export struct Entry {
 // How a running session is doing.
 export enum LiveState { idle, busy, waiting, other }
 
+// What is known of Claude Code's sign-in, for the account's details.
+export enum SignInState { unknown, signed-in, signed-out }
+
 // What a row of the sidebar's session list is: a heading over a part of it, a session running
 // now (this window's, another's, a terminal's), or one of this folder's earlier sessions.
 export enum SessionRowKind { heading, running, earlier }

@@ -2,20 +2,24 @@
 //! one directory per working directory, named after its path with every character other than
 //! letters and digits made a `-`; running ones as `~/.claude/sessions/<pid>.json`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde::Deserialize;
+use web_time::SystemTime;
 
 use crate::chat::UserText;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::external::claude_files::{AgentRecord, LiveRecord};
 use crate::external::wire::{
     self, MessageOrigin, SessionId, TranscriptCwd, TranscriptLine, UserContent,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use crate::home::Home;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::process;
 
 /// A session's two words, an adjective and a noun picked by its id, so the same each time it
@@ -42,6 +46,55 @@ impl PetName {
     /// Whether `text` holds the two words, as each name edualc gave the session has.
     fn is_in(&self, text: &str) -> bool {
         text.contains(self.0.as_str())
+    }
+}
+
+/// The name other Claude Code sessions message a session's process by (`--name`): an adjective
+/// and a noun picked by the session's id, so the same each time it runs, then its project. The
+/// CLI's own name comes from the process id, and changes as the session is started again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
+pub(crate) struct MessagingName(String);
+
+impl MessagingName {
+    /// The name of session `id` in the folder `cwd`: an adjective, a noun, the folder's name
+    /// and two digits, all but the folder picked by the id.
+    pub(crate) fn of(id: &SessionId, cwd: &Path) -> Self {
+        Self(format!(
+            "{}-{}-{:02}",
+            PetName::of(id),
+            project_part(cwd),
+            id_number(id, 16) % 100
+        ))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The most of the folder's name a session's name takes.
+const PROJECT_PART_CHARS: usize = 20;
+
+/// The folder's name as a session's name takes it, as Claude Code writes its own names
+/// (`claude_but_sane` as `claude-but-sane`): lowercase letters and digits, the rest a dash, at
+/// most [`PROJECT_PART_CHARS`]. "project" for a folder with no such letters.
+fn project_part(cwd: &Path) -> String {
+    let folder = cwd
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut part = String::new();
+    for character in folder.chars() {
+        if character.is_ascii_alphanumeric() {
+            part.push(character);
+        } else if !part.is_empty() && !part.ends_with('-') {
+            part.push('-');
+        }
+    }
+    let part: String = part.chars().take(PROJECT_PART_CHARS).collect();
+    match part.trim_end_matches('-') {
+        "" => "project".to_owned(),
+        trimmed => trimmed.to_owned(),
     }
 }
 
@@ -216,7 +269,7 @@ fn project_dir(cwd: &Path) -> PathBuf {
 fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
     let name = project_name(cwd);
     std::iter::once(projects_dir())
-        .chain(Home::of(cwd).map(|home| home.projects()))
+        .chain(sandboxed_projects(cwd))
         .map(|projects| projects.join(&name))
         .collect()
 }
@@ -224,8 +277,31 @@ fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
 /// Every folder of transcripts' folders: the user's own home's and every sandboxed home's.
 fn all_projects_dirs() -> Vec<PathBuf> {
     std::iter::once(projects_dir())
-        .chain(Home::all().iter().map(Home::projects))
+        .chain(all_sandboxed_projects())
         .collect()
+}
+
+/// The folder of transcripts' folders in the home of `cwd`'s sandboxed sessions.
+#[cfg(not(target_arch = "wasm32"))]
+fn sandboxed_projects(cwd: &Path) -> Option<PathBuf> {
+    Home::of(cwd).map(|home| home.projects())
+}
+
+/// Every sandboxed home's folder of transcripts' folders.
+#[cfg(not(target_arch = "wasm32"))]
+fn all_sandboxed_projects() -> Vec<PathBuf> {
+    Home::all().iter().map(Home::projects).collect()
+}
+
+/// The browser demo has no sandbox, and so no sandboxed homes.
+#[cfg(target_arch = "wasm32")]
+fn sandboxed_projects(_cwd: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn all_sandboxed_projects() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
@@ -294,7 +370,7 @@ pub(crate) enum ClaudeHome {
 pub(crate) fn written_transcript(home: ClaudeHome, cwd: &Path, id: &SessionId) -> PathBuf {
     let projects = match home {
         ClaudeHome::Users => None,
-        ClaudeHome::Sandboxed => Home::of(cwd).map(|home| home.projects()),
+        ClaudeHome::Sandboxed => sandboxed_projects(cwd),
     }
     .unwrap_or_else(projects_dir);
     transcript_in(&projects, cwd, id)
@@ -348,6 +424,7 @@ pub(crate) fn locate(cwd: &Path, id: &SessionId) -> PathBuf {
 }
 
 /// The transcripts in a directory, newest first.
+#[cfg(not(target_arch = "wasm32"))]
 fn transcripts(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -382,6 +459,7 @@ fn transcripts(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
 /// used) are left out.
 /// The working directory's sessions, newest first. Those in `known` whose transcript hasn't
 /// changed since are taken as they are, not read again.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<SessionInfo> {
     let mut known: HashMap<SessionId, SessionInfo> = known
         .into_iter()
@@ -418,6 +496,7 @@ pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<Ses
 }
 
 /// Every working directory Claude Code was used in that still exists, most recent first.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn projects() -> Vec<ProjectInfo> {
     let mut projects: Vec<_> = all_projects_dirs()
         .iter()
@@ -442,6 +521,7 @@ pub(crate) fn projects() -> Vec<ProjectInfo> {
 }
 
 /// The sessions Claude Code processes are running now, other than our own (`claude -p`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn live() -> Vec<LiveSession> {
     let dir = config_dir().join("sessions");
     let entries = match std::fs::read_dir(&dir) {
@@ -512,6 +592,7 @@ const AGENT_QUIET: std::time::Duration = std::time::Duration::from_secs(30 * 60)
 /// The subagents of the session whose transcript is `transcript` that run at `now`: those whose
 /// record beside it (`<session>/subagents/agent-<id>.meta.json`) isn't marked finished, and
 /// whose transcript was written within [`AGENT_QUIET`].
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn running_agents(transcript: &Path, now: SystemTime) -> usize {
     let Ok(entries) = std::fs::read_dir(transcript.with_extension("").join("subagents")) else {
         return 0;
@@ -566,7 +647,42 @@ fn read_small(path: &Path, limit: u64) -> Option<String> {
     Some(text)
 }
 
+/// The demo project's sessions, in the browser demo (see `web::demo`), newest first.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn list(cwd: &Path, limit: usize, _known: Vec<SessionInfo>) -> Vec<SessionInfo> {
+    let mut sessions = crate::web::demo::saved(cwd);
+    sessions.truncate(limit);
+    sessions
+}
+
+/// The demo's folders, in the browser demo.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn projects() -> Vec<ProjectInfo> {
+    crate::web::demo::projects()
+}
+
+/// The demo's sessions "running in other terminals", in the browser demo.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn live() -> Vec<LiveSession> {
+    crate::web::demo::running()
+}
+
+/// The whole lines of one of the demo's transcripts from `offset` on, in the browser demo,
+/// and the offset after the last; they are built into the page whole.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
+    let text = crate::web::demo::transcript(path)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let rest = usize::try_from(offset)
+        .ok()
+        .and_then(|at| text.get(at..))
+        .unwrap_or_default();
+    let lines = rest.lines().filter_map(parse_line).collect();
+    Ok((lines, u64::try_from(text.len()).unwrap_or(u64::MAX)))
+}
+
 /// The whole lines of a transcript from `offset` on, and the offset after the last.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_from(path: &Path, offset: u64) -> std::io::Result<(Vec<TranscriptLine>, u64)> {
     if !std::fs::metadata(path)?.is_file() {
         return Err(std::io::Error::other("not a regular file"));
@@ -626,7 +742,7 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
         .map(|id| PetName::of(&id));
     let custom = custom.filter(|title| !own_name.as_ref().is_some_and(|name| name.is_in(title)));
     if let Some(title) = custom.or(generated).or(summary) {
-        return Some((title, worktree));
+        return Some((title_line(&title).to_owned(), worktree));
     }
     // The first prompt; or, for a session another one started by writing to it, that message,
     // whose turn can fill more than the head before the user writes anything.
@@ -646,7 +762,20 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
             }) => prompt_text(&message.content),
             Ok(_) | Err(_) => None,
         })
-        .map(|prompt| (crate::tools::truncate_chars(prompt.trim(), 80), worktree))
+        .map(|prompt| {
+            (
+                crate::tools::truncate_chars(title_line(&prompt), 80),
+                worktree,
+            )
+        })
+}
+
+/// The first line with text in it: a title is shown on one line, in a row of its height.
+fn title_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
 }
 
 /// A title from another session's message: who sent it and what it says, as far as known.
@@ -736,6 +865,89 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A session keeps its name however often it is started: an adjective and a noun from its
+    /// id, its project, then two digits from its id; other ids get other names, but for rare
+    /// collisions.
+    #[test]
+    fn a_session_is_named_by_its_project_and_id() {
+        let id = |text: &str| SessionId::try_from(text.to_owned()).expect("a session id");
+        let project = Path::new("/home/someone/code/claude_but_sane");
+        let session = "d1ba2743-c47a-4446-aefc-d4594dbc045d";
+        let name = MessagingName::of(&id(session), project);
+        assert_eq!(
+            name,
+            MessagingName::of(&id(session), project),
+            "started again"
+        );
+        let mut parts = name.0.splitn(3, '-');
+        let (Some(adjective), Some(noun), Some(rest)) = (parts.next(), parts.next(), parts.next())
+        else {
+            panic!("two words first in {name}");
+        };
+        let words = petname::Petnames::small();
+        assert!(words.adjectives.contains(&adjective), "{name}");
+        assert!(words.nouns.contains(&noun), "{name}");
+        let number = rest
+            .strip_prefix("claude-but-sane-")
+            .expect("named after its project");
+        assert!(
+            number.len() == 2 && number.chars().all(|digit| digit.is_ascii_digit()),
+            "{name}"
+        );
+        let names: std::collections::HashSet<MessagingName> = (0..200)
+            .map(|_| MessagingName::of(&SessionId::new_random(), project))
+            .collect();
+        assert!(names.len() > 195, "only {} names of 200", names.len());
+    }
+
+    /// A project's part of the name is its folder's, as Claude Code writes its own names, and
+    /// short; a folder with no Latin letters or digits is "project".
+    #[test]
+    fn a_project_is_named_after_its_folder() {
+        assert_eq!(
+            project_part(Path::new("/code/claude_but_sane")),
+            "claude-but-sane"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/My Project.v2")),
+            "my-project-v2"
+        );
+        assert_eq!(
+            project_part(Path::new("/code/a-very-long-project-name-indeed")),
+            "a-very-long-project"
+        );
+        assert_eq!(project_part(Path::new("/home/someone/文档")), "project");
+        assert_eq!(project_part(Path::new("/")), "project");
+    }
+
+    /// The browser demo's transcripts (`web/demo`) read as Claude Code's: every line parses, and
+    /// each has the title the demo's sidebar lists it by.
+    #[test]
+    fn the_browser_demos_transcripts_read_as_transcripts() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/demo");
+        let transcripts: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("the demo's folder")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect();
+        assert_eq!(transcripts.len(), 11, "{transcripts:?}");
+        for path in transcripts {
+            let text = std::fs::read_to_string(&path).expect("a transcript");
+            let lines: Vec<TranscriptLine> = text.lines().filter_map(parse_line).collect();
+            assert_eq!(lines.len(), text.lines().count(), "{}", path.display());
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| matches!(line, TranscriptLine::AiTitle { .. })),
+                "{}",
+                path.display()
+            );
+        }
+    }
 
     #[test]
     fn project_dirs_are_named_like_claude_code_names_them() {
@@ -919,6 +1131,25 @@ mod tests {
     /// A session another session started by writing to it is titled by that message, and so
     /// listed, though the user's first prompt comes later than the head that is read; a
     /// session the user started keeps its prompt, whatever reached it after.
+    #[test]
+    fn a_title_is_one_line() {
+        let dir = std::env::temp_dir().join(format!("edualc-one-line-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490483.jsonl");
+        let title_of = |line: serde_json::Value| {
+            std::fs::write(&path, format!("{line}\n")).expect("a transcript");
+            summary(&path).map(|(title, _)| title)
+        };
+        let prompt = json!({
+            "type": "user",
+            "message": { "role": "user", "content": "\n  Check the kitchen\nThen move on to the hall" },
+        });
+        assert_eq!(title_of(prompt).as_deref(), Some("Check the kitchen"));
+        let titled = json!({ "type": "custom-title", "customTitle": "Two\nlines" });
+        assert_eq!(title_of(titled).as_deref(), Some("Two"));
+        std::fs::remove_dir_all(&dir).expect("cleaned up");
+    }
+
     #[test]
     fn a_session_another_started_is_titled_by_its_message() {
         let dir = std::env::temp_dir().join(format!("edualc-peer-titles-{}", std::process::id()));
