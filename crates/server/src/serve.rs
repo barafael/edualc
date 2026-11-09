@@ -3,6 +3,8 @@
 
 use std::io::IsTerminal as _;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use dioxus::server::axum::extract::ws::{Message as PageMessage, WebSocket};
@@ -10,7 +12,8 @@ use edualc_host::daemon::{self, Daemon};
 use edualc_host::ipc::pairing::Pairing;
 use edualc_host::ipc::{self, ToDaemon};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
 use crate::state::State;
 
@@ -221,7 +224,8 @@ fn serve(listen: SocketAddr, pairing: &Pairing, state: State) -> std::process::E
         let (accepted, taken) = mpsc::channel(daemon::QUEUE);
         tokio::spawn(handshakes(tcp, acceptor, accepted));
         let access = Access::Token(token, Daemon::start());
-        dioxus::server::axum::serve(TlsListener { taken, local }, router(access)).await
+        let app = router(access).into_make_service_with_connect_info::<Hearing>();
+        dioxus::server::axum::serve(TlsListener { taken, local }, app).await
     });
     match served {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -295,6 +299,88 @@ fn router(access: Access) -> dioxus::server::axum::Router {
 /// A connection whose TLS handshake is done.
 type Secured = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
 
+/// A connection that says when it last read anything: a message that takes long to arrive
+/// shows the line alive as it arrives, not only once it is whole (a pong sent after it waits
+/// behind it, and a page's browser sends none of its own).
+struct Heard<Io = Secured> {
+    secured: Io,
+    read: watch::Sender<Instant>,
+}
+
+impl<Io> Heard<Io> {
+    fn new(secured: Io) -> Self {
+        Self {
+            secured,
+            read: watch::Sender::new(Instant::now()),
+        }
+    }
+}
+
+impl<Io: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Heard<Io> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let polled = Pin::new(&mut self.secured).poll_read(context, buffer);
+        if matches!(polled, Poll::Ready(Ok(()))) && buffer.filled().len() > before {
+            self.read.send_replace(Instant::now());
+        }
+        polled
+    }
+}
+
+impl<Io: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Heard<Io> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.secured).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.secured).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.secured).poll_shutdown(context)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.secured).poll_write_vectored(context, buffers)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.secured.is_write_vectored()
+    }
+}
+
+/// When a line's connection last read anything, for its handler (axum's connect info).
+#[derive(Debug, Clone)]
+pub struct Hearing(pub watch::Receiver<Instant>);
+
+impl
+    dioxus::server::axum::extract::connect_info::Connected<
+        dioxus::server::axum::serve::IncomingStream<'_, TlsListener>,
+    > for Hearing
+{
+    fn connect_info(stream: dioxus::server::axum::serve::IncomingStream<'_, TlsListener>) -> Self {
+        Self(stream.io().read.subscribe())
+    }
+}
+
 /// Connections, their TLS handshakes done, as axum takes them.
 struct TlsListener {
     taken: mpsc::Receiver<(Secured, SocketAddr)>,
@@ -302,12 +388,12 @@ struct TlsListener {
 }
 
 impl dioxus::server::axum::serve::Listener for TlsListener {
-    type Io = Secured;
+    type Io = Heard;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         match self.taken.recv().await {
-            Some(taken) => taken,
+            Some((secured, peer)) => (Heard::new(secured), peer),
             // The handshakes' task ended with the runtime: nothing more comes.
             None => std::future::pending().await,
         }
@@ -404,17 +490,52 @@ pub async fn play(page: WebSocket) {
     }
 }
 
+/// How long a line has been silent: since its last message, or, where its connection says so,
+/// since anything at all arrived, a message only part of the way there too.
+struct Silence {
+    heard: Option<Hearing>,
+    message: Instant,
+}
+
+impl Silence {
+    fn new(heard: Option<Hearing>) -> Self {
+        Self {
+            heard,
+            message: Instant::now(),
+        }
+    }
+
+    /// When the line is to be taken as gone, unless it says something before.
+    fn ends_at(&self) -> Instant {
+        let read = self.heard.as_ref().map(|Hearing(read)| *read.borrow());
+        read.map_or(self.message, |read| read.max(self.message)) + SILENT
+    }
+}
+
 /// Carries a window's or a page's line to the daemon, message by message, until either hangs
-/// up, or the line goes silent for [`SILENT`] (it is pinged every [`PING`]).
-pub async fn carry(line: WebSocket, daemon: Daemon) {
+/// up, or the line goes silent for [`SILENT`] (it is pinged every [`PING`]). A line whose
+/// connection says when it last read (`heard`) isn't silent while a message is arriving.
+pub async fn carry(line: WebSocket, heard: Option<Hearing>, daemon: Daemon) {
     let (requests, received) = mpsc::channel(daemon::QUEUE);
     let (outbox, mut answers) = mpsc::unbounded_channel();
     let (mut to_window, mut from_window) = line.split();
     // Each way its own loop, the two polled together: an answer waiting for the window to read
     // doesn't stop its requests being read, which would leave both writing and neither reading.
     let asked = async move {
+        let mut silence = Silence::new(heard);
         loop {
-            match tokio::time::timeout(SILENT, from_window.next()).await {
+            // A message part of the way there stays where the socket reads it: a next taken
+            // up again goes on with it.
+            let next = tokio::select! {
+                next = from_window.next() => Ok(next),
+                () = tokio::time::sleep_until(silence.ends_at()) => Err(()),
+            };
+            if next.is_err() && Instant::now() < silence.ends_at() {
+                // Something arrived meanwhile.
+                continue;
+            }
+            silence.message = Instant::now();
+            match next {
                 Ok(Some(Ok(PageMessage::Binary(bytes)))) => match ipc::decode::<ToDaemon>(&bytes) {
                     Ok(request) => {
                         if requests.send(request).await.is_err() {
@@ -433,7 +554,7 @@ pub async fn carry(line: WebSocket, daemon: Daemon) {
                     tracing::info!(%error, "a window's line broke");
                     return;
                 }
-                Err(_elapsed) => {
+                Err(()) => {
                     tracing::info!("a window's line went silent");
                     return;
                 }
@@ -579,5 +700,44 @@ mod tests {
                 "{name} in {names:?}"
             );
         }
+    }
+
+    /// A line is silent from its last message, or from the last bytes its connection read, a
+    /// message only part of the way there too, whichever came later.
+    #[test]
+    fn a_line_is_silent_from_whatever_it_last_said() {
+        let message = Instant::now();
+        let alone = Silence {
+            heard: None,
+            message,
+        };
+        assert_eq!(alone.ends_at(), message + SILENT);
+        let read = watch::Sender::new(message - PING);
+        let heard = Silence {
+            heard: Some(Hearing(read.subscribe())),
+            message,
+        };
+        assert_eq!(heard.ends_at(), message + SILENT);
+        read.send_replace(message + PING);
+        assert_eq!(heard.ends_at(), message + PING + SILENT);
+    }
+
+    /// A connection says when it last read something, and only then.
+    #[tokio::test]
+    async fn a_connection_says_when_it_last_read() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut window, server) = tokio::io::duplex(64);
+        let mut server = Heard::new(server);
+        let opened = *server.read.borrow();
+        let hearing = server.read.subscribe();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        window.write_all(b"part").await.expect("written");
+        let mut bytes = [0; 4];
+        server.read_exact(&mut bytes).await.expect("read");
+        let read = *hearing.borrow();
+        assert!(read > opened);
+        drop(window);
+        assert_eq!(server.read(&mut bytes).await.expect("its end"), 0);
+        assert_eq!(*hearing.borrow(), read, "an end read is nothing heard");
     }
 }

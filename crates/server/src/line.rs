@@ -20,7 +20,9 @@ mod server {
     use dioxus::server::axum::response::{IntoResponse, Response};
     use edualc_core::ipc::{MAX_MESSAGE, PROTOCOL};
 
-    use crate::serve::Access;
+    use dioxus::server::axum::extract::ConnectInfo;
+
+    use crate::serve::{Access, Hearing};
 
     /// What a page asks the line with.
     #[derive(serde::Deserialize)]
@@ -37,6 +39,7 @@ mod server {
     pub async fn line(
         Query(Asked { token, protocol }): Query<Asked>,
         Extension(access): Extension<Access>,
+        extensions: dioxus::server::axum::http::Extensions,
         upgrade: WebSocketUpgrade,
     ) -> Response {
         if !access.admits(&token) {
@@ -62,7 +65,11 @@ mod server {
         match access {
             Access::Demo => upgrade.on_upgrade(crate::serve::play),
             Access::Token(_, daemon) => {
-                upgrade.on_upgrade(move |line| crate::serve::carry(line, daemon))
+                // Served over TLS, the connection says when it last read; under `dx`, not.
+                let heard = extensions
+                    .get::<ConnectInfo<Hearing>>()
+                    .map(|ConnectInfo(heard)| heard.clone());
+                upgrade.on_upgrade(move |line| crate::serve::carry(line, heard, daemon))
             }
         }
     }
