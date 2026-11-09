@@ -7,6 +7,7 @@ use edualc_core::*;
 
 mod appearance;
 mod buses;
+mod command_line;
 mod confine;
 mod seat;
 mod start;

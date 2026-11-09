@@ -9,6 +9,7 @@ edualc is a Cargo workspace of four crates:
 | `crates/core` (`edualc-core`) | what every window shares: the conversation, the app that owns its state, what of it a window shows (`present`), the protocol and the line to edualcd (TLS, pairing). Builds for Linux, Android (the app) and `wasm32` (a page); what a page hasn't is behind `#[cfg(not(target_arch = "wasm32"))]` |
 | `crates/host` (`edualc-host`) | the daemon: runs `claude` (sandboxed) for the windows, reads Claude Code's files for them, stops sessions running elsewhere; and the demo's scripted Claude (`demo`) |
 | `crates/slint` (`edualc`) | the native window: Slint (`ui/*.slint`), its frontend of the presenter (`src/ui/`), its desktop (`seat`: links, notifications, the clipboard), its D-Bus proxies, its confinement, its paired edualcds and its line to one |
+| `crates/gpui` (`edualc-gpui`) | the native window again, drawn with GPUI (Zed's) and gpui-component: the same app and presenter, start, desktop and confinement as `crates/slint`, whose `command_line`, `buses`, `seat`, `appearance` and `confine` it takes as they are (`#[path]`); only its frontend (`src/ui/`) is its own (see below) |
 | `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon run in a Dioxus fullstack server, over TLS, which also serves the same window as a page (`src/web/`); with the `mobile` feature, the Android app instead (`src/android/`), which draws the page's components |
 
 Within them:
@@ -151,6 +152,14 @@ edualc-server --all-targets -- -D warnings`, `cargo clippy -p edualc-server --fe
 edualc-server --features edualc-server/web -- -D warnings -A dead_code`, `ast-grep scan`,
 `cargo deny check` (licenses that combine with the GPL, advisories, sources) and `cargo test`
 are clean. Use the toolchain CI pins (1.99.1).
+
+The GPUI window is GPUI as gpui-component 0.9.1 takes it: `gpui-pre`, a snapshot of Zed's GPUI,
+and its Linux platform (Wayland, drawn through wgpu). Its frontend reaches the view through
+GPUI's handle on the app (`AsyncApp`), so the app is made and begun on GPUI's executor, not in
+GPUI's launch callback, which holds the app. A Markdown link opens through the app, as the Slint
+window's do; only a web page's or mail's is left a link, and an image is its words, before
+anything is drawn (`ui::widgets::safe_markdown`). GPUI draws a window only as the compositor
+asks for its frames: on a screen that is off or locked, it waits.
 
 ## Releasing
 

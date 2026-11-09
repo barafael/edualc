@@ -26,6 +26,9 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste, unmaintained: a proc-macro of image's AVIF and EXR decoders, which dioxus-desktop turns on" },
   { id = "RUSTSEC-2025-0057", reason = "fxhash, unmaintained: the selectors crate in kuchikiki, which wry's Android backend parses HTML with" },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: gtk-rs 0.18's macros, wry's Linux backend, which edualc never builds (its `mobile` feature is Android's)" },
+  # Inside the GPUI window's GPUI and gpui-component (crates/gpui), until they move past them.
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz, unmaintained: usvg, which GPUI draws its SVG icons with" },
+  { id = "RUSTSEC-2024-0384", reason = "instant, unmaintained: gpui-base and gpui-component time with it" },
 ]
 
 [licenses]
@@ -51,6 +54,9 @@ allow = [
   # certificate list (CDLA-Permissive-2.0, a data licence that puts nothing on the program).
   "BSL-1.0",
   "CDLA-Permissive-2.0",
+  # Through gpui-component: enum-iterator (0BSD, OSI approved, public-domain-like: it asks
+  # nothing of a program it goes into).
+  "0BSD",
 ]
 
 [bans]

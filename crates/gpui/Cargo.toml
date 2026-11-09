@@ -1,0 +1,53 @@
+[package]
+name = "edualc-gpui"
+description = "edualc: a native desktop window for Claude Code, built with GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+
+# The Slint window's start, desktop and confinement are this window's too: `src/main.rs` takes
+# those modules from `crates/slint/src` as they are, so the two windows start, confine
+# themselves and reach the desktop alike. Only the drawing (`src/ui/`) is GPUI's.
+[[bin]]
+name = "edualc-gpui"
+path = "src/main.rs"
+
+[dependencies]
+edualc-core.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The desktop portal and the notification service, as the Slint window reaches them (`seat`).
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+rustix.workspace = true
+seccompiler.workspace = true
+libc.workspace = true
+landlock.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+dirs.workspace = true
+strum = { version = "0.27", features = ["derive"] }
+# Zed's GPUI, as the snapshot gpui-component is built on (`gpui-pre`, of zed@d2a4fb6), its
+# Linux platform (Wayland, drawn through wgpu), and gpui-component's widgets: text fields (the
+# composer's among them, with IME and undo), Markdown with selection, scroll bars, buttons,
+# menus. Wayland only: the window is confined to Wayland's socket (`confine`).
+gpui = { version = "=0.3.12", package = "gpui-pre", default-features = false, features = ["font-kit", "wayland"] }
+gpui-platform = { version = "=0.3.12", package = "gpui-pre-platform", default-features = false, features = ["wayland"] }
+gpui-component = "=0.9.1"
+# Lucide's icons, the whole catalog, as SVGs GPUI draws (gpui-component's own among them).
+gpui-kit-assets = "=0.9.1"
+# Markdown read to keep only a web page's or mail's links (`ui::widgets::safe_markdown`), as the
+# app splits it; already built for the app.
+pulldown-cmark = { version = "0.13", default-features = false }
+# The conversation's images, as GPUI takes them (a frame of BGRA pixels); already built for GPUI.
+image = { version = "0.25", default-features = false }
+smallvec = "1.6"
+
+[lints]
+workspace = true
