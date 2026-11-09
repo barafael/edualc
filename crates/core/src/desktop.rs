@@ -2,8 +2,11 @@
 //! and the editors, terminals and file manager a folder can be opened in. They go through the
 //! programs' own command lines, and niri through its socket.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::external::niri;
 use crate::sessions::{LiveKind, LiveSession};
@@ -132,6 +135,8 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error("{program} didn't end within {}s", RUN_LIMIT.as_secs())]
+    TimedOut { program: Program },
     #[error("{program} failed: {stderr}")]
     Failed { program: Program, stderr: String },
     #[error(transparent)]
@@ -146,25 +151,98 @@ pub enum Error {
     NotThatSession(u32),
 }
 
-/// Runs a program to its end; what it printed, if it succeeded.
+/// How long a program edualc runs gets to end. Each is quick (`claude stop`, git's
+/// configuration, fonts, a notification): one that takes longer has hung, and is killed rather
+/// than holding its thread, and what waits on it, forever.
+const RUN_LIMIT: Duration = Duration::from_secs(30);
+
+/// How often a running program is looked at, to see whether it ended.
+const RUN_POLL: Duration = Duration::from_millis(20);
+
+/// Runs a program to its end, for at most [`RUN_LIMIT`]; what it printed, if it succeeded.
 pub fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
     let name = if program == Program::Claude {
         crate::claude::program()
     } else {
         program.to_string().into()
     };
-    let output = Command::new(name)
+    run_within(program, &name, args, RUN_LIMIT)
+}
+
+/// Runs `name`, as `program`, for at most `limit`.
+fn run_within(
+    program: Program,
+    name: &std::ffi::OsStr,
+    args: &[&str],
+    limit: Duration,
+) -> Result<Vec<u8>, Error> {
+    let deadline = Instant::now() + limit;
+    let mut child = Command::new(name)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|source| Error::Run { program, source })?;
-    if output.status.success() {
-        Ok(output.stdout)
+    // Read beside it, so one printing much isn't stopped by a full pipe.
+    let stdout = child.stdout.take().map(read_beside);
+    let stderr = child.stderr.take().map(read_beside);
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(RUN_POLL),
+            Ok(None) => break Err(Error::TimedOut { program }),
+            Err(source) => break Err(Error::Run { program, source }),
+        }
+    };
+    let status = match ended {
+        Ok(status) => status,
+        Err(error) => {
+            // Its readers are left to end as the pipes close.
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, %program, "couldn't kill a program run");
+            }
+            if let Err(error) = child.wait() {
+                tracing::debug!(%error, %program, "a program killed wasn't waited for");
+            }
+            return Err(error);
+        }
+    };
+    // A program it started may hold its output open after it ended: not waited for past the
+    // limit either.
+    let printed = |reading: Option<mpsc::Receiver<Vec<u8>>>| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match reading.map(|reading| reading.recv_timeout(left)) {
+            Some(Ok(bytes)) => Ok(bytes),
+            Some(Err(_)) => Err(Error::TimedOut { program }),
+            None => Ok(Vec::new()),
+        }
+    };
+    let stdout = printed(stdout)?;
+    if status.success() {
+        Ok(stdout)
     } else {
+        let stderr = printed(stderr).unwrap_or_default();
         Err(Error::Failed {
             program,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
         })
     }
+}
+
+/// Reads all a program prints to one of its pipes, on a thread of its own.
+fn read_beside(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (read, reading) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Err(error) = pipe.read_to_end(&mut bytes) {
+            tracing::debug!(%error, "a program's output wasn't read to its end");
+        }
+        if read.send(bytes).is_err() {
+            // Nobody waits for it any more: it took too long.
+        }
+    });
+    reading
 }
 
 /// What the desktop knows edualc by: the window's Wayland app id, the name of its desktop entry
@@ -296,5 +374,37 @@ mod tests {
         let chain = ancestors(std::process::id());
         assert_eq!(chain.first(), Some(&std::process::id()));
         assert!(chain.len() > 1, "the test runner has a parent");
+    }
+
+    /// A program that ends in time gives what it printed, or why it failed.
+    #[test]
+    fn a_program_run_gives_what_it_printed() {
+        let said = run_within(Program::Git, "echo".as_ref(), &["hello"], RUN_LIMIT);
+        assert_eq!(said.ok(), Some(b"hello\n".to_vec()));
+        let failed = run_within(
+            Program::Git,
+            "sh".as_ref(),
+            &["-c", "echo no >&2; exit 3"],
+            RUN_LIMIT,
+        );
+        assert!(matches!(failed, Err(Error::Failed { stderr, .. }) if stderr == "no"));
+    }
+
+    /// One that hangs is killed at its limit; so is waiting on a program it left holding the
+    /// output open.
+    #[test]
+    fn a_program_that_hangs_is_given_up() {
+        let limit = Duration::from_millis(300);
+        let started = Instant::now();
+        let hung = run_within(Program::Claude, "sleep".as_ref(), &["30"], limit);
+        assert!(matches!(
+            hung,
+            Err(Error::TimedOut {
+                program: Program::Claude
+            })
+        ));
+        let left_open = run_within(Program::Git, "sh".as_ref(), &["-c", "sleep 30 &"], limit);
+        assert!(matches!(left_open, Err(Error::TimedOut { .. })));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

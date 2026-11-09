@@ -536,6 +536,11 @@ impl From<crate::desktop::Error> for ActFailure {
                 | niri::Error::Refused(_)),
             ) => Self::Niri(error.to_string()),
             Error::NoWindow(pid) => Self::NoWindow(pid),
+            // Told as a failure, which every window reads, not as a reason of its own.
+            timed_out @ Error::TimedOut { program } => Self::Failed {
+                program,
+                stderr: timed_out.to_string(),
+            },
             Error::StillRunning(pid) => Self::StillRunning(pid),
             Error::NotThatSession(pid) => Self::NotThatSession(pid),
         }
