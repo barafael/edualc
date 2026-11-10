@@ -15,6 +15,7 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "zvariant, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, folded into zbus: Slint's accessibility (AT-SPI) stack" },
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils, unmaintained: Slint's macros block on futures with spin_on" },
 ]
 
 [licenses]
