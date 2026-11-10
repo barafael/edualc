@@ -12,6 +12,8 @@ mod buses;
 mod chat;
 mod cjk;
 mod claude;
+#[cfg_attr(target_arch = "wasm32", path = "web/colouring.rs")]
+mod colouring;
 #[cfg(not(target_arch = "wasm32"))]
 mod confine;
 #[cfg(not(target_arch = "wasm32"))]

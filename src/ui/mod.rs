@@ -17,6 +17,7 @@ use crate::app::{
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
+use crate::colouring::Colouring;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
@@ -29,7 +30,7 @@ use crate::generated::{
     TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
-use crate::highlight::{Highlighter, Progress};
+use crate::highlight::{self, BlockAt, Coloured, Drawing, Highlighter, Job};
 use crate::ipc::Runs;
 use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
@@ -69,22 +70,34 @@ pub(crate) struct View {
     images: HashMap<ImageKey, ShownImage>,
     /// The language text with Han characters alone is set in (see `cjk`).
     han: CjkLanguage,
-    /// Colours code in the theme's colours.
+    /// Colours the side panel's and the plan's code, here: there is little of it.
     highlighter: Highlighter,
+    /// Colours the conversation's code, off the UI thread.
+    colouring: Colouring,
+    /// What the conversation's blocks are drawn as now: colourings asked for an earlier one
+    /// are dropped as they come.
+    drawing: Drawing,
 }
 
 struct Blocks {
     model: ModelRc<MdBlock>,
     shown: Vec<Block>,
-    /// For each block that is code, how far it is coloured: a block streaming in is coloured
-    /// a line at a time.
-    progress: Vec<Option<Progress>>,
+    /// How each block's code is shown (text blocks are `Plain`).
+    code: Vec<CodeShown>,
 }
 
-/// What a block is shown with besides itself.
-struct Shown<'a> {
-    han: CjkLanguage,
-    highlighter: &'a Highlighter,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeShown {
+    Plain,
+    Coloured,
+}
+
+/// How a block's code is coloured.
+enum Colour<'a> {
+    /// Here, at once.
+    Now(&'a Highlighter),
+    /// Shown plain; the colouring thread is asked.
+    Later,
 }
 
 /// The `VecModel` behind a model made in [`View::new`].
@@ -100,6 +113,7 @@ impl View {
         window: AppWindow,
         openers: &[Opener],
         fonts: crate::appearance::Fonts,
+        events: async_channel::Sender<crate::app::Event>,
     ) -> Self {
         if let Some(family) = fonts.sans {
             window.global::<Theme>().set_sans(family.into());
@@ -126,7 +140,9 @@ impl View {
             .chain(openers.iter().map(|opener| opener.label()))
             .collect();
         window.global::<Session>().set_openers(strings(&openers));
-        let highlighter = Highlighter::new(&window.global::<Theme>().get_syntax());
+        let colours = window.global::<Theme>().get_syntax();
+        let highlighter = Highlighter::new(&colours);
+        let colouring = Colouring::start(&colours, events);
         Self {
             window,
             entries,
@@ -141,7 +157,17 @@ impl View {
             images: HashMap::new(),
             han: CjkLanguage::Japanese,
             highlighter,
+            colouring,
+            drawing: Drawing::default(),
         }
+    }
+
+    /// Drops what the conversation's blocks are drawn as, so each is drawn again with its row;
+    /// colourings still on their way are for the old drawing.
+    fn forget_blocks(&mut self) {
+        self.blocks.clear();
+        self.drawing = self.drawing.next();
+        self.colouring.forget();
     }
 
     /// The language text with Han characters alone is set in, from the next row drawn on, and
@@ -149,7 +175,7 @@ impl View {
     pub(crate) fn set_han_language(&mut self, han: CjkLanguage) {
         self.han = han;
         // Each Markdown block carries its family, and an unchanged block isn't drawn again.
-        self.blocks.clear();
+        self.forget_blocks();
         self.window
             .global::<Preferences>()
             .set_han_language(match han {
@@ -160,21 +186,48 @@ impl View {
             });
     }
 
-    /// What blocks are shown with.
-    fn shown(&self) -> Shown<'_> {
-        Shown {
-            han: self.han,
-            highlighter: &self.highlighter,
-        }
-    }
-
     /// Code's colours changed (the look, or the desktop's dark or light). Code drawn in the old
     /// ones is coloured again as its entry is drawn again.
     pub(crate) fn recolour_code(&mut self) {
-        self.highlighter
-            .set_colours(&self.window.global::<Theme>().get_syntax());
+        let colours = self.window.global::<Theme>().get_syntax();
+        self.highlighter.set_colours(&colours);
+        self.colouring.set_colours(&colours);
         // An unchanged block isn't drawn again, and what is coloured so far has the old colours.
-        self.blocks.clear();
+        self.forget_blocks();
+    }
+
+    /// A conversation's code block, coloured; dropped if the block has changed since, as a
+    /// later colouring of it is on its way.
+    pub(crate) fn code_coloured(&mut self, coloured: Coloured) {
+        let Coloured {
+            at,
+            drawing,
+            code: asked,
+            markdown: coloured,
+        } = coloured;
+        if drawing != self.drawing {
+            return;
+        }
+        let Some(Some(slot)) = self.blocks.get_mut(at.entry) else {
+            return;
+        };
+        let Some(Block::Code { code, .. }) = slot.shown.get(at.block) else {
+            return;
+        };
+        if *code != asked {
+            return;
+        }
+        let rows = vec_model(&slot.model);
+        let (Some(mut row), Some(shown)) = (rows.row_data(at.block), slot.code.get_mut(at.block))
+        else {
+            return;
+        };
+        (row.body, *shown) = match coloured.and_then(|source| highlight::parsed(&source)) {
+            Some(body) => (body, CodeShown::Coloured),
+            // Grown too long to colour, say: plain, not its colours of before.
+            None => (markdown::plain(code), CodeShown::Plain),
+        };
+        rows.set_row_data(at.block, row);
     }
 
     /// Image `key`'s pixels, or why it can't be shown.
@@ -336,7 +389,7 @@ impl View {
                     Answer::Answered(text) => {
                         let blocks: Vec<MdBlock> = markdown::blocks(text)
                             .iter()
-                            .map(|block| md_block(block, &self.shown(), &mut None))
+                            .map(|block| md_block(block, self.han, &Colour::Now(&self.highlighter)))
                             .collect();
                         (
                             SideState::Answered,
@@ -425,7 +478,7 @@ impl View {
             }
         }
         if reset {
-            self.blocks.clear();
+            self.forget_blocks();
             let all: Vec<Entry> = chat
                 .entries
                 .iter()
@@ -626,19 +679,49 @@ impl View {
         let slot = slot.get_or_insert_with(|| Blocks {
             model: ModelRc::new(VecModel::<MdBlock>::default()),
             shown: Vec::new(),
-            progress: Vec::new(),
+            code: Vec::new(),
         });
-        let with = Shown {
-            han: self.han,
-            highlighter: &self.highlighter,
-        };
-        slot.progress.resize_with(blocks.len(), || None);
+        slot.code.resize(blocks.len(), CodeShown::Plain);
         let rows = vec_model(&slot.model);
-        for ((position, block), progress) in blocks.iter().enumerate().zip(&mut slot.progress) {
-            match slot.shown.get(position) {
-                Some(shown) if shown == block => {}
-                Some(_) => rows.set_row_data(position, md_block(block, &with, progress)),
-                None => rows.push(md_block(block, &with, progress)),
+        for ((position, block), shown) in blocks.iter().enumerate().zip(&mut slot.code) {
+            if slot.shown.get(position) == Some(block) {
+                continue;
+            }
+            let mut row = md_block(block, self.han, &Colour::Later);
+            match block {
+                Block::Code { lang, code } => {
+                    // Code streaming in keeps the colours it had until what it grew to comes
+                    // back coloured, rather than going plain in between.
+                    match rows.row_data(position) {
+                        Some(before)
+                            if *shown == CodeShown::Coloured
+                                && before.lang.as_str() == lang
+                                && code.starts_with(before.raw.as_str()) =>
+                        {
+                            row.body = before.body;
+                        }
+                        Some(_) | None => *shown = CodeShown::Plain,
+                    }
+                    self.colouring.ask(Job {
+                        at: BlockAt {
+                            entry: index,
+                            block: position,
+                        },
+                        drawing: self.drawing,
+                        lang: lang.clone(),
+                        code: code.clone(),
+                    });
+                }
+                Block::Text(_)
+                | Block::Heading(..)
+                | Block::Quote(_)
+                | Block::Table(_)
+                | Block::Rule => *shown = CodeShown::Plain,
+            }
+            if position < rows.row_count() {
+                rows.set_row_data(position, row);
+            } else {
+                rows.push(row);
             }
         }
         while rows.row_count() > blocks.len() {
@@ -991,7 +1074,7 @@ impl View {
                     let rows: Vec<PlanSection> = parts
                         .iter()
                         .map(|part| PlanSection {
-                            block: md_block(&part.block, &self.shown(), &mut None),
+                            block: md_block(&part.block, self.han, &Colour::Now(&self.highlighter)),
                             excerpt: crate::plan::excerpt(&input.plan, part).into(),
                             comment: part.comment.as_str().into(),
                             editing: false,
@@ -1192,10 +1275,8 @@ fn cjk(text: &str, han: CjkLanguage) -> CjkChars {
 }
 
 /// A Markdown block for the window; its prose in the family of its own text, as a paragraph's
-/// script sets its lines (`han` for Han characters alone), its code in colour, carrying on from
-/// `progress`.
-fn md_block(block: &Block, with: &Shown<'_>, progress: &mut Option<Progress>) -> MdBlock {
-    let han = with.han;
+/// script sets its lines (`han` for Han characters alone), its code coloured as `colour` says.
+fn md_block(block: &Block, han: CjkLanguage, colour: &Colour<'_>) -> MdBlock {
     match block {
         Block::Text(source) => MdBlock {
             kind: BlockKind::Text,
@@ -1212,7 +1293,10 @@ fn md_block(block: &Block, with: &Shown<'_>, progress: &mut Option<Progress>) ->
         },
         Block::Code { lang, code } => MdBlock {
             kind: BlockKind::Code,
-            body: with.highlighter.code(lang, code, progress),
+            body: match colour {
+                Colour::Now(highlighter) => highlighter.code(lang, code, &mut None),
+                Colour::Later => markdown::plain(code),
+            },
             lang: lang.as_str().into(),
             raw: code.as_str().into(),
             ..MdBlock::default()

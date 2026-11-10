@@ -161,6 +161,8 @@ pub(crate) enum Event {
         key: ImageKey,
         shown: Result<Pixels, images::ShowError>,
     },
+    /// A code block of the conversation, coloured off the UI thread (see `colouring`).
+    CodeColoured(crate::highlight::Coloured),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
     /// The sessions the daemon runs, anew.
@@ -821,7 +823,7 @@ impl App {
             fonts,
             text_size: desktop_text_size,
         } = desktop_found;
-        let mut view = View::new(window, &openers, fonts);
+        let mut view = View::new(window, &openers, fonts, events.clone());
         let settings = settings::load().unwrap_or_else(|error| {
             tracing::warn!(%error, "starting with the default settings");
             Settings::default()
@@ -996,6 +998,7 @@ impl App {
                 accepted,
                 runs,
             } => self.trust_read(request, accepted, runs),
+            Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view

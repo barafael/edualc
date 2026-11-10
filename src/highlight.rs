@@ -9,7 +9,13 @@
 //!
 //! A block that streams in grows a line at a time; [`Progress`] keeps the lines already
 //! coloured and the parser's state after them, so each update colours only what is new.
+//!
+//! Colouring takes about 60 µs a line (a release build), and a grammar's first block about
+//! 15 ms more, so the conversation's code is coloured by a [`Colourer`] off the UI thread (see
+//! `colouring`): the window shows it plain until the Markdown comes back, and Slint's parsing of
+//! that (about 4 ms for 3000 lines) is all the UI thread does.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use syntect::highlighting::{
@@ -22,7 +28,8 @@ use syntect::util::LinesWithEndings;
 use crate::generated::SyntaxColours;
 use crate::markdown;
 
-/// Longer code is shown plain: highlighting takes about 0.1 ms a line, on the UI thread.
+/// Longer code is shown plain: it would keep the colouring thread about 0.2 s, and Slint's
+/// parsing on the UI thread grows with it.
 const MAX_LINES: usize = 3000;
 /// A line longer than this (minified code, data) is shown plain, as the whole block is: some
 /// grammars' patterns backtrack on long lines.
@@ -80,16 +87,19 @@ impl Highlighter {
         code: &str,
         progress: &mut Option<Progress>,
     ) -> slint::StyledText {
-        self.coloured(lang, code, progress)
+        self.markdown(lang, code, progress)
+            .and_then(|source| parsed(&source))
             .unwrap_or_else(|| markdown::plain(code))
     }
 
-    fn coloured(
+    /// `code` in `lang`'s colours as the Markdown Slint makes it from, carrying on from
+    /// `progress`; `None` where it is shown plain.
+    pub(crate) fn markdown(
         &self,
         lang: &str,
         code: &str,
         progress: &mut Option<Progress>,
-    ) -> Option<slint::StyledText> {
+    ) -> Option<String> {
         if code.is_empty() || code.lines().count() > MAX_LINES {
             return None;
         }
@@ -132,7 +142,7 @@ impl Highlighter {
         } else {
             source.push_str(&last);
         }
-        slint::StyledText::from_markdown(&source).ok()
+        Some(source)
     }
 
     /// The grammar for a fence's tag: its name or a file extension (`rust`, `rs`), before any
@@ -157,7 +167,12 @@ impl Highlighter {
         if line.len() > MAX_LINE_BYTES {
             return None;
         }
-        let ops = parse.parse_line(line, &self.syntaxes).ok()?;
+        let ops = parse
+            .parse_line(line, &self.syntaxes)
+            .inspect_err(
+                |error| tracing::warn!(%error, "a grammar failed; its code is shown plain"),
+            )
+            .ok()?;
         let mut out = String::new();
         for (style, text) in HighlightIterator::new(highlight, &ops, line, painter) {
             let text = text.strip_suffix('\n').unwrap_or(text);
@@ -178,6 +193,94 @@ impl Highlighter {
             }
         }
         Some(out)
+    }
+}
+
+/// Coloured code's Markdown as Slint shows it; `None`, logged, if Slint refuses it.
+pub(crate) fn parsed(source: &str) -> Option<slint::StyledText> {
+    slint::StyledText::from_markdown(source)
+        .inspect_err(|error| tracing::warn!(?error, "Slint refused coloured code; shown plain"))
+        .ok()
+}
+
+/// Where a conversation's code block is: its entry, and its place among the entry's blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct BlockAt {
+    pub(crate) entry: usize,
+    pub(crate) block: usize,
+}
+
+/// Which drawing of the conversation a colouring is for: each time the view drops its blocks
+/// (another conversation, other colours), what was asked before is for one no longer shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Drawing(u64);
+
+impl Drawing {
+    #[must_use]
+    pub(crate) fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// A code block to colour.
+#[derive(Debug)]
+pub(crate) struct Job {
+    pub(crate) at: BlockAt,
+    pub(crate) drawing: Drawing,
+    pub(crate) lang: String,
+    pub(crate) code: String,
+}
+
+/// A code block coloured: the code it was asked for, back, so the view can tell whether it is
+/// still the block's; its Markdown, or `None` where it stays plain.
+#[derive(Debug)]
+pub(crate) struct Coloured {
+    pub(crate) at: BlockAt,
+    pub(crate) drawing: Drawing,
+    pub(crate) code: String,
+    pub(crate) markdown: Option<String>,
+}
+
+/// Colours the conversation's code blocks, keeping each block's progress so a block streaming
+/// in is coloured only as far as it is new.
+pub(crate) struct Colourer {
+    highlighter: Highlighter,
+    progress: HashMap<BlockAt, Progress>,
+}
+
+impl Colourer {
+    pub(crate) fn new(colours: &SyntaxColours) -> Self {
+        Self {
+            highlighter: Highlighter::new(colours),
+            progress: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn colour(&mut self, job: Job) -> Coloured {
+        let mut progress = self.progress.remove(&job.at);
+        let markdown = self
+            .highlighter
+            .markdown(&job.lang, &job.code, &mut progress);
+        if let Some(progress) = progress {
+            self.progress.insert(job.at, progress);
+        }
+        Coloured {
+            at: job.at,
+            drawing: job.drawing,
+            code: job.code,
+            markdown,
+        }
+    }
+
+    /// The view dropped its blocks: what is asked next starts afresh.
+    pub(crate) fn forget(&mut self) {
+        self.progress.clear();
+    }
+
+    /// Other colours: what is coloured so far has the old ones.
+    pub(crate) fn set_colours(&mut self, colours: &SyntaxColours) {
+        self.highlighter.set_colours(colours);
+        self.progress.clear();
     }
 }
 
@@ -461,5 +564,84 @@ mod tests {
             let text = highlighter.code(lang, &code, &mut None);
             prop_assert_eq!(shown(&text), as_plain(&code));
         });
+    }
+
+    fn job(at: BlockAt, code: &str) -> Job {
+        Job {
+            at,
+            drawing: Drawing::default(),
+            lang: "rust".to_owned(),
+            code: code.to_owned(),
+        }
+    }
+
+    /// Two blocks streaming in at once each end as they would if coloured whole. (That each
+    /// carries on from its own progress, rather than starting over, is only faster: not seen
+    /// here.)
+    #[test]
+    fn blocks_streamed_together_end_as_whole_ones() {
+        let first = "/* a\n   long comment */\nfn f() -> u8 {\n    1\n}\n";
+        let second = "let s = \"a\n string\";\n// done\n";
+        let (one, two) = (
+            BlockAt { entry: 0, block: 0 },
+            BlockAt { entry: 3, block: 1 },
+        );
+        let mut colourer = Colourer::new(&colours());
+        let mut last = (None, None);
+        for end in 1..=first.len().max(second.len()) {
+            let (first_piece, second_piece) = (
+                first.get(..end.min(first.len())).unwrap_or(first),
+                second.get(..end.min(second.len())).unwrap_or(second),
+            );
+            last.0 = colourer.colour(job(one, first_piece)).markdown;
+            last.1 = colourer.colour(job(two, second_piece)).markdown;
+        }
+        let whole = Highlighter::new(&colours());
+        assert_eq!(last.0, whole.markdown("rust", first, &mut None));
+        assert_eq!(last.1, whole.markdown("rust", second, &mut None));
+    }
+
+    /// What comes back says which block and drawing it is for, and carries the code it was
+    /// asked for, so the view can tell a stale answer.
+    #[test]
+    fn an_answer_names_its_block_drawing_and_code() {
+        let at = BlockAt { entry: 7, block: 2 };
+        let drawing = Drawing::default().next();
+        let mut colourer = Colourer::new(&colours());
+        let coloured = colourer.colour(Job {
+            drawing,
+            ..job(at, "fn f() {}")
+        });
+        assert_eq!(
+            (coloured.at, coloured.drawing, coloured.code.as_str()),
+            (at, drawing, "fn f() {}")
+        );
+    }
+
+    /// Other colours apply to a block coloured before, not only to what it grows by.
+    #[test]
+    fn other_colours_recolour_a_block_already_coloured() {
+        let at = BlockAt { entry: 0, block: 0 };
+        let mut colourer = Colourer::new(&colours());
+        let before = colourer.colour(job(at, "fn f() {}\n")).markdown;
+        let red = colours().keyword;
+        let blue = slint::Color::from_rgb_u8(0x12, 0x34, 0xff);
+        colourer.set_colours(&SyntaxColours {
+            keyword: blue,
+            ..colours()
+        });
+        let after = colourer.colour(job(at, "fn f() {}\nfn g() {}\n")).markdown;
+        let hex = |colour: slint::Color| {
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                colour.red(),
+                colour.green(),
+                colour.blue()
+            )
+        };
+        assert!(before.is_some_and(|markdown| markdown.contains(&hex(red))));
+        let after = after.unwrap_or_default();
+        assert!(after.contains(&hex(blue)), "{after}");
+        assert!(!after.contains(&hex(red)), "{after}");
     }
 }
