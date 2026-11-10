@@ -1,7 +1,7 @@
 # Maintainer: Felin Tusun <16455996+felintusun@users.noreply.github.com>
 
 pkgname=edualc
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock'
 arch=(x86_64 aarch64)

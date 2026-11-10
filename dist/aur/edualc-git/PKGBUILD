@@ -2,7 +2,7 @@
 
 pkgname=edualc-git
 _name=edualc
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock (main branch)'
 arch=(x86_64 aarch64)
