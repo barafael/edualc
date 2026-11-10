@@ -45,6 +45,12 @@ impl TryFrom<String> for SessionId {
     }
 }
 
+impl From<uuid::Uuid> for SessionId {
+    fn from(id: uuid::Uuid) -> Self {
+        Self(id.hyphenated().to_string())
+    }
+}
+
 impl SessionId {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
@@ -53,7 +59,7 @@ impl SessionId {
     /// A fresh id, for a session started (or forked) here: Claude Code takes it with
     /// `--session-id`, so it is known before the session's first prompt.
     pub(crate) fn new_random() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        Self::from(uuid::Uuid::new_v4())
     }
 }
 

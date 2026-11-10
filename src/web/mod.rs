@@ -2,8 +2,6 @@
 //! and Claude Code (`daemon`, `scenarios`), and a demo project's sessions in place of
 //! `~/.claude` (`demo`). It opens on a session that fixed the project's elevation gain.
 
-use std::path::PathBuf;
-
 use slint::ComponentHandle;
 
 use crate::app::{App, Desktop};
@@ -33,11 +31,10 @@ pub(crate) fn main() {
         events.clone(),
         link,
         Desktop::in_the_browser(),
-        PathBuf::from(demo::PROJECT),
+        demo::Folder::Trailhead.path().to_path_buf(),
         None,
     );
-    let first = SessionId::try_from(demo::FIRST.to_owned()).ok();
-    app.begin(Vec::new(), first, None, None);
+    app.begin(Vec::new(), Some(SessionId::from(demo::FIRST)), None, None);
     let started = slint::spawn_local(app.run(received))
         .and_then(|_app| slint::spawn_local(daemon::run(requests, events)));
     if let Err(error) = started {

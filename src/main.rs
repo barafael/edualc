@@ -47,6 +47,8 @@ mod trust;
 mod watcher;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod words;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).
 // Slint's code, not ours: it shares state through `Rc` and cells, and discards what it likes.

@@ -30,12 +30,12 @@ pub(crate) struct PetName(String);
 
 impl PetName {
     pub(crate) fn of(id: &SessionId) -> Self {
-        let words = petname::Petnames::small();
-        let word = |list: &[&'static str], number: usize| {
+        fn word<'list>(list: &[&'list str], number: usize) -> &'list str {
             list.get(number % list.len().max(1))
                 .copied()
                 .unwrap_or("session")
-        };
+        }
+        let words = petname::Petnames::small();
         Self(format!(
             "{}-{}",
             word(&words.adjectives, id_number(id, 0)),

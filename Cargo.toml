@@ -38,8 +38,8 @@ tracing = "0.1"
 jiff = { version = "0.2.38", features = ["serde"] }
 # `Instant`, which is std's on Linux and the page's clock in a browser; already built for Slint.
 web-time = "1.1"
-# Newtypes' `Display` and `From`; already built for Slint.
-derive_more = { version = "2", features = ["display", "from"] }
+# Newtypes' `Display`, `From` and `Deref`; already built for Slint.
+derive_more = { version = "2", features = ["display", "from", "deref"] }
 # Images, decoded in a confined helper (see `decode`): pure-Rust PNG, JPEG, GIF and WebP, whose
 # decoders are already built for Slint (through resvg).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
