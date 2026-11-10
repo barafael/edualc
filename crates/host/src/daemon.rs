@@ -1032,18 +1032,18 @@ impl Session {
     }
 
     /// A line to the process's input, never waited on here: one that isn't reading holds up
-    /// none of the rest. One that has left [`QUEUE`] lines unread has hung, and is ended as a
-    /// closed input ends it.
-    fn write(&mut self, stdin: &mut Option<mpsc::Sender<String>>, line: String) {
-        let Some(input) = stdin.as_ref() else {
+    /// none of the rest. One that has left [`QUEUE`] lines, or [`QUEUED_BYTES`], unread has
+    /// hung, and is ended as a closed input ends it.
+    fn write(&mut self, stdin: &mut Option<Input>, line: String) {
+        let Some(input) = stdin.as_mut() else {
             return;
         };
-        match input.try_send(line) {
+        match input.queue(line) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(Unqueued::Closed) => {
                 tracing::debug!(id = ?self.id, "claude's input closed");
             }
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(Unqueued::Full) => {
                 tracing::warn!(id = ?self.id, "claude isn't reading its input: ending it");
                 *stdin = None;
                 self.input_closed(Instant::now());
@@ -1078,7 +1078,7 @@ impl Session {
             )
             .await;
         }
-        let mut stdin = child.stdin.take().map(input);
+        let mut stdin = child.stdin.take().map(Input::start);
         let (lines, mut output) = mpsc::channel(QUEUE);
         let pumps = [
             child
@@ -1283,20 +1283,69 @@ impl Pending {
     }
 }
 
+/// The most bytes queued for a process's input and not written yet: a few of the longest
+/// lines a window may send.
+const QUEUED_BYTES: usize = 4 * crate::ipc::MAX_LINE;
+
 /// A process's input, written on a task of its own, line by line as they are queued. Dropped,
 /// the input closes once the lines queued are written; one the process doesn't read holds it
 /// open only until the process is killed, a grace after its input closed.
-fn input(mut stdin: ChildStdin) -> mpsc::Sender<String> {
-    let (lines, mut writing) = mpsc::channel::<String>(QUEUE);
-    tokio::spawn(async move {
-        while let Some(line) = writing.recv().await {
-            if let Err(error) = write_line(&mut stdin, &line).await {
-                tracing::debug!(%error, "claude's input closed");
-                return;
+struct Input {
+    lines: mpsc::UnboundedSender<String>,
+    /// The length of each line written, as it is.
+    written: mpsc::UnboundedReceiver<usize>,
+    queued_lines: usize,
+    queued_bytes: usize,
+}
+
+/// Why a line wasn't queued for a process's input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unqueued {
+    Closed,
+    /// So much is queued already that the process can't be reading.
+    Full,
+}
+
+impl Input {
+    fn start(mut stdin: ChildStdin) -> Self {
+        let (lines, mut writing) = mpsc::unbounded_channel::<String>();
+        let (wrote, written) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(line) = writing.recv().await {
+                if let Err(error) = write_line(&mut stdin, &line).await {
+                    tracing::debug!(%error, "claude's input closed");
+                    return;
+                }
+                if wrote.send(line.len()).is_err() {
+                    // The session let go of its input: what is queued is still written.
+                }
             }
+        });
+        Self {
+            lines,
+            written,
+            queued_lines: 0,
+            queued_bytes: 0,
         }
-    });
-    lines
+    }
+
+    /// Queues `line`, unless the process has left too much unread.
+    fn queue(&mut self, line: String) -> Result<(), Unqueued> {
+        while let Ok(bytes) = self.written.try_recv() {
+            self.queued_lines = self.queued_lines.saturating_sub(1);
+            self.queued_bytes = self.queued_bytes.saturating_sub(bytes);
+        }
+        let bytes = line.len();
+        if self.queued_lines >= QUEUE || self.queued_bytes.saturating_add(bytes) > QUEUED_BYTES {
+            return Err(Unqueued::Full);
+        }
+        if self.lines.send(line).is_err() {
+            return Err(Unqueued::Closed);
+        }
+        self.queued_lines += 1;
+        self.queued_bytes += bytes;
+        Ok(())
+    }
 }
 
 async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
@@ -1832,5 +1881,18 @@ mod tests {
             told.last(),
             Some(FromDaemon::Ended { key: ended, code: None }) if *ended == key
         ));
+    }
+
+    /// A process that doesn't read its input is let fall behind by so many bytes, and no more.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_process_input_unread_is_bounded_by_its_bytes() {
+        let mut process = running("sleep", &["30"]).child;
+        let mut input = Input::start(process.stdin.take().expect("its input"));
+        let longest = "x".repeat(crate::ipc::MAX_LINE);
+        for _ in 0..QUEUED_BYTES / crate::ipc::MAX_LINE {
+            assert_eq!(input.queue(longest.clone()), Ok(()));
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(input.queue("one more".to_owned()), Err(Unqueued::Full));
     }
 }

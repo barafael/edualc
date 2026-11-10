@@ -152,12 +152,13 @@ pub enum Error {
 }
 
 /// How long a program edualc runs gets to end. Each is quick (`claude stop`, git's
-/// configuration, fonts, a notification): one that takes longer has hung, and is killed rather
-/// than holding its thread, and what waits on it, forever.
-const RUN_LIMIT: Duration = Duration::from_secs(30);
+/// configuration, fonts, a notification): one that takes longer has hung, and is killed, with
+/// what it started, rather than holding its thread, and what waits on it, forever.
+pub(crate) const RUN_LIMIT: Duration = Duration::from_secs(30);
 
-/// How often a running program is looked at, to see whether it ended.
-const RUN_POLL: Duration = Duration::from_millis(20);
+/// How long what a program printed is waited for once it ended: a process it started may hold
+/// its output open, and what came by then is what it printed.
+const OUTPUT_GRACE: Duration = Duration::from_millis(500);
 
 /// Runs a program to its end, for at most [`RUN_LIMIT`]; what it printed, if it succeeded.
 pub fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
@@ -176,53 +177,43 @@ fn run_within(
     args: &[&str],
     limit: Duration,
 ) -> Result<Vec<u8>, Error> {
-    let deadline = Instant::now() + limit;
-    let mut child = Command::new(name)
+    let mut command = Command::new(name);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // A group of its own, so that what it starts is killed with it.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
         .spawn()
         .map_err(|source| Error::Run { program, source })?;
-    // Read beside it, so one printing much isn't stopped by a full pipe.
+    let pid = child.id();
+    // Read beside it, so one printing much isn't stopped by a full pipe; and waited for beside
+    // it, so that one the kernel can't kill at once (stuck on a file system) holds up no one.
     let stdout = child.stdout.take().map(read_beside);
     let stderr = child.stderr.take().map(read_beside);
-    let ended = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(RUN_POLL),
-            Ok(None) => break Err(Error::TimedOut { program }),
-            Err(source) => break Err(Error::Run { program, source }),
+    let (ended, ending) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        if ended.send(child.wait()).is_err() {
+            // Given up on: it is reaped as it ends.
+        }
+    });
+    let status = match ending.recv_timeout(limit) {
+        Ok(Ok(status)) => status,
+        Ok(Err(source)) => return Err(Error::Run { program, source }),
+        Err(_) => {
+            kill_group(pid);
+            return Err(Error::TimedOut { program });
         }
     };
-    let status = match ended {
-        Ok(status) => status,
-        Err(error) => {
-            // Its readers are left to end as the pipes close.
-            if let Err(error) = child.kill() {
-                tracing::debug!(%error, %program, "couldn't kill a program run");
-            }
-            if let Err(error) = child.wait() {
-                tracing::debug!(%error, %program, "a program killed wasn't waited for");
-            }
-            return Err(error);
-        }
-    };
-    // A program it started may hold its output open after it ended: not waited for past the
-    // limit either.
-    let printed = |reading: Option<mpsc::Receiver<Vec<u8>>>| {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match reading.map(|reading| reading.recv_timeout(left)) {
-            Some(Ok(bytes)) => Ok(bytes),
-            Some(Err(_)) => Err(Error::TimedOut { program }),
-            None => Ok(Vec::new()),
-        }
-    };
-    let stdout = printed(stdout)?;
+    let grace = Instant::now() + OUTPUT_GRACE;
+    let stdout = printed(stdout, grace);
     if status.success() {
         Ok(stdout)
     } else {
-        let stderr = printed(stderr).unwrap_or_default();
+        let stderr = printed(stderr, grace);
         Err(Error::Failed {
             program,
             stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
@@ -230,16 +221,65 @@ fn run_within(
     }
 }
 
-/// Reads all a program prints to one of its pipes, on a thread of its own.
-fn read_beside(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
-    let (read, reading) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Err(error) = pipe.read_to_end(&mut bytes) {
-            tracing::debug!(%error, "a program's output wasn't read to its end");
+/// Kills the process group `pid` leads.
+fn kill_group(pid: u32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rustix::process::{Pid, Signal, kill_process_group};
+        let Some(group) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+            return;
+        };
+        if let Err(error) = kill_process_group(group, Signal::KILL) {
+            tracing::debug!(%error, pid, "couldn't kill a program run");
         }
-        if read.send(bytes).is_err() {
-            // Nobody waits for it any more: it took too long.
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // No program runs in a browser.
+        let _: u32 = pid;
+    }
+}
+
+/// What a program printed to one of its pipes by its end, or by `grace` if a process it started
+/// holds the pipe open.
+fn printed(reading: Option<mpsc::Receiver<Vec<u8>>>, grace: Instant) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let Some(reading) = reading else {
+        return bytes;
+    };
+    loop {
+        let left = grace.saturating_duration_since(Instant::now());
+        match reading.recv_timeout(left) {
+            Ok(read) => bytes.extend(read),
+            Err(mpsc::RecvTimeoutError::Disconnected | mpsc::RecvTimeoutError::Timeout) => {
+                return bytes;
+            }
+        }
+    }
+}
+
+/// Reads what a program prints to one of its pipes, on a thread of its own, piece by piece as
+/// it comes, until the pipe closes.
+fn read_beside(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (read, reading) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = vec![0; 64 * 1024];
+        loop {
+            match pipe.read(&mut bytes) {
+                Ok(0) => return,
+                Ok(count) => {
+                    let piece = bytes.get(..count).unwrap_or_default().to_vec();
+                    if read.send(piece).is_err() {
+                        // Nobody waits for it any more.
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    tracing::debug!(%error, "a program's output wasn't read to its end");
+                    return;
+                }
+            }
         }
     });
     reading
@@ -390,21 +430,33 @@ mod tests {
         assert!(matches!(failed, Err(Error::Failed { stderr, .. }) if stderr == "no"));
     }
 
-    /// One that hangs is killed at its limit; so is waiting on a program it left holding the
-    /// output open.
+    /// One that hangs is killed at its limit, with what it started; one that ends, leaving a
+    /// process holding its output open, gives what it printed by then.
     #[test]
     fn a_program_that_hangs_is_given_up() {
         let limit = Duration::from_millis(300);
         let started = Instant::now();
-        let hung = run_within(Program::Claude, "sleep".as_ref(), &["30"], limit);
+        let hung = run_within(
+            Program::Claude,
+            "sh".as_ref(),
+            &["-c", "sleep 30 & wait"],
+            limit,
+        );
         assert!(matches!(
             hung,
             Err(Error::TimedOut {
                 program: Program::Claude
             })
         ));
-        let left_open = run_within(Program::Git, "sh".as_ref(), &["-c", "sleep 30 &"], limit);
-        assert!(matches!(left_open, Err(Error::TimedOut { .. })));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let started = Instant::now();
+        let left_open = run_within(
+            Program::Git,
+            "sh".as_ref(),
+            &["-c", "echo done; sleep 30 &"],
+            limit,
+        );
+        assert_eq!(left_open.ok(), Some(b"done\n".to_vec()));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
