@@ -6,7 +6,8 @@ The README has the short version; this is every feature, as the window has it.
 
 - **The conversation, as a document.** Markdown is rendered (headings, lists, code blocks with copy
   buttons, tables, quotes), text streams in as it's written, and every part of it can be selected and
-  copied (Ctrl+C), including tool output.
+  copied (Ctrl+C), including tool output. Code blocks are coloured by their language (bat's
+  grammars, in the look's colours), a line at a time as they stream in.
 - **Tool calls as cards, runs of them as one line.** Each card shows its command, file or query; edits
   show a diff; outputs are folded and copyable in full. Two or more calls in a row fold into one line
   ("Ran 1 command, read 2 files, edited main.rs") that opens on a click; while it works the line shows

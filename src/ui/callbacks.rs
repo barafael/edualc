@@ -138,6 +138,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     usage.on_refresh(actions.on(|| Action::ShowUsage));
     session.on_open_worktree(actions.on_index(Action::OpenWorktree));
     session.on_switch_look(actions.on(|| Action::SwitchLook));
+    session.on_syntax_colours_changed(actions.on(|| Action::RecolourCode));
     window.global::<Preferences>().on_choose_send_key({
         let actions = actions.clone();
         move |key| {

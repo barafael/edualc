@@ -21,6 +21,7 @@ mod desktop;
 mod external;
 mod folder;
 mod grouping;
+mod highlight;
 #[cfg(not(target_arch = "wasm32"))]
 mod home;
 mod ipc;

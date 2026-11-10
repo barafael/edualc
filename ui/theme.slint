@@ -15,6 +15,22 @@ export global Motion {
 // The looks to choose from (the sidebar's palette button).
 export enum Look { gruvbox, plain }
 
+// Code's colours, by what a word is in its language. On the code background each reaches 4.5:1;
+// those moved towards the text colour for it are marked "lifted". Rust colours code with them
+// (`src/highlight.rs`), and colours it again when they change.
+export struct SyntaxColours {
+    comment: color,
+    keyword: color,
+    string: color,
+    // Numbers, `true`, escapes, named constants.
+    constant: color,
+    type-name: color,
+    function: color,
+    // A diff's lines, shown as code.
+    inserted: color,
+    deleted: color,
+}
+
 // One look's colours, dark or light; what each is for is told at the `Theme` property that
 // takes it.
 struct Colours {
@@ -46,6 +62,7 @@ struct Colours {
     info: color,
     // A diff's added line, behind it (faint).
     added: color,
+    syntax: SyntaxColours,
 }
 
 export global Theme {
@@ -82,6 +99,16 @@ export global Theme {
         danger-text: #fb5841, // lifted to 4.6:1
         info: #8ec07c, // aqua
         added: #b8bb26,
+        syntax: {
+            comment: #958676, // gray, lifted
+            keyword: #fb4934, // red
+            string: #b8bb26, // green
+            constant: #d3869b, // purple
+            type-name: #fabd2f, // yellow
+            function: #8ec07c, // aqua
+            inserted: #b8bb26,
+            deleted: #fb5841,
+        },
     };
     property <Colours> gruvbox-light: {
         surface: #fbf1c7, // bg0
@@ -111,6 +138,16 @@ export global Theme {
         danger-text: #9d0006,
         info: #417756, // aqua, lifted to 4.6:1
         added: #79740e,
+        syntax: {
+            comment: #6f635a, // gray, lifted
+            keyword: #9d0006, // red
+            string: #6c6716, // green, lifted
+            constant: #8f3f71, // purple
+            type-name: #855d22, // yellow, lifted
+            function: #416f52, // aqua, lifted
+            inserted: #6c6815, // lifted
+            deleted: #9d0006,
+        },
     };
     // Plain greys, a blue accent, Claude's clay for its mark.
     property <Colours> plain-dark: {
@@ -141,6 +178,17 @@ export global Theme {
         danger-text: #f47b74,
         info: #5bb8d6,
         added: #6bc46d,
+        // GitHub's.
+        syntax: {
+            comment: #8b949e,
+            keyword: #ff7b72,
+            string: #a5d6ff,
+            constant: #79c0ff,
+            type-name: #ffa657,
+            function: #d2a8ff,
+            inserted: #6bc46d,
+            deleted: #f47b74,
+        },
     };
     property <Colours> plain-light: {
         surface: #ffffff,
@@ -170,6 +218,17 @@ export global Theme {
         danger-text: #b3261e,
         info: #0b6e78,
         added: #1e7b34,
+        // GitHub's.
+        syntax: {
+            comment: #677079, // lifted
+            keyword: #cf222e,
+            string: #0a3069,
+            constant: #0550ae,
+            type-name: #953800,
+            function: #8250df,
+            inserted: #1e7b34,
+            deleted: #b3261e,
+        },
     };
     property <Colours> colours: self.look == Look.plain
         ? (self.dark ? self.plain-dark : self.plain-light)
@@ -238,6 +297,8 @@ export global Theme {
     out property <color> added-text: self.success;
     out property <color> removed: self.danger.with-alpha(0.16);
     out property <color> removed-text: self.danger-text;
+    // Code, by what each word is (`SyntaxColours`).
+    out property <SyntaxColours> syntax: self.colours.syntax;
     // A share's colour, warming as it fills: a warning from 70%, danger from 90%.
     public pure function fill(fraction: float) -> color {
         return fraction >= 0.9 ? self.danger : fraction >= 0.7 ? self.warning : self.info;

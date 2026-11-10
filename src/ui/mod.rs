@@ -29,6 +29,7 @@ use crate::generated::{
     TableRow, TaskItem, TaskKind, Theme, ToolState, Transcript, Usage,
 };
 use crate::grouping::{self, Grouping, RunState};
+use crate::highlight::{Highlighter, Progress};
 use crate::ipc::Runs;
 use crate::markdown::{self, Block};
 use crate::sandbox::Enforcement;
@@ -68,11 +69,22 @@ pub(crate) struct View {
     images: HashMap<ImageKey, ShownImage>,
     /// The language text with Han characters alone is set in (see `cjk`).
     han: CjkLanguage,
+    /// Colours code in the theme's colours.
+    highlighter: Highlighter,
 }
 
 struct Blocks {
     model: ModelRc<MdBlock>,
     shown: Vec<Block>,
+    /// For each block that is code, how far it is coloured: a block streaming in is coloured
+    /// a line at a time.
+    progress: Vec<Option<Progress>>,
+}
+
+/// What a block is shown with besides itself.
+struct Shown<'a> {
+    han: CjkLanguage,
+    highlighter: &'a Highlighter,
 }
 
 /// The `VecModel` behind a model made in [`View::new`].
@@ -114,6 +126,7 @@ impl View {
             .chain(openers.iter().map(|opener| opener.label()))
             .collect();
         window.global::<Session>().set_openers(strings(&openers));
+        let highlighter = Highlighter::new(&window.global::<Theme>().get_syntax());
         Self {
             window,
             entries,
@@ -127,6 +140,7 @@ impl View {
             modes: Vec::new(),
             images: HashMap::new(),
             han: CjkLanguage::Japanese,
+            highlighter,
         }
     }
 
@@ -144,6 +158,23 @@ impl View {
                 CjkLanguage::TraditionalChinese => HanLanguage::TraditionalChinese,
                 CjkLanguage::Korean => HanLanguage::Korean,
             });
+    }
+
+    /// What blocks are shown with.
+    fn shown(&self) -> Shown<'_> {
+        Shown {
+            han: self.han,
+            highlighter: &self.highlighter,
+        }
+    }
+
+    /// Code's colours changed (the look, or the desktop's dark or light). Code drawn in the old
+    /// ones is coloured again as its entry is drawn again.
+    pub(crate) fn recolour_code(&mut self) {
+        self.highlighter
+            .set_colours(&self.window.global::<Theme>().get_syntax());
+        // An unchanged block isn't drawn again, and what is coloured so far has the old colours.
+        self.blocks.clear();
     }
 
     /// Image `key`'s pixels, or why it can't be shown.
@@ -305,7 +336,7 @@ impl View {
                     Answer::Answered(text) => {
                         let blocks: Vec<MdBlock> = markdown::blocks(text)
                             .iter()
-                            .map(|block| md_block(block, self.han))
+                            .map(|block| md_block(block, &self.shown(), &mut None))
                             .collect();
                         (
                             SideState::Answered,
@@ -595,13 +626,19 @@ impl View {
         let slot = slot.get_or_insert_with(|| Blocks {
             model: ModelRc::new(VecModel::<MdBlock>::default()),
             shown: Vec::new(),
+            progress: Vec::new(),
         });
+        let with = Shown {
+            han: self.han,
+            highlighter: &self.highlighter,
+        };
+        slot.progress.resize_with(blocks.len(), || None);
         let rows = vec_model(&slot.model);
-        for (position, block) in blocks.iter().enumerate() {
+        for ((position, block), progress) in blocks.iter().enumerate().zip(&mut slot.progress) {
             match slot.shown.get(position) {
                 Some(shown) if shown == block => {}
-                Some(_) => rows.set_row_data(position, md_block(block, self.han)),
-                None => rows.push(md_block(block, self.han)),
+                Some(_) => rows.set_row_data(position, md_block(block, &with, progress)),
+                None => rows.push(md_block(block, &with, progress)),
             }
         }
         while rows.row_count() > blocks.len() {
@@ -954,7 +991,7 @@ impl View {
                     let rows: Vec<PlanSection> = parts
                         .iter()
                         .map(|part| PlanSection {
-                            block: md_block(&part.block, self.han),
+                            block: md_block(&part.block, &self.shown(), &mut None),
                             excerpt: crate::plan::excerpt(&input.plan, part).into(),
                             comment: part.comment.as_str().into(),
                             editing: false,
@@ -1155,8 +1192,10 @@ fn cjk(text: &str, han: CjkLanguage) -> CjkChars {
 }
 
 /// A Markdown block for the window; its prose in the family of its own text, as a paragraph's
-/// script sets its lines (`han` for Han characters alone).
-fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
+/// script sets its lines (`han` for Han characters alone), its code in colour, carrying on from
+/// `progress`.
+fn md_block(block: &Block, with: &Shown<'_>, progress: &mut Option<Progress>) -> MdBlock {
+    let han = with.han;
     match block {
         Block::Text(source) => MdBlock {
             kind: BlockKind::Text,
@@ -1173,7 +1212,7 @@ fn md_block(block: &Block, han: CjkLanguage) -> MdBlock {
         },
         Block::Code { lang, code } => MdBlock {
             kind: BlockKind::Code,
-            body: markdown::plain(code),
+            body: with.highlighter.code(lang, code, progress),
             lang: lang.as_str().into(),
             raw: code.as_str().into(),
             ..MdBlock::default()

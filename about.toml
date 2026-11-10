@@ -3,6 +3,10 @@
 # `OR` expression is reported under the first of its licenses accepted here.
 #
 #   cargo about generate about.hbs > THIRD_PARTY_LICENSES.md
+#   cargo test -- --ignored add_the_grammars_licenses_to_the_report
+#
+# The second adds the licenses of the grammars two-face bundles, which cargo-about can't see;
+# `cargo test` fails while the report lacks them.
 
 # edualc is Linux-only, as in deny.toml: other platforms' crates in the graph are never built.
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]

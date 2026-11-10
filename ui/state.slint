@@ -99,6 +99,8 @@ export global Session {
     callback zoom(int);
     // The other look: Gruvbox or plain.
     callback switch-look;
+    // Code's colours changed (the look, or the desktop's dark or light): code is coloured again.
+    callback syntax-colours-changed;
 }
 
 // The composer: the draft, and slash commands matching it.
