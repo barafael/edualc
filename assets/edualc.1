@@ -1,0 +1,105 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH edualc 1  edualc edualc
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+edualc \- Native desktop window for Claude Code, sandboxed with Landlock
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBedualc\fR [\fB\-m\fR|\fB\-\-model\fR] [\fB\-\-permission\-mode\fR] [\fB\-r\fR|\fB\-\-resume\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIDIR\fR] [\fIPROMPT\fR] 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH DESCRIPTION
+A native desktop window for Claude Code.
+.PP
+Its arguments read as claude\*(Aqs own: where to work, which model, a session to continue, and a first prompt. It needs claude (Claude Code) on the PATH.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-m\fR, \fB\-\-model\fR \fI<MODEL>\fR
+The model, as claude \-\-model takes it (an alias such as sonnet, or a full name)
+.TP
+\fB\-\-permission\-mode\fR \fI<MODE>\fR
+The permission mode to start in
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+default: Claude asks before it edits files or runs commands
+.IP \(bu 2
+acceptEdits: File edits go through; commands still ask
+.IP \(bu 2
+plan: Claude only reads and plans, then asks you to approve the plan
+.IP \(bu 2
+auto: A classifier lets the safe through and asks about the rest
+.IP \(bu 2
+bypassPermissions: Nothing asks. Only for sandboxes you can throw away
+.RE
+.TP
+\fB\-r\fR, \fB\-\-resume\fR \fI<SESSION>\fR
+A session to continue, by its id
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fIDIR\fR]
+The folder to work in; where edualc was started, if none
+.TP
+[\fIPROMPT\fR]
+A first prompt
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH "EXIT STATUS"
+.TP
+\fB0\fR
+The window was closed.
+.TP
+\fB1\fR
+edualc couldn\*(Aqt start: its daemon, its confinement or its window.
+.TP
+\fB2\fR
+The command line was wrong.
+.SH ENVIRONMENT
+.TP
+\fBCLAUDE_BIN\fR
+The Claude Code program to run; claude on the PATH if unset.
+.TP
+\fBCLAUDE_CONFIG_DIR\fR
+Claude Code\*(Aqs configuration folder; ~/.claude if unset.
+.TP
+\fBRUST_LOG\fR
+Which messages are logged to standard error, as a tracing\-subscriber filter; edualc=info if unset.
+.TP
+\fBLC_ALL, LC_MESSAGES, LANG\fR
+The first set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until the settings choose.
+.TP
+\fBNIRI_SOCKET\fR
+Under niri, the sidebar can focus the window of a session running elsewhere.
+.TP
+\fBXDG_CONFIG_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR\fR
+Where the files below are kept.
+.SH FILES
+.TP
+\fB$XDG_CONFIG_HOME/edualc/settings.json\fR
+The settings (~/.config if unset).
+.TP
+\fB$XDG_STATE_HOME/edualc/claude/\fR
+Claude Code\*(Aqs home for each project\*(Aqs sandboxed sessions (~/.local/state if unset).
+.TP
+\fB$XDG_RUNTIME_DIR/edualc/\fR
+The daemon\*(Aqs socket.
+.TP
+\fB$CLAUDE_CONFIG_DIR/projects/\fR
+Claude Code\*(Aqs transcripts, read for the sidebar and to continue sessions.
+.SH "SEE ALSO"
+Claude Code: https://code.claude.com/docs/
+.br
+edualc: https://github.com/felintusun/edualc

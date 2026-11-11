@@ -10,6 +10,9 @@
 
 # edualc is Linux-only, as in deny.toml: other platforms' crates in the graph are never built.
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# Dev-dependencies aren't built into the program. Build dependencies stay: the Lucide icons are
+# embedded through build.rs.
+ignore-dev-dependencies = true
 
 accepted = [
   "MIT",

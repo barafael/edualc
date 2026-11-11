@@ -783,6 +783,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "clap_mangen"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "211d617eaa4b735c96c9e0228fcbdb5120ef623f2b8cb67ffb84c3e02dbc28a4"
+dependencies = [
+ "clap",
+ "roff",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1195,6 +1205,7 @@ dependencies = [
  "async-channel",
  "base64",
  "clap",
+ "clap_mangen",
  "derive_more",
  "dirs",
  "image",
@@ -1223,7 +1234,6 @@ dependencies = [
  "tracing-subscriber",
  "two-face",
  "uuid",
- "wasm-bindgen",
  "web-time",
  "zeroize",
 ]
@@ -4059,6 +4069,12 @@ checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rowan"

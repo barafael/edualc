@@ -1,4 +1,5 @@
 # Maintainer: Felin Tusun <16455996+felintusun@users.noreply.github.com>
+# Written from dist/package.ncl by dist/formats.ncl: change those, not this.
 
 pkgname=edualc-git
 _name=edualc
@@ -8,15 +9,14 @@ pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock (main br
 arch=(x86_64 aarch64)
 url='https://github.com/felintusun/edualc'
 license=(GPL-3.0-or-later)
-# fontconfig is linked; Wayland, xkbcommon and EGL (libglvnd) are opened at start
 depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd)
 makedepends=(cargo git)
 optdepends=(
-  'claude-code: the Claude Code CLI that edualc runs (or Anthropic installer: claude on the PATH)'
-  'xdg-dbus-proxy: the window'"'"'s filtered D-Bus, for screen readers and the light or dark setting'
+  'xdg-dbus-proxy: the window'\''s filtered D-Bus, for screen readers and the light or dark setting'
   'wl-clipboard: pasting images'
-  'ttf-fira-sans: the interface font (otherwise the desktop'"'"'s sans)'
-  'ttf-fira-code: the code font (otherwise the desktop'"'"'s monospace)'
+  'claude-code: the Claude Code CLI that edualc runs (or Anthropic'\''s installer: claude on the PATH)'
+  'ttf-fira-sans: the interface font (otherwise the desktop'\''s sans)'
+  'ttf-fira-code: the code font (otherwise the desktop'\''s monospace)'
   'noto-fonts-cjk: Japanese, Chinese and Korean text'
 )
 provides=("$_name")
@@ -52,9 +52,11 @@ check() {
 
 package() {
   cd "$_name"
-  install -Dm755 target/release/edualc -t "$pkgdir/usr/bin"
-  install -Dm644 assets/edualc.desktop -t "$pkgdir/usr/share/applications"
-  install -Dm644 assets/edualc.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
-  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
-  install -Dm644 THIRD_PARTY_LICENSES.md -t "$pkgdir/usr/share/licenses/$pkgname"
+  install -Dm0755 target/release/edualc "$pkgdir"/usr/bin/edualc
+  install -Dm0644 assets/io.github.felintusun.edualc.desktop "$pkgdir"/usr/share/applications/io.github.felintusun.edualc.desktop
+  install -Dm0644 assets/io.github.felintusun.edualc.svg "$pkgdir"/usr/share/icons/hicolor/scalable/apps/io.github.felintusun.edualc.svg
+  install -Dm0644 assets/io.github.felintusun.edualc.metainfo.xml "$pkgdir"/usr/share/metainfo/io.github.felintusun.edualc.metainfo.xml
+  install -Dm0644 assets/edualc.1 "$pkgdir"/usr/share/man/man1/edualc.1
+  install -Dm0644 README.md "$pkgdir"/usr/share/doc/edualc/README.md
+  install -Dm0644 THIRD_PARTY_LICENSES.md "$pkgdir"/usr/share/licenses/edualc/THIRD_PARTY_LICENSES.md
 }

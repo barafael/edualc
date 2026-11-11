@@ -1,6 +1,6 @@
 [package]
 name = "edualc"
-description = "edualc: a native desktop window for Claude Code, built with Slint"
+description = "Native desktop window for Claude Code, sandboxed with Landlock"
 version = "0.1.1"
 edition = "2024"
 # Slint is used under GPL-3.0-only, so a built binary goes out under GPL-3.0.
@@ -87,8 +87,6 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 # daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
-# The page's entry point.
-wasm-bindgen = "0.2"
 # The browser's clock and random numbers, for timestamps and ids.
 jiff = { version = "0.2.38", features = ["js"] }
 uuid = { version = "1.29", default-features = false, features = ["js"] }
@@ -102,6 +100,8 @@ lucide-static-svg = "1.55"
 # What a peer sends is fed, at random and shrunk to the smallest failing case, to the parsers
 # that take it (the frames, the pasted pieces). Without forking tests into processes of their own.
 proptest = { version = "1.12", default-features = false, features = ["std"] }
+# The manual page (assets/edualc.1), written by a test from the command line's definition.
+clap_mangen = "0.3"
 
 # "deny", not "forbid": Slint's generated code allows `unsafe` for itself, which "forbid" refuses.
 [lints.rust]
@@ -154,50 +154,3 @@ codegen-units = 1
 # wasm-bindgen reads which wasm features are on from a section stripping removes; it drops the
 # names itself (`--remove-name-section`).
 strip = false
-
-# `cargo deb --no-build`, after a release build (see .github/workflows/release.yml). fontconfig is
-# linked, and dpkg-shlibdeps finds it; winit opens Wayland, xkbcommon and EGL as it starts.
-# Claude Code itself is no package anywhere, so it is named in the README, not here.
-[package.metadata.deb]
-maintainer = "Felin Tusun <16455996+felintusun@users.noreply.github.com>"
-copyright = "Felin Tusun"
-license-file = ["LICENSE", "0"]
-section = "devel"
-extended-description = """\
-A native desktop window for Claude Code, Anthropic's coding agent: conversations, permission \
-prompts, plans to comment on, and sessions across projects, without the terminal UI. It runs \
-the claude CLI, sandboxed with Landlock by default, so Claude Code must be installed."""
-depends = "$auto, libwayland-client0, libwayland-egl1, libxkbcommon0, libegl1"
-# the window's filtered D-Bus (a screen reader, light or dark), and pasting images
-recommends = "xdg-dbus-proxy, wl-clipboard"
-assets = [
-    ["target/release/edualc", "usr/bin/", "755"],
-    ["assets/edualc.desktop", "usr/share/applications/", "644"],
-    ["assets/edualc.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["README.md", "usr/share/doc/edualc/", "644"],
-    ["THIRD_PARTY_LICENSES.md", "usr/share/doc/edualc/", "644"],
-]
-
-# `cargo generate-rpm`, after a release build. Linked libraries are found by reading the binary;
-# the ones opened at start are named by their sonames, which each distribution resolves to its
-# own packages.
-[package.metadata.generate-rpm]
-assets = [
-    { source = "target/release/edualc", dest = "/usr/bin/edualc", mode = "755" },
-    { source = "assets/edualc.desktop", dest = "/usr/share/applications/edualc.desktop", mode = "644" },
-    { source = "assets/edualc.svg", dest = "/usr/share/icons/hicolor/scalable/apps/edualc.svg", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/edualc/README.md", mode = "644", doc = true },
-    { source = "LICENSE", dest = "/usr/share/licenses/edualc/LICENSE", mode = "644", doc = true },
-    { source = "THIRD_PARTY_LICENSES.md", dest = "/usr/share/licenses/edualc/THIRD_PARTY_LICENSES.md", mode = "644", doc = true },
-]
-auto-req = "builtin"
-
-[package.metadata.generate-rpm.requires]
-"libwayland-client.so.0()(64bit)" = "*"
-"libwayland-egl.so.1()(64bit)" = "*"
-"libxkbcommon.so.0()(64bit)" = "*"
-"libEGL.so.1()(64bit)" = "*"
-
-[package.metadata.generate-rpm.recommends]
-xdg-dbus-proxy = "*"
-wl-clipboard = "*"

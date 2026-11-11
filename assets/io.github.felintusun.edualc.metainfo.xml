@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Written from dist/package.ncl by dist/formats.ncl and dist/build.nu: change those, not this. -->
+<component type="desktop-application">
+  <id>io.github.felintusun.edualc</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>edualc</name>
+  <summary>Native desktop window for Claude Code, sandboxed with Landlock</summary>
+  <developer id="io.github.felintusun">
+    <name>Felin Tusun</name>
+  </developer>
+  <description>
+    <p>A native desktop window for Claude Code, Anthropic's coding agent: conversations, permission prompts, plans to comment on, and sessions across projects, without the terminal UI. It runs Claude Code's command-line program, sandboxed with Landlock by default, so Claude Code must be installed.</p>
+  </description>
+  <launchable type="desktop-id">io.github.felintusun.edualc.desktop</launchable>
+  <url type="homepage">https://github.com/felintusun/edualc</url>
+  <url type="bugtracker">https://github.com/felintusun/edualc/issues</url>
+  <url type="vcs-browser">https://github.com/felintusun/edualc</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>edualc</binary>
+  </provides>
+  <releases>
+    <release date="2026-11-10" version="0.1.1"/>
+    <release date="2026-11-03" version="0.1.0"/>
+  </releases>
+</component>

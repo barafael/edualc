@@ -11,12 +11,12 @@ use crate::{app, confine, daemon, decode, desktop, generated, ipc, link, session
 
 /// A native desktop window for Claude Code.
 ///
-/// Its arguments read as `claude`'s own: where to work, which model, a session to continue, and
-/// a first prompt. It needs `claude` (Claude Code) on the PATH.
+/// Its arguments read as claude's own: where to work, which model, a session to continue, and a
+/// first prompt. It needs claude (Claude Code) on the PATH.
 #[derive(Debug, clap::Parser)]
 #[command(name = "edualc", version, about)]
 struct Args {
-    /// The model, as `claude --model` takes it (an alias such as `sonnet`, or a full name).
+    /// The model, as claude --model takes it (an alias such as sonnet, or a full name).
     #[arg(short, long)]
     model: Option<String>,
     /// The permission mode to start in.
@@ -220,6 +220,9 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     slint::run_event_loop_until_quit()?;
     Ok(std::process::ExitCode::SUCCESS)
 }
+
+#[cfg(test)]
+mod manual;
 
 #[cfg(test)]
 mod tests {
