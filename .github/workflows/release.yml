@@ -67,7 +67,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
-      image: ghcr.io/felintusun/edualc-ci:debian@sha256:2324c6e684aa322a82dce2d530019b0ff8cee6e05cfed76352e97ccd973b477c
+      image: ghcr.io/felintusun/edualc-ci:debian@sha256:196f1ed4db4e5ec202145b1e201a1f82cc1d986779fc1739b213be4181bf11b6
     timeout-minutes: 90
     permissions:
       contents: read
@@ -124,7 +124,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
-      image: ghcr.io/felintusun/edualc-ci:fedora@sha256:6062712d8e1f6586caf6ae6d7702c135999bc30b00b6410a7e73f51a5c1d3143
+      image: ghcr.io/felintusun/edualc-ci:fedora@sha256:d1e7c6181cb09bc4833cb884db55a559f789f1c2cc5b0305efc6a724c4f2b5a4
     timeout-minutes: 15
     permissions:
       contents: read
@@ -167,7 +167,7 @@ jobs:
     name: Arch package
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch@sha256:478f021da25ed2db1d12e9e1ae69e3e834232c8bd013c746b743cc20c01910af
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:52cd9281cf7ff7de028ddea342a5c14b7fc341e33687ef4f25c47bc4f5869a6b
     timeout-minutes: 90
     permissions:
       contents: read
@@ -272,7 +272,7 @@ jobs:
       # Ubuntu 24.04 has no piuparts, so it runs in the Debian image, with what its chroot needs:
       # mounts, device nodes, and no AppArmor profile in the way.
       - env:
-          IMAGE: ghcr.io/felintusun/edualc-ci:debian@sha256:2324c6e684aa322a82dce2d530019b0ff8cee6e05cfed76352e97ccd973b477c
+          IMAGE: ghcr.io/felintusun/edualc-ci:debian@sha256:196f1ed4db4e5ec202145b1e201a1f82cc1d986779fc1739b213be4181bf11b6
         run: |
           docker run --rm --cap-add SYS_ADMIN --cap-add MKNOD --security-opt apparmor=unconfined \
             -v "$PWD/packages:/packages:ro" "$IMAGE" \
