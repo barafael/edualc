@@ -1,0 +1,54 @@
+# edualc's CI images, one stage each: `debian` builds the release program and the .deb, `fedora`
+# the .rpm, `arch` runs the checks and the Arch package build. `tools` builds just, Nushell,
+# Nickel, ast-grep and cargo-about from crates.io for all three. Built and pushed by
+# .github/workflows/images.yml:
+#
+#   podman build --target debian -f ci/Containerfile ci
+#
+# The release program is built on Debian 12, the oldest glibc edualc supports.
+
+# Base images are written out in each FROM, which Dependabot updates.
+
+FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS tools
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config
+RUN cargo install --locked --root /tools \
+    just@1.59.0 \
+    nu@0.117.0 \
+    nickel-lang-cli@1.18.0 \
+    ast-grep@0.51.1
+# Its binary needs the `cli` feature, which `cargo install` of several crates can't set per crate.
+RUN cargo install --locked --root /tools --features cli cargo-about@0.9.3
+
+FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS debian
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates git build-essential pkg-config libfontconfig-dev \
+        dpkg-dev lintian file
+COPY --from=tools /tools/bin/just /tools/bin/nu /tools/bin/nickel /usr/local/bin/
+
+FROM docker.io/library/fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5 AS fedora
+RUN dnf -y install --setopt=install_weak_deps=False \
+        git tar gzip rpm-build rpmlint desktop-file-utils \
+    && dnf clean all
+COPY --from=tools /tools/bin/just /tools/bin/nu /tools/bin/nickel /usr/local/bin/
+
+FROM docker.io/library/archlinux:base@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899 AS arch
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN pacman -Syu --noconfirm --needed \
+        base-devel git rustup fontconfig pkgconf python sudo \
+        shellcheck namcap appstream desktop-file-utils \
+    && pacman -Scc --noconfirm
+# 1.99.1 for the checks (as ci.yml pins it), stable for the PKGBUILDs (RUSTUP_TOOLCHAIN=stable).
+RUN rustup toolchain install 1.99.1 --profile minimal \
+        --component clippy --component rustfmt --target wasm32-unknown-unknown \
+    && rustup toolchain install stable --profile minimal \
+    && rustup default 1.99.1 \
+    && mkdir -p "$CARGO_HOME" \
+    && chmod -R a+rX "$RUSTUP_HOME" "$CARGO_HOME"
+# makepkg refuses to run as root.
+RUN useradd --create-home builder \
+    && echo 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/builder
+COPY --from=tools /tools/bin/ /usr/local/bin/

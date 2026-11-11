@@ -1,0 +1,80 @@
+name: CI images
+# Builds ci/Containerfile's images and pushes them to GitHub's container registry as
+# ghcr.io/<owner>/edualc-ci:<image>, for amd64 and arm64 (Arch: amd64 only). The other workflows
+# use them by digest; this run's summary lists the digests. Runs when the Containerfile changes,
+# weekly for the distributions' updates, and by hand.
+on:
+  push:
+    paths:
+      - ci/Containerfile
+      - .github/workflows/images.yml
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            images: debian fedora arch
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            images: debian fedora
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          ARCH: ${{ matrix.arch }}
+          IMAGES: ${{ matrix.images }}
+        run: |
+          set -eu
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          repository="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/edualc-ci"
+          for image in $IMAGES; do
+            tag="$repository:$image-$ARCH-$GITHUB_SHA"
+            docker build --target "$image" --tag "$tag" \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --file ci/Containerfile ci
+            docker push "$tag"
+          done
+  merge:
+    name: Tag the images
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          repository="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/edualc-ci"
+          for image in debian fedora arch; do
+            set -- "$repository:$image-amd64-$GITHUB_SHA"
+            if [ "$image" != arch ]; then
+              set -- "$@" "$repository:$image-arm64-$GITHUB_SHA"
+            fi
+            docker buildx imagetools create --tag "$repository:$image" \
+              --tag "$repository:$image-$GITHUB_SHA" "$@"
+            digest=$(docker buildx imagetools inspect "$repository:$image" --format '{{json .Manifest}}' |
+              jq -r .digest)
+            echo "- \`$repository@$digest\` ($image)" >> "$GITHUB_STEP_SUMMARY"
+          done

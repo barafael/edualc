@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # The base images of ci/Containerfile's stages.
+  - package-ecosystem: docker
+    directory: /ci
+    schedule:
+      interval: weekly
+  # The actions the workflows use, pinned to commits.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

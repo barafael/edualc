@@ -1,15 +1,14 @@
 name: Release
 
-# A tag v<version> builds the release for x86_64 and aarch64: a tarball, a .deb and an .rpm
-# each. Once every package has installed and started on the distributions below, a draft
-# release holds them and their checksums; a person publishes it. Run by hand, it is a dry run:
-# the same packages, kept as the run's artifacts, and no release.
+# A tag v<version> builds the release for x86_64 and aarch64: a tarball, a .deb and an .rpm each,
+# with dist/build.nu (see the Justfile). The packages are linted (lintian, rpmlint), packaged twice
+# to compare, installed and started on the distributions below, and the .deb goes through
+# piuparts; an Arch package is built from the -git PKGBUILD and checked with namcap. Then a draft
+# release holds the packages and their checksums; a person publishes it. Run by hand, it is a dry
+# run: the same checks, the packages kept as the run's artifacts, and no release.
 #
-# Built in Debian 12: a binary needs at least the glibc it was linked against, and Debian 12's
-# is older than that of any distribution whose kernel has the Landlock edualc's sandbox uses.
-#
-# Actions and images are pinned to digests (the tag in each comment). No build cache: a release
-# is built from nothing but the tagged tree.
+# The program is built in Debian 12, the oldest glibc edualc supports. The build jobs run in
+# edualc's CI images (ci/Containerfile, images.yml).
 
 on:
   push:
@@ -25,8 +24,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # the toolchain CI gates with (ci.yml)
-  RUST_TOOLCHAIN: "1.99.1"
 
 jobs:
   package:
@@ -39,97 +36,184 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    container: docker.io/library/debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880
-    # all of Slint, from nothing, with thin LTO
+    container:
+      image: ghcr.io/felintusun/edualc-ci:debian
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     timeout-minutes: 90
     permissions:
       contents: read
+      packages: read
     steps:
-      # git for the checkout, a C toolchain and fontconfig's headers for the build, dpkg-shlibdeps
-      # for the .deb's library dependencies
-      - run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git \
-            build-essential pkg-config libfontconfig-dev dpkg-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Read the version
-        id: version
+          # the tags, for the release history in the metainfo
+          fetch-depth: 0
+      - name: Check the tag
         env:
           EVENT: ${{ github.event_name }}
           TAG: ${{ github.ref_name }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          # the tag names the version the packages say they are
+          version=$(nu -c 'open Cargo.toml | get package.version')
           if [ "$EVENT" = push ] && [ "$TAG" != "v$version" ]; then
             echo "tag $TAG, but edualc is $version"; exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
       - run: cargo build --release --locked
-      # The packages and the PKGBUILDs name these libraries, and those winit opens as it starts
-      # (Wayland, xkbcommon, EGL); a new one must be added there too.
+      # dist/package.ncl names the libraries opened at start; the linked ones must be these.
       - name: Check the linked libraries
         run: |
           readelf -d target/release/edualc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' > needed
           cat needed
           if grep -vxE 'libfontconfig\.so\.1|libgcc_s\.so\.1|libm\.so\.6|libc\.so\.6|ld-linux-(x86-64|aarch64)\.so\.[12]' needed; then
-            echo "edualc links a library the packages don't name"; exit 1
+            echo "edualc links a library dist/package.ncl doesn't account for"; exit 1
           fi
-      - run: cargo deb --no-build
-      - run: cargo generate-rpm
-      - name: Gather the packages
-        env:
-          ARCH: ${{ matrix.arch }}
-          VERSION: ${{ steps.version.outputs.version }}
+      - name: Package, lint, and package again to compare
         run: |
-          name="edualc-$VERSION-$ARCH-linux"
-          mkdir -p "out/$name"
-          cp target/release/edualc assets/edualc.desktop assets/edualc.svg \
-            README.md LICENSE THIRD_PARTY_LICENSES.md "out/$name/"
-          tar -C out -czf "out/$name.tar.gz" "$name"
-          rm -r "out/$name"
-          cp target/debian/*.deb target/generate-rpm/*.rpm out/
+          set -eu
+          deb=$(just package deb)
+          tarball=$(just package tarball)
+          nu dist/build.nu lint-deb "$deb"
+          again_deb=$(just package deb)
+          again_tarball=$(just package tarball)
+          (cd "$deb" && sha256sum ./*.deb) > first
+          (cd "$again_deb" && sha256sum ./*.deb) > second
+          (cd "$tarball" && sha256sum ./*.tar.gz) >> first
+          (cd "$again_tarball" && sha256sum ./*.tar.gz) >> second
+          diff first second
+          mkdir out
+          cp "$deb"/*.deb "$tarball"/*.tar.gz out/
           ls -l out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: packages-${{ matrix.arch }}
+          name: packages-deb-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-${{ matrix.arch }}
+          path: target/release/edualc
+          if-no-files-found: error
+
+  rpm:
+    name: RPM (${{ matrix.arch }})
+    needs: package
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/felintusun/edualc-ci:fedora
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: program-${{ matrix.arch }}
+          path: target/release
+      - name: Package, lint, and package again to compare
+        run: |
+          set -eu
+          chmod 0755 target/release/edualc
+          rpms=$(just package rpm)
+          nu dist/build.nu lint-rpm "$rpms"
+          again=$(just package rpm)
+          (cd "$rpms" && find . -name '*.rpm' -exec sha256sum {} +) > first
+          (cd "$again" && find . -name '*.rpm' -exec sha256sum {} +) > second
+          diff first second
+          mkdir out
+          find "$rpms" -name '*.rpm' -exec cp {} out/ \;
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-rpm-${{ matrix.arch }}
           path: out/*
           if-no-files-found: error
 
-  # Each package installed as its distribution installs it, then started; the tarball's binary
-  # started as unpacked. Without a display, it says its version and how to call it, which loads
-  # every library it links.
+  # The -git PKGBUILD, building this commit, with makepkg; its tests run in ci.yml, on the runner.
+  arch:
+    name: Arch package
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/felintusun/edualc-ci:arch
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: makepkg and namcap
+        run: |
+          set -eu
+          git config --system --add safe.directory "$PWD"
+          work=$(nu dist/build.nu pkgbuild-local)
+          chown -R builder "$work"
+          cd "$work"
+          sudo -u builder env PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME=/home/builder/.cargo \
+            makepkg --syncdeps --noconfirm --nocheck
+          namcap ./*.pkg.tar.zst
+          mkdir "$GITHUB_WORKSPACE/out"
+          cp ./*.pkg.tar.zst "$GITHUB_WORKSPACE/out/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-arch-x86_64
+          path: out/*
+          if-no-files-found: error
+
+  # Each package installed as its distribution installs it, then started; the tarball's program
+  # started as unpacked. Without a display, it prints its version and help, which loads every
+  # library it links.
   smoke:
     name: Start on ${{ matrix.distro }} (${{ matrix.arch }})
-    needs: package
+    needs: [package, rpm, arch]
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        distro: [debian-12, ubuntu-24.04, fedora-43, almalinux-10]
+        distro: [debian-12, ubuntu-24.04, fedora-43, almalinux-10, archlinux]
+        exclude:
+          - arch: aarch64
+            distro: archlinux
         include:
           - arch: x86_64
             runner: ubuntu-24.04
           - arch: aarch64
             runner: ubuntu-24.04-arm
           - distro: debian-12
-            image: docker.io/library/debian:12@sha256:d74df7598108a173a621eda4d58a2adbf850b2d9a9d81bc2cca1a6c21174a880
+            image: docker.io/library/debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
             kind: deb
           - distro: ubuntu-24.04
             image: docker.io/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
             kind: deb
           - distro: fedora-43
-            image: docker.io/library/fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+            image: docker.io/library/fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5
             kind: rpm
           - distro: almalinux-10
             image: docker.io/library/almalinux:10@sha256:5a4b41a427c9717be8f4ac2a32aa22efbae5f9124fbcb79a6765394f312acfe8
             kind: rpm
+          - distro: archlinux
+            image: docker.io/library/archlinux:base@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899
+            kind: arch
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
     timeout-minutes: 15
@@ -137,7 +221,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: packages-${{ matrix.arch }}
+          name: packages-${{ matrix.kind }}-${{ matrix.arch }}
           path: packages
       - if: matrix.kind == 'deb'
         run: |
@@ -145,17 +229,40 @@ jobs:
           apt-get install -y --no-install-recommends ./packages/*.deb
       - if: matrix.kind == 'rpm'
         run: dnf install -y --setopt=install_weak_deps=False ./packages/*.rpm
+      - if: matrix.kind == 'arch'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm ./packages/*.pkg.tar.zst
       - run: edualc --version
       - run: edualc --help
-      - run: |
+      # the tarball comes with the .deb's artifact
+      - if: matrix.kind == 'deb'
+        run: |
           mkdir unpacked
           tar -C unpacked -xzf packages/*.tar.gz
           unpacked/*/edualc --version
 
+  # Installs, upgrades and removes the .deb in a fresh Debian 12 chroot.
+  piuparts:
+    name: piuparts
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-deb-x86_64
+          path: packages
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends piuparts debootstrap debian-archive-keyring
+      - run: sudo piuparts --distribution bookworm --mirror http://deb.debian.org/debian packages/*.deb
+
   release:
     name: Draft the release
     if: github.event_name == 'push'
-    needs: smoke
+    needs: [smoke, piuparts]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -163,7 +270,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: packages-*
+          pattern: packages-{deb,rpm}-*
           path: packages
           merge-multiple: true
       - working-directory: packages
