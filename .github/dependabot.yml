@@ -5,8 +5,13 @@ updates:
     directory: /ci
     schedule:
       interval: weekly
+    # A release has been out a week before it's proposed.
+    cooldown:
+      default-days: 7
   # The actions the workflows use, pinned to commits.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
