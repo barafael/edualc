@@ -35,7 +35,7 @@ jobs:
           # the tags, which packaging-check compares with dist/releases.json
           fetch-depth: 0
       - run: git config --system --add safe.directory "$PWD"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: just fmt-check
       - run: just lint
       - run: just lint-wasm
@@ -60,7 +60,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libfontconfig-dev pkg-config
       # rust-toolchain.toml's
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The image decoder's tests confine a helper as edualc starts it, with nothing open but the
       # standard streams; it refuses to run with more. A step here inherits one more descriptor,
       # so the tests run with everything past the standard streams closed (as `just test` does).
