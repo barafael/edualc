@@ -244,10 +244,16 @@ jobs:
         with:
           name: packages-deb-x86_64
           path: packages
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends piuparts debootstrap debian-archive-keyring
-      - run: sudo piuparts --distribution bookworm --mirror http://deb.debian.org/debian packages/*.deb
+      # Ubuntu 24.04 has no piuparts, so it runs in the Debian image, privileged for its chroot
+      # (debootstrap, mounts).
+      - env:
+          IMAGE: ghcr.io/felintusun/edualc-ci:debian@sha256:3f983f59b6fac37a2c19d23f08699707fe6d45073ddd9bba39ec1fb94d560545
+        run: |
+          docker run --rm --privileged -v "$PWD/packages:/packages:ro" "$IMAGE" sh -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends piuparts debootstrap debian-archive-keyring
+            piuparts --distribution bookworm --mirror http://deb.debian.org/debian /packages/*.deb
+          '
 
   release:
     name: Draft the release
