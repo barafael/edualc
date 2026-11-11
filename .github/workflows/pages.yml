@@ -48,7 +48,8 @@ jobs:
           wasm-bindgen --target web --no-typescript --remove-name-section --out-dir site \
             --out-name edualc target/wasm32-unknown-unknown/web/edualc.wasm
           # the fonts built into the window are Fira, whose licence goes with them
-          cp web/index.html assets/edualc.svg web/fonts/*-OFL.txt site/
+          cp web/index.html web/fonts/*-OFL.txt site/
+          cp assets/io.github.felintusun.edualc.svg site/edualc.svg
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site

@@ -167,9 +167,12 @@ pub(crate) fn run(program: Program, args: &[&str]) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// What the desktop knows edualc by: the window's Wayland app id, and the name of its desktop
-/// entry (`assets/edualc.desktop`) and of its icon, which the entry's `Icon` names.
-pub(crate) const APP_ID: &str = "edualc";
+/// What the desktop knows edualc by: the window's Wayland app id, the name of its desktop entry
+/// (`assets/io.github.felintusun.edualc.desktop`) and of its icon, which the entry's `Icon`
+/// names, and its AppStream id.
+pub(crate) const APP_ID: &str = "io.github.felintusun.edualc";
+/// What people see edualc called, in a notification's header.
+const APP_NAME: &str = "edualc";
 
 /// Shows a desktop notification. Its texts come from other sessions' records: they are taken
 /// as text, never as options or markup (which notification daemons render in the body).
@@ -183,7 +186,7 @@ pub(crate) fn notify(summary: &str, body: &str) -> Result<(), Error> {
         Program::NotifySend,
         &[
             "--app-name",
-            APP_ID,
+            APP_NAME,
             "--icon",
             APP_ID,
             "--hint",

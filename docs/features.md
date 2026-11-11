@@ -149,5 +149,5 @@ session, flies off when the conversation begins and flies in when a new session 
 (`ui/heron.slint`, with the wing beats `assets/heron-wings-*.svg`). About once a minute the one
 in the sidebar looks over its shoulder, preens or flaps its wings, in turn, for a second or so
 (`assets/heron-looking-back.svg`, `heron-preening-*.svg`, `heron-flapping-*.svg`). It is also
-the app's icon (`assets/edualc.svg`, on Gruvbox's light background).
+the app's icon (`assets/io.github.felintusun.edualc.svg`, on Gruvbox's light background).
 

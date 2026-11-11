@@ -2236,8 +2236,8 @@ component WatchBar inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: Session.title + " — " + Session.project + " — edualc";
-    // Where windows show their own icon (X11); Wayland's come from `assets/edualc.desktop`.
-    icon: @image-url("../assets/edualc.svg");
+    // Where windows show their own icon (X11); Wayland's come from the desktop entry.
+    icon: @image-url("../assets/io.github.felintusun.edualc.svg");
     preferred-width: 1280px;
     preferred-height: 880px;
     min-width: 760px;

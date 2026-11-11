@@ -1,6 +1,6 @@
 # edualc
 
-<img src="assets/edualc.svg" alt="" width="72" align="right">
+<img src="assets/io.github.felintusun.edualc.svg" alt="" width="72" align="right">
 
 **A native Linux desktop window for Claude Code, with a sandbox around it.**
 
