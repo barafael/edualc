@@ -81,25 +81,16 @@ export component BlockView inherits VerticalLayout {
     in property <MdBlock> block;
     in property <string> key;
     in property <bool> first;
-    // The width beside the prose, on its right, so that prose holds to its measure while code
-    // and tables may take the `room` there is (see `Theme.measure`). Both come from the row's
-    // width, not from what the blocks hold. With none beside, every block fills the width.
-    in property <length> beside;
-    in property <length> room;
-    if root.block.kind == BlockKind.text: HorizontalLayout {
-        padding-right: root.beside;
-        Selectable {
-            text: root.block.body;
-            key: root.key;
-            cjk: root.block.cjk;
-            default-font-size: 1rem * Theme.message;
-            line-height-factor: Theme.line-factor(root.block.cjk);
-        }
+    if root.block.kind == BlockKind.text: Selectable {
+        text: root.block.body;
+        key: root.key;
+        cjk: root.block.cjk;
+        default-font-size: 1rem * Theme.message;
+        line-height-factor: Theme.line-factor(root.block.cjk);
     }
     // Bold already (see `src/ui/mod.rs`); a size by level.
     if root.block.kind == BlockKind.heading: VerticalLayout {
         padding-top: root.first ? 0 : Theme.space-xs;
-        padding-right: root.beside;
         Selectable {
             text: root.block.body;
             key: root.key;
@@ -108,31 +99,21 @@ export component BlockView inherits VerticalLayout {
             default-font-size: 1rem * Theme.message * (root.block.level == 1 ? Theme.heading : root.block.level == 2 ? Theme.title : 1.0);
         }
     }
-    // Code and tables start where the prose starts, never narrower than it, and wider as their
-    // content needs, up to the room there is.
-    if root.block.kind == BlockKind.code: HorizontalLayout {
-        property <length> wide: max(root.room - root.beside, min(code.preferred-width, root.room));
-        padding-right: max(0px, root.room - self.wide);
-        code := CodeBox {
-            body: root.block.body;
-            key: root.key;
-            label: root.block.lang;
-            copyable: true;
-            keeps-lines: true;
-            scale: Theme.message;
-            copy => { Clipboard.copy(root.block.raw); }
-        }
+    // Code takes the column's width; a longer line scrolls sideways.
+    if root.block.kind == BlockKind.code: CodeBox {
+        body: root.block.body;
+        key: root.key;
+        label: root.block.lang;
+        copyable: true;
+        keeps-lines: true;
+        scale: Theme.message;
+        copy => { Clipboard.copy(root.block.raw); }
     }
-    if root.block.kind == BlockKind.table: HorizontalLayout {
-        property <length> wide: max(root.room - root.beside, min(table.preferred-width, root.room));
-        padding-right: max(0px, root.room - self.wide);
-        table := TableView {
-            block: root.block;
-            key: root.key;
-        }
+    if root.block.kind == BlockKind.table: TableView {
+        block: root.block;
+        key: root.key;
     }
     if root.block.kind == BlockKind.quote: HorizontalLayout {
-        padding-right: root.beside;
         spacing: Theme.space-m;
         Rectangle {
             width: 3px;
@@ -151,7 +132,6 @@ export component BlockView inherits VerticalLayout {
     if root.block.kind == BlockKind.rule: VerticalLayout {
         padding-top: Theme.space-xs;
         padding-bottom: Theme.space-xs;
-        padding-right: root.beside;
         Rectangle {
             height: 1px;
             background: Theme.divider;
@@ -162,16 +142,11 @@ export component BlockView inherits VerticalLayout {
 export component MarkdownView inherits VerticalLayout {
     in property <[MdBlock]> blocks;
     in property <int> index;
-    // See `BlockView`.
-    in property <length> beside;
-    in property <length> room;
     spacing: Theme.space-s;
     for block[i] in root.blocks: BlockView {
         block: block;
         key: "e\{root.index}:b\{i}";
         first: i == 0;
-        beside: root.beside;
-        room: root.room;
     }
 }
 
@@ -318,11 +293,8 @@ component RunLine inherits Pressable {
 component ToolCard inherits Rectangle {
     in property <Entry> entry;
     in property <int> index;
-    // How wide its images may be: from the row, as the card sizes itself from what it holds.
+    // How wide its images may be.
     in property <length> image-room;
-    // As wide as its diff, input, output and images need, for the row to give it that much
-    // where there is room; its summary line and Markdown wrap or shorten to fit instead.
-    out property <length> natural-width: content.preferred-width;
     property <string> state-label: root.entry.tool-state == ToolState.awaiting ? "Waiting for you"
         : root.entry.tool-state == ToolState.failed ? "Failed"
         : root.entry.tool-state == ToolState.denied ? "Denied"
@@ -332,7 +304,7 @@ component ToolCard inherits Rectangle {
     border-width: 1px;
     border-color: root.entry.tool-state == ToolState.awaiting ? Theme.warning : Theme.divider;
     background: Theme.card;
-    content := VerticalLayout {
+    VerticalLayout {
         Pressable {
             border-radius: Theme.radius-m;
             clicked => { Transcript.toggle(root.index); }
@@ -484,15 +456,10 @@ component PeerBubble inherits HorizontalLayout {
 component AssistantText inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
-    // See `BlockView`.
-    in property <length> beside;
-    in property <length> room;
     spacing: 2px;
     MarkdownView {
         blocks: root.entry.blocks;
         index: root.index;
-        beside: root.beside;
-        room: root.room;
     }
     HorizontalLayout {
         alignment: start;
@@ -560,72 +527,52 @@ component Thinking inherits VerticalLayout {
 export component EntryView inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
-    // The column: up to `Theme.wide-measure`, centred in the row (whose width is the caller's,
-    // not what the entry holds), after a nested entry's indent. Prose takes `Theme.measure` at
-    // its left; code, tables and cards grow from there to the column's width.
+    // The column: `Theme.measure` wide at most, centred in the row (whose width is the caller's,
+    // not what the entry holds), after a nested entry's indent. Everything in it takes its width.
     property <length> indent: root.entry.nested ? Theme.space-xl : 0;
-    property <length> room: min(root.width - self.indent, Theme.wide-measure);
-    property <length> prose: min(self.room, Theme.measure);
-    padding-left: self.indent + (root.width - self.indent - self.room) / 2;
-    padding-right: (root.width - self.indent - self.room) / 2;
+    property <length> column: min(root.width - self.indent, Theme.measure);
+    padding-left: self.indent + (root.width - self.indent - self.column) / 2;
+    padding-right: (root.width - self.indent - self.column) / 2;
     if root.entry.kind == EntryKind.user: UserBubble {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         entry: root.entry;
         index: root.index;
     }
     // An image the user sent, where their messages are.
     if root.entry.kind == EntryKind.image: HorizontalLayout {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         alignment: end;
         for shown in root.entry.images: ImageView {
             shown: shown;
-            room: root.prose * 0.85;
+            room: root.column * 0.85;
         }
     }
     if root.entry.kind == EntryKind.peer: PeerBubble {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         entry: root.entry;
         index: root.index;
     }
     if root.entry.kind == EntryKind.assistant: AssistantText {
         entry: root.entry;
         index: root.index;
-        beside: root.room - root.prose;
-        room: root.room;
     }
     if root.entry.kind == EntryKind.thinking: Thinking {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         entry: root.entry;
         index: root.index;
     }
     if root.entry.group == GroupRole.head: RunLine {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         entry: root.entry;
         index: root.index;
     }
-    // An open run's calls, indented under its line; a folded run shows only the line. A card
-    // is as wide as the prose, or as its content needs up to the column's width.
+    // An open run's calls, indented under its line; a folded run shows only the line.
     if root.entry.kind == EntryKind.tool && (root.entry.group == GroupRole.alone || root.entry.group-open): tool-row := HorizontalLayout {
         property <length> indent: root.entry.group == GroupRole.alone ? 0 : Theme.space-l;
-        property <length> card-width: max(root.prose - self.indent, min(card.natural-width, root.room - self.indent));
-        alignment: start;
         padding-left: self.indent;
         padding-top: root.entry.group == GroupRole.head ? Theme.space-xs : 0;
-        card := ToolCard {
-            width: tool-row.card-width;
+        ToolCard {
             entry: root.entry;
             index: root.index;
-            image-room: root.room - tool-row.indent - 2 * Theme.space-s;
+            image-room: root.column - tool-row.indent - 2 * Theme.space-s;
         }
     }
     if root.entry.kind == EntryKind.info: Selectable {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         text: root.entry.body;
         key: "e\{root.index}:text";
         horizontal-alignment: center;
@@ -635,8 +582,6 @@ export component EntryView inherits VerticalLayout {
         line-height-factor: Theme.line-factor(root.entry.cjk);
     }
     if root.entry.kind == EntryKind.error: Rectangle {
-        width: root.prose;
-        cross-axis-self-alignment: start;
         border-radius: Theme.radius-m;
         background: Theme.danger-fill;
         HorizontalLayout {

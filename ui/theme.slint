@@ -393,12 +393,12 @@ export global Theme {
     out property <length> header: max(46px, self.base-size * 3.1);
     out property <length> sidebar: max(272px, self.base-size * 18);
     out property <length> side-panel: max(400px, self.base-size * 26);
-    // The transcript's measure, in ems of its messages (`message`), as the user chose after the
-    // typography review: prose, lists and headings at most 42 em (about 92 characters of Fira
-    // Sans, 42 of CJK); code blocks, tables and tool output as wide as they need, up to 70 em
-    // (100 to 120 columns of code), from the prose's left edge. Only in ems, so a line holds as
-    // many characters at any zoom; with margins of `column-margin` at least.
+    // The conversation's column, in ems of its messages (`message`): at most 42 em (about 92
+    // characters of Fira Sans, 42 of CJK), for prose, code, tables and tool calls alike; longer
+    // code lines and wider tables scroll sideways. Only in ems, so a line holds as many
+    // characters at any zoom; with margins of `column-margin` at least.
     out property <length> measure: self.base-size * self.message * 42;
+    // A plan's column, whose code and tables have more room (100 to 120 columns of code).
     out property <length> wide-measure: self.base-size * self.message * 70;
     out property <length> column-margin: self.space-l;
 }
