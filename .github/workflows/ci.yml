@@ -26,13 +26,9 @@ jobs:
     name: Formatting and lints
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:04ed7e389e8efb4e9a3729f2c924cc1151091a3fb83b1b950b2466902d6948b1
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -37,14 +37,10 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
-      image: ghcr.io/felintusun/edualc-ci:debian
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
+      image: ghcr.io/felintusun/edualc-ci:debian@sha256:3f983f59b6fac37a2c19d23f08699707fe6d45073ddd9bba39ec1fb94d560545
     timeout-minutes: 90
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,14 +104,10 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
-      image: ghcr.io/felintusun/edualc-ci:fedora
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
+      image: ghcr.io/felintusun/edualc-ci:fedora@sha256:7a3e80bcb8ce06203ed5e1fc022b84ab31ed426251b680427b3d360b7745fc5d
     timeout-minutes: 15
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,14 +141,10 @@ jobs:
     name: Arch package
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:04ed7e389e8efb4e9a3729f2c924cc1151091a3fb83b1b950b2466902d6948b1
     timeout-minutes: 90
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
