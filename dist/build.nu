@@ -1,115 +1,92 @@
 #!/usr/bin/env nu
-# Packages edualc with each format's own tools, from dist/formats.ncl. Run from the repository's
-# root, after `cargo build --release`:
-#
-#   nu dist/build.nu generate        packaging files from dist/*.ncl
-#   nu dist/build.nu check           formatting, contracts, kept files, linters
-#   nu dist/build.nu write-kept      writes the -git PKGBUILD and the metainfo into the tree
-#   nu dist/build.nu write-release   writes the release's PKGBUILD
-#   nu dist/build.nu release-checksum  the tag tarball's checksum into release.ncl, then write-release
-#   nu dist/build.nu deb             .deb (dpkg-shlibdeps, dpkg-gencontrol, dpkg-deb)
-#   nu dist/build.nu rpm             .rpm (rpmbuild)
-#   nu dist/build.nu tarball         .tar.gz
-#   nu dist/build.nu lint-deb DIR    lintian on the .deb files in DIR
-#   nu dist/build.nu lint-rpm DIR    rpmlint on the .rpm files under DIR
-#
-# Each command writes to a new folder under target/packaging and prints its path on stdout; the
-# tools' own output goes to stderr. Dates come from SOURCE_DATE_EPOCH, else the last commit.
 
+const root = path self ..
 const packaging = "target/packaging"
+# Generated files kept in the tree: path in the tree → path in `generate`'s folder. The release's
+# PKGBUILD builds the last tag's tree, so `write-release` writes it, in that tree.
+const kept = {
+    "assets/io.github.felintusun.edualc.desktop": "desktop"
+    "assets/io.github.felintusun.edualc.metainfo.xml": "metainfo.xml"
+    "dist/aur/edualc-git/PKGBUILD": "arch/edualc-git/PKGBUILD"
+}
 
-def main [] {
+# Packages edualc with each format's own tools, from dist/package.ncl through dist/formats.ncl.
+#
+# Commands that build write into a new folder under target/packaging and print its path; the
+# tools' own output goes to stderr. The packages' dates are the newest release's day in
+# dist/releases.json, or SOURCE_DATE_EPOCH. deb, rpm and tarball package target/release/edualc.
+def main []: nothing -> nothing {
     help main
 }
 
-# A fresh folder for one run of `kind`.
-def fresh [kind: string]: nothing -> path {
-    mkdir $packaging
-    mktemp --directory --tmpdir-path $packaging $"($kind).XXXXXX" | path expand
+def --env at-root []: nothing -> nothing {
+    cd $root
 }
 
-# When the source was last changed, in seconds since 1970.
-def epoch []: nothing -> int {
+# A fresh folder for one run of `kind`. (An absolute path: mktemp takes a relative one from where
+# the script started, not from `cd`.)
+def fresh [kind: string]: nothing -> path {
+    let base = $root | path join $packaging
+    mkdir $base
+    mktemp --directory --tmpdir-path $base $"($kind).XXXXXX"
+}
+
+# The packages' time, in seconds since 1970: SOURCE_DATE_EPOCH, else midnight (UTC) of `date`.
+def epoch [date: string]: nothing -> int {
     if ($env.SOURCE_DATE_EPOCH? | is-empty) {
-        ^git log -1 --format=%ct | str trim | into int
+        ($"($date)T00:00:00+00:00" | into datetime | into int) // 1_000_000_000
     } else {
         $env.SOURCE_DATE_EPOCH | into int
     }
 }
 
-# The release date as Debian's changelog (RFC 2822) and RPM's write it. Day and month names are
-# spelled out here because `format date` uses the locale's.
-def release-dates []: nothing -> record<date_rfc2822: string, date_rpm: string> {
-    const days = [Mon Tue Wed Thu Fri Sat Sun]
-    const months = [Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec]
-    let when = (epoch) * 1_000_000_000 | into datetime
-    let day = $days | get (($when | format date "%u" | into int) - 1)
-    let month = $months | get (($when | format date "%m" | into int) - 1)
-    let day_of_month = $when | format date "%d"
-    let year = $when | format date "%Y"
-    {
-        date_rfc2822: $"($day), ($day_of_month) ($month) ($year) ($when | format date '%H:%M:%S') +0000",
-        date_rpm: $"($day) ($month) ($day_of_month) ($year)",
+# The files of `pattern`, or an error naming `what` is missing.
+def found [pattern: string, what: string]: nothing -> list<string> {
+    let files = glob $pattern
+    if ($files | is-empty) {
+        error make { msg: $"no ($what) at ($pattern)" }
     }
+    $files
 }
 
-# Every release, newest first: the v* tags with their dates, and `version` if it has no tag yet,
-# dated by the last commit.
-def release-history [version: string]: nothing -> list<record<version: string, date: string>> {
-    let tagged = (^git for-each-ref --sort=-creatordate
-        --format "%(refname:short) %(creatordate:short)" "refs/tags/v*"
-        | lines
-        | parse "v{version} {date}")
-    if ($tagged | any {|release| $release.version == $version }) {
-        $tagged
-    } else {
-        let date = (epoch) * 1_000_000_000 | into datetime | format date "%Y-%m-%d"
-        [{version: $version, date: $date}] ++ $tagged
-    }
-}
-
-# A field of formats.ncl as text or JSON, with the `release` file merged in.
-def field [name: string, release: path, --json (-j)]: nothing -> string {
-    let format = if $json { "json" } else { "text" }
-    ^nickel export --format $format dist/formats.ncl dist/release.ncl $release --field $name
-}
-
-# Installs `files` (source, path, mode, gzip) under `root`.
-def stage [files: list<record<source: string, path: string, mode: string, gzip: bool>>, root: path] {
+# Installs `files` under `tree`, with every folder 0755 whatever the umask.
+def stage [
+    files: list<record<source: string, role: string, path: string, mode: string, gzip: bool>>
+    tree: path
+]: nothing -> nothing {
     for file in $files {
-        let target = $root | path join ($file.path | str trim --left --char "/")
+        let target = $tree | path join ($file.path | str trim --left --char "/")
+        mkdir ($target | path dirname)
         if $file.gzip {
-            mkdir ($target | path dirname)
             open --raw $file.source | ^gzip -9n | save --raw $target
-            ^chmod $file.mode $target
         } else {
-            ^install $"-Dm($file.mode)" $file.source $target
+            open --raw $file.source | save --raw $target
         }
+        ^chmod $file.mode $target
     }
+    ^find $tree -type d -exec chmod 0755 "{}" "+"
 }
 
-# Writes the packaging files from dist/*.ncl.
+# Writes the packaging files from dist/*.ncl, and formats.json with everything formats.ncl says.
 def "main generate" []: nothing -> path {
+    at-root
     let generated = fresh generated
-    let version = open Cargo.toml | get package.version
-    let release = $"($generated)/release.json"
-    { release: ((release-dates) | merge {history: (release-history $version)}) } | to json | save $release
-    ^nickel export --format text dist/package.ncl --field name --output $"($generated)/name"
-    $version | save $"($generated)/version"
-    mkdir $"($generated)/debian" $"($generated)/fedora" $"($generated)/tarball"
-    mkdir $"($generated)/arch/edualc" $"($generated)/arch/edualc-git"
+    let formats = ^nickel export --format json dist/formats.ncl | from json
+    $formats | to json | save $"($generated)/formats.json"
+    mkdir $"($generated)/debian" $"($generated)/fedora" $"($generated)/arch/edualc" $"($generated)/arch/edualc-git"
     for part in [control changelog copyright] {
-        field $"debian.($part)" $release | save $"($generated)/debian/($part)"
+        $formats.debian | get $part | save $"($generated)/debian/($part)"
     }
-    field debian.files $release --json | save $"($generated)/debian/files.json"
-    field fedora.spec $release | save $"($generated)/fedora/package.spec"
-    field tarball.files $release --json | save $"($generated)/tarball/files.json"
-    field arch.tagged $release | save $"($generated)/arch/edualc/PKGBUILD"
-    field arch.git $release | save $"($generated)/arch/edualc-git/PKGBUILD"
+    $formats.fedora.spec | save $"($generated)/fedora/package.spec"
+    $formats.arch.git | save $"($generated)/arch/edualc-git/PKGBUILD"
+    if $formats.arch.tagged != null {
+        $formats.arch.tagged | save $"($generated)/arch/edualc/PKGBUILD"
+    }
+    $formats.desktop | save $"($generated)/desktop"
     [
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<!-- Written from dist/package.ncl by dist/formats.ncl and dist/build.nu: change those, not this. -->'
-        (field metainfo $release --json | from json | to xml --indent 2 --self-closed --partial-escape)
+        ($formats.metainfo | to xml --indent 2 --self-closed --partial-escape)
     ]
     | str join "\n"
     | $in + "\n"
@@ -117,105 +94,166 @@ def "main generate" []: nothing -> path {
     $generated
 }
 
-# Generated files kept in the tree: path in the tree → path in `generate`'s folder. The release's
-# PKGBUILD builds the last tag, so it is written by `write-release` instead.
-const kept = {
-    "dist/aur/edualc-git/PKGBUILD": "arch/edualc-git/PKGBUILD"
-    "assets/io.github.felintusun.edualc.metainfo.xml": "metainfo.xml"
-}
-
-# Writes the kept files into the tree.
-def "main write-kept" [] {
+# Writes the generated files kept in the tree.
+def "main write-kept" []: nothing -> nothing {
+    at-root
     let generated = main generate
     for file in ($kept | transpose kept written) {
         cp $"($generated)/($file.written)" $file.kept
     }
 }
 
-# Sets dist/release.ncl's checksum to that of the tag v<Cargo.toml's version>'s tarball as GitHub
-# serves it, after comparing it with `git archive` of the tag, and writes the release's PKGBUILD.
-def "main release-checksum" [] {
-    let version = open Cargo.toml | get package.version
-    let tag = $"v($version)"
-    let url = $"(open Cargo.toml | get package.repository)/archive/refs/tags/($tag).tar.gz"
-    let served = http get --raw $url | hash sha256
-    let archived = (^git archive $"--prefix=(open Cargo.toml | get package.name)-($version)/" $tag
-        | ^gzip -n
-        | hash sha256)
-    if $served != $archived {
-        error make { msg: $"($url) is not `git archive` of ($tag): ($served) against ($archived)" }
+# After tagging v<Cargo.toml's version> and pushing the tag: puts the tag's tarball's checksum,
+# as GitHub serves it, into dist/releases.json, once its contents match `git archive` of the tag,
+# then writes the release's PKGBUILD.
+def "main release-checksum" []: nothing -> nothing {
+    at-root
+    let package = open Cargo.toml | get package
+    let releases = open dist/releases.json
+    if ($releases | first | get version) != $package.version {
+        error make { msg: $"dist/releases.json doesn't start with ($package.version)" }
     }
-    open --raw dist/release.ncl
-    | str replace --regex 'source_sha256 = "[0-9a-f]{64}"' $"source_sha256 = \"($served)\""
-    | save --force dist/release.ncl
+    let tag = $"v($package.version)"
+    let url = $"($package.repository)/archive/refs/tags/($tag).tar.gz"
+    let served = http get --raw $url
+    let served_tar = $served | ^gzip -dc | hash sha256
+    let archived_tar = ^git archive --format=tar $"--prefix=($package.name)-($package.version)/" $tag | hash sha256
+    if $served_tar != $archived_tar {
+        error make { msg: $"($url) doesn't hold `git archive` of ($tag)" }
+    }
+    $releases
+    | update 0 {|release| $release | upsert source_sha256 ($served | hash sha256) }
+    | to json --indent 2
+    | $in + "\n"
+    | save --force dist/releases.json
     main write-release
 }
 
-# Writes the release's PKGBUILD. Run in the tagged tree, after setting the tarball's checksum in
-# dist/release.ncl.
-def "main write-release" [] {
+# Writes the release's PKGBUILD. Run in the tagged tree, once the release's checksum is in
+# dist/releases.json.
+def "main write-release" []: nothing -> nothing {
+    at-root
     let generated = main generate
-    cp $"($generated)/arch/edualc/PKGBUILD" dist/aur/edualc/PKGBUILD
+    let written = $"($generated)/arch/edualc/PKGBUILD"
+    if not ($written | path exists) {
+        error make { msg: "no checksum for the newest release in dist/releases.json: see `release-checksum`" }
+    }
+    cp $written dist/aur/edualc/PKGBUILD
 }
 
-# Checks formatting and contracts of dist/*.ncl, compares the kept files with `generate`'s, and
-# lints the PKGBUILDs, the desktop entry and the metainfo.
-def "main check" [] {
+# Checks that every v* tag in HEAD's history is in dist/releases.json, with the tag's day.
+def "main check-tags" []: nothing -> nothing {
+    at-root
+    let releases = open dist/releases.json
+    let tags = (^git for-each-ref --merged HEAD --format "%(refname:short) %(creatordate:short)" "refs/tags/v*"
+        | lines
+        | parse "v{version} {date}")
+    for tag in $tags {
+        let listed = $releases | where version == $tag.version
+        if ($listed | is-empty) {
+            error make { msg: $"v($tag.version) isn't in dist/releases.json" }
+        }
+        if ($listed | first | get date) != $tag.date {
+            error make { msg: $"v($tag.version) was tagged on ($tag.date), not as dist/releases.json says" }
+        }
+    }
+}
+
+# Checks the Nickel files' formatting, types and contracts, the kept files against freshly
+# generated ones, the release tags, and lints the PKGBUILDs, the desktop entry and the metainfo.
+def "main check" []: nothing -> nothing {
+    at-root
     ^nickel format --check ...(glob dist/*.ncl)
-    # Contracts are checked lazily, so export everything. `| ignore` would drop the exit code.
-    ^nickel export dist/package.ncl --output /dev/null
+    for file in (glob dist/*.ncl) {
+        ^nickel typecheck $file
+    }
+    # Exporting everything applies every contract.
     let generated = main generate
     for file in ($kept | transpose kept written) {
         ^diff -u $file.kept $"($generated)/($file.written)"
     }
+    main check-tags
     # makepkg sets srcdir and pkgdir, and reads the arrays itself.
-    ^shellcheck --shell=bash --exclude=SC2034,SC2154,SC2164 ...(glob dist/aur/*/PKGBUILD)
+    (^shellcheck --shell=bash --exclude=SC2034,SC2154,SC2164
+        ...(glob $"($generated)/arch/*/PKGBUILD") ...(glob dist/aur/*/PKGBUILD))
     ^desktop-file-validate assets/io.github.felintusun.edualc.desktop
     ^appstreamcli validate --no-net --pedantic assets/io.github.felintusun.edualc.metainfo.xml
 }
 
-# Runs lintian on the .deb files in `folder`; warnings fail too. initial-upload-closes-no-bugs is
-# suppressed: it concerns uploads to Debian's archive, which these packages don't go through.
-def "main lint-deb" [folder: path] {
-    (^lintian --pedantic --display-info --fail-on error,warning
-        --suppress-tags initial-upload-closes-no-bugs
-        ...(glob $"($folder)/*.deb"))
+# Checks that `program` links only the libraries dist/package.ncl lists under `linked`.
+def "main check-linked" [program: path = "target/release/edualc"]: nothing -> nothing {
+    at-root
+    let linked = (main generate | path join formats.json | open $in | get linked)
+    let needed = ^readelf -d $program | lines | parse --regex '\(NEEDED\)\s+Shared library: \[(?<soname>[^\]]+)\]' | get soname
+    print --stderr ...$needed
+    let unlisted = $needed | where $it not-in $linked
+    if ($unlisted | is-not-empty) {
+        error make { msg: $"($program) links ($unlisted | str join ', '), which dist/package.ncl doesn't list" }
+    }
 }
 
-# Runs rpmlint on the .rpm files under `folder`, with dist/rpmlint.toml.
-def "main lint-rpm" [folder: path] {
-    ^rpmlint --config dist/rpmlint.toml ...(glob $"($folder)/**/*.rpm")
+# Runs lintian on the .deb files in `folder`; warnings fail too. initial-upload-closes-no-bugs is
+# suppressed: it concerns uploads to Debian's archive, which these packages don't go through.
+def "main lint-deb" [folder: path]: nothing -> nothing {
+    (^lintian --pedantic --display-info --fail-on error,warning
+        --suppress-tags initial-upload-closes-no-bugs
+        ...(found $"($folder)/*.deb" ".deb files"))
+}
+
+# Runs rpmlint on the .rpm files under `folder`, with dist/rpmlint.toml; warnings fail too.
+def "main lint-rpm" [folder: path]: nothing -> nothing {
+    ^rpmlint --strict --config $"($root)/dist/rpmlint.toml" ...(found $"($folder)/**/*.rpm" ".rpm files")
+}
+
+# Runs namcap on the packages in `folder`. Its errors and warnings fail, except those
+# dist/formats.ncl expects (`arch.namcap_expected`).
+def "main lint-arch" [folder: path]: nothing -> nothing {
+    let packages = found $"($folder)/*.pkg.tar.zst" "Arch packages"
+    let expected = (main generate | path join formats.json | open $in | get arch.namcap_expected)
+    let messages = ^namcap ...$packages | lines
+    print --stderr ...$messages
+    let unexpected = ($messages
+        | where $it =~ ' [EW]: '
+        | where {|message| $expected | all {|pattern| $message !~ $pattern } })
+    if ($unexpected | is-not-empty) {
+        error make { msg: $"namcap: ($unexpected | str join '; ')" }
+    }
 }
 
 # Writes the -git PKGBUILD with this checkout as its source, for building the commit at hand.
 def "main pkgbuild-local" []: nothing -> path {
+    at-root
     let generated = main generate
     let work = fresh pkgbuild
-    let local = 'source=("$_name::git+file://' + (pwd) + '")'
-    open --raw $"($generated)/arch/edualc-git/PKGBUILD"
-    | str replace 'source=("git+$url.git")' $local
-    | save $"($work)/PKGBUILD"
+    let written = open --raw $"($generated)/arch/edualc-git/PKGBUILD"
+    let local = $written | str replace 'source=("git+$url.git")' ('source=("$_name::git+file://' + $root + '")')
+    if $local == $written {
+        error make { msg: "the -git PKGBUILD has no source=(\"git+$url.git\") line to replace" }
+    }
+    $local | save $"($work)/PKGBUILD"
     $work
 }
 
-# Builds the .deb.
+# Builds the .deb from target/release/edualc.
 def "main deb" []: nothing -> path {
-    # dpkg-deb clamps the files' times to it.
-    $env.SOURCE_DATE_EPOCH = epoch | into string
+    at-root
     let generated = main generate
-    let name = open --raw $"($generated)/name"
+    let formats = open $"($generated)/formats.json"
+    let name = $formats.name
+    # dpkg-deb clamps the files' times to it.
+    $env.SOURCE_DATE_EPOCH = epoch $formats.date | into string
     let work = fresh deb
     let tree = $"($work)/debian/($name)"
     let docs = $"($tree)/usr/share/doc/($name)"
     mkdir $"($work)/debian" $"($tree)/DEBIAN"
     cp $"($generated)/debian/control" $"($generated)/debian/changelog" $"($work)/debian/"
-    stage (open $"($generated)/debian/files.json") $tree
-    ^install -Dm0644 $"($generated)/debian/copyright" $"($docs)/copyright"
+    stage $formats.debian.files $tree
+    open --raw $"($generated)/debian/copyright" | save --raw $"($docs)/copyright"
     open --raw $"($generated)/debian/changelog" | ^gzip -9n | save --raw $"($docs)/changelog.Debian.gz"
-    ^chmod 0644 $"($docs)/changelog.Debian.gz"
+    ^chmod 0644 $"($docs)/copyright" $"($docs)/changelog.Debian.gz"
     do {
         cd $work
-        ^dpkg-shlibdeps -Tdebian/substvars $"debian/($name)/usr/bin/($name)"
+        ^dpkg-shlibdeps -Tdebian/substvars $"debian/($name)($formats.program)"
         ^dpkg-gencontrol $"-p($name)" $"-Pdebian/($name)" -Tdebian/substvars
     }
     do {
@@ -229,23 +267,26 @@ def "main deb" []: nothing -> path {
         | save DEBIAN/md5sums
     }
     ^chmod 0644 $"($tree)/DEBIAN/md5sums"
+    ^chmod 0755 $"($tree)/DEBIAN"
     let out = $"($work)/out"
     mkdir $out
     ^dpkg-deb --root-owner-group -Zxz --build $tree $out | print --stderr
     $out
 }
 
-# Builds the .rpm (in a subfolder named after the architecture).
+# Builds the .rpm from target/release/edualc, in a subfolder named after the architecture.
 def "main rpm" []: nothing -> path {
-    $env.SOURCE_DATE_EPOCH = epoch | into string
+    at-root
     let generated = main generate
+    let formats = open $"($generated)/formats.json"
+    $env.SOURCE_DATE_EPOCH = epoch $formats.date | into string
     let work = fresh rpm
     # The build time, file times and build host come from SOURCE_DATE_EPOCH and a fixed name.
     (^rpmbuild -bb
         --define "use_source_date_epoch_as_buildtime 1"
         --define "clamp_mtime_to_source_date_epoch 1"
         --define "_buildhost reproducible"
-        --define $"_sourcedir (pwd)"
+        --define $"_sourcedir ($root)"
         --define $"_topdir ($work)"
         --define $"_rpmdir ($work)/out"
         $"($generated)/fedora/package.spec"
@@ -253,17 +294,17 @@ def "main rpm" []: nothing -> path {
     $"($work)/out"
 }
 
-# Builds the tarball.
+# Builds the tarball from target/release/edualc: one folder, named after the machine.
 def "main tarball" []: nothing -> path {
+    at-root
     let generated = main generate
-    let name = open --raw $"($generated)/name"
-    let version = open --raw $"($generated)/version"
-    let folder = $"($name)-($version)-(uname | get machine)-linux"
+    let formats = open $"($generated)/formats.json"
+    let folder = $"($formats.name)-($formats.version)-(uname | get machine)-linux"
     let work = fresh tarball
-    stage (open $"($generated)/tarball/files.json") $"($work)/($folder)"
+    stage $formats.tarball.files $"($work)/($folder)"
     let out = $"($work)/out"
     mkdir $out
-    (^tar -C $work --sort=name --owner=0 --group=0 --numeric-owner $"--mtime=@(epoch)" -cf - $folder
+    (^tar -C $work --sort=name --owner=0 --group=0 --numeric-owner $"--mtime=@(epoch $formats.date)" -cf - $folder
         | ^gzip -9n
         | save --raw $"($out)/($folder).tar.gz")
     $out

@@ -97,7 +97,7 @@ fn manual() -> String {
     roff.control("SH", ["SEE ALSO"]);
     roff.text([roman("Claude Code: https://code.claude.com/docs/")]);
     roff.control("br", []);
-    roff.text([roman("edualc: https://github.com/felintusun/edualc")]);
+    roff.text([roman(concat!("edualc: ", env!("CARGO_PKG_REPOSITORY")))]);
 
     roff.to_writer(&mut page).expect("writing to memory");
     String::from_utf8(page).expect("roff is UTF-8")
