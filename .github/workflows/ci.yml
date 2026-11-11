@@ -16,12 +16,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The toolchain the tests run with; the CI images (ci/Containerfile) carry the same.
-  RUST_TOOLCHAIN: "1.99.1"
 
+# The checks run as `just check` runs them locally, in edualc's Arch CI image (ci/Containerfile,
+# pinned by digest; `just in-image arch <recipe>` runs one there with podman). The Rust toolchain
+# is rust-toolchain.toml's.
 jobs:
-  # Formatting, lints and the generated files kept in the tree, in edualc's Arch CI image
-  # (ci/Containerfile), through the Justfile's recipes.
   lint:
     name: Formatting and lints
     runs-on: ubuntu-24.04
@@ -33,19 +32,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # the tags, for the release history in the metainfo
+          # the tags, which packaging-check compares with dist/releases.json
           fetch-depth: 0
       - run: git config --system --add safe.directory "$PWD"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: just fmt-check
       - run: just lint
-      # The browser demo (src/web, pages.yml) builds from the same code; what only the daemon
-      # calls is unused there, so dead code is no error in that build.
       - run: just lint-wasm
       - run: just packaging-check
-      # THIRD_PARTY_LICENSES.md is what cargo-about writes for this tree.
-      - run: just licences
-      - run: git diff --exit-code THIRD_PARTY_LICENSES.md
+      - run: just images-check
+      - run: just licences-check
 
   # On the runner itself, not in a container: the sandbox's tests confine child processes with
   # Landlock and seccomp, which a container's own seccomp profile may refuse.
@@ -62,9 +58,8 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libfontconfig-dev pkg-config
-      - run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+      # rust-toolchain.toml's
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # The image decoder's tests confine a helper as edualc starts it, with nothing open but the
       # standard streams; it refuses to run with more. A step here inherits one more descriptor,
@@ -76,45 +71,43 @@ jobs:
   deny:
     name: cargo deny
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:04ed7e389e8efb4e9a3729f2c924cc1151091a3fb83b1b950b2466902d6948b1
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - run: just deny
 
-  # RustSec's advisories, as cargo audit reads them, run as is rather than through an action
+  # RustSec's advisories
   audit:
     name: cargo audit
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:04ed7e389e8efb4e9a3729f2c924cc1151091a3fb83b1b950b2466902d6948b1
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo install --locked cargo-audit
-      - run: cargo audit
+      - run: just audit
 
-  # zizmor audits these workflows. The action installs a hash-pinned zizmor wheel (nothing
-  # compiled), annotates pull requests instead of uploading to the Security tab (which would
-  # need write access), and uses the read-only job token for the online audits.
+  # zizmor audits these workflows, online too with the read-only job token, and annotates pull
+  # requests with what it finds.
   zizmor:
     name: Workflow security (zizmor)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:04ed7e389e8efb4e9a3729f2c924cc1151091a3fb83b1b950b2466902d6948b1
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          advanced-security: false
-          annotations: true
-          persona: auditor
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: just workflows --format github

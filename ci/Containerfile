@@ -1,11 +1,12 @@
-# edualc's CI images, one stage each: `debian` builds the release program and the .deb, `fedora`
-# the .rpm, `arch` runs the checks and the Arch package build. `tools` builds just, Nushell,
-# Nickel, ast-grep and cargo-about from crates.io for all three. Built and pushed by
-# .github/workflows/images.yml:
+# edualc's CI images, one stage each: `debian` builds the release program and the .deb and runs
+# piuparts, `fedora` builds the .rpm, `arch` runs the checks and the Arch package build. `tools`
+# builds just, Nushell, Nickel, ast-grep, cargo-about, cargo-deny, cargo-audit and zizmor from
+# crates.io. Built and pushed by .github/workflows/images.yml:
 #
 #   podman build --target debian -f ci/Containerfile ci
 #
-# The release program is built on Debian 12, the oldest glibc edualc supports.
+# The release program is built on Debian 12, the oldest glibc edualc supports. Rust's version
+# here is rust-toolchain.toml's (`just images-check` compares them).
 
 # Base images are written out in each FROM, which Dependabot updates.
 
@@ -16,7 +17,10 @@ RUN cargo install --locked --root /tools \
     just@1.59.0 \
     nu@0.117.0 \
     nickel-lang-cli@1.18.0 \
-    ast-grep@0.51.1
+    ast-grep@0.51.1 \
+    cargo-deny@0.20.2 \
+    cargo-audit@0.23.0 \
+    zizmor@1.32.0
 # Its binary needs the `cli` feature, which `cargo install` of several crates can't set per crate.
 RUN cargo install --locked --root /tools --features cli cargo-about@0.9.3
 
@@ -24,7 +28,11 @@ FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffb
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates git build-essential pkg-config libfontconfig-dev \
-        dpkg-dev lintian file
+        dpkg-dev lintian file \
+        piuparts debootstrap debian-archive-keyring
+# The image's toolchain, without rust-toolchain.toml's components and target, which only the
+# checks need.
+ENV RUSTUP_TOOLCHAIN=1.99.1
 COPY --from=tools /tools/bin/just /tools/bin/nu /tools/bin/nickel /usr/local/bin/
 
 FROM docker.io/library/fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5 AS fedora

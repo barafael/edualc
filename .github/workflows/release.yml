@@ -8,7 +8,9 @@ name: Release
 # run: the same checks, the packages kept as the run's artifacts, and no release.
 #
 # The program is built in Debian 12, the oldest glibc edualc supports. The build jobs run in
-# edualc's CI images (ci/Containerfile, images.yml).
+# edualc's CI images (ci/Containerfile, images.yml). A tag is built only if it is signed by a key
+# in .github/allowed_signers and its commit is on main; the packages get provenance attestations
+# (`gh attestation verify <file> -R felintusun/edualc`).
 
 on:
   push:
@@ -26,8 +28,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A tag names Cargo.toml's version, is signed by a key in .github/allowed_signers, and its
+  # commit is on main. A dry run checks nothing here.
+  tag:
+    name: Check the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG, but edualc is $version"; exit 1
+          fi
+          # the annotated tag itself, which checking out a tag may leave lightweight
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git -c gpg.ssh.allowedSignersFile=.github/allowed_signers verify-tag "$TAG"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
   package:
     name: Package (${{ matrix.arch }})
+    needs: tag
     strategy:
       matrix:
         include:
@@ -41,31 +71,16 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+      id-token: write # signs the packages' attestations
+      attestations: write # records them with the repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # the tags, for the release history in the metainfo
-          fetch-depth: 0
       - run: git config --system --add safe.directory "$PWD"
-      - name: Check the tag
-        env:
-          EVENT: ${{ github.event_name }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          version=$(nu -c 'open Cargo.toml | get package.version')
-          if [ "$EVENT" = push ] && [ "$TAG" != "v$version" ]; then
-            echo "tag $TAG, but edualc is $version"; exit 1
-          fi
       - run: cargo build --release --locked
-      # dist/package.ncl names the libraries opened at start; the linked ones must be these.
-      - name: Check the linked libraries
-        run: |
-          readelf -d target/release/edualc | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' > needed
-          cat needed
-          if grep -vxE 'libfontconfig\.so\.1|libgcc_s\.so\.1|libm\.so\.6|libc\.so\.6|ld-linux-(x86-64|aarch64)\.so\.[12]' needed; then
-            echo "edualc links a library dist/package.ncl doesn't account for"; exit 1
-          fi
+      # Only the libraries dist/package.ncl lists under `linked`.
+      - run: just check-linked
       - name: Package, lint, and package again to compare
         run: |
           set -eu
@@ -82,6 +97,10 @@ jobs:
           mkdir out
           cp "$deb"/*.deb "$tarball"/*.tar.gz out/
           ls -l out
+      - if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-deb-${{ matrix.arch }}
@@ -109,11 +128,12 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      id-token: write # signs the packages' attestations
+      attestations: write # records them with the repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - run: git config --system --add safe.directory "$PWD"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -126,12 +146,16 @@ jobs:
           rpms=$(just package rpm)
           nu dist/build.nu lint-rpm "$rpms"
           again=$(just package rpm)
-          (cd "$rpms" && find . -name '*.rpm' -exec sha256sum {} +) > first
-          (cd "$again" && find . -name '*.rpm' -exec sha256sum {} +) > second
+          (cd "$rpms" && find . -name '*.rpm' -exec sha256sum {} + | sort) > first
+          (cd "$again" && find . -name '*.rpm' -exec sha256sum {} + | sort) > second
           diff first second
           mkdir out
           find "$rpms" -name '*.rpm' -exec cp {} out/ \;
           ls -l out
+      - if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-rpm-${{ matrix.arch }}
@@ -151,6 +175,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # the -git PKGBUILD's version counts the commits
           fetch-depth: 0
       - name: makepkg and namcap
         run: |
@@ -161,7 +186,7 @@ jobs:
           cd "$work"
           sudo -u builder env PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME=/home/builder/.cargo \
             makepkg --syncdeps --noconfirm --nocheck
-          namcap ./*.pkg.tar.zst
+          nu "$GITHUB_WORKSPACE/dist/build.nu" lint-arch .
           mkdir "$GITHUB_WORKSPACE/out"
           cp ./*.pkg.tar.zst "$GITHUB_WORKSPACE/out/"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -244,16 +269,14 @@ jobs:
         with:
           name: packages-deb-x86_64
           path: packages
-      # Ubuntu 24.04 has no piuparts, so it runs in the Debian image, privileged for its chroot
-      # (debootstrap, mounts).
+      # Ubuntu 24.04 has no piuparts, so it runs in the Debian image, with what its chroot needs:
+      # mounts, device nodes, and no AppArmor profile in the way.
       - env:
           IMAGE: ghcr.io/felintusun/edualc-ci:debian@sha256:3f983f59b6fac37a2c19d23f08699707fe6d45073ddd9bba39ec1fb94d560545
         run: |
-          docker run --rm --privileged -v "$PWD/packages:/packages:ro" "$IMAGE" sh -euc '
-            apt-get update
-            apt-get install -y --no-install-recommends piuparts debootstrap debian-archive-keyring
-            piuparts --distribution bookworm --mirror http://deb.debian.org/debian /packages/*.deb
-          '
+          docker run --rm --cap-add SYS_ADMIN --cap-add MKNOD --security-opt apparmor=unconfined \
+            -v "$PWD/packages:/packages:ro" "$IMAGE" \
+            sh -c 'exec piuparts --distribution bookworm --mirror http://deb.debian.org/debian /packages/*.deb'
 
   release:
     name: Draft the release
@@ -263,12 +286,24 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write # creates the draft release
+      attestations: read # verifies the packages' attestations
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packages-{deb,rpm}-*
           path: packages
           merge-multiple: true
+      # Each package was attested by this workflow, in this repository.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: packages
+        run: |
+          set -eu
+          for file in *; do
+            gh attestation verify "$file" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml"
+          done
       - working-directory: packages
         run: sha256sum -- * > SHA256SUMS
       - env:
