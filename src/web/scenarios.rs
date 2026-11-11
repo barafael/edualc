@@ -98,8 +98,19 @@ pub fn summarize(points: &[Point]) -> Summary {
 
 const GAIN_ANALYSIS: &str = "## What's going on
 
-`summarize` adds up **every** rise between two consecutive points. GPS elevation jitters by 2 \
-to 5 m from one fix to the next, so on a track with a point every second the noise alone climbs \
+`summarize` adds up **every** rise between two consecutive points:
+
+```rust
+for pair in points.windows(2) {
+    let [from, to] = pair else { continue };
+    let climb_m = to.elevation_m - from.elevation_m;
+    if climb_m > 0.0 {
+        summary.gain_m += climb_m;
+    }
+}
+```
+
+GPS elevation jitters by 2 to 5 m from one fix to the next, so on a track with a point every second the noise alone climbs \
 hundreds of metres:
 
 | Track | Points | Gain now | Reference |
