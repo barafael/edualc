@@ -68,8 +68,9 @@ in
       { soname = "libxkbcommon.so.0", debian = "libxkbcommon0", arch = "libxkbcommon" },
       { soname = "libEGL.so.1", debian = "libegl1", arch = "libglvnd" },
     ],
-  # Linked libraries as Arch packages, which makepkg doesn't detect.
-  linked_on_arch | Array String = ["glibc", "libgcc", "fontconfig"],
+  # Arch packages needed besides those: the linked libraries, which makepkg doesn't detect, and
+  # the icon theme the icon goes into.
+  needed_on_arch | Array String = ["glibc", "libgcc", "fontconfig", "hicolor-icon-theme"],
 
   # Optional packages edualc uses, and what for.
   recommended

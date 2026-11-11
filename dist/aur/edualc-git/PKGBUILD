@@ -9,7 +9,9 @@ pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock (main br
 arch=(x86_64 aarch64)
 url='https://github.com/felintusun/edualc'
 license=(GPL-3.0-or-later)
-depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd)
+# Cargo strips the binary (strip = true), which leaves a debug package nothing to hold.
+options=('!debug')
+depends=(glibc libgcc fontconfig hicolor-icon-theme wayland libxkbcommon libglvnd)
 makedepends=(cargo git)
 optdepends=(
   'xdg-dbus-proxy: the window'\''s filtered D-Bus, for screen readers and the light or dark setting'

@@ -257,7 +257,9 @@ in
         arch=(x86_64 aarch64)
         url=%{quoted p.homepage}
         license=(%{p.license})
-        depends=(%{std.string.join " " (unique (p.linked_on_arch @ named "arch" p.opened))})
+        # Cargo strips the binary (strip = true), which leaves a debug package nothing to hold.
+        options=('!debug')
+        depends=(%{std.string.join " " (unique (p.needed_on_arch @ named "arch" p.opened))})
         makedepends=(%{std.string.join " " variant.makedepends})
         optdepends=(
           %{lines (p.recommended
