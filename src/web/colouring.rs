@@ -1,5 +1,5 @@
-//! The conversation's code, in the browser demo: coloured as it is asked for, since the page
-//! has no thread to colour on beside it. The demo's conversations are short.
+//! The browser demo's version of `colouring`: colours each block when asked, on the page's only
+//! thread.
 
 use crate::app::Event;
 use crate::generated::SyntaxColours;

@@ -70,12 +70,12 @@ pub(crate) struct View {
     images: HashMap<ImageKey, ShownImage>,
     /// The language text with Han characters alone is set in (see `cjk`).
     han: CjkLanguage,
-    /// Colours the side panel's and the plan's code, here: there is little of it.
+    /// Colours the side panel's and the plan's code on the UI thread.
     highlighter: Highlighter,
-    /// Colours the conversation's code, off the UI thread.
+    /// Colours the conversation's code on its own thread.
     colouring: Colouring,
-    /// What the conversation's blocks are drawn as now: colourings asked for an earlier one
-    /// are dropped as they come.
+    /// The current drawing of the conversation's blocks; colourings for an earlier one are
+    /// dropped.
     drawing: Drawing,
 }
 
@@ -690,8 +690,7 @@ impl View {
             let mut row = md_block(block, self.han, &Colour::Later);
             match block {
                 Block::Code { lang, code } => {
-                    // Code streaming in keeps the colours it had until what it grew to comes
-                    // back coloured, rather than going plain in between.
+                    // A growing block keeps its previous colouring until the new one arrives.
                     match rows.row_data(position) {
                         Some(before)
                             if *shown == CodeShown::Coloured

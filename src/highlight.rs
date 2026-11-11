@@ -7,13 +7,11 @@
 //! characters as character references (which no Markdown rule strips or reads as indentation),
 //! lines ended by hard breaks, and each coloured run in a `<font color>` tag.
 //!
-//! A block that streams in grows a line at a time; [`Progress`] keeps the lines already
-//! coloured and the parser's state after them, so each update colours only what is new.
+//! [`Progress`] keeps a streaming block's coloured lines and the parser's state after them, so
+//! each update colours only the new lines.
 //!
-//! Colouring takes about 60 µs a line (a release build), and a grammar's first block about
-//! 15 ms more, so the conversation's code is coloured by a [`Colourer`] off the UI thread (see
-//! `colouring`): the window shows it plain until the Markdown comes back, and Slint's parsing of
-//! that (about 4 ms for 3000 lines) is all the UI thread does.
+//! The conversation's code is coloured by a [`Colourer`] on its own thread (see `colouring`);
+//! the UI thread parses the Markdown it returns.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -28,8 +26,7 @@ use syntect::util::LinesWithEndings;
 use crate::generated::SyntaxColours;
 use crate::markdown;
 
-/// Longer code is shown plain: it would keep the colouring thread about 0.2 s, and Slint's
-/// parsing on the UI thread grows with it.
+/// Longer code is shown plain.
 const MAX_LINES: usize = 3000;
 /// A line longer than this (minified code, data) is shown plain, as the whole block is: some
 /// grammars' patterns backtrack on long lines.

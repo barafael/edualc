@@ -1,7 +1,5 @@
-//! The conversation's code, coloured on a thread of its own (see `highlight`), so opening a
-//! long session or switching the look doesn't hold up the window. What it colours comes back
-//! as [`Event::CodeColoured`]. Of several asks for one block waiting together, only the last is
-//! coloured: a block streaming in faster than it is coloured skips what it has outgrown.
+//! Colours the conversation's code on its own thread (see `highlight`) and sends each block back
+//! as [`Event::CodeColoured`]. Of several queued asks for one block, only the last is coloured.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
