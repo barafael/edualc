@@ -347,13 +347,12 @@ fn bring_agy_conversation_from(home: &Path, users: &Path, id: &uuid::Uuid) -> Re
     Ok(true)
 }
 
-/// Makes `home` ready for a session working in `cwd` on `conversation`, its temporary files
-/// in `scratch`: seeds it afresh from the user's own home. A resumed session's transcript that
-/// went on separately in the user's home is named.
+/// Makes `home` ready for a session working in `cwd` on `conversation`: seeds it afresh from
+/// the user's own home. A resumed session's transcript that went on separately in the user's
+/// home is named.
 pub(crate) fn prepare(
     home: &Home,
     cwd: &Path,
-    scratch: &Scratch,
     conversation: &Conversation,
 ) -> Result<Option<Diverged>, Error> {
     let homes = home.path().parent().unwrap_or(home.path());
@@ -362,7 +361,7 @@ pub(crate) fn prepare(
     let home_fd = open_folder(CWD, home.path())?;
     let real = sessions::config_dir();
 
-    let settings = settings(&real.join("settings.json"), scratch.path())?;
+    let settings = settings(&real.join("settings.json"))?;
     staging.write("settings.json", settings.as_bytes())?;
     staging.move_into(&home_fd, home.path(), "settings.json", "settings.json")?;
 
@@ -392,9 +391,11 @@ pub(crate) fn prepare(
     }
 }
 
-/// The user's settings, with Claude Code's temporary files in `scratch`. A setting's `env`
-/// outranks the process's own variables, and the user's may move them elsewhere.
-fn settings(real: &Path, scratch: &Path) -> Result<String, Error> {
+/// The user's settings, without what they say of temporary files: a setting's `env` outranks
+/// the process's own variables, which name the session's own folder (see `spawn`), and Claude
+/// Code reads the file again as it changes. The project's sandboxed sessions share it, so a
+/// folder named in it would be the last started session's for all of them.
+fn settings(real: &Path) -> Result<String, Error> {
     let parsed = match std::fs::read_to_string(real) {
         Ok(text) => serde_json::from_str(&text).map_err(|source| Error::Json {
             path: real.to_owned(),
@@ -405,9 +406,8 @@ fn settings(real: &Path, scratch: &Path) -> Result<String, Error> {
     };
     let mut settings = object(parsed);
     let mut env = object(settings.remove("env").unwrap_or(Value::Null));
-    let scratch = Value::String(scratch.to_string_lossy().into_owned());
-    env.insert("CLAUDE_CODE_TMPDIR".to_owned(), scratch.clone());
-    env.insert("TMPDIR".to_owned(), scratch);
+    env.remove("CLAUDE_CODE_TMPDIR");
+    env.remove("TMPDIR");
     settings.insert("env".to_owned(), Value::Object(env));
     Ok(Value::Object(settings).to_string())
 }
@@ -1523,39 +1523,29 @@ mod tests {
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 
+    /// The shared settings name no temporary folder, the user's taken out too: each session's
+    /// own comes from its process, and a setting's would outrank it for every session of the
+    /// project. The rest of the user's settings stay.
     #[test]
-    fn settings_send_temporary_files_to_the_sessions_folder() {
+    fn settings_leave_temporary_files_to_each_session() {
         let scratch = std::env::temp_dir().join(format!("edualc-settings-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).expect("a folder");
         let real = scratch.join("settings.json");
         std::fs::write(
             &real,
-            r#"{"model":"opus","env":{"TMPDIR":"/var/tmp","OTHER":"x"}}"#,
+            r#"{"model":"opus","env":{"TMPDIR":"/var/tmp","CLAUDE_CODE_TMPDIR":"/x","OTHER":"x"}}"#,
         )
         .expect("settings");
-        let own: Value = serde_json::from_str(
-            &settings(&real, Path::new("/var/tmp/edualc-1/abcd")).expect("built"),
-        )
-        .expect("json");
+        let own: Value = serde_json::from_str(&settings(&real).expect("built")).expect("json");
         let text = |keys: &[&str]| at(&own, keys).and_then(Value::as_str).map(str::to_owned);
         assert_eq!(text(&["model"]).as_deref(), Some("opus"));
-        assert_eq!(
-            text(&["env", "TMPDIR"]).as_deref(),
-            Some("/var/tmp/edualc-1/abcd")
-        );
-        assert_eq!(
-            text(&["env", "CLAUDE_CODE_TMPDIR"]).as_deref(),
-            Some("/var/tmp/edualc-1/abcd")
-        );
+        assert_eq!(text(&["env", "TMPDIR"]), None);
+        assert_eq!(text(&["env", "CLAUDE_CODE_TMPDIR"]), None);
         assert_eq!(text(&["env", "OTHER"]).as_deref(), Some("x"));
-        let missing: Value = serde_json::from_str(
-            &settings(&scratch.join("none.json"), Path::new("/t")).expect("built"),
-        )
-        .expect("json");
-        assert_eq!(
-            at(&missing, &["env", "TMPDIR"]).and_then(Value::as_str),
-            Some("/t")
-        );
+        let missing: Value =
+            serde_json::from_str(&settings(&scratch.join("none.json")).expect("built"))
+                .expect("json");
+        assert_eq!(at(&missing, &["env", "TMPDIR"]), None);
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 

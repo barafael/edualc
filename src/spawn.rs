@@ -361,7 +361,7 @@ fn sandboxed(
 ) -> Result<Sandboxed, Error> {
     let home = Home::of(cwd).ok_or(home::Error::NoStateFolder)?;
     let scratch = Scratch::make(launch.conversation.id())?;
-    let diverged = home::prepare(&home, cwd, &scratch, &launch.conversation)?;
+    let diverged = home::prepare(&home, cwd, &launch.conversation)?;
     let read = absolute(&wish.read)?;
     let write = absolute(&wish.write)?;
     let policy = Policy::for_project(
