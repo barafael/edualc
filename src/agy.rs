@@ -35,6 +35,7 @@ use tokio::sync::mpsc;
 
 use crate::external::mcp::SendArguments;
 use crate::external::wire::SessionId;
+use crate::home::{self, AgyHome};
 use crate::relay::{self, Class, Job, Outcome, Places};
 use crate::sandbox::{Enforcement, Policy};
 use crate::sessions::{self, MessagingName};
@@ -91,6 +92,10 @@ enum Error {
     Sandbox(#[from] crate::sandbox::Error),
     #[error(transparent)]
     Inbox(#[from] inbox::Error),
+    #[error("no folder for edualc's state: neither XDG_STATE_HOME nor HOME is set")]
+    NoState,
+    #[error("couldn't make the project's agy home: {0}")]
+    Home(#[from] crate::home::Error),
     #[error("couldn't run: {0}")]
     Runtime(#[source] std::io::Error),
 }
@@ -204,23 +209,30 @@ fn on_path(program: &str) -> Option<PathBuf> {
 /// tool through `tool`; and how far the kernel enforced the sandbox.
 fn start_agy(
     cwd: &Path,
+    start: &Start,
     own: &Own,
     with_bus: bool,
     runtime: &tokio::runtime::Handle,
 ) -> Result<(Child, Enforcement), Error> {
     let agy = on_path("agy").ok_or(Error::NoAgy)?;
     let program = std::env::current_exe().map_err(Error::Start)?;
-    let home = dirs::home_dir().unwrap_or_default();
-    // agy writes only its own data (its sign-in state, conversations, logs: agy 1.5.6 wrote
-    // nothing else in a turn). Its configuration it reads, and can't change: `mcp_config.json`
-    // names programs agy runs outside edualc too.
-    let data = [home.join(".gemini/antigravity-cli")];
-    let read = [
-        agy.clone(),
-        program,
-        home.join(".gemini/config"),
-        home.join(".gemini/GEMINI.md"),
-    ];
+    // agy keeps its data in the project's own agy home, seeded with the user's configuration
+    // (see `home::prepare_agy`), and reaches nothing of the user's own `~/.gemini`: what an
+    // agy session writes there, the user's agy outside edualc never reads or runs.
+    let home = AgyHome::of(cwd).ok_or(Error::NoState)?;
+    home::prepare_agy(&home)?;
+    if let Start::Resume(agys) = start {
+        match uuid::Uuid::parse_str(agys) {
+            Ok(conversation) => {
+                if home::bring_agy_conversation(&home, &conversation)? {
+                    tracing::info!(%conversation, "the conversation was brought into the agy home");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "agy's conversation id isn't one"),
+        }
+    }
+    let data = [home.path().to_owned()];
+    let read = [agy.clone(), program];
     let mut sockets = vec![own.tool()];
     if with_bus {
         sockets.push(own.bus());
@@ -229,6 +241,7 @@ fn start_agy(
     let mut command = Command::new(&agy);
     command
         .args(["acp", "--disable-telemetry"])
+        .arg(format!("--gemini-dir={}", home.path().display()))
         .current_dir(cwd)
         .env("TMPDIR", own.scratch())
         .env_remove("NIRI_SOCKET")
@@ -304,7 +317,7 @@ async fn adapt(args: Args, runtime: &tokio::runtime::Handle) -> Result<(), Error
     let tools = UnixListener::bind(own.tool()).map_err(Error::Folder)?;
     let inbox = inbox::Inbox::open(&id, &cwd, &name)?;
     tracing::info!(inbox = %inbox.socket().display(), %name, "the session's inbox is open");
-    let (mut agy, enforcement) = start_agy(&cwd, &own, proxies.is_some(), runtime)?;
+    let (mut agy, enforcement) = start_agy(&cwd, &start, &own, proxies.is_some(), runtime)?;
     let program = std::env::current_exe().map_err(Error::Start)?;
     let mut translator = Translator::new(
         id.clone(),
