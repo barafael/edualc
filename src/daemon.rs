@@ -1575,6 +1575,7 @@ mod tests {
 
     fn launch() -> Launch {
         Launch {
+            backend: crate::claude::Backend::Claude,
             cwd: PathBuf::from("/tmp"),
             conversation: Conversation::New(
                 SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())

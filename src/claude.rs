@@ -64,13 +64,48 @@ pub(crate) enum Error {
     Lost,
 }
 
+/// The program a session talks to: Claude Code, or Google's Antigravity CLI, which edualc's
+/// adapter (see `agy`) speaks to over the Agent Client Protocol and translates for the window.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::EnumIter,
+)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Backend {
+    #[default]
+    Claude,
+    Agy,
+}
+
+impl Backend {
+    /// Who asks, as a permission prompt names it.
+    pub(crate) fn agent(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Agy => "agy",
+        }
+    }
+}
+
 /// What a session's process is started with; the daemon starts it.
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Launch {
+    pub(crate) backend: Backend,
     pub(crate) cwd: PathBuf,
     pub(crate) conversation: Conversation,
-    /// A model or alias for `--model`; the user's default if none.
+    /// A model or alias, as the backend takes it; the backend's default if none.
     pub(crate) model: Option<String>,
     /// Sandboxed, and with what let in, unless `None`.
     pub(crate) sandbox: Option<SandboxWish>,

@@ -10,7 +10,7 @@ use std::process::Stdio;
 use rustix::io::FdFlags;
 use tokio::process::{Child, Command};
 
-use crate::claude::{Conversation, FolderConfiguration, Launch};
+use crate::claude::{Backend, Conversation, FolderConfiguration, Launch};
 use crate::external::wire::SessionId;
 use crate::home::{self, AccessToken, CopyBack, Home, Scratch};
 use crate::sandbox::{self, Allowances, Enforcement, Own, Policy};
@@ -55,6 +55,10 @@ pub(crate) enum Error {
         "processes {0:?} started with the pipe meant for the session's sign-in, so it wasn't handed over; start the session again"
     )]
     SignInPipeShared(Vec<u32>),
+    #[error("couldn't start edualc's adapter for agy: {0}")]
+    Adapter(#[source] std::io::Error),
+    #[error("agy sessions can't be copied yet, only continued")]
+    AgyFork,
 }
 
 /// A started process, its pipes still in it, and how far it is sandboxed. Dropped, it is
@@ -158,6 +162,9 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
         .ok()
         .filter(|cwd| cwd.is_dir())
         .ok_or_else(|| Error::NoFolder(launch.cwd.clone()))?;
+    if launch.backend == Backend::Agy {
+        return spawn_agy(launch, &cwd, runtime);
+    }
     let mut command = Command::new(crate::claude::program());
     command.args([
         "-p",
@@ -284,6 +291,48 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
             })
         }
     }
+}
+
+/// An agy session: edualc's own adapter (see `agy`), which runs `agy acp` confined and speaks
+/// stream-json to the daemon as `claude` does. The adapter itself isn't confined: it serves
+/// the session's inbox, publishes its record and carries its messages, which the sandbox
+/// keeps from agy.
+fn spawn_agy(
+    launch: &Launch,
+    cwd: &Path,
+    runtime: &tokio::runtime::Handle,
+) -> Result<Spawned, Error> {
+    let program = std::env::current_exe().map_err(Error::Adapter)?;
+    let mut command = Command::new(program);
+    command.arg(crate::agy::ADAPTER_FLAG);
+    command.arg(format!("--cwd={}", cwd.display()));
+    match &launch.conversation {
+        Conversation::New(id) => command.arg(format!("--session-id={id}")),
+        Conversation::Continue(id) => command.arg(format!("--resume={id}")),
+        Conversation::Fork { .. } => return Err(Error::AgyFork),
+    };
+    let name = MessagingName::of(launch.conversation.id(), cwd);
+    if let Some(model) = &launch.model {
+        command.arg(format!("--model={}", model_name(model)?));
+    }
+    for variable in INHERITED_SESSION {
+        command.env_remove(variable);
+    }
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let _in_runtime = runtime.enter();
+    Ok(Spawned {
+        child: command.spawn().map_err(Error::Adapter)?,
+        enforcement: None,
+        scratch: None,
+        record: None,
+        diverged: None,
+        name,
+    })
 }
 
 /// Before session `id` is resumed outside the sandbox: what it last wrote in its sandboxed home,

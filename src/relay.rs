@@ -431,20 +431,7 @@ pub(crate) struct Reply {
 impl Reply {
     /// The line that answers the call with `outcome`.
     pub(crate) fn answer(&self, outcome: &Outcome) -> String {
-        let (text, error) = match outcome {
-            Outcome::Sent(to) => (
-                format!(
-                    "Delivered to {to}. An answer, if it gives one, arrives as a message to this \
-                     session."
-                ),
-                false,
-            ),
-            Outcome::Listed(names) if names.is_empty() => {
-                ("No other session is running.".to_owned(), false)
-            }
-            Outcome::Listed(names) => (format!("Running sessions:\n{}", names.join("\n")), false),
-            Outcome::Refused(refusal) => (refusal.to_string(), true),
-        };
+        let (text, error) = outcome.told();
         tool_result(&self.request_id, &self.call, &text, error)
     }
 }
@@ -457,6 +444,26 @@ pub(crate) enum Outcome {
     /// The other running sessions, a line each.
     Listed(Vec<String>),
     Refused(Refusal),
+}
+
+impl Outcome {
+    /// What the calling session is told, and whether as an error.
+    pub(crate) fn told(&self) -> (String, bool) {
+        match self {
+            Self::Sent(to) => (
+                format!(
+                    "Delivered to {to}. An answer, if it gives one, arrives as a message to this \
+                     session."
+                ),
+                false,
+            ),
+            Self::Listed(names) if names.is_empty() => {
+                ("No other session is running.".to_owned(), false)
+            }
+            Self::Listed(names) => (format!("Running sessions:\n{}", names.join("\n")), false),
+            Self::Refused(refusal) => (refusal.to_string(), true),
+        }
+    }
 }
 
 /// Why a message isn't delivered: told to Claude as the call's error.

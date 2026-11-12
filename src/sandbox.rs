@@ -292,6 +292,36 @@ impl Policy {
         policy
     }
 
+    /// The policy for agy working in `project` (see `agy`): what a sandboxed Claude reads, and
+    /// writes in the project, its git folder, caches and `/dev/shm`; besides, agy's own data
+    /// (`data`, its sign-in and conversations) and the session's temporary folder. Of socket
+    /// files only `sockets`, which edualc's adapter serves it; it makes none for others. It
+    /// also reads `programs`: agy itself, and edualc for the messaging tool agy starts.
+    pub(crate) fn for_agy(
+        project: &Path,
+        data: &[PathBuf],
+        scratch: &Path,
+        sockets: &[PathBuf],
+        programs: &[PathBuf],
+    ) -> Self {
+        let mut policy = Self::for_project(
+            project,
+            Own {
+                home: scratch,
+                scratch,
+            },
+            Allowances {
+                desktop: false,
+                hardware: false,
+                read: programs,
+                write: data,
+            },
+        );
+        policy.inboxes.clear();
+        policy.sockets.extend(sockets.iter().cloned());
+        policy
+    }
+
     /// Whether the user let the desktop in (see [`Allowances::desktop`]).
     fn lets_in_the_desktop(&self) -> bool {
         self.devices

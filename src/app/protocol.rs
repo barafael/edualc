@@ -225,6 +225,9 @@ impl App {
                 });
             }
             System::CompactBoundary => self.chat.info("Conversation compacted"),
+            System::EdualcSandbox { enforcement } => {
+                self.status.sandboxing = Sandboxing::Agy(enforcement);
+            }
             System::BackgroundTasksChanged { tasks } => {
                 self.redraw.tasks |= self.status.tasks.list(tasks);
             }

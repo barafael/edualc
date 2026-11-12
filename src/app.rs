@@ -434,6 +434,11 @@ pub(crate) enum Action {
 pub(crate) struct Status {
     pub(crate) session_id: Option<SessionId>,
     pub(crate) title: Option<String>,
+    /// The program the session talks to: the command line's for a new one, the transcript's
+    /// for one continued.
+    pub(crate) backend: claude::Backend,
+    /// The command line's: new sessions talk to it.
+    pub(crate) backend_choice: claude::Backend,
     /// The model in use, as the CLI resolved it.
     pub(crate) model: String,
     pub(crate) models: Vec<wire::ModelInfo>,
@@ -486,6 +491,9 @@ pub(crate) enum Sandboxing {
     /// The user turned on Claude Code's own (for its commands), which Landlock would break.
     ClaudeCodes,
     Landlock(sandbox::Enforcement),
+    /// agy, in the sandbox edualc's adapter keeps it in (see `agy`), as far as the adapter
+    /// says the kernel enforced it.
+    Agy(sandbox::Enforcement),
 }
 
 /// What Claude is doing, for the status bar. That it waits for the user is told by what it
@@ -816,6 +824,7 @@ impl App {
         link: Link,
         desktop_found: Desktop,
         cwd: PathBuf,
+        backend: claude::Backend,
         model: Option<String>,
     ) -> Self {
         let Desktop {
@@ -842,6 +851,8 @@ impl App {
             events,
             chat: Chat::default(),
             status: Status {
+                backend,
+                backend_choice: backend,
                 model_choice: model,
                 sandbox_choice: SandboxChoice {
                     on: settings.sandbox,
@@ -1238,7 +1249,8 @@ impl App {
             self.view.render_menus(&self.status);
         }
         if redraw.prompt {
-            self.view.render_prompt(&self.asks, &self.cwd);
+            self.view
+                .render_prompt(&self.asks, &self.cwd, self.status.backend);
         }
         if redraw.usage {
             self.view.render_usage(&self.usage, &self.status);
@@ -1359,7 +1371,9 @@ impl App {
     /// Starts a process in the working directory once it is trusted: here, or in the terminal,
     /// which the daemon is asked about.
     fn start(&mut self, resume: Option<Resume>) {
-        if trust::trusted_in_edualc(&self.cwd, &self.settings)
+        // What a folder configures is Claude Code's; agy reads none of it.
+        if self.status.backend == claude::Backend::Agy
+            || trust::trusted_in_edualc(&self.cwd, &self.settings)
             || self.accepted_in_terminal.contains(&self.cwd)
         {
             self.launch(resume, FolderConfiguration::Read);
@@ -1423,6 +1437,7 @@ impl App {
         }
         let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
         let launch = Launch {
+            backend: self.status.backend,
             cwd: self.cwd.clone(),
             conversation: Resume::conversation(resume),
             model: self.status.model_choice.clone(),
@@ -1435,8 +1450,11 @@ impl App {
             }),
             folder_configuration,
         };
-        // How far it is sandboxed is known once the daemon started it (`Output::Started`).
-        self.status.sandboxing = if own_sandbox {
+        // How far it is sandboxed is known once the daemon started it (`Output::Started`), for
+        // agy once its adapter says (`System::EdualcSandbox`).
+        self.status.sandboxing = if self.status.backend == claude::Backend::Agy {
+            Sandboxing::Pending
+        } else if own_sandbox {
             Sandboxing::ClaudeCodes
         } else if self.settings.sandbox {
             Sandboxing::Pending
@@ -1752,6 +1770,7 @@ impl App {
         self.watch = None;
         self.chat.clear();
         self.reset_session(None, None);
+        self.status.backend = self.status.backend_choice;
         self.start(None);
         self.redraw = Redraw::everything();
         self.view.focus_composer();
@@ -1800,8 +1819,13 @@ impl App {
         let known = self.sessions.iter().find(|session| session.id == id);
         let title = known.map(|session| session.title.clone());
         let worktree = known.and_then(|session| session.worktree.clone());
+        let backend = known.map_or_else(
+            || sessions::backend_of(&sessions::locate(&self.cwd, &id)),
+            |session| session.backend,
+        );
         self.reset_session(Some(id.clone()), title);
         self.status.worktree = worktree;
+        self.status.backend = backend;
         self.load_session(id.clone(), self.cwd.clone());
         self.start(Some(Resume::Continue(id)));
         self.redraw = Redraw::everything();
@@ -1825,6 +1849,7 @@ impl App {
             .find(|session| session.id == id)
             .map(|session| session.title.clone());
         self.reset_session(Some(id.clone()), title);
+        self.status.backend = sessions::backend_of(&sessions::locate(&self.cwd, &id));
         self.load_session(id, self.cwd.clone());
         self.generation = self.generation.next();
         match Claude::attach(&self.link, self.generation, hosted.id) {

@@ -5,6 +5,8 @@
 //! The same window also runs in a browser, as a demo (`web`): there the daemon is a script in
 //! the page, and what only Linux has (processes, sockets, the sandbox) is left out.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod agy;
 mod app;
 mod appearance;
 #[cfg(not(target_arch = "wasm32"))]

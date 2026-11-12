@@ -150,7 +150,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 14;
+pub(crate) const PROTOCOL: u32 = 15;
 
 /// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -365,6 +365,8 @@ pub(crate) enum StartFailure {
     NotHosted,
     #[error("the daemon failed starting it")]
     Crashed,
+    #[error("{0}")]
+    Agy(String),
 }
 
 /// Why the desktop didn't do what it was asked, as the window is told.
@@ -434,6 +436,7 @@ impl From<crate::spawn::Error> for StartFailure {
             | Error::Home(_)
             | Error::SignIn(_)
             | Error::SignInPipeShared(_)) => Self::Sandbox(error.to_string()),
+            error @ (Error::Adapter(_) | Error::AgyFork) => Self::Agy(error.to_string()),
         }
     }
 }

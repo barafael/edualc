@@ -32,6 +32,7 @@ pub(crate) fn main() {
         link,
         Desktop::in_the_browser(),
         demo::Folder::Trailhead.path().to_path_buf(),
+        crate::claude::Backend::Claude,
         None,
     );
     app.begin(Vec::new(), Some(SessionId::from(demo::FIRST)), None, None);

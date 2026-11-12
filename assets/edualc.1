@@ -8,7 +8,7 @@ edualc \- Native desktop window for Claude Code, sandboxed with Landlock
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH SYNOPSIS
-\fBedualc\fR [\fB\-m\fR|\fB\-\-model\fR] [\fB\-\-permission\-mode\fR] [\fB\-r\fR|\fB\-\-resume\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIDIR\fR] [\fIPROMPT\fR] 
+\fBedualc\fR [\fB\-\-backend\fR] [\fB\-m\fR|\fB\-\-model\fR] [\fB\-\-permission\-mode\fR] [\fB\-r\fR|\fB\-\-resume\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIDIR\fR] [\fIPROMPT\fR] 
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH DESCRIPTION
@@ -19,8 +19,21 @@ Its arguments read as claude\*(Aqs own: where to work, which model, a session to
 .el .ds Aq '
 .SH OPTIONS
 .TP
+\fB\-\-backend\fR \fI<PROGRAM>\fR [default: claude]
+The program to work with: claude (Claude Code), or agy (Google\*(Aqs Antigravity CLI)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+claude
+.IP \(bu 2
+agy
+.RE
+.TP
 \fB\-m\fR, \fB\-\-model\fR \fI<MODEL>\fR
-The model, as claude \-\-model takes it (an alias such as sonnet, or a full name)
+The model, as the backend takes it (for claude an alias such as sonnet, or a full name; for agy a name `agy models` lists)
 .TP
 \fB\-\-permission\-mode\fR \fI<MODE>\fR
 The permission mode to start in

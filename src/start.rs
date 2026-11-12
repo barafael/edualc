@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use slint::ComponentHandle;
 
+use crate::claude::Backend;
 use crate::external::wire::SessionId;
 use crate::folder::{Folder, FolderError};
 use crate::{app, confine, daemon, decode, desktop, generated, ipc, link, sessions, ui};
@@ -16,7 +17,11 @@ use crate::{app, confine, daemon, decode, desktop, generated, ipc, link, session
 #[derive(Debug, clap::Parser)]
 #[command(name = "edualc", version, about)]
 struct Args {
-    /// The model, as claude --model takes it (an alias such as sonnet, or a full name).
+    /// The program to work with: claude (Claude Code), or agy (Google's Antigravity CLI).
+    #[arg(long, value_name = "PROGRAM", default_value = "claude", value_parser = backends())]
+    backend: Backend,
+    /// The model, as the backend takes it (for claude an alias such as sonnet, or a full name;
+    /// for agy a name `agy models` lists).
     #[arg(short, long)]
     model: Option<String>,
     /// The permission mode to start in.
@@ -41,6 +46,15 @@ fn permission_modes() -> impl clap::builder::TypedValueParser<Value = app::Permi
             .map(|mode| PossibleValue::new(<&'static str>::from(mode)).help(mode.description())),
     )
     .try_map(|name| name.parse::<app::PermissionMode>())
+}
+
+/// The backends by their names, so help lists them and a wrong one is told the right ones.
+fn backends() -> impl clap::builder::TypedValueParser<Value = Backend> {
+    use clap::builder::{PossibleValuesParser, TypedValueParser as _};
+    PossibleValuesParser::new(
+        <Backend as strum::IntoEnumIterator>::iter().map(<&'static str>::from),
+    )
+    .try_map(|name| name.parse::<Backend>())
 }
 
 /// Why the folder named on the command line isn't worked in.
@@ -151,6 +165,13 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     if std::env::args().nth(1).as_deref() == Some("--daemon") {
         return Ok(daemon::run());
     }
+    // An agy session's adapter, which the daemon starts in place of claude, and the messaging
+    // tool it gives agy (see `agy`).
+    match std::env::args().nth(1).as_deref() {
+        Some(crate::agy::ADAPTER_FLAG) => return Ok(crate::agy::run_adapter()),
+        Some(crate::agy::TOOL_FLAG) => return Ok(crate::agy::run_tool()),
+        Some(_) | None => {}
+    }
     // The image decoder the daemon and the window start, confined before it reads (see
     // `decode`).
     if let Some(job) = std::env::args()
@@ -162,6 +183,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
 
     // Help and the version are printed here, and wrong arguments said, before anything starts.
     let Args {
+        backend,
         model,
         mode,
         resume,
@@ -213,7 +235,15 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
-    let mut app = app::App::new(window.clone_strong(), events, link, desktop, cwd, model);
+    let mut app = app::App::new(
+        window.clone_strong(),
+        events,
+        link,
+        desktop,
+        cwd,
+        backend,
+        model,
+    );
     app.begin(hosted, resume, mode, prompt.as_deref());
     slint::spawn_local(app.run(received)).expect("the event loop is set up");
     window.show()?;

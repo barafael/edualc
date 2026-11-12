@@ -79,9 +79,14 @@ libc = "0.2"
 landlock = "0.4"
 # The daemon's actors (connections, sessions), their channels, its processes and sockets;
 # already built for a dependency.
-tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "process", "io-util", "io-std", "signal", "sync", "time", "macros"] }
 # The messages between the window and its daemon: compact, strictly checked serde.
 postcard = { version = "1", default-features = false, features = ["use-std"] }
+# An agy session's inbox (see `agy`), as Claude Code's own: its key file is named by the SHA-256
+# of the inbox's path, its token is random, and a peer's token is compared in constant time.
+sha2 = "0.10"
+getrandom = { version = "0.3", features = ["std"] }
+subtle = "2.6"
 
 # The browser demo (`web/`): the window, drawn with WebGL into the page's canvas, with a scripted
 # daemon in place of Claude Code. No accessibility: AccessKit has no backend in a browser here.

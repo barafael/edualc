@@ -233,6 +233,7 @@ mod tests {
 
     fn saved(number: u8, title: &str) -> SessionInfo {
         SessionInfo {
+            backend: crate::claude::Backend::Claude,
             id: id(number),
             title: title.to_owned(),
             modified: SystemTime::UNIX_EPOCH + Duration::from_secs(u64::from(number)),

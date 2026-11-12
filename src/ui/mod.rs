@@ -793,6 +793,7 @@ impl View {
         session.set_sandboxed(matches!(
             status.sandboxing,
             Sandboxing::Landlock(Enforcement::Full | Enforcement::Partial)
+                | Sandboxing::Agy(Enforcement::Full | Enforcement::Partial)
                 | Sandboxing::ClaudeCodes
                 | Sandboxing::Pending
         ));
@@ -1020,7 +1021,12 @@ impl View {
     }
 
     /// The bar above the composer, for the first request waiting.
-    pub(crate) fn render_prompt(&mut self, asks: &VecDeque<Ask>, cwd: &Path) {
+    pub(crate) fn render_prompt(
+        &mut self,
+        asks: &VecDeque<Ask>,
+        cwd: &Path,
+        backend: crate::claude::Backend,
+    ) {
         let prompt = self.window.global::<Prompt>();
         let Some(ask) = asks.front() else {
             prompt.set_kind(PromptKind::None);
@@ -1105,7 +1111,7 @@ impl View {
                     title,
                     summary,
                     summary_reads_as,
-                } = tool_prompt(ask, cwd);
+                } = tool_prompt(ask, cwd, backend);
                 // The description often only repeats what the title or summary say.
                 let repeats =
                     title.contains(description.as_str()) || summary.contains(description.as_str());
@@ -1376,39 +1382,43 @@ struct ToolPrompt {
     summary_reads_as: tools::Writing,
 }
 
-fn tool_prompt(ask: &Ask, cwd: &Path) -> ToolPrompt {
+fn tool_prompt(ask: &Ask, cwd: &Path, backend: crate::claude::Backend) -> ToolPrompt {
     let view = tools::describe(&ask.tool, &ask.input, cwd, tools::Depth::Headline);
     let field = |key: &str| tools::str_field(&ask.input, key).to_owned();
+    let agent = backend.agent();
     let (title, summary) = if ask.tool == ToolName::Bash {
         // Claude can ask for a command to run outside Claude Code's own sandbox.
         let outside =
             ask.input.get("dangerouslyDisableSandbox") == Some(&serde_json::Value::Bool(true));
         let title = if outside {
-            "Allow Claude to run this command outside Claude Code's sandbox?"
+            format!("Allow {agent} to run this command outside Claude Code's sandbox?")
         } else {
-            "Allow Claude to run this command?"
+            format!("Allow {agent} to run this command?")
         };
-        (title.into(), field("command"))
+        (title, field("command"))
     } else if ask.tool == ToolName::RelaySendMessage {
         (
-            format!("Allow Claude to send this message to {}?", field("to")),
+            format!("Allow {agent} to send this message to {}?", field("to")),
             field("message"),
         )
     } else {
         match ask.tool.kind() {
             ToolKind::Edit | ToolKind::Write => (
-                format!("Allow Claude to edit {}?", view.summary),
+                format!("Allow {agent} to edit {}?", view.summary),
                 String::new(),
             ),
             ToolKind::Web if ask.tool == ToolName::WebFetch => {
-                ("Allow Claude to fetch this page?".into(), field("url"))
+                (format!("Allow {agent} to fetch this page?"), field("url"))
             }
             ToolKind::Read
             | ToolKind::Command
             | ToolKind::Search
             | ToolKind::Web
             | ToolKind::Agent
-            | ToolKind::Other => (format!("Allow Claude to use {}?", view.title), view.summary),
+            | ToolKind::Other => (
+                format!("Allow {agent} to use {}?", view.title),
+                view.summary,
+            ),
         }
     };
     ToolPrompt {
@@ -1487,6 +1497,24 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
             "Your Claude Code settings turn on its own sandbox, for its shell commands; this \
              window's would break it, so it stays off. Claude Code's file tools, hooks and MCP \
              servers run with all your rights.",
+        ),
+        Sandboxing::Agy(Enforcement::Full) => (
+            "Sandboxed (agy)",
+            "The network is open.\n\
+             agy, and everything it starts, may change only this project, its git folder, \
+             caches, agy's own data and temporary files.\n\
+             Of desktop services it reaches only the keyring, for its own sign-in; no other \
+             socket but edualc's messaging tool.\n\
+             agy doesn't always ask before it edits files: the sandbox keeps it to these.",
+        ),
+        Sandboxing::Agy(Enforcement::Partial) => (
+            "Partly sandboxed (agy)",
+            "This kernel's Landlock is older: agy's files are kept apart, but not everything \
+             (socket files, say) is.",
+        ),
+        Sandboxing::Agy(Enforcement::None) => (
+            "Not sandboxed (agy)",
+            "This kernel has no Landlock: agy has all your rights.",
         ),
         // Short enough for one line under the sidebar's chip at its default width.
         Sandboxing::Off => ("Not sandboxed", "Claude Code has all your rights."),
@@ -2104,7 +2132,7 @@ mod tests {
                     description: String::new(),
                 },
             };
-            tool_prompt(&ask, Path::new("/work"))
+            tool_prompt(&ask, Path::new("/work"), crate::claude::Backend::Claude)
         };
         let message = asked(
             ToolName::RelaySendMessage,

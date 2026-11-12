@@ -76,9 +76,10 @@ impl App {
         let id = self.status.session_id.as_ref()?;
         let home = match self.status.sandboxing {
             Sandboxing::Landlock(_) => sessions::ClaudeHome::Sandboxed,
-            Sandboxing::Pending | Sandboxing::Off | Sandboxing::ClaudeCodes => {
-                sessions::ClaudeHome::Users
-            }
+            Sandboxing::Pending
+            | Sandboxing::Off
+            | Sandboxing::ClaudeCodes
+            | Sandboxing::Agy(_) => sessions::ClaudeHome::Users,
         };
         Some(transcript_of(
             &sessions::written_transcript(home, &self.cwd, id),

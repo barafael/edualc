@@ -220,6 +220,7 @@ pub(crate) fn saved(cwd: &Path) -> Vec<SessionInfo> {
         .filter(|saved| saved.cwd.path() == cwd)
         .filter_map(|saved| {
             Some(SessionInfo {
+                backend: crate::claude::Backend::Claude,
                 id: SessionId::from(saved.id),
                 title: title(&saved.transcript)?,
                 modified: ago(saved.age),

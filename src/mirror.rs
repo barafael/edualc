@@ -234,7 +234,7 @@ pub(crate) fn read_regular(folder: &OwnedFd, name: &OsStr, limit: u64) -> Option
 
 /// Writes `name` in `folder` whole or not at all, readable by this user alone, as Claude Code
 /// writes its own.
-fn write_atomically(folder: &Path, name: &OsStr, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(folder: &Path, name: &OsStr, bytes: &[u8]) -> std::io::Result<()> {
     let staged = folder.join(format!(".edualc-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -250,7 +250,7 @@ fn write_atomically(folder: &Path, name: &OsStr, bytes: &[u8]) -> std::io::Resul
     written
 }
 
-fn remove(path: &Path) {
+pub(crate) fn remove(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {

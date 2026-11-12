@@ -114,6 +114,8 @@ pub(crate) fn id_number(id: &SessionId, at: usize) -> usize {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionInfo {
+    /// The program it talks to.
+    pub(crate) backend: crate::claude::Backend,
     pub(crate) id: SessionId,
     pub(crate) title: String,
     pub(crate) modified: SystemTime,
@@ -264,21 +266,39 @@ fn project_dir(cwd: &Path) -> PathBuf {
     projects_dir().join(project_name(cwd))
 }
 
-/// The folders a project's transcripts are in: the user's own home's, and the home of its
-/// sandboxed sessions (see `home`).
+/// The folders a project's transcripts are in: the user's own home's, the home of its
+/// sandboxed sessions (see `home`), and edualc's for agy's sessions (see `agy`).
 fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
     let name = project_name(cwd);
     std::iter::once(projects_dir())
         .chain(sandboxed_projects(cwd))
+        .chain(agy_projects())
         .map(|projects| projects.join(&name))
         .collect()
 }
 
-/// Every folder of transcripts' folders: the user's own home's and every sandboxed home's.
+/// Every folder of transcripts' folders: the user's own home's, every sandboxed home's, and
+/// agy's sessions'.
 fn all_projects_dirs() -> Vec<PathBuf> {
     std::iter::once(projects_dir())
         .chain(all_sandboxed_projects())
+        .chain(agy_projects())
         .collect()
+}
+
+/// Where edualc keeps the transcripts of agy's sessions, a folder per project as Claude Code
+/// keeps its own: agy keeps its conversations in a database of its own, which edualc doesn't
+/// read.
+pub(crate) fn agy_projects() -> Option<PathBuf> {
+    dirs::state_dir().map(|state| state.join("edualc").join("agy"))
+}
+
+/// The program a session saved at `transcript` talks to, as where its transcript is says.
+pub(crate) fn backend_of(transcript: &Path) -> crate::claude::Backend {
+    match agy_projects() {
+        Some(agy) if transcript.starts_with(&agy) => crate::claude::Backend::Agy,
+        Some(_) | None => crate::claude::Backend::Claude,
+    }
 }
 
 /// The folder of transcripts' folders in the home of `cwd`'s sandboxed sessions.
@@ -485,6 +505,7 @@ pub(crate) fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<Ses
             }
             let (title, worktree) = summary(&path)?;
             Some(SessionInfo {
+                backend: backend_of(&path),
                 id,
                 title,
                 modified,

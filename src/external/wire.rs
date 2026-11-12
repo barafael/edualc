@@ -520,6 +520,11 @@ pub(crate) enum System {
         #[serde(default)]
         summary: Option<String>,
     },
+    /// Not Claude Code's: edualc's agy adapter (see `agy`) says how far the kernel enforced the
+    /// sandbox it started agy in.
+    EdualcSandbox {
+        enforcement: crate::sandbox::Enforcement,
+    },
     /// A request to the API failed; Claude Code tries it again after a while.
     ApiRetry {
         attempt: u32,
