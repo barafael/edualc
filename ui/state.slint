@@ -138,6 +138,12 @@ export global Composer {
     // Ctrl+V: the clipboard's image, if it holds one (text is pasted as ever).
     callback paste-image;
     callback remove-image(int);
+    // The session's earlier prompts, as Up (on the first line) and Down (on the last) step
+    // through them: whether there is an older one, and whether one is in the draft now.
+    in property <bool> can-recall-older;
+    in property <bool> recalling;
+    callback recall-older;
+    callback recall-newer;
     // The draft is a shell command (`!`, or the full-width `！`): it runs instead of being sent.
     in property <bool> shell;
     // Puts `!` in front of the draft, or takes it away.

@@ -11,7 +11,7 @@ use async_channel::{Receiver, Sender};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::chat::{Change, Chat, ImageKey, ToolState};
+use crate::chat::{Body, Change, Chat, ImageKey, ToolState};
 use crate::claude::{self, Claude, FolderConfiguration, Launch, Output, Resume, SandboxWish};
 use crate::decode::{Picture, Pixels};
 use crate::desktop;
@@ -190,6 +190,62 @@ pub(crate) struct SentPrompt {
     images: Vec<Picture>,
 }
 
+/// Where the composer is among the session's prompts, as Up and Down step through them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Recall {
+    /// The draft is the user's own.
+    #[default]
+    Writing,
+    /// The draft is prompt `index` of the session's, oldest first; `draft` is what was
+    /// written before, given back once Down steps past the newest.
+    Recalled { index: usize, draft: String },
+}
+
+/// What Down puts in the draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Recalled {
+    /// The session's prompt at this index.
+    Prompt(usize),
+    /// What was being written before Up.
+    Draft(String),
+}
+
+impl Recall {
+    /// Up, among `count` prompts, with `draft` in the composer: the prompt to show, if there
+    /// is an older one.
+    fn older(&mut self, count: usize, draft: &str) -> Option<usize> {
+        let (index, kept) = match self {
+            Self::Writing => (count.checked_sub(1)?, draft.to_owned()),
+            Self::Recalled { index, draft } => (index.checked_sub(1)?, draft.clone()),
+        };
+        *self = Self::Recalled { index, draft: kept };
+        Some(index)
+    }
+
+    /// Down, among `count` prompts: the next prompt, or past the newest the draft from before,
+    /// the user writing again; nothing unless a prompt is recalled.
+    fn newer(&mut self, count: usize) -> Option<Recalled> {
+        let Self::Recalled { index, draft } = std::mem::take(self) else {
+            return None;
+        };
+        let next = index.saturating_add(1);
+        if next < count {
+            *self = Self::Recalled { index: next, draft };
+            Some(Recalled::Prompt(next))
+        } else {
+            Some(Recalled::Draft(draft))
+        }
+    }
+
+    /// Whether Up has an older prompt to bring, among `count`.
+    fn has_older(&self, count: usize) -> bool {
+        match self {
+            Self::Writing => count > 0,
+            Self::Recalled { index, .. } => *index > 0,
+        }
+    }
+}
+
 /// What is known of Claude Code's sign-in. Behind a pipe it offers no `/login`, and a session
 /// signed in with a token handed over names no account, so this comes from how turns end.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -325,6 +381,10 @@ pub(crate) enum Action {
     DraftEdited(String),
     /// A command from the list matching the draft, put in the draft.
     PickCommand(usize),
+    /// Up on the composer's first line: the prompt before the one shown, or the newest.
+    RecallOlder,
+    /// Down on its last line, while a prompt is recalled: the next one, or the draft again.
+    RecallNewer,
     /// A command from the list matching the draft, sent as it is.
     RunCommand(usize),
     Toggle(usize),
@@ -756,6 +816,7 @@ pub(crate) struct App {
     sessions: Vec<SessionInfo>,
     /// The slash commands the draft could become, by their place in `status.commands`.
     command_matches: Vec<usize>,
+    recall: Recall,
     log: VecDeque<String>,
     live: Vec<LiveSession>,
     /// The sessions the daemon runs, which outlive their windows.
@@ -871,6 +932,7 @@ impl App {
             cwd,
             sessions: Vec::new(),
             command_matches: Vec::new(),
+            recall: Recall::Writing,
             log: VecDeque::new(),
             live: Vec::new(),
             hosted: Vec::new(),
@@ -1083,6 +1145,8 @@ impl App {
             Action::ChooseMode(index) => self.choose_mode(index),
             Action::DraftEdited(draft) => self.draft_edited(&draft),
             Action::PickCommand(index) => self.pick_command(index),
+            Action::RecallOlder => self.recall_older(),
+            Action::RecallNewer => self.recall_newer(),
             Action::RunCommand(index) => self.run_command(index),
             Action::Toggle(index) => self.chat.toggle(index),
             Action::CopyEntry(index) => {
@@ -1801,6 +1865,8 @@ impl App {
         // Side questions belong to the session they were asked in.
         self.side = SideChat::default();
         self.redraw.side = true;
+        self.recall = Recall::Writing;
+        self.show_recall();
     }
 
     /// Shows a saved session and continues it; one running elsewhere is only watched.
@@ -1922,6 +1988,7 @@ impl App {
                     .error(format!("Couldn't read the session: {error}"));
             }
         }
+        self.show_recall();
         if let Some(prompt) = self.held_prompt.take() {
             self.send(&prompt);
         }
@@ -2213,6 +2280,7 @@ impl App {
         self.chat.user_images(&images);
         if !text.is_empty() {
             self.chat.user(text);
+            self.show_recall();
         }
         self.last_prompt = Some(SentPrompt {
             text: text.to_owned(),
@@ -2312,6 +2380,9 @@ impl App {
 
     /// Lists the slash commands the draft could become.
     fn draft_edited(&mut self, draft: &str) {
+        // An edit makes the draft the user's own, a recalled prompt changed too.
+        self.recall = Recall::Writing;
+        self.show_recall();
         let draft = normalized(draft);
         self.view.set_shell_mode(shell_command(&draft).is_some());
         self.view
@@ -2374,6 +2445,67 @@ impl App {
     fn put_draft(&mut self, text: &str) {
         self.view.set_draft(text);
         self.draft_edited(text);
+    }
+
+    /// The session's prompts as the conversation shows them, oldest first: those of a
+    /// resumed session's transcript too, whichever window or terminal sent them.
+    fn prompts(&self) -> Vec<String> {
+        self.chat
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if let Body::User(text) = &entry.body {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Tells the composer whether Up has an older prompt to bring, and whether one is shown.
+    fn show_recall(&self) {
+        let count = self
+            .chat
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.body, Body::User(_)))
+            .count();
+        let recalling = matches!(self.recall, Recall::Recalled { .. });
+        self.view
+            .set_recall(self.recall.has_older(count), recalling);
+    }
+
+    /// Up: the prompt before the one shown, or the newest, the draft kept for coming back.
+    fn recall_older(&mut self) {
+        let prompts = self.prompts();
+        let mut recall = self.recall.clone();
+        let Some(text) = recall
+            .older(prompts.len(), &self.view.draft())
+            .and_then(|index| prompts.get(index))
+        else {
+            return;
+        };
+        // Put in the draft as an edit is, which makes it the user's own: the step is kept after.
+        self.put_draft(text);
+        self.recall = recall;
+        self.show_recall();
+        self.view.focus_composer();
+    }
+
+    /// Down: the prompt after the one shown, or, past the newest, the draft as it was.
+    fn recall_newer(&mut self) {
+        let prompts = self.prompts();
+        let mut recall = self.recall.clone();
+        let text = match recall.newer(prompts.len()) {
+            Some(Recalled::Prompt(index)) => prompts.get(index).cloned().unwrap_or_default(),
+            Some(Recalled::Draft(draft)) => draft,
+            None => return,
+        };
+        self.put_draft(&text);
+        self.recall = recall;
+        self.show_recall();
+        self.view.focus_composer();
     }
 
     /// A prompt sent before the process could start: shown in the composer, and sent once the
@@ -2895,6 +3027,41 @@ pub(crate) fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Up steps back from the newest prompt to the oldest and stops there; Down steps forward
+    /// and, past the newest, gives back what was being written. With no prompts, Up does
+    /// nothing; while writing, Down does nothing.
+    #[test]
+    fn up_and_down_step_through_the_prompts() {
+        let mut recall = Recall::Writing;
+        assert!(!recall.has_older(0));
+        assert_eq!(recall.older(0, "half a thought"), None);
+        assert_eq!(recall, Recall::Writing);
+        assert_eq!(recall.newer(3), None);
+
+        assert!(recall.has_older(3));
+        assert_eq!(recall.older(3, "half a thought"), Some(2));
+        assert_eq!(recall.older(3, "the newest, shown"), Some(1));
+        assert_eq!(recall.older(3, "the middle, shown"), Some(0));
+        assert!(!recall.has_older(3));
+        assert_eq!(recall.older(3, "the oldest, shown"), None);
+        assert_eq!(
+            recall,
+            Recall::Recalled {
+                index: 0,
+                draft: "half a thought".to_owned()
+            },
+            "Up at the oldest stays there, the draft kept"
+        );
+
+        assert_eq!(recall.newer(3), Some(Recalled::Prompt(1)));
+        assert_eq!(recall.newer(3), Some(Recalled::Prompt(2)));
+        assert_eq!(
+            recall.newer(3),
+            Some(Recalled::Draft("half a thought".to_owned()))
+        );
+        assert_eq!(recall, Recall::Writing);
+    }
 
     /// Being signed out brings up how to sign in at once, keeping the prompt to send again. A
     /// sandboxed session's token that ran out gets one start again by itself; refused after

@@ -617,7 +617,10 @@ mod tests {
     /// agy writes its own data, and reads its configuration without changing it.
     #[test]
     fn agy_keeps_its_data_and_reads_its_configuration() {
-        let scratch = std::env::temp_dir().join(format!("edualc-agy-{}", std::process::id()));
+        // Not the temporary folder, which may be one the policy lets write (/dev/shm).
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("edualc-agy-{}", std::process::id()));
         let [project, data, config, temporary] =
             ["project", "data", "config", "tmp"].map(|name| scratch.join(name));
         for folder in [&project, &data, &config, &temporary] {

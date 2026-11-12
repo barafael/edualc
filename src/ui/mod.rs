@@ -342,6 +342,13 @@ impl View {
         self.window.global::<Composer>().get_draft().into()
     }
 
+    /// Whether Up can bring an older prompt back, and whether one is in the draft now.
+    pub(crate) fn set_recall(&self, can_recall_older: bool, recalling: bool) {
+        let composer = self.window.global::<Composer>();
+        composer.set_can_recall_older(can_recall_older);
+        composer.set_recalling(recalling);
+    }
+
     /// Whether the composer shows the draft as a shell command.
     pub(crate) fn set_shell_mode(&self, shell: bool) {
         self.window.global::<Composer>().set_shell(shell);

@@ -1714,7 +1714,8 @@ component EditArea inherits Rectangle {
                 // match the draft, Up and Down choose one, Enter runs it, and → (at the end) or
                 // Tab put it in the draft. Down on the last line goes to the end. Esc dismisses
                 // a command's hint. Ctrl+V asks for the clipboard's image too, and pastes its
-                // text as ever.
+                // text as ever. Otherwise Up on the first line and Down on the last step through
+                // the session's earlier prompts.
                 key-pressed(event) => {
                     if event.text == Key.Return && event.modifiers.control {
                         if Preferences.send-key == SendKey.ctrl-enter {
@@ -1749,6 +1750,17 @@ component EditArea inherits Rectangle {
                         Composer.run-command(min(Composer.command-index, Composer.commands.length - 1));
                         Composer.draft = "";
                         root.sent();
+                        return accept;
+                    }
+                    // Up on the first line brings the session's earlier prompts back, one by
+                    // one; Down on the last goes forward again, and past the newest, back to
+                    // what was being written.
+                    if event.text == Key.UpArrow && !event.modifiers.shift && Composer.can-recall-older && root.caret-y < 0.5 * root.line {
+                        Composer.recall-older();
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow && !event.modifiers.shift && Composer.recalling && root.caret-y + 1.5 * root.line > measure.preferred-height {
+                        Composer.recall-newer();
                         return accept;
                     }
                     if event.text == Key.DownArrow && !event.modifiers.shift && root.caret-y + 1.5 * root.line > measure.preferred-height {

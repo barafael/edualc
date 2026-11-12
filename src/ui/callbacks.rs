@@ -113,6 +113,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     composer.on_remove_image(actions.on_index(Action::RemoveImage));
     composer.on_break_line(|text, from, to| break_line(&text, from, to));
     composer.on_toggle_shell(actions.on(|| Action::ToggleShell));
+    composer.on_recall_older(actions.on(|| Action::RecallOlder));
+    composer.on_recall_newer(actions.on(|| Action::RecallNewer));
 
     let session = window.global::<Session>();
     session.on_interrupt(actions.on(|| Action::Interrupt));
