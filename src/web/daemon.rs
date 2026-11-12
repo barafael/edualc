@@ -46,10 +46,12 @@ pub(crate) async fn run(requests: Receiver<ToDaemon>, events: Sender<Event>) {
                 }
             }
             ToDaemon::Act { request, act } => acted(&events, request, act),
+            // The page's daemon serves this window alone, and ends with the page.
             ToDaemon::Hello { .. }
             | ToDaemon::Attach { .. }
             | ToDaemon::Detach { .. }
-            | ToDaemon::Identify { .. } => {}
+            | ToDaemon::Identify { .. }
+            | ToDaemon::ShutDown => {}
         }
     }
 }

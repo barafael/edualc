@@ -147,8 +147,9 @@ async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), 
                 }
             },
             changed = sessions.changed() => {
+                // As a window asked it to shut down, its sessions ended.
                 if changed.is_err() {
-                    tracing::error!("the hub ended");
+                    tracing::info!("the hub ended: ending");
                     break;
                 }
             },
@@ -252,12 +253,30 @@ enum Effect {
 /// What a window asks of the hub, by its keys.
 #[derive(Debug, PartialEq, Eq)]
 enum Ask {
-    Start { key: Generation, launch: Launch },
-    Line { key: Generation, line: String },
-    End { key: Generation },
-    Attach { key: Generation, hosted: HostedId },
-    Detach { key: Generation },
-    Identify { key: Generation, session: SessionId },
+    Start {
+        key: Generation,
+        launch: Launch,
+    },
+    Line {
+        key: Generation,
+        line: String,
+    },
+    End {
+        key: Generation,
+    },
+    Attach {
+        key: Generation,
+        hosted: HostedId,
+    },
+    Detach {
+        key: Generation,
+    },
+    Identify {
+        key: Generation,
+        session: SessionId,
+    },
+    /// Every session ends, and then the daemon.
+    ShutDown,
 }
 
 /// The daemon's id for a window's connection.
@@ -388,6 +407,7 @@ impl Connection {
             // A second hello, or a key not in use.
             ToDaemon::Hello { .. } | ToDaemon::Identify { .. } => Vec::new(),
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
+            ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
         }
     }
 }
@@ -629,6 +649,8 @@ enum Step {
     Answer(FromDaemon),
     /// The list changed: every window hears it.
     Changed,
+    /// Every window is told, and the hub ends, its sessions with it.
+    ShutDown,
 }
 
 /// What the hub tells a session (`Attach` carries the outbox, added by the loop).
@@ -654,6 +676,8 @@ impl Hub {
         // as the sessions holding its sender do.
         let (replies, replying) = mpsc::channel(QUEUE);
         tokio::spawn(keep_replies(replying));
+        // A window asked to shut down: the loop ends, and below, every session with it.
+        let mut shutting_down = false;
         loop {
             let steps = tokio::select! {
                 request = requests.recv() => match request {
@@ -680,7 +704,7 @@ impl Hub {
                                     send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
                                 }
                                 Step::Answer(answer) => tell(&outbox, answer).await,
-                                other @ (Step::Tell { .. } | Step::Changed) => rest.push(other),
+                                other @ (Step::Tell { .. } | Step::Changed | Step::ShutDown) => rest.push(other),
                             }
                         }
                         rest
@@ -726,10 +750,23 @@ impl Hub {
                             tell(outbox, FromDaemon::Hosted(list.clone())).await;
                         }
                     }
+                    Step::ShutDown => {
+                        tracing::info!(
+                            sessions = self.sessions.len(),
+                            "shutting down, as a window asked"
+                        );
+                        for outbox in windows.values() {
+                            tell(outbox, FromDaemon::ShuttingDown).await;
+                        }
+                        shutting_down = true;
+                    }
                     Step::Start { .. } | Step::Answer(_) => {}
                 }
             }
             running.send_replace(self.sessions.len());
+            if shutting_down {
+                break;
+            }
         }
         orders.clear();
         while tasks.join_next().await.is_some() {}
@@ -817,6 +854,7 @@ impl Hub {
                     failure: StartFailure::NotHosted,
                 })],
             },
+            Ask::ShutDown => vec![Step::ShutDown],
             Ask::Identify { key, session } => match self.shown_as(window, key) {
                 Some(id) => {
                     if let Some(kept) = self.sessions.get_mut(&id) {
@@ -1874,6 +1912,59 @@ mod tests {
         assert_eq!(told.recv().await, Some(FromDaemon::Hosted(Vec::new())));
         drop(hub);
         hub_task.await.expect("the hub ends");
+    }
+
+    /// A window asking to shut down: every window hears it, and the hub ends though windows
+    /// are still connected, which ends the daemon (`serve` hears the hub's end).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_shutdown_tells_every_window_and_ends_the_hub() {
+        let (hub, requests) = mpsc::channel(8);
+        let (running, mut sessions) = watch::channel(0usize);
+        let hub_task = tokio::spawn(Hub::default().event_loop(
+            requests,
+            running,
+            tokio::runtime::Handle::current(),
+        ));
+        let mut heard = Vec::new();
+        for window in [WindowId(1), WindowId(2)] {
+            let (outbox, mut told) = mpsc::channel(8);
+            hub.send(ToHub::Joined {
+                window,
+                outbox: outbox.clone(),
+            })
+            .await
+            .expect("the hub listens");
+            assert_eq!(told.recv().await, Some(FromDaemon::Hosted(Vec::new())));
+            heard.push((outbox, told));
+        }
+        let asking = heard
+            .first()
+            .map(|(outbox, _)| outbox.clone())
+            .expect("a window");
+        hub.send(ToHub::Asked {
+            window: WindowId(1),
+            ask: Ask::ShutDown,
+            outbox: asking,
+        })
+        .await
+        .expect("the hub listens");
+        for (_, told) in &mut heard {
+            assert_eq!(told.recv().await, Some(FromDaemon::ShuttingDown));
+        }
+        hub_task.await.expect("the hub ends of itself");
+        // The last count it sent comes first, then its end, which `serve` stops on.
+        while sessions.changed().await.is_ok() {}
+        drop(hub);
+    }
+
+    /// A window's shutdown goes to the hub as it is.
+    #[test]
+    fn a_window_asks_the_hub_to_shut_down() {
+        let mut connection = Connection::new(WindowId(1));
+        assert_eq!(
+            connection.handle(ToDaemon::ShutDown),
+            [Effect::Hub(Ask::ShutDown)]
+        );
     }
 
     #[test]

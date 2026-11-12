@@ -165,6 +165,8 @@ pub(crate) enum Event {
     CodeColoured(crate::highlight::Coloured),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
+    /// A window asked the daemon to shut down: the sessions end, and then it.
+    DaemonShuttingDown,
     /// The sessions the daemon runs, anew.
     Hosted(Vec<Hosted>),
     /// The worktree a session's transcript says it works in.
@@ -188,6 +190,14 @@ pub(crate) enum Event {
 pub(crate) struct SentPrompt {
     text: String,
     images: Vec<Picture>,
+}
+
+/// What the window knows of its daemon's life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Daemon {
+    Running,
+    /// A window asked it to shut down: its end that follows is no loss to tell of.
+    ShuttingDown,
 }
 
 /// Where the composer is among the session's prompts, as Up and Down step through them.
@@ -486,6 +496,9 @@ pub(crate) enum Action {
     /// Lets the sandboxed Claude reach USB devices and serial ports in the folder shown, or
     /// stops it, starting the process again.
     ToggleSandboxHardware,
+    /// Ends every session the daemon runs, in every window, and then the daemon (asked in the
+    /// settings, there confirmed).
+    ShutDown,
     Quit,
 }
 
@@ -858,6 +871,7 @@ pub(crate) struct App {
     /// The command line's prompt for a session continued: sent once its transcript is shown,
     /// which replaces the conversation, the prompt's bubble with it.
     held_prompt: Option<String>,
+    daemon: Daemon,
     /// The process is to start again, as the sandbox changed or a sandboxed session's sign-in
     /// ran out, while something was under way that starting it again would interrupt (a
     /// question waiting for its answers, say): it starts again once nothing is.
@@ -955,6 +969,7 @@ impl App {
             trust_gate: TrustGate::Open,
             accepted_in_terminal: HashSet::new(),
             held_prompt: None,
+            daemon: Daemon::Running,
             restart_waits: false,
             last_prompt: None,
             turn_refused_sign_in: false,
@@ -981,6 +996,7 @@ impl App {
         self.load_sessions();
         // Known before resuming: a session the daemon runs is attached to, one running
         // elsewhere watched, neither resumed by a second process writing the same transcript.
+        self.view.set_running_sessions(hosted.len());
         self.hosted = hosted;
         let resuming = resume.is_some();
         if resuming {
@@ -1102,11 +1118,23 @@ impl App {
             Event::DaemonLost => {
                 self.process = None;
                 self.forget_process();
-                self.chat.error(
-                    "Lost the edualc daemon, which runs Claude Code. Open edualc again to go on.",
+                match self.daemon {
+                    Daemon::Running => self.chat.error(
+                        "Lost the edualc daemon, which runs Claude Code. Open edualc again to go on.",
+                    ),
+                    // Said as it began.
+                    Daemon::ShuttingDown => {}
+                }
+            }
+            Event::DaemonShuttingDown => {
+                self.daemon = Daemon::ShuttingDown;
+                self.chat.info(
+                    "edualc is shutting down, as asked in a window: every session ends. Open \
+                     edualc again to go on; the sidebar continues this session.",
                 );
             }
             Event::Hosted(hosted) => {
+                self.view.set_running_sessions(hosted.len());
                 self.hosted = hosted;
                 self.redraw.sessions = true;
             }
@@ -1277,6 +1305,11 @@ impl App {
                 }
             }
             Action::ToggleShell => self.toggle_shell(),
+            Action::ShutDown => {
+                if link::send(&self.link, ToDaemon::ShutDown).is_err() {
+                    self.chat.error("Lost the edualc daemon.");
+                }
+            }
             Action::Quit => {
                 self.quit();
                 return ControlFlow::Break(());

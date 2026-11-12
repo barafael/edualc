@@ -150,7 +150,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 15;
+pub(crate) const PROTOCOL: u32 = 16;
 
 /// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +224,9 @@ pub(crate) enum ToDaemon {
     Identify { key: Generation, session: SessionId },
     /// Something for the desktop, answered by `Done` with the same `request`.
     Act { request: ActId, act: Act },
+    /// Ends every session the daemon runs, in every window, and then the daemon: the user
+    /// asked, to have the next window start the edualc installed now.
+    ShutDown,
 }
 
 /// What the daemon tells the window.
@@ -277,6 +280,8 @@ pub(crate) enum FromDaemon {
     },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
+    /// A window asked the daemon to shut down: its sessions end, and then it.
+    ShuttingDown,
     /// The clipboard's image, or why there is none: a [`Pasted`], postcard-encoded, in pieces
     /// that fit messages; the last piece ends it.
     Pasted {

@@ -119,6 +119,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Picked { .. }
         | FromDaemon::Trusted { .. }
         | FromDaemon::Hosted(_)
+        | FromDaemon::ShuttingDown
         | FromDaemon::Pasted { .. } => return Err(Error::Version),
     };
     let hosted = match channel.recv(&mut deframer)? {
@@ -132,6 +133,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
         | FromDaemon::Trusted { .. }
+        | FromDaemon::ShuttingDown
         | FromDaemon::Pasted { .. } => return Err(Error::OutOfTurn),
     };
     Ok(Connected {
@@ -272,6 +274,7 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
                 last,
             } => joined(&mut pasting, request, &piece, last)
                 .map(|pasted| Event::Pasted { request, pasted }),
+            FromDaemon::ShuttingDown => Some(Event::DaemonShuttingDown),
             FromDaemon::Hello { .. } => None,
         };
         if let Some(event) = event

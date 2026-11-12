@@ -170,6 +170,9 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             });
         }
     });
+    window
+        .global::<Preferences>()
+        .on_shut_down(actions.on(|| Action::ShutDown));
     window.global::<Preferences>().on_choose_han_language({
         let actions = actions.clone();
         move |language| {

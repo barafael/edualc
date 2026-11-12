@@ -134,6 +134,8 @@ component SandboxFolders inherits VerticalLayout {
 
 export component SettingsPanel inherits Rectangle {
     callback close;
+    // Shut down was pressed once: the second press, on the button that says what ends, does it.
+    property <bool> confirming-shutdown;
     background: Theme.surface;
     // The focus comes in as it opens, and Tab goes round within it: what is typed must not go
     // to the composer it covers.
@@ -298,6 +300,40 @@ export component SettingsPanel inherits Rectangle {
                     detail: "Noto Sans CJK KR";
                     chosen: Preferences.han-language == HanLanguage.korean;
                     clicked => { Preferences.choose-han-language(HanLanguage.korean); }
+                }
+                Rectangle {
+                    height: Theme.space-m;
+                }
+                Text {
+                    text: "edualc's daemon";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: "It runs the sessions of every window, and goes on while one runs, so a newly installed edualc takes over only once it is shut down. Shutting down ends every session, in every window; the sidebar continues them in the next window you open.";
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.space-s;
+                    TextButton {
+                        text: !root.confirming-shutdown ? "Shut down edualc…"
+                            : Preferences.running-sessions == 1 ? "End 1 session and shut down"
+                            : "End " + Preferences.running-sessions + " sessions and shut down";
+                        danger: true;
+                        clicked => {
+                            if root.confirming-shutdown {
+                                root.confirming-shutdown = false;
+                                Preferences.shut-down();
+                            } else {
+                                root.confirming-shutdown = true;
+                            }
+                        }
+                    }
+                    if root.confirming-shutdown: TextButton {
+                        text: "Cancel";
+                        clicked => { root.confirming-shutdown = false; }
+                    }
                 }
             }
         }

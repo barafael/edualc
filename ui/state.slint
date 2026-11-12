@@ -292,6 +292,9 @@ export global Preferences {
     // A sandboxed session's messages to other sessions go without asking the user.
     in property <bool> messages-unasked;
     callback toggle-messages-unasked;
+    // The sessions edualc's daemon runs, in every window; a shutdown ends them all.
+    in property <int> running-sessions;
+    callback shut-down;
 }
 
 // Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and

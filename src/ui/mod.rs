@@ -287,6 +287,13 @@ impl View {
     }
 
     /// Whether a sandboxed session's messages to other sessions go without asking.
+    /// How many sessions a shutdown would end.
+    pub(crate) fn set_running_sessions(&self, count: usize) {
+        self.window
+            .global::<Preferences>()
+            .set_running_sessions(i32::try_from(count).unwrap_or(i32::MAX));
+    }
+
     pub(crate) fn set_messages_unasked(&self, unasked: bool) {
         self.window
             .global::<Preferences>()
