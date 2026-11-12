@@ -25,7 +25,7 @@ jobs:
     name: Formatting and lints
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch@sha256:52cd9281cf7ff7de028ddea342a5c14b7fc341e33687ef4f25c47bc4f5869a6b
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:5843153cfe96f07d91b1c83b8a60f4780bb351e7cd1ec08852e888c09564c0f1
     permissions:
       contents: read
     steps:
@@ -72,7 +72,7 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch@sha256:52cd9281cf7ff7de028ddea342a5c14b7fc341e33687ef4f25c47bc4f5869a6b
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:5843153cfe96f07d91b1c83b8a60f4780bb351e7cd1ec08852e888c09564c0f1
     permissions:
       contents: read
     steps:
@@ -86,7 +86,7 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch@sha256:52cd9281cf7ff7de028ddea342a5c14b7fc341e33687ef4f25c47bc4f5869a6b
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:5843153cfe96f07d91b1c83b8a60f4780bb351e7cd1ec08852e888c09564c0f1
     permissions:
       contents: read
     steps:
@@ -101,7 +101,7 @@ jobs:
     name: Workflow security (zizmor)
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/felintusun/edualc-ci:arch@sha256:52cd9281cf7ff7de028ddea342a5c14b7fc341e33687ef4f25c47bc4f5869a6b
+      image: ghcr.io/felintusun/edualc-ci:arch@sha256:5843153cfe96f07d91b1c83b8a60f4780bb351e7cd1ec08852e888c09564c0f1
     permissions:
       contents: read
     steps:
