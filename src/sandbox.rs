@@ -294,15 +294,16 @@ impl Policy {
 
     /// The policy for agy working in `project` (see `agy`): what a sandboxed Claude reads, and
     /// writes in the project, its git folder, caches and `/dev/shm`; besides, agy's own data
-    /// (`data`, its sign-in and conversations) and the session's temporary folder. Of socket
-    /// files only `sockets`, which edualc's adapter serves it; it makes none for others. It
-    /// also reads `programs`: agy itself, and edualc for the messaging tool agy starts.
+    /// (`data`, its sign-in and conversations) and the session's temporary folder. It also
+    /// reads `read`: agy itself, edualc for the messaging tool agy starts, and agy's
+    /// configuration. Of socket files only `sockets`, which edualc's adapter serves it; it
+    /// makes none for others.
     pub(crate) fn for_agy(
         project: &Path,
         data: &[PathBuf],
+        read: &[PathBuf],
         scratch: &Path,
         sockets: &[PathBuf],
-        programs: &[PathBuf],
     ) -> Self {
         let mut policy = Self::for_project(
             project,
@@ -313,7 +314,7 @@ impl Policy {
             Allowances {
                 desktop: false,
                 hardware: false,
-                read: programs,
+                read,
                 write: data,
             },
         );
@@ -610,6 +611,59 @@ mod tests {
             std::fs::read_to_string(private.join("secret.txt")).is_ok(),
             "this thread stays free"
         );
+        std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
+    }
+
+    /// agy writes its own data, and reads its configuration without changing it.
+    #[test]
+    fn agy_keeps_its_data_and_reads_its_configuration() {
+        let scratch = std::env::temp_dir().join(format!("edualc-agy-{}", std::process::id()));
+        let [project, data, config, temporary] =
+            ["project", "data", "config", "tmp"].map(|name| scratch.join(name));
+        for folder in [&project, &data, &config, &temporary] {
+            std::fs::create_dir_all(folder).expect("a scratch folder");
+        }
+        std::fs::write(config.join("mcp_config.json"), "{}").expect("a configuration");
+        let policy = Policy::for_agy(
+            &project,
+            std::slice::from_ref(&data),
+            std::slice::from_ref(&config),
+            &temporary,
+            &[],
+        );
+        let outcome = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let enforcement = policy.restrict_this_thread().expect("a sandbox");
+                    let shell = |script: &str| {
+                        Command::new("sh")
+                            .args(["-c", script])
+                            .output()
+                            .expect("sh runs")
+                            .status
+                            .success()
+                    };
+                    let data = data.display();
+                    let config = config.display();
+                    (
+                        enforcement,
+                        shell(&format!("echo state > '{data}/state'")),
+                        shell(&format!("cat '{config}/mcp_config.json'")),
+                        shell(&format!("echo '{{\"x\":1}}' > '{config}/mcp_config.json'")),
+                        shell(&format!("echo planted > '{config}/new.json'")),
+                    )
+                })
+                .join()
+                .expect("the restricted thread")
+        });
+        let (enforcement, writes_data, reads_config, changes_config, adds_config) = outcome;
+        if enforcement == Enforcement::None {
+            return;
+        }
+        assert!(writes_data, "its own data is writable");
+        assert!(reads_config, "its configuration is readable");
+        assert!(!changes_config, "its configuration can't be changed");
+        assert!(!adds_config, "nor added to");
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
     }
 

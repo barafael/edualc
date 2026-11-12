@@ -211,18 +211,21 @@ fn start_agy(
     let agy = on_path("agy").ok_or(Error::NoAgy)?;
     let program = std::env::current_exe().map_err(Error::Start)?;
     let home = dirs::home_dir().unwrap_or_default();
-    let data = [home.join(".gemini"), home.join(".config/antigravity")];
+    // agy writes only its own data (its sign-in state, conversations, logs: agy 1.5.6 wrote
+    // nothing else in a turn). Its configuration it reads, and can't change: `mcp_config.json`
+    // names programs agy runs outside edualc too.
+    let data = [home.join(".gemini/antigravity-cli")];
+    let read = [
+        agy.clone(),
+        program,
+        home.join(".gemini/config"),
+        home.join(".gemini/GEMINI.md"),
+    ];
     let mut sockets = vec![own.tool()];
     if with_bus {
         sockets.push(own.bus());
     }
-    let policy = Policy::for_agy(
-        cwd,
-        &data,
-        &own.scratch(),
-        &sockets,
-        &[agy.clone(), program],
-    );
+    let policy = Policy::for_agy(cwd, &data, &read, &own.scratch(), &sockets);
     let mut command = Command::new(&agy);
     command
         .args(["acp", "--disable-telemetry"])
