@@ -89,10 +89,18 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
-    /// Who asks, as a permission prompt names it.
+    /// Who answers and asks, as the window names it.
     pub(crate) fn agent(self) -> &'static str {
         match self {
             Self::Claude => "Claude",
+            Self::Agy => "agy",
+        }
+    }
+
+    /// The program the session runs as.
+    pub(crate) fn program(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
             Self::Agy => "agy",
         }
     }

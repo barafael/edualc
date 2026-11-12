@@ -798,6 +798,11 @@ impl View {
                 | Sandboxing::Pending
         ));
         session.set_sandbox_pending(status.sandboxing == Sandboxing::Pending);
+        session.set_agent(status.backend.agent().into());
+        session.set_program(status.backend.program().into());
+        let claude = status.backend == crate::claude::Backend::Claude;
+        session.set_sandbox_adjustable(claude);
+        session.set_shell_commands(claude);
         let (context, fraction) = match (status.context_tokens, status.context_window) {
             (0, _) => (String::new(), 0.0),
             (used, 0) => (short_count(used), 0.0),
@@ -1503,8 +1508,8 @@ fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
             "The network is open.\n\
              agy, and everything it starts, may change only this project, its git folder, \
              caches, agy's own data and temporary files.\n\
-             Of desktop services it reaches only the keyring, for its own sign-in; no other \
-             socket but edualc's messaging tool.\n\
+             Of desktop services it reaches only the keyring, for its own sign-in; of other \
+             sockets only the ssh agent and edualc's messaging tool.\n\
              agy doesn't always ask before it edits files: the sandbox keeps it to these.",
         ),
         Sandboxing::Agy(Enforcement::Partial) => (

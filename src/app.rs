@@ -794,6 +794,9 @@ pub(crate) struct App {
     trust_gate: TrustGate,
     /// Folders the daemon found trusted in the terminal: starting there again asks nothing.
     accepted_in_terminal: HashSet<PathBuf>,
+    /// The command line's prompt for a session continued: sent once its transcript is shown,
+    /// which replaces the conversation, the prompt's bubble with it.
+    held_prompt: Option<String>,
     /// The process is to start again, as the sandbox changed or a sandboxed session's sign-in
     /// ran out, while something was under way that starting it again would interrupt (a
     /// question waiting for its answers, say): it starts again once nothing is.
@@ -889,6 +892,7 @@ impl App {
             usage: UsagePanel::default(),
             trust_gate: TrustGate::Open,
             accepted_in_terminal: HashSet::new(),
+            held_prompt: None,
             restart_waits: false,
             last_prompt: None,
             turn_refused_sign_in: false,
@@ -916,7 +920,8 @@ impl App {
         // Known before resuming: a session the daemon runs is attached to, one running
         // elsewhere watched, neither resumed by a second process writing the same transcript.
         self.hosted = hosted;
-        if resume.is_some() {
+        let resuming = resume.is_some();
+        if resuming {
             self.live = sessions::live();
         }
         match resume {
@@ -933,8 +938,11 @@ impl App {
         if let Some(mode) = mode {
             self.set_mode(mode);
         }
-        if let Some(prompt) = prompt {
-            self.send(prompt);
+        match prompt {
+            // Sent once the transcript is shown (see `session_loaded`).
+            Some(prompt) if resuming => self.held_prompt = Some(prompt.to_owned()),
+            Some(prompt) => self.send(prompt),
+            None => {}
         }
         match Watcher::start(self.events.clone()) {
             Ok(watcher) => {
@@ -1913,6 +1921,9 @@ impl App {
                 self.chat
                     .error(format!("Couldn't read the session: {error}"));
             }
+        }
+        if let Some(prompt) = self.held_prompt.take() {
+            self.send(&prompt);
         }
     }
 

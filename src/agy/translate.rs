@@ -477,8 +477,35 @@ impl Translator {
                 self.queue.push_back(Queued::User { prompt, content });
                 self.next_turn()
             }
+            Some("bash_command") => {
+                let command = said.get("command").and_then(Value::as_str).unwrap_or("");
+                self.shell_refused(command)
+            }
             Some(_) | None => Vec::new(),
         }
+    }
+
+    /// A `!` command: agy has no shell beside the conversation, so it is told as not run, in
+    /// the rows Claude Code replays for one (its echo, then what it printed).
+    fn shell_refused(&self, command: &str) -> Vec<Effect> {
+        let row = |text: String| {
+            Effect::ToWindow(json!({
+                "type": "user",
+                "isReplay": true,
+                "message": {"role": "user", "content": text},
+                "parent_tool_use_id": null,
+                "session_id": self.id.to_string(),
+            }))
+        };
+        vec![
+            row(format!("<bash-input>{}</bash-input>", escaped(command))),
+            row(
+                "<bash-stdout></bash-stdout><bash-stderr>Not run: agy sessions don't run ! \
+                 commands. Ask agy to run it, or run it in a terminal.</bash-stderr>\
+                 <bash-exit-code>1</bash-exit-code>"
+                    .to_owned(),
+            ),
+        ]
     }
 
     fn window_request(&mut self, said: &Value) -> Vec<Effect> {
@@ -995,6 +1022,13 @@ impl Translator {
     }
 }
 
+/// Text as Claude Code puts it in its `<bash-…>` rows: `&`, `<` and `>` as entities.
+fn escaped(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn now() -> String {
     jiff::Timestamp::now().to_string()
 }
@@ -1094,6 +1128,16 @@ fn as_claude_tool(call: &ToolCall) -> (String, Value) {
         (Some("read_file" | "view_file"), _) | (None, Some(ToolKind::Read)) => (
             "Read".to_owned(),
             json!({"file_path": path().unwrap_or_else(title)}),
+        ),
+        // Appending (agy's `Append`) adds to the file: as an edit that adds the lines, not a
+        // Write, which would read as the whole file.
+        (Some("write_file"), _) if input.get("Append") == Some(&Value::Bool(true)) => (
+            "Edit".to_owned(),
+            json!({
+                "file_path": path().unwrap_or_else(title),
+                "old_string": "",
+                "new_string": field("Content"),
+            }),
         ),
         (Some("write_file"), _) => (
             "Write".to_owned(),
@@ -1493,6 +1537,57 @@ mod tests {
                 .and_then(|line| line.pointer("/message/content/0/content")),
             Some(&json!("Delivered to calm-heron."))
         );
+    }
+
+    /// agy's file tools read as Claude Code's, an append as the lines it adds (agy 1.5.6's
+    /// arguments, as logged).
+    #[test]
+    fn file_tools_read_as_claude_codes() {
+        let call = |name: &str, input: Value| ToolCall {
+            tool_call_id: "c".to_owned(),
+            name: Some(name.to_owned()),
+            raw_input: Some(input),
+            ..ToolCall::default()
+        };
+        let (name, input) = as_claude_tool(&call(
+            "write_file",
+            json!({"Append": true, "Content": "three\n", "Path": "/w/f.txt"}),
+        ));
+        assert_eq!(name, "Edit");
+        assert_eq!(input.get("old_string"), Some(&json!("")));
+        assert_eq!(input.get("new_string"), Some(&json!("three\n")));
+        let (name, input) = as_claude_tool(&call(
+            "write_file",
+            json!({"Content": "hi\n", "Overwrite": true, "Path": "/w/hello.txt"}),
+        ));
+        assert_eq!(name, "Write");
+        assert_eq!(input.get("content"), Some(&json!("hi\n")));
+        let (name, input) = as_claude_tool(&call(
+            "edit_file",
+            json!({"Path": "/w/f.txt", "Replacement": "two\nthree", "Target": "two"}),
+        ));
+        assert_eq!(name, "Edit");
+        assert_eq!(input.get("old_string"), Some(&json!("two")));
+    }
+
+    /// A `!` command is told as not run, in the rows the window reads a command's run from,
+    /// and nothing reaches agy.
+    #[test]
+    fn shell_commands_are_refused() {
+        let mut translator = opened();
+        let refused = translator.window_said(
+            r#"{"type":"bash_command","command":"ls <dir>","uuid":"00000000-0000-4000-8000-000000000000"}"#,
+        );
+        assert!(agy_lines(&refused).is_empty());
+        let rows: Vec<&str> = window_lines(&refused)
+            .iter()
+            .filter_map(|line| line.pointer("/message/content").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            rows.first(),
+            Some(&"<bash-input>ls &lt;dir&gt;</bash-input>")
+        );
+        assert!(rows.get(1).is_some_and(|row| row.contains("Not run")));
     }
 
     /// A loaded session's replayed history isn't shown again: the transcript has it.

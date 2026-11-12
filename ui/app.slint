@@ -110,7 +110,7 @@ component SandboxChip inherits Pressable {
                     text: Session.sandbox-detail;
                     wrap: word-wrap;
                 }
-                TextButton {
+                if Session.sandbox-adjustable: TextButton {
                     text: Session.sandbox-on ? "Turn the sandbox off" : "Sandbox Claude Code";
                     danger: Session.sandbox-on;
                     clicked => {
@@ -118,31 +118,31 @@ component SandboxChip inherits Pressable {
                         sandbox-menu.close();
                     }
                 }
-                if Session.sandbox-on: TextButton {
+                if Session.sandbox-adjustable && Session.sandbox-on: TextButton {
                     text: Session.sandbox-desktop ? "Close the display to Claude" : "Let Claude use the display (UI tests)";
                     clicked => {
                         Session.toggle-sandbox-desktop();
                         sandbox-menu.close();
                     }
                 }
-                if Session.sandbox-on: TextButton {
+                if Session.sandbox-adjustable && Session.sandbox-on: TextButton {
                     text: Session.sandbox-hardware ? "Close USB and serial ports to Claude here" : "Let Claude use USB and serial ports here";
                     clicked => {
                         Session.toggle-sandbox-hardware();
                         sandbox-menu.close();
                     }
                 }
-                if Session.sandbox-on && !Session.sandbox-hardware: Caption {
+                if Session.sandbox-adjustable && Session.sandbox-on && !Session.sandbox-hardware: Caption {
                     text: "For this folder: debug probes and boards, but also any other USB device you can open, such as a phone.";
                     wrap: word-wrap;
                 }
                 // Said while it holds, as it changes what reaches other sessions unseen.
-                if Session.sandbox-on && Preferences.messages-unasked: Caption {
+                if Session.sandbox-adjustable && Session.sandbox-on && Preferences.messages-unasked: Caption {
                     text: "Its messages to other sessions go without asking you (see the settings, Ctrl+,).";
                     wrap: word-wrap;
                     color: Theme.warning-text;
                 }
-                Caption {
+                if Session.sandbox-adjustable: Caption {
                     text: "Changing it starts Claude Code again; the conversation goes on.";
                     wrap: word-wrap;
                 }
@@ -692,7 +692,7 @@ component Sidebar inherits Rectangle {
                 spacing: Theme.space-s;
                 // The plan is in the usage details.
                 Text {
-                    text: "Claude Code";
+                    text: Session.program;
                     color: Theme.text;
                     font-weight: 600;
                     font-size: 1rem * Theme.small;
@@ -761,7 +761,7 @@ component Sidebar inherits Rectangle {
                     { label: "Email", value: Session.email },
                     { label: "Organization", value: Session.organization },
                     { label: "Provider", value: Session.provider },
-                    { label: "Claude Code", value: Session.version },
+                    { label: Session.program, value: Session.version },
                     { label: "This session", value: Session.cost },
                 ]: HorizontalLayout {
                     spacing: Theme.space-s;
@@ -1039,7 +1039,7 @@ component PromptBar inherits Rectangle {
             // does: once armed like the buttons, and not with nothing written.
             feedback := Field {
                 property <int> grab: root.grab-serial;
-                placeholder: "Or tell Claude what to do instead";
+                placeholder: "Or tell " + Session.agent + " what to do instead";
                 accepted(text) => {
                     if root.armed && text != "" {
                         Prompt.deny(Prompt.request, text);
@@ -1633,7 +1633,8 @@ component EditArea inherits Rectangle {
                 y: (parent.height - self.height) / 2;
             }
             Small {
-                text: (Session.sandboxed ? "Shell command: Enter runs it in the sandbox, beside the conversation." : "Shell command: Enter runs it beside the conversation, not sandboxed.")
+                text: !Session.shell-commands ? "Shell command: " + Session.agent + " sessions don't run these. Ask " + Session.agent + " to run it, or use a terminal."
+                    : (Session.sandboxed ? "Shell command: Enter runs it in the sandbox, beside the conversation." : "Shell command: Enter runs it beside the conversation, not sandboxed.")
                     + " Claude sees it, and what it printed, with your next message.";
                 color: Theme.text-secondary;
                 wrap: word-wrap;
@@ -1657,9 +1658,9 @@ component EditArea inherits Rectangle {
                 x: 0;
                 y: 0;
                 width: scroll.width;
-                text: Session.turn ? "Write the next message; it waits until Claude is done"
-                    : Preferences.send-key == SendKey.ctrl-enter ? "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Ctrl+Enter to send"
-                    : "Message Claude  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
+                text: Session.turn ? "Write the next message; it waits until " + Session.agent + " is done"
+                    : Preferences.send-key == SendKey.ctrl-enter ? "Message " + Session.agent + "  ·  / for commands  ·  ! for a shell command  ·  Ctrl+Enter to send"
+                    : "Message " + Session.agent + "  ·  / for commands  ·  ! for a shell command  ·  Shift+Enter for a new line";
                 overflow: elide;
                 color: Theme.text-faint;
                 // Only drawn: the entry itself tells assistive technology.
@@ -1689,8 +1690,8 @@ component EditArea inherits Rectangle {
                 font-family: Composer.shell ? Theme.mono : Theme.sans;
                 selection-background-color: Theme.selection;
                 selection-foreground-color: Theme.selection-text;
-                accessible-label: "Message to Claude";
-                accessible-placeholder-text: "Message Claude, or start with ! for a shell command";
+                accessible-label: "Message to " + Session.agent;
+                accessible-placeholder-text: "Message " + Session.agent + ", or start with ! for a shell command";
                 edited => {
                     Composer.command-index = 0;
                     root.hint-dismissed = false;

@@ -5,6 +5,13 @@ import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, Ima
 
 // The CLI process and the conversation it holds.
 export global Session {
+    // Who answers in this session ("Claude", "agy"), and the program it runs as.
+    in property <string> agent: "Claude";
+    in property <string> program: "Claude Code";
+    // The window changes the sandbox; not for agy, whose sandbox edualc's adapter keeps.
+    in property <bool> sandbox-adjustable: true;
+    // `!` commands run beside the conversation; agy has no shell for them.
+    in property <bool> shell-commands: true;
     // The working directory, its last part, and the session's title.
     in property <string> cwd;
     in property <string> project;
