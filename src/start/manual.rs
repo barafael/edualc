@@ -36,7 +36,7 @@ fn manual() -> String {
     entry(
         &mut roff,
         "1",
-        "edualc couldn't start: its daemon or its window.",
+        "edualc couldn't start its daemon or its window.",
     );
     entry(&mut roff, "2", "The command line was wrong.");
 
@@ -59,7 +59,7 @@ fn manual() -> String {
     entry(
         &mut roff,
         "LC_ALL, LC_MESSAGES, LANG",
-        "The first set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until the settings choose.",
+        "The first of these that is set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until you choose in the settings.",
     );
     entry(
         &mut roff,
@@ -82,6 +82,11 @@ fn manual() -> String {
         &mut roff,
         "$XDG_RUNTIME_DIR/edualc/",
         "The daemon's socket.",
+    );
+    entry(
+        &mut roff,
+        "$XDG_STATE_HOME/edualc/",
+        "Transcripts (agy/) and data folders (agy-homes/) of agy sessions, and folders left by the sandbox of earlier versions (~/.local/state if unset).",
     );
     entry(
         &mut roff,

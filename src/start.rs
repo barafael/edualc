@@ -12,16 +12,17 @@ use crate::{app, daemon, decode, desktop, generated, link, sessions, ui};
 
 /// A native desktop window for Claude Code.
 ///
-/// Its arguments read as claude's own: where to work, which model, a session to continue, and a
-/// first prompt. It needs claude (Claude Code) on the PATH.
+/// Its arguments work like claude's own: the folder to work in, the model, a session to
+/// continue, and a first prompt. It needs claude (Claude Code) on the PATH, or agy with
+/// --backend agy.
 #[derive(Debug, clap::Parser)]
 #[command(name = "edualc", version, about)]
 struct Args {
     /// The program to work with: claude (Claude Code), or agy (Google's Antigravity CLI).
     #[arg(long, value_name = "PROGRAM", default_value = "claude", value_parser = backends())]
     backend: Backend,
-    /// The model, as the backend takes it (for claude an alias such as sonnet, or a full name;
-    /// for agy a name `agy models` lists).
+    /// The model: for claude an alias such as sonnet, or a full name; for agy a name that
+    /// `agy models` lists.
     #[arg(short, long)]
     model: Option<String>,
     /// The permission mode to start in.
@@ -30,7 +31,7 @@ struct Args {
     /// A session to continue, by its id.
     #[arg(short, long, value_name = "SESSION", value_parser = session_id)]
     resume: Option<SessionId>,
-    /// The folder to work in; where edualc was started, if none.
+    /// The folder to work in. Without one, the folder edualc was started in.
     #[arg(value_parser = folder)]
     dir: Option<Folder>,
     /// A first prompt.

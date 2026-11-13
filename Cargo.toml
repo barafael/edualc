@@ -58,7 +58,7 @@ petname = { version = "3.2", default-features = false, features = ["default-word
 # An agy session's inbox token, cleared from memory once dropped.
 zeroize = "1.9"
 
-# What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.
+# Dependencies for Linux only. The browser demo has no processes, sockets, image decoder or desktop.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "accessibility", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
 # Opens links in the browser.
@@ -112,8 +112,7 @@ clap_mangen = "0.3"
 [lints.rust]
 unsafe_code = "deny"
 
-# The harness workspace's set (../edit-epistemology/benchmark/harness): errors are not swallowed,
-# casts don't lose, matches name every variant. Shared mutable state is refused in clippy.toml.
+# Errors are not swallowed, casts don't lose, matches name every variant. Shared mutable state is refused in clippy.toml.
 [lints.clippy]
 map_err_ignore = "deny"
 indexing_slicing = "deny"

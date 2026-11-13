@@ -1,5 +1,5 @@
-# No mutable state is shared (CONVENTIONS.md in ../edit-epistemology/benchmark/harness): state has
-# one owner, `App`, and everything else reaches it by message.
+# No mutable state is shared: state has one owner, `App`, and everything else reaches it by
+# message.
 disallowed-types = [
     { path = "std::cell::Cell", reason = "no interior mutability; send the owner a message" },
     { path = "std::cell::RefCell", reason = "no interior mutability; send the owner a message" },

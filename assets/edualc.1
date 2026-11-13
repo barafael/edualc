@@ -14,7 +14,7 @@ edualc \- Native desktop window for Claude Code
 .SH DESCRIPTION
 A native desktop window for Claude Code.
 .PP
-Its arguments read as claude\*(Aqs own: where to work, which model, a session to continue, and a first prompt. It needs claude (Claude Code) on the PATH.
+Its arguments work like claude\*(Aqs own: the folder to work in, the model, a session to continue, and a first prompt. It needs claude (Claude Code) on the PATH, or agy with \-\-backend agy.
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH OPTIONS
@@ -33,7 +33,7 @@ agy
 .RE
 .TP
 \fB\-m\fR, \fB\-\-model\fR \fI<MODEL>\fR
-The model, as the backend takes it (for claude an alias such as sonnet, or a full name; for agy a name `agy models` lists)
+The model: for claude an alias such as sonnet, or a full name; for agy a name that `agy models` lists
 .TP
 \fB\-\-permission\-mode\fR \fI<MODE>\fR
 The permission mode to start in
@@ -64,7 +64,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 [\fIDIR\fR]
-The folder to work in; where edualc was started, if none
+The folder to work in. Without one, the folder edualc was started in
 .TP
 [\fIPROMPT\fR]
 A first prompt
@@ -76,7 +76,7 @@ A first prompt
 The window was closed.
 .TP
 \fB1\fR
-edualc couldn\*(Aqt start: its daemon or its window.
+edualc couldn\*(Aqt start its daemon or its window.
 .TP
 \fB2\fR
 The command line was wrong.
@@ -92,7 +92,7 @@ Claude Code\*(Aqs configuration folder; ~/.claude if unset.
 Which messages are logged to standard error, as a tracing\-subscriber filter; edualc=info if unset.
 .TP
 \fBLC_ALL, LC_MESSAGES, LANG\fR
-The first set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until the settings choose.
+The first of these that is set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until you choose in the settings.
 .TP
 \fBNIRI_SOCKET\fR
 Under niri, the sidebar can focus the window of a session running elsewhere.
@@ -106,6 +106,9 @@ The settings (~/.config if unset).
 .TP
 \fB$XDG_RUNTIME_DIR/edualc/\fR
 The daemon\*(Aqs socket.
+.TP
+\fB$XDG_STATE_HOME/edualc/\fR
+Transcripts (agy/) and data folders (agy\-homes/) of agy sessions, and folders left by the sandbox of earlier versions (~/.local/state if unset).
 .TP
 \fB$CLAUDE_CONFIG_DIR/projects/\fR
 Claude Code\*(Aqs transcripts, read for the sidebar and to continue sessions.
