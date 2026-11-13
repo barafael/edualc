@@ -10,9 +10,6 @@ use crate::settings::Settings;
 use crate::{generated, ui};
 
 mod daemon;
-pub(crate) mod demo;
-mod scenarios;
-
 /// How many messages to the daemon may wait; the demo's answers them at once.
 const QUEUE: usize = 1024;
 
@@ -45,7 +42,11 @@ pub(crate) fn main() {
         Desktop::in_the_browser(crate::appearance::DEFAULT_TEXT_SIZE),
         Ok(Settings::default()),
         app::Start {
-            cwd: Some(demo::Folder::Trailhead.path().to_path_buf()),
+            cwd: Some(
+                edualc_core::demo::world::Folder::Trailhead
+                    .path()
+                    .to_path_buf(),
+            ),
             backend: crate::claude::Backend::Claude,
             model: None,
         },
@@ -53,7 +54,7 @@ pub(crate) fn main() {
     app.begin(
         Vec::new(),
         Vec::new(),
-        Some(SessionId::from(demo::FIRST)),
+        Some(SessionId::from(edualc_core::demo::world::FIRST)),
         None,
         None,
     );

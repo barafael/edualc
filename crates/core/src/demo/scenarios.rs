@@ -10,8 +10,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize as _;
 use serde_json::Map;
 
-use super::daemon::{Interrupted, Out, Turn, input};
-use super::demo;
+use super::script::{Interrupted, Out, Turn, input};
+use super::world as demo;
 use crate::app::{Mode, PermissionMode};
 use crate::external::tool_input::{BashInput, EditInput, GrepInput, ReadInput};
 use crate::external::wire::{
@@ -21,7 +21,7 @@ use crate::external::wire::{
 };
 
 /// Plays the turn for `prompt`, to its end or an interrupt.
-pub(super) async fn play(turn: Turn, prompt: String) {
+pub async fn play(turn: Turn, prompt: String) {
     let lowered = prompt.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|word| lowered.contains(word));
     let played = if has(&["smooth", "question"]) {
@@ -469,7 +469,7 @@ fn command(command: &str, description: &str) -> serde_json::Value {
 }
 
 /// The answer to `initialize`: the models, commands and account the window lists.
-pub(super) fn initialized() -> Initialized {
+pub fn initialized() -> Initialized {
     let model =
         |value: &str, display_name: &str, resolved_model: &str, description: &str| ModelInfo {
             value: value.to_owned(),
@@ -520,7 +520,7 @@ pub(super) fn initialized() -> Initialized {
 }
 
 /// The answer to a side question (`/btw`).
-pub(super) fn side_answer(question: &str) -> &'static str {
+pub fn side_answer(question: &str) -> &'static str {
     let lowered = question.to_lowercase();
     if lowered.contains("3 m") || lowered.contains("threshold") {
         "3 m sits just above typical GPS jitter (2 to 5 m between fixes with a barometer, more \
@@ -538,7 +538,7 @@ pub(super) fn side_answer(question: &str) -> &'static str {
 }
 
 /// A `!` command, run "in the project": a few are played, the rest say so.
-pub(super) fn shell(out: &Out, command: &str) {
+pub fn shell(out: &Out, command: &str) {
     let command = command.trim();
     let (stdout, stderr) = if command.starts_with("git log") {
         (

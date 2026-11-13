@@ -1450,15 +1450,12 @@ name = "edualc"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "base64 0.23.1",
  "clap",
  "clap_mangen",
- "derive_more",
  "dirs",
  "edualc-core",
  "lucide-static-svg",
  "proptest",
- "serde",
  "serde_json",
  "slint",
  "slint-build",
@@ -1468,7 +1465,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "two-face",
- "uuid",
  "web-time",
 ]
 
@@ -1541,6 +1537,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wayland-backend",
  "zeroize",
 ]
 
@@ -2055,6 +2052,8 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
 dependencies = [
+ "futures-channel",
+ "futures-core",
  "js-sys",
  "wasm-bindgen",
 ]

@@ -332,6 +332,7 @@ async fn window_over(
                 live,
                 finds_windows: local && std::env::var_os("NIRI_SOCKET").is_some(),
                 local,
+                home: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             };
             if outbox.send(answer).await.is_err() {
                 tracing::warn!("a window left as it came");

@@ -28,7 +28,7 @@ use crate::link::{self, Link};
 use crate::overview;
 use crate::plan;
 use crate::present::model::PlaceView;
-use crate::present::{Command, Frontend, Presenter};
+use crate::present::{Command, Frontend, Presenter, Seat};
 use crate::repeat::Repeat;
 use crate::sessions::{
     self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
@@ -270,6 +270,8 @@ pub enum Event {
     /// A code block of the conversation, coloured by the window that colours it (see
     /// [`crate::colour`]).
     CodeColoured(crate::colour::Coloured),
+    /// The frontend couldn't do something on its desktop (see `present::Seat`): why.
+    SeatFailed(String),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
     /// A window asked the daemon to shut down: the sessions end, and then it.
@@ -1289,6 +1291,10 @@ pub struct App<F: Frontend> {
     side: SideChat,
     /// What a worktree can be opened in here, as the menu lists them after "this window".
     openers: Vec<desktop::Opener>,
+    /// The session the frontend was last told it shows (`Command::SessionShown`).
+    told_shown: Option<SessionId>,
+    /// The window is on the daemon's machine (see `Desktop`).
+    local: bool,
     settings: Settings,
     /// The desktop's text size, in logical pixels, which the zoom scales.
     desktop_text_size: f32,
@@ -1360,6 +1366,7 @@ impl<F: Frontend> App<F> {
         let Desktop {
             openers,
             finds_windows,
+            local,
             text_size: desktop_text_size,
         } = desktop_found;
         let mut view = Presenter::new(frontend, &openers, finds_windows);
@@ -1426,6 +1433,8 @@ impl<F: Frontend> App<F> {
             records: None,
             side: SideChat::default(),
             openers,
+            told_shown: None,
+            local,
             settings,
             desktop_text_size,
             session_filter: String::new(),
@@ -1605,6 +1614,10 @@ impl<F: Frontend> App<F> {
             Event::Trusted { request, trust } => self.trust_read(request, trust),
             Event::ClaudeTrustRead { request, trusted } => self.claude_trust_read(request, trusted),
             Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
+            Event::SeatFailed(failure) => {
+                tracing::warn!(%failure, "the frontend's desktop didn't do it");
+                self.chat.error(failure);
+            }
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view
@@ -1883,6 +1896,11 @@ impl<F: Frontend> App<F> {
             &session_title,
             can_back,
         );
+        if self.status.session_id != self.told_shown {
+            self.told_shown.clone_from(&self.status.session_id);
+            self.view
+                .command(Command::SessionShown(self.told_shown.clone()));
+        }
         let changes = self.chat.take_changes();
         if changes.contains(&Change::Reset) {
             let shown = self.chat.image_keys();
@@ -2199,8 +2217,36 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`.
+    /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`. A window
+    /// that isn't on the daemon's machine has its own desktop do what it can (`Seat`): a link
+    /// opened, a notification, the clipboard's image.
     fn ask_desktop(&mut self, act: Act, acting: Acting) {
+        if !self.local && act.needs_its_desktop() {
+            match act {
+                Act::OpenUrl(url) => self.view.seat(Seat::OpenUrl(url)),
+                Act::Notify { summary, body } => self.view.seat(Seat::Notify { summary, body }),
+                Act::PasteImage => self.view.seat(Seat::PasteImage),
+                // Not on this desktop to do: editors, other programs' windows and a folder to
+                // pick are the daemon's machine's. A window doesn't offer them.
+                Act::OpenIn { .. }
+                | Act::PickFolder
+                | Act::FocusWindowOf { .. }
+                | Act::CheckTrust { .. }
+                | Act::CheckClaudeTrust { .. }
+                | Act::TrustForClaudeCode { .. }
+                | Act::StopSession(_)
+                | Act::StoreApiKey(_)
+                | Act::RemoveApiKey
+                | Act::CheckApiKey
+                | Act::CreateProject { .. }
+                | Act::ChangesLooked { .. }
+                | Act::MarkReviewed { .. }
+                | Act::UnmarkReviewed { .. } => {
+                    tracing::debug!("not asked of the daemon's desktop: this window isn't on it");
+                }
+            }
+            return;
+        }
         self.last_act = self.last_act.next();
         let request = self.last_act;
         if link::send(&self.link, ToDaemon::Act { request, act }).is_err() {
@@ -3897,6 +3943,8 @@ pub struct Desktop {
     openers: Vec<desktop::Opener>,
     /// Other programs' windows can be found, as the daemon says.
     finds_windows: bool,
+    /// The window is on the daemon's machine: the daemon does what the desktop is asked.
+    local: bool,
     /// In logical pixels.
     text_size: f32,
 }
@@ -3904,11 +3952,11 @@ pub struct Desktop {
 impl Desktop {
     /// What the daemon told, and the text size of the desktop the window is on, in logical
     /// pixels.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn of(greeting: &link::Greeting, text_size: f32) -> Self {
         Self {
             openers: greeting.openers.clone(),
             finds_windows: greeting.finds_windows,
+            local: greeting.local,
             text_size,
         }
     }
@@ -3919,6 +3967,7 @@ impl Desktop {
         Self {
             openers: Vec::new(),
             finds_windows: false,
+            local: true,
             text_size,
         }
     }
@@ -3957,22 +4006,56 @@ mod tests {
     }
 
     impl Frontend for Recorder {
-        fn nav(&mut self, _nav: &present::model::Nav) {}
-        fn changes(&mut self, _changes: &present::model::Changes) {}
-        fn session(&mut self, session: &present::model::Session) {
+        fn nav(&mut self, _old: Option<&present::model::Nav>, _nav: &present::model::Nav) {}
+        fn changes(
+            &mut self,
+            _old: Option<&present::model::Changes>,
+            _changes: &present::model::Changes,
+        ) {
+        }
+        fn session(
+            &mut self,
+            _old: Option<&present::model::Session>,
+            session: &present::model::Session,
+        ) {
             if self.sessions.send(session.clone()).is_err() {
                 tracing::debug!("the test stopped listening");
             }
         }
-        fn composer(&mut self, _composer: &present::model::Composer) {}
-        fn sessions(&mut self, _sessions: &present::model::Sessions) {}
+        fn composer(
+            &mut self,
+            _old: Option<&present::model::Composer>,
+            _composer: &present::model::Composer,
+        ) {
+        }
+        fn sessions(
+            &mut self,
+            _old: Option<&present::model::Sessions>,
+            _sessions: &present::model::Sessions,
+        ) {
+        }
         fn entries(&mut self, _change: present::EntriesChange) {}
-        fn prompt(&mut self, _prompt: &present::model::Prompt) {}
-        fn peek(&mut self, _peek: &present::model::Peek) {}
-        fn side(&mut self, _side: &present::model::Side) {}
-        fn preferences(&mut self, _preferences: &present::model::Preferences) {}
-        fn usage(&mut self, _usage: &present::model::Usage) {}
-        fn transcript(&mut self, _transcript: &present::model::Transcript) {}
+        fn prompt(
+            &mut self,
+            _old: Option<&present::model::Prompt>,
+            _prompt: &present::model::Prompt,
+        ) {
+        }
+        fn peek(&mut self, _old: Option<&present::model::Peek>, _peek: &present::model::Peek) {}
+        fn side(&mut self, _old: Option<&present::model::Side>, _side: &present::model::Side) {}
+        fn preferences(
+            &mut self,
+            _old: Option<&present::model::Preferences>,
+            _preferences: &present::model::Preferences,
+        ) {
+        }
+        fn usage(&mut self, _old: Option<&present::model::Usage>, _usage: &present::model::Usage) {}
+        fn transcript(
+            &mut self,
+            _old: Option<&present::model::Transcript>,
+            _transcript: &present::model::Transcript,
+        ) {
+        }
         fn show_image(&mut self, _key: ImageKey, _shown: Result<&crate::decode::Pixels, String>) {}
         fn keep_images(&mut self, _shown: &HashSet<ImageKey>) {}
         fn command(&mut self, command: present::Command) {
@@ -4013,6 +4096,7 @@ mod tests {
                     openers: Vec::new(),
                     finds_windows: false,
                     text_size: 14.0,
+                    local: true,
                 },
                 Ok(Settings::default()),
                 Start {
@@ -4753,22 +4837,76 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     impl Frontend for RecordingFrontend {
-        fn nav(&mut self, nav: &crate::present::model::Nav) {
+        fn nav(
+            &mut self,
+            _old: Option<&crate::present::model::Nav>,
+            nav: &crate::present::model::Nav,
+        ) {
             if self.navs.send(nav.clone()).is_err() {
                 // Tests stop reading updates when the harness drops.
             }
         }
-        fn session(&mut self, _session: &crate::present::model::Session) {}
-        fn composer(&mut self, _composer: &crate::present::model::Composer) {}
-        fn sessions(&mut self, _sessions: &crate::present::model::Sessions) {}
+        fn session(
+            &mut self,
+            _old: Option<&crate::present::model::Session>,
+            _session: &crate::present::model::Session,
+        ) {
+        }
+        fn composer(
+            &mut self,
+            _old: Option<&crate::present::model::Composer>,
+            _composer: &crate::present::model::Composer,
+        ) {
+        }
+        fn sessions(
+            &mut self,
+            _old: Option<&crate::present::model::Sessions>,
+            _sessions: &crate::present::model::Sessions,
+        ) {
+        }
         fn entries(&mut self, _change: crate::present::EntriesChange) {}
-        fn prompt(&mut self, _prompt: &crate::present::model::Prompt) {}
-        fn peek(&mut self, _peek: &crate::present::model::Peek) {}
-        fn changes(&mut self, _changes: &crate::present::model::Changes) {}
-        fn side(&mut self, _side: &crate::present::model::Side) {}
-        fn preferences(&mut self, _preferences: &crate::present::model::Preferences) {}
-        fn usage(&mut self, _usage: &crate::present::model::Usage) {}
-        fn transcript(&mut self, _transcript: &crate::present::model::Transcript) {}
+        fn prompt(
+            &mut self,
+            _old: Option<&crate::present::model::Prompt>,
+            _prompt: &crate::present::model::Prompt,
+        ) {
+        }
+        fn peek(
+            &mut self,
+            _old: Option<&crate::present::model::Peek>,
+            _peek: &crate::present::model::Peek,
+        ) {
+        }
+        fn changes(
+            &mut self,
+            _old: Option<&crate::present::model::Changes>,
+            _changes: &crate::present::model::Changes,
+        ) {
+        }
+        fn side(
+            &mut self,
+            _old: Option<&crate::present::model::Side>,
+            _side: &crate::present::model::Side,
+        ) {
+        }
+        fn preferences(
+            &mut self,
+            _old: Option<&crate::present::model::Preferences>,
+            _preferences: &crate::present::model::Preferences,
+        ) {
+        }
+        fn usage(
+            &mut self,
+            _old: Option<&crate::present::model::Usage>,
+            _usage: &crate::present::model::Usage,
+        ) {
+        }
+        fn transcript(
+            &mut self,
+            _old: Option<&crate::present::model::Transcript>,
+            _transcript: &crate::present::model::Transcript,
+        ) {
+        }
         fn show_image(&mut self, _key: ImageKey, _shown: Result<&Pixels, String>) {}
         fn keep_images(&mut self, _shown: &HashSet<ImageKey>) {}
         fn command(&mut self, command: Command) {
@@ -4809,6 +4947,7 @@ mod tests {
                     openers: Vec::new(),
                     finds_windows: false,
                     text_size: 14.0,
+                    local: true,
                 },
                 Ok(settings),
                 Start {

@@ -195,18 +195,9 @@ pub(crate) struct SlintFrontend {
     /// The transcript's rows: the model the list filters, and what they show.
     entries: ModelRc<slint_ui::Entry>,
     shown: Vec<present::Entry>,
-    /// What each global was set to last.
-    nav: Option<present::Nav>,
-    session: Option<present::Session>,
-    composer: Option<present::Composer>,
-    sessions: Option<present::Sessions>,
-    changes: Option<present::Changes>,
+    /// What the side panel and the request bar were set to last, to colour their code again.
     prompt: Option<present::Prompt>,
-    peek: Option<present::Peek>,
     side: Option<present::Side>,
-    preferences: Option<present::Preferences>,
-    usage: Option<present::Usage>,
-    transcript: Option<present::Transcript>,
 }
 
 impl SlintFrontend {
@@ -242,17 +233,8 @@ impl SlintFrontend {
             code: Vec::new(),
             entries,
             shown: Vec::new(),
-            nav: None,
-            session: None,
-            composer: None,
-            sessions: None,
-            changes: None,
             prompt: None,
-            peek: None,
             side: None,
-            preferences: None,
-            usage: None,
-            transcript: None,
         }
     }
 
@@ -390,79 +372,54 @@ impl SlintFrontend {
 }
 
 impl Frontend for SlintFrontend {
-    fn nav(&mut self, nav: &present::Nav) {
-        model::apply_nav(&self.window, self.nav.as_ref(), nav, &self.drawing);
-        self.nav = Some(nav.clone());
+    fn nav(&mut self, old: Option<&present::Nav>, nav: &present::Nav) {
+        model::apply_nav(&self.window, old, nav, &self.drawing);
     }
 
-    fn session(&mut self, session: &present::Session) {
-        model::apply_session(&self.window, self.session.as_ref(), session, &self.drawing);
-        self.session = Some(session.clone());
+    fn session(&mut self, old: Option<&present::Session>, session: &present::Session) {
+        model::apply_session(&self.window, old, session, &self.drawing);
     }
 
-    fn composer(&mut self, composer: &present::Composer) {
-        model::apply_composer(
-            &self.window,
-            self.composer.as_ref(),
-            composer,
-            &self.drawing,
-        );
-        self.composer = Some(composer.clone());
+    fn composer(&mut self, old: Option<&present::Composer>, composer: &present::Composer) {
+        model::apply_composer(&self.window, old, composer, &self.drawing);
     }
 
-    fn sessions(&mut self, sessions: &present::Sessions) {
-        model::apply_sessions(
-            &self.window,
-            self.sessions.as_ref(),
-            sessions,
-            &self.drawing,
-        );
-        self.sessions = Some(sessions.clone());
+    fn sessions(&mut self, old: Option<&present::Sessions>, sessions: &present::Sessions) {
+        model::apply_sessions(&self.window, old, sessions, &self.drawing);
     }
 
-    fn prompt(&mut self, prompt: &present::Prompt) {
-        model::apply_prompt(&self.window, self.prompt.as_ref(), prompt, &self.drawing);
+    fn prompt(&mut self, old: Option<&present::Prompt>, prompt: &present::Prompt) {
+        model::apply_prompt(&self.window, old, prompt, &self.drawing);
         self.prompt = Some(prompt.clone());
     }
 
-    fn peek(&mut self, peek: &present::Peek) {
-        model::apply_peek(&self.window, self.peek.as_ref(), peek, &self.drawing);
-        self.peek = Some(peek.clone());
+    fn peek(&mut self, old: Option<&present::Peek>, peek: &present::Peek) {
+        model::apply_peek(&self.window, old, peek, &self.drawing);
     }
 
-    fn changes(&mut self, changes: &present::Changes) {
-        model::apply_changes(&self.window, self.changes.as_ref(), changes, &self.drawing);
-        self.changes = Some(changes.clone());
+    fn changes(&mut self, old: Option<&present::Changes>, changes: &present::Changes) {
+        model::apply_changes(&self.window, old, changes, &self.drawing);
     }
 
-    fn side(&mut self, side: &present::Side) {
-        model::apply_side(&self.window, self.side.as_ref(), side, &self.drawing);
+    fn side(&mut self, old: Option<&present::Side>, side: &present::Side) {
+        model::apply_side(&self.window, old, side, &self.drawing);
         self.side = Some(side.clone());
     }
 
-    fn preferences(&mut self, preferences: &present::Preferences) {
-        model::apply_preferences(
-            &self.window,
-            self.preferences.as_ref(),
-            preferences,
-            &self.drawing,
-        );
-        self.preferences = Some(preferences.clone());
+    fn preferences(
+        &mut self,
+        old: Option<&present::Preferences>,
+        preferences: &present::Preferences,
+    ) {
+        model::apply_preferences(&self.window, old, preferences, &self.drawing);
     }
 
-    fn usage(&mut self, usage: &present::Usage) {
-        model::apply_usage(&self.window, self.usage.as_ref(), usage, &self.drawing);
-        self.usage = Some(usage.clone());
+    fn usage(&mut self, old: Option<&present::Usage>, usage: &present::Usage) {
+        model::apply_usage(&self.window, old, usage, &self.drawing);
     }
 
-    fn transcript(&mut self, transcript: &present::Transcript) {
-        model::apply_transcript(
-            &self.window,
-            self.transcript.as_ref(),
-            transcript,
-            &self.drawing,
-        );
-        self.transcript = Some(transcript.clone());
+    fn transcript(&mut self, old: Option<&present::Transcript>, transcript: &present::Transcript) {
+        model::apply_transcript(&self.window, old, transcript, &self.drawing);
     }
 
     fn entries(&mut self, change: EntriesChange) {
@@ -649,6 +606,8 @@ impl Frontend for SlintFrontend {
                 Look::Plain => slint_ui::Look::Plain,
             }),
             Command::RecolourCode => self.recolour_code(),
+            // A window of its own system's, ended and started again, would open it again.
+            Command::SessionShown(_) => {}
             Command::Quit => {
                 if let Err(error) = slint::quit_event_loop() {
                     tracing::warn!(%error, "the window didn't close");
