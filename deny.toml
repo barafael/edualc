@@ -3,7 +3,7 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-# edualc is Linux-only (Landlock, seccomp, xdg-dbus-proxy); other platforms' crates in the
+# edualc is Linux-only (Landlock, seccomp, its daemon's Unix socket); other platforms' crates in the
 # resolved graph are never built.
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 

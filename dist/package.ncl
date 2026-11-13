@@ -15,7 +15,7 @@ let cargo = import "../Cargo.toml" in
   },
   copyright = "2026 Felin Tusun",
   summary = cargo.package.description,
-  description = "A native desktop window for Claude Code, Anthropic's coding agent: conversations, permission prompts, plans to comment on, and sessions across projects, without the terminal UI. It runs Claude Code's command-line program, sandboxed with Landlock by default, so Claude Code must be installed.",
+  description = "A native desktop window for Claude Code, Anthropic's coding agent: conversations, permission prompts, plans to comment on, and sessions across projects, without the terminal UI. It runs Claude Code's command-line program, so Claude Code must be installed.",
   generic_name = "Claude Code window",
   categories = ["Development"],
   keywords = ["Claude", "Claude Code", "AI", "agent"],
@@ -51,12 +51,6 @@ let cargo = import "../Cargo.toml" in
     { why = "the folders the icon goes into", fedora = "hicolor-icon-theme", arch = "hicolor-icon-theme" },
   ],
   recommended = [
-    {
-      why = "the window's filtered D-Bus, for screen readers and the light or dark setting",
-      debian = "xdg-dbus-proxy",
-      fedora = "xdg-dbus-proxy",
-      arch = "xdg-dbus-proxy",
-    },
     { why = "pasting images", debian = "wl-clipboard", fedora = "wl-clipboard", arch = "wl-clipboard" },
     { why = "the Claude Code CLI that edualc runs (or Anthropic's installer: claude on the PATH)", arch = "claude-code" },
     { why = "the interface font (otherwise the desktop's sans)", arch = "ttf-fira-sans" },

@@ -1,6 +1,6 @@
 [package]
 name = "edualc"
-description = "Native desktop window for Claude Code, sandboxed with Landlock"
+description = "Native desktop window for Claude Code"
 version = "0.1.1"
 edition = "2024"
 # Slint is used under GPL-3.0-only, so a built binary goes out under GPL-3.0.

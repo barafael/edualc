@@ -2,7 +2,7 @@
 Type=Application
 Name=edualc
 GenericName=Claude Code window
-Comment=Native desktop window for Claude Code, sandboxed with Landlock
+Comment=Native desktop window for Claude Code
 Exec=edualc %f
 Icon=io.github.felintusun.edualc
 Terminal=false

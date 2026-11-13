@@ -1,5 +1,2 @@
 # rpmlint's configuration for edualc's package (`nu dist/build.nu lint-rpm`).
-Filters = [
-  # "sandboxed" is not in rpmlint's dictionary.
-  "spelling-error .*sandboxed",
-]
+Filters = []

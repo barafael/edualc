@@ -19,22 +19,11 @@ The README has the short version; this is every feature, as the window has it.
   with notes to send along with the answer. The buttons arm only 0.7 s after a request appears,
   and every answer names the request it was given for: a click can't answer a request it wasn't
   meant for. The tool card shows the input that is approved.
-- **A sandbox for Claude Code.** The `claude` process, and everything it starts (commands, hooks, MCP
-  servers), runs in a Landlock sandbox: the system and toolchains read-only; writable only the
-  project, its git folder, caches, temporary files and Claude Code's own data; no private files, no
-  socket but the ssh agent's (no D-Bus, no niri), no signals outside, no `sudo`. What Claude Code
-  runs on its own (`settings.json`, hooks, skills, plugins) stays read-only. The header's chip says
-  how far the kernel enforces it and turns it off, lets the display in for UI tests, or, for the
-  folder shown, USB devices and serial ports for debug probes and boards: every USB device your
-  account may open, a phone too, and the ports there as it starts (one plugged in again needs it
-  started again); HID probes stay out, as hidraw is keyboards' and security keys' too. The usual
-  toolchains are readable (cargo's config, not its credentials; nvm, pnpm, uv, mise, pyenv, bun) and
-  Go, Maven and Gradle may write their homes; more is let in with `sandbox_read` and
-  `sandbox_write` in `~/.config/edualc/settings.json`. The keyring stays out of reach, so a `gh`
-  that keeps its token there isn't logged in inside. The network stays open (Landlock tells ports
-  apart, not hosts). If your Claude Code settings turn on its own
-  sandbox (bubblewrap, for its commands), that one is kept and this one stays off: the two don't
-  stack.
+- **Claude Code as in a terminal.** edualc puts nothing around the `claude` process: it runs with
+  your rights, your `~/.claude` and `~/.claude.json`, and your settings, Claude Code's own sandbox
+  for its commands (bubblewrap) and Remote Control among them. What edualc keeps to itself is its
+  own: the daemon's socket and state are yours alone, it listens on no network, and images are
+  decoded in a confined process (below).
 - **Signing in.** `claude -p` has no `/login`, though it tells you to run it. When a turn fails for
   want of a sign-in, or on `/login`, the window shows `claude auth login` to run in a terminal; "Try
   again" starts Claude Code again and sends the failed message again.
@@ -95,7 +84,7 @@ The README has the short version; this is every feature, as the window has it.
   session (`btw: <question>`). Fold the panel away while something else needs you; the header's
   button brings it back and shows when an answer came meanwhile.
 - **Shell commands (`!`), as in the terminal.** `! command` is run by Claude Code itself, through its
-  undocumented `bash_command` input, so in the same sandbox as its own commands. It runs beside the
+  undocumented `bash_command` input, so as its own commands run. It runs beside the
   conversation, as a card that shows its output; prompts can be sent meanwhile. The command and what it
   printed go to Claude with your next prompt, as the terminal gives them. One runs at a time, and Stop
   (Esc) stops it. Stop interrupts, so it stops Claude's turn too if one is running. While the draft
@@ -120,7 +109,6 @@ The README has the short version; this is every feature, as the window has it.
   makes it taller over the conversation and another gives it the whole column, to see all of a long
   paste. The account, cost and plan limits sit at the foot of the sidebar, which Ctrl+B hides; a
   click on them opens the usage details over the conversation, which stays in sight around them.
-  While Claude Code isn't sandboxed, the foot of the sidebar says so above them too.
 - **The keyboard.** Every control can be reached with Tab and pressed with Enter or Space, a ring
   showing where the focus is. Tab and Shift+Tab stay within the area they are in: the sidebar, the
   conversation, what Claude asks together with the composer, or the side panel. F6 and Shift+F6 go

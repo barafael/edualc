@@ -5,7 +5,7 @@ pkgname=edualc-git
 _name=edualc
 pkgver=0.1.1
 pkgrel=1
-pkgdesc='Native desktop window for Claude Code, sandboxed with Landlock (main branch)'
+pkgdesc='Native desktop window for Claude Code (main branch)'
 arch=(x86_64 aarch64)
 url='https://github.com/felintusun/edualc'
 license=('GPL-3.0-or-later')
@@ -14,7 +14,6 @@ options=('!debug')
 depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd hicolor-icon-theme)
 makedepends=(cargo git)
 optdepends=(
-  'xdg-dbus-proxy: the window'\''s filtered D-Bus, for screen readers and the light or dark setting'
   'wl-clipboard: pasting images'
   'claude-code: the Claude Code CLI that edualc runs (or Anthropic'\''s installer: claude on the PATH)'
   'ttf-fira-sans: the interface font (otherwise the desktop'\''s sans)'

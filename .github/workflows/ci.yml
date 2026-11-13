@@ -43,8 +43,8 @@ jobs:
       - run: just images-check
       - run: just licences-check
 
-  # On the runner itself, not in a container: the sandbox's tests confine child processes with
-  # Landlock and seccomp, which a container's own seccomp profile may refuse.
+  # On the runner itself, not in a container: the image decoder's tests confine child processes
+  # with Landlock and seccomp, which a container's own seccomp profile may refuse.
   test:
     name: Tests
     runs-on: ubuntu-24.04
