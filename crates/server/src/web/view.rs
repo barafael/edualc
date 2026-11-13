@@ -269,7 +269,8 @@ impl Frontend for PageFrontend {
             Command::Quit => page.write().closed = true,
             Command::SessionShown(session) => page.write().session = session,
             // The page shows code as it is.
-            Command::RecolourCode => {}
+            // The page shows code as it is.
+            Command::RecolourCode | Command::DrawColouredCode => {}
         }
     }
 

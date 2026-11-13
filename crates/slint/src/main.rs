@@ -8,8 +8,7 @@
 use edualc_core::*;
 
 mod appearance;
-#[cfg_attr(target_arch = "wasm32", path = "web/colouring.rs")]
-mod colouring;
+mod colourist;
 #[cfg(not(target_arch = "wasm32"))]
 mod connect;
 mod highlight;

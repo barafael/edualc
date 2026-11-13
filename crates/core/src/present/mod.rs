@@ -6,7 +6,6 @@
 use std::collections::HashSet;
 
 use crate::chat::ImageKey;
-use crate::colour::Coloured;
 use crate::decode::Pixels;
 
 pub mod model;
@@ -114,6 +113,9 @@ pub enum Command {
     /// Code's colours changed (the look, or the desktop's dark or light): code shown is coloured
     /// again in them, by a window that colours it.
     RecolourCode,
+    /// The window's own thread coloured code (`Event::CodeColoured`): it is to draw it. A
+    /// window that doesn't colour code is never told.
+    DrawColouredCode,
     /// The window closes.
     Quit,
     /// The session the window shows now, by its id; none for a new one not started yet. A
@@ -138,9 +140,6 @@ pub trait Frontend {
     /// Lets go of the images but those `shown` holds: the conversation was replaced.
     fn keep_images(&mut self, shown: &HashSet<ImageKey>);
     fn command(&mut self, command: Command);
-    /// A code block of the conversation, coloured as this window asked for (see `colour`); a
-    /// window that doesn't colour code never asks, and ignores what comes.
-    fn code_coloured(&mut self, _coloured: Coloured) {}
     /// Does something on the desktop the frontend is on, the user's (see [`Seat`]). A window
     /// on edualcd's own machine is never asked: edualcd does it.
     fn seat(&mut self, _seat: Seat) {}

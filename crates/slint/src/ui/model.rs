@@ -289,6 +289,20 @@ impl ToSlint for present::TableRow {
     }
 }
 
+/// Whether code growing from `old` to `new` keeps the colours it shows until it is coloured
+/// again (`colourist`), rather than shown plain meanwhile: the newest of it shows a moment late.
+pub(super) fn keeps_colours(
+    old: &present::MdBlock,
+    new: &present::MdBlock,
+    images: &Drawing,
+) -> bool {
+    new.kind == present::BlockKind::Code
+        && old.kind == present::BlockKind::Code
+        && old.lang == new.lang
+        && new.raw.starts_with(old.raw.as_str())
+        && images.coloured_as(&new.lang, &new.raw).is_none()
+}
+
 impl ToSlint for present::MdBlock {
     type Slint = slint_ui::MdBlock;
     fn to_slint(&self, images: &Drawing) -> Self::Slint {
@@ -305,6 +319,9 @@ impl ToSlint for present::MdBlock {
     }
     fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
+        if keeps_colours(old, self, images) {
+            row.body = shown.body;
+        }
         row.rows = resync(&shown.rows, &old.rows, &self.rows, images).unwrap_or(shown.rows);
         row.column_stretch = resync(
             &shown.column_stretch,

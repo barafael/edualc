@@ -157,7 +157,6 @@ In `crates/core/src`:
 | `app.rs`, `app/` | `App`, the single owner of all state. Your actions, the daemon's messages, timers (`repeat`) and what the daemon read reach it as `Event`s on one channel. `app/` holds applying what the process says (`protocol`), the side panel (`side`, `peek`), what runs beside the turn (`tasks`), the usage panel (`usage`), images, and worktrees. |
 | `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `scripts/present_gen.py`), handed to a `Frontend` once per batch, each part only when it changed |
 | `demo/` | the demo: Claude Code played by a script, on a demo project, for `edualcd --demo` and the Slint window's browser demo (the `demo` feature) |
-| `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
 | `ipc/pairing.rs`, `ipc/tls.rs`, `ipc/token.rs` | the address a window pairs with (a demo's is plain), edualcd's TLS (its own certificate, pinned by its SHA-256), and the token a connection over the network shows |
 | `ipc/ws.rs`, `line.rs`, `ipc/servers.rs` | the Android app's connection over the network: the WebSocket's end, carrying it on a thread of its own and reaching edualcd again when it's lost, and the edualcds the app is paired with |
@@ -195,7 +194,7 @@ In `crates/slint/src`:
 | `main.rs`, `start.rs`, `start/manual.rs` | how the window starts: its command line, reaching or starting the daemon, opening the window; the manual page |
 | `connect.rs` | the window's connection to the daemon over its Unix socket |
 | `ui/` | the Slint frontend of the presenter: keeping the Slint models in line with the state, and the callbacks |
-| `highlight.rs`, `colouring.rs` | colouring code by its language, on a thread of its own |
+| `highlight.rs`, `colourist.rs` | colouring code by its language, on a thread of its own |
 | `appearance.rs` | fonts and the desktop's text size |
 | `words.rs` | text that isn't a closed set of ours: words people read, or someone else's |
 | `web/` | the browser demo: a scripted daemon and the demo project's sessions |
@@ -216,10 +215,17 @@ Elsewhere:
 is a frontend (`crates/slint/src/ui/`): it draws the data as Slint's types, changes a list row by
 row so a row that stays keeps its selection, and turns its callbacks into `App`'s actions.
 
-A frontend may do some things on its own. The Slint window colours a conversation's code on a
-thread of its own, and draws the block again when the colours come back (`Event::CodeColoured`,
-`Frontend::code_coloured`). It also puts back the space Slint leaves out between a text's
-paragraphs, so the Markdown every frontend gets stays plain.
+A frontend may do some things on its own. The Slint window colours code on a thread of its own
+(`colourist`), so that a long session opens, and the colours change, without the window waiting.
+It shows code plain at once and orders each block coloured by its place, the conversation's from
+its end, which is shown first. The thread colours the last order for each block, carrying on from
+how far a growing block was, and makes the `StyledText` itself. It wakes the window
+(`Event::CodeColoured`, which the app answers with `Command::DrawColouredCode`) at most once a
+frame, and less often after long code, which Slint lays out whole each time it changes. Code that
+only grew keeps its colours until it is coloured again, and new colours replace the old ones only
+when they come. The browser demo colours on the page's one thread, when the window is woken. The
+window also puts back the space Slint leaves out between a text's paragraphs, so the Markdown
+every frontend gets stays plain.
 
 ## Conventions
 

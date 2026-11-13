@@ -178,8 +178,9 @@ pub enum Event {
         key: ImageKey,
         shown: Result<Pixels, images::ShowError>,
     },
-    /// A code block of the conversation, coloured by the window that colours it (see `colour`).
-    CodeColoured(crate::colour::Coloured),
+    /// The window's code is coloured, off the event loop, by its own thread: it is to draw it
+    /// (`Command::DrawColouredCode`).
+    CodeColoured,
     /// The frontend couldn't do something on its desktop (see `present::Seat`): why.
     SeatFailed(String),
     /// The daemon is gone, and the sessions it ran for this window.
@@ -1181,7 +1182,7 @@ impl<F: Frontend> App<F> {
                 accepted,
                 runs,
             } => self.trust_read(request, accepted, runs),
-            Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
+            Event::CodeColoured => self.view.command(Command::DrawColouredCode),
             Event::SeatFailed(failure) => {
                 tracing::warn!(%failure, "the frontend's desktop didn't do it");
                 self.chat.error(failure);
