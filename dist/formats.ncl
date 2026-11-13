@@ -343,7 +343,7 @@ let text_element = fun tag text => element tag {} [text] in
           export CARGO_TARGET_DIR=target
           cargo build --frozen --release
           # edualcd with its page: the server, and the public/ folder it serves
-          dx bundle --frozen -p edualc-server --platform web --fullstack --release
+          dx bundle --frozen -p edualc-server --platform web --fullstack --profile web
           cp target/dx/edualcd/release/web/server target/release/edualcd
           rm -rf target/release/public
           cp -r target/dx/edualcd/release/web/public target/release/public
