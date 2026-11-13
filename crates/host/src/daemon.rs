@@ -819,6 +819,8 @@ impl Hub {
         let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
         let mut tasks = JoinSet::new();
+        // Which session each task runs: one that panics gives back no `Session` to say.
+        let mut hosting: BTreeMap<tokio::task::Id, HostedId> = BTreeMap::new();
         // A window asked to shut down: the loop ends, and below, every session with it.
         let mut shutting_down = false;
         loop {
@@ -840,7 +842,8 @@ impl Hub {
                                     orders.insert(id, order);
                                     let key = self.key_of(id);
                                     let shown = key.map(|key| (key, outbox.clone()));
-                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
+                                    let task = tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
+                                    hosting.insert(task.id(), id);
                                 }
                                 Step::Tell { id, command: Order::Attach { key } } => {
                                     send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
@@ -858,14 +861,31 @@ impl Hub {
                     // The daemon ends: the sessions' orders close, and each ends.
                     None => break,
                 },
-                Some(ended) = tasks.join_next() => {
-                    match ended {
-                        Ok(session) => {
+                Some(ended) = tasks.join_next_with_id() => {
+                    let task = match &ended {
+                        Ok((task, _)) => *task,
+                        Err(error) => error.id(),
+                    };
+                    match (hosting.remove(&task), ended) {
+                        (Some(_) | None, Ok((_, session))) => {
                             orders.remove(&session.id);
                             self.ended(session.id)
                         }
-                        Err(error) => {
-                            tracing::error!(%error, "a session failed");
+                        // Its process is killed as the task drops it; it goes from the list, and
+                        // the window showing it is told it ended, rather than waiting on it.
+                        (Some(id), Err(error)) => {
+                            tracing::error!(%error, ?id, "a session failed");
+                            orders.remove(&id);
+                            let shown = self.sessions.get(&id).and_then(|kept| kept.shown);
+                            if let Some((window, key)) = shown
+                                && let Some(outbox) = windows.get(&window)
+                            {
+                                tell(outbox, FromDaemon::Ended { key, code: None }).await;
+                            }
+                            self.ended(id)
+                        }
+                        (None, Err(error)) => {
+                            tracing::error!(%error, "a session failed, which ran nothing known");
                             Vec::new()
                         }
                     }
