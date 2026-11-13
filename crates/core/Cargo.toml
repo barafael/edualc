@@ -8,6 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+sha2.workspace = true
+subtle.workspace = true
 # Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
 # `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies
 # on, and the Qt backend drawing emoji itself (#14449) are merged but in no release yet (1.18.1 is
@@ -46,6 +48,8 @@ uuid.workspace = true
 # The words of a session's name for other sessions to message it by: curated English adjectives
 # and nouns, picked by the session's id (no random generator).
 petname = { version = "3.2", default-features = false, features = ["default-words"] }
+# The token windows show the daemon over the network, cleared from memory once dropped.
+zeroize = { version = "1.9", features = ["serde"] }
 
 # What runs on Linux only: processes, sockets and the desktop a page has none of.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -56,6 +60,8 @@ libc.workspace = true
 landlock.workspace = true
 tokio.workspace = true
 postcard.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 # A page: its clock, random numbers and timers.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -69,14 +69,15 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    let (settings, openers, live, finds_windows) = match greeting {
+    let (settings, openers, live, finds_windows, local) = match greeting {
         FromDaemon::Hello {
             protocol,
             settings,
             openers,
             live,
             finds_windows,
-        } if protocol == PROTOCOL => (settings, openers, live, finds_windows),
+            local,
+        } if protocol == PROTOCOL => (settings, openers, live, finds_windows, local),
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
         | FromDaemon::Failed { .. }
@@ -114,6 +115,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         settings,
         openers,
         finds_windows,
+        local,
     };
     Ok(Connected {
         line: Line { channel, deframer },

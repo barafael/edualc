@@ -50,8 +50,42 @@ edualc keeps its own parts private:
 
 - the socket described above;
 - its state, in files with mode 0600 inside folders with mode 0700;
-- no network listener;
+- no network listener, unless you start edualcd with `--listen` (see below);
 - images, decoded in a process of their own that locks itself down before it reads them (`decode`).
+
+## The network side
+
+Windows that aren't on this machine, such as a web page or an app on another device, reach
+edualcd over the network. This is in addition to the Unix socket: a window on this machine still
+uses the socket, with its checks.
+
+`edualcd --listen ADDRESS` accepts connections at `/api/line` over TLS. They carry WebSocket
+frames of what the socket carries (postcard's COBS), and each is one more window of the same
+daemon. A user service, `assets/edualcd.service`, runs it on the loopback address. The daemon
+gets each connection as a `daemon::Line`, so another transport, such as WebTransport, would only
+need to provide one.
+
+On its first start, edualcd makes a certificate for itself (with rcgen) and a token, and keeps them
+in `$XDG_STATE_HOME/edualcd`, a folder that is yours alone. `EDUALC_TOKEN` can set the token
+instead. The token is never taken on the command line, since every user of the machine can read
+that. `edualcd --pair` prints the address windows pair with:
+`https://host:port/#token=…&fingerprint=…`. The token is in the fragment, which is never sent to a
+server. A window trusts exactly the certificate it paired with, by its SHA-256, whatever it names
+or is signed by.
+
+The token lets whoever holds it run Claude Code as you, so it is kept like an SSH key:
+
+- it's held in memory that is cleared when it goes (`ipc::Token`), and `Debug` never shows it;
+- it's compared in constant time (by the SHA-256 of each);
+- it's never in an address, since proxies and servers log those. A connection shows it in its first
+  frame, of at most 1 KiB and within 5 seconds, or is closed with nothing else read.
+
+A connection that speaks another protocol is refused (HTTP 409) before the WebSocket opens. A
+connection is pinged every 15 seconds and dropped after 45 seconds in which nothing came from it.
+
+Only a window on this machine may act on its desktop. From a connection over the network the
+daemon refuses it (`ActFailure::NotHere`), and its hello says the window isn't local (`local`, no
+editors, no windows to find), so the window does what it can on its own desktop instead.
 
 ## Doing nothing while nothing happens
 
@@ -82,6 +116,7 @@ In `crates/core/src`:
 | `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `scripts/present_gen.py`), handed to a `Frontend` once per batch, each part only when it changed |
 | `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
+| `ipc/pairing.rs`, `ipc/tls.rs`, `ipc/token.rs` | the address a window pairs with, edualcd's TLS (its own certificate, pinned by its SHA-256), and the token a connection over the network shows |
 | `link.rs` | the window's connection, whatever carries it: the channel its messages go on, the daemon's greeting, and the `Inbox` that turns the daemon's messages into `Event`s |
 | `claude.rs` | a session's process as the window sees it: what it is started with, what its output means, and the handle that writes to it |
 | `chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `sidebar.rs` | the conversation as entries; how tool calls, Markdown and plan comments are shown; runs of tool calls folded into one line; the sidebar's list |
@@ -96,6 +131,7 @@ In `crates/host/src`:
 |---|---|
 | `daemon.rs`, `spawn.rs` | the daemon's actors, starting `claude` or agy's adapter, and acting on the desktop |
 | `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings |
+| `net/` | the daemon's network side: its certificate and token (`state`), the TLS listener, and the route a connection comes in by (`line`), which lets it in by its first frame |
 | `agy.rs`, `agy/` | an agy session: the adapter (`edualcd --agy-adapter`) that speaks the Agent Client Protocol to `agy acp` and Claude Code's stream-json to the daemon; agy's data folder per project; its inbox; the messages it sends to other sessions |
 | `bin/edualcd.rs` | the daemon's program |
 

@@ -24,9 +24,9 @@ jiff = { version = "0.2.38", features = ["serde"] }
 zeroize = "1.9"
 # An agy session's inbox (see `agy`), as Claude Code's own: its key file is named by the SHA-256
 # of the inbox's path, its token is random, and a peer's token is compared in constant time.
-sha2 = "0.10"
+sha2.workspace = true
 getrandom = { version = "0.3", features = ["std"] }
-subtle = "2.6"
+subtle.workspace = true
 # An agy session's adapter's command line.
 clap.workspace = true
 base64 = "0.23"
@@ -36,9 +36,15 @@ open = "5"
 # The desktop's own folder picker, through its portal on Linux.
 rfd = "0.17"
 tracing-subscriber.workspace = true
+axum.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 [lints]
 workspace = true

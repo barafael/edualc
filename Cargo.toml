@@ -34,6 +34,18 @@ uuid = { version = "1.29", default-features = false, features = ["std", "v4", "s
 # Oniguruma to build). The colours are the theme's, not syntect's themes.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
+# edualcd's network line: an HTTP server with WebSockets, over TLS it takes itself.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "ws"] }
+# edualcd's certificate, made on its first start.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+sha2 = "0.10"
+# Tokens compared in constant time.
+subtle = "2.6"
+# The network line's TLS (rustls, with ring): edualcd's own certificate, pinned by its SHA-256.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 # The manual page (assets/edualc.1), written by a test from the command line's definition.
 clap_mangen = "0.3"

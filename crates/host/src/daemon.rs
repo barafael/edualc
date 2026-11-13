@@ -56,8 +56,46 @@ const CLIPBOARD: Duration = Duration::from_secs(5);
 /// The most of the clipboard's list of types read: a few dozen names.
 const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
 
+/// How a window reaches the daemon, and so how far it is trusted with the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// By the Unix socket: a program on this machine, this user's, installed beside the daemon.
+    /// What the desktop is asked, the daemon does for it.
+    Local,
+    /// Over the network, with the token: a page or an app, whose desktop is its own, and whose
+    /// asks of this one are refused.
+    Network,
+}
+
+/// A window's line, whatever carries it: what it asks (its hello first) and where what the
+/// daemon says to it goes. Whatever carries the line makes the messages and takes them.
+#[derive(Debug)]
+pub struct Line {
+    pub requests: mpsc::Receiver<ToDaemon>,
+    pub outbox: mpsc::Sender<FromDaemon>,
+}
+
+impl Line {
+    /// A line, and its other end: what a window asks goes in at `.0`'s first, and what the
+    /// daemon says comes out at `.1`'s second.
+    #[must_use]
+    pub fn pair() -> (Self, mpsc::Sender<ToDaemon>, mpsc::Receiver<FromDaemon>) {
+        let (asks, requests) = mpsc::channel(QUEUE);
+        let (outbox, says) = mpsc::channel(QUEUE);
+        (Self { requests, outbox }, asks, says)
+    }
+}
+
+/// Where the daemon takes windows from besides its socket.
+#[derive(Debug, Default)]
+pub struct Options {
+    /// The network side, if there is one: lines that show the token are windows too. The daemon
+    /// does not end while it serves them, as a service doesn't.
+    pub network: Option<crate::net::Config>,
+}
+
 /// Runs the daemon; it returns as it ends.
-pub fn run() -> std::process::ExitCode {
+pub fn run(options: Options) -> std::process::ExitCode {
     // Closed to the user's other processes: its memory, and the descriptors it holds (the
     // claude processes' and the image decoder's pipes). Windows check it by user, not program.
     if let Err(error) =
@@ -93,7 +131,7 @@ pub fn run() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(listener)) {
+    match runtime.block_on(serve(listener, options)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(%error, "the daemon failed");
@@ -103,7 +141,19 @@ pub fn run() -> std::process::ExitCode {
 }
 
 /// Takes windows as they connect, until no window and no session is left for [`IDLE`].
-async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
+async fn serve(listener: ipc::Listener, options: Options) -> Result<(), ipc::Error> {
+    let lingers = options.network.is_some();
+    let mut network = options.network.map(|config| {
+        let (lines, taken) = mpsc::channel(QUEUE);
+        let access = crate::net::Access::new(config.token, lines);
+        let app = crate::net::router(access);
+        tokio::spawn(async move {
+            if let Err(error) = crate::net::serve(config.listen, config.acceptor, app).await {
+                tracing::error!(%error, "the network side failed");
+            }
+        });
+        taken
+    });
     let (listener, _lock) = listener.into_tokio()?;
     let (hub, requests) = mpsc::channel(QUEUE);
     let (running, mut sessions) = watch::channel(0usize);
@@ -131,6 +181,22 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
             },
+            line = async {
+                match network.as_mut() {
+                    Some(lines) => lines.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => match line {
+                Some(line) => {
+                    last_window = last_window.next();
+                    windows.spawn(window_over(line, Reach::Network, last_window, hub.clone()));
+                    quiet_since = None;
+                }
+                None => {
+                    tracing::error!("the network side ended: ending");
+                    break;
+                }
+            },
             Some(ended) = windows.join_next() => {
                 if let Err(error) = ended {
                     tracing::error!(%error, "a window's connection failed");
@@ -148,7 +214,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
                 break;
             },
         }
-        let quiet = windows.is_empty() && *sessions.borrow() == 0;
+        let quiet = !lingers && windows.is_empty() && *sessions.borrow() == 0;
         quiet_since = match (quiet, quiet_since) {
             (true, None) => Some(Instant::now()),
             (true, since @ Some(_)) => since,
@@ -163,46 +229,12 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
     Ok(())
 }
 
-/// A window's connection: hello, then its requests to its [`Connection`], and what the hub,
-/// sessions and the desktop say back, until it hangs up.
+/// A window's connection by the socket: its two directions pumped into a [`Line`].
 async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHub>) {
-    let (mut reading, mut writing) = channel.split();
+    let (mut reading, writing) = channel.split();
+    let (line, requests, answers) = Line::pair();
     let mut deframer = Deframer::default();
-    let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
-    match hello.await {
-        Ok(Ok(ToDaemon::Hello { protocol })) => {
-            let (settings, openers, live) = tokio::task::spawn_blocking(|| {
-                (
-                    settings::load().map_err(|error| error.to_string()),
-                    desktop::openers(),
-                    sessions::live(),
-                )
-            })
-            .await
-            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
-            let answer = FromDaemon::Hello {
-                protocol: ipc::PROTOCOL,
-                settings,
-                openers,
-                live,
-                finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
-            };
-            if let Err(error) = ipc::send(&mut writing, &answer).await {
-                tracing::warn!(%error, "a window left as it came");
-                return;
-            }
-            if protocol != ipc::PROTOCOL {
-                tracing::warn!(protocol, "a window of another version");
-                return;
-            }
-        }
-        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-            tracing::warn!("a connection that didn't say hello");
-            return;
-        }
-    }
-    let (requests, received) = mpsc::channel(QUEUE);
-    let (outbox, answers) = mpsc::channel(QUEUE);
+
     // The socket's two directions: pumps, not actors.
     let reader = tokio::spawn(async move {
         loop {
@@ -220,12 +252,63 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHu
         }
     });
     let writer = tokio::spawn(write(writing, answers));
-    let connection = Connection::new(id).event_loop(received, outbox, hub).await;
-    tracing::info!(window = ?connection.id, "a window's connection ended");
+    window_over(line, Reach::Local, id, hub).await;
     reader.abort();
     if let Err(error) = writer.await {
         tracing::debug!(%error, "the writer ended");
     }
+}
+
+/// A window's connection, over whatever carries its line: hello, then its requests to its
+/// [`Connection`], and what the hub, sessions and the desktop say back, until it hangs up.
+async fn window_over(line: Line, reach: Reach, id: WindowId, hub: mpsc::Sender<ToHub>) {
+    let Line {
+        mut requests,
+        outbox,
+    } = line;
+    match tokio::time::timeout(HELLO, requests.recv()).await {
+        Ok(Some(ToDaemon::Hello { protocol })) => {
+            let local = reach == Reach::Local;
+            let (settings, openers, live) = tokio::task::spawn_blocking(move || {
+                (
+                    settings::load().map_err(|error| error.to_string()),
+                    // Editors and windows are the desktop's the window is on.
+                    if local {
+                        desktop::openers()
+                    } else {
+                        Vec::new()
+                    },
+                    sessions::live(),
+                )
+            })
+            .await
+            .unwrap_or_else(|error| (Err(error.to_string()), Vec::new(), Vec::new()));
+            let answer = FromDaemon::Hello {
+                protocol: ipc::PROTOCOL,
+                settings,
+                openers,
+                live,
+                finds_windows: local && std::env::var_os("NIRI_SOCKET").is_some(),
+                local,
+            };
+            if outbox.send(answer).await.is_err() {
+                tracing::warn!("a window left as it came");
+                return;
+            }
+            if protocol != ipc::PROTOCOL {
+                tracing::warn!(protocol, "a window of another version");
+                return;
+            }
+        }
+        Ok(Some(_) | None) | Err(_) => {
+            tracing::warn!("a connection that didn't say hello");
+            return;
+        }
+    }
+    let connection = Connection::new(id, reach)
+        .event_loop(requests, outbox, hub)
+        .await;
+    tracing::info!(window = ?connection.id, "a window's connection ended");
 }
 
 /// Writes what is queued for a window, until everything that could queue more is gone.
@@ -306,13 +389,15 @@ impl WindowId {
 #[derive(Debug, PartialEq, Eq)]
 struct Connection {
     id: WindowId,
+    reach: Reach,
     keys: BTreeMap<Generation, String>,
 }
 
 impl Connection {
-    fn new(id: WindowId) -> Self {
+    fn new(id: WindowId, reach: Reach) -> Self {
         Self {
             id,
+            reach,
             keys: BTreeMap::new(),
         }
     }
@@ -366,7 +451,7 @@ impl Connection {
                     }
                     Effect::Act { request, act } => {
                         let outbox = outbox.clone();
-                        tokio::spawn(act_for(request, act, outbox));
+                        tokio::spawn(act_for(request, act, self.reach, outbox));
                     }
                     Effect::Refuse { key, failure } => {
                         tell(&outbox, FromDaemon::Failed { key, failure }).await;
@@ -446,7 +531,39 @@ impl Connection {
 
 /// Does what the desktop is asked, on a thread of its own (it may take a while), and tells the
 /// window.
-async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
+async fn act_for(request: ActId, act: Act, reach: Reach, outbox: mpsc::Sender<FromDaemon>) {
+    // The desktop here is the user's of this machine; a line over the network has its own.
+    if reach == Reach::Network && act.needs_its_desktop() {
+        match act {
+            Act::PickFolder => {
+                tell(
+                    &outbox,
+                    FromDaemon::Picked {
+                        request,
+                        folder: None,
+                    },
+                )
+                .await
+            }
+            Act::PasteImage => tell_pasted(&outbox, request, &Err(PasteFailure::NoImage)).await,
+            Act::OpenIn { .. }
+            | Act::OpenUrl(_)
+            | Act::Notify { .. }
+            | Act::FocusWindowOf { .. }
+            | Act::CheckTrust { .. }
+            | Act::StopSession(_) => {
+                tell(
+                    &outbox,
+                    FromDaemon::Done {
+                        request,
+                        result: Err(ActFailure::NotHere),
+                    },
+                )
+                .await;
+            }
+        }
+        return;
+    }
     if act == Act::PickFolder {
         let picked = tokio::task::spawn_blocking(move || {
             rfd::FileDialog::new()
@@ -1405,6 +1522,66 @@ mod tests {
     use super::*;
     use crate::claude::FolderConfiguration;
 
+    /// A line over the network has no say in this machine's desktop: what it asks of it is
+    /// refused, and what is a folder or an image comes back as none.
+    #[tokio::test]
+    async fn a_line_over_the_network_has_no_say_in_this_machines_desktop() {
+        let (outbox, mut says) = mpsc::channel(8);
+        let request = ActId::default();
+        for act in [
+            Act::OpenUrl("https://example.org/".to_owned()),
+            Act::Notify {
+                summary: "a".to_owned(),
+                body: "b".to_owned(),
+            },
+            Act::FocusWindowOf { pid: 1 },
+        ] {
+            act_for(request, act, Reach::Network, outbox.clone()).await;
+            assert!(matches!(
+                says.recv().await,
+                Some(FromDaemon::Done {
+                    result: Err(ActFailure::NotHere),
+                    ..
+                })
+            ));
+        }
+        act_for(request, Act::PickFolder, Reach::Network, outbox.clone()).await;
+        assert!(matches!(
+            says.recv().await,
+            Some(FromDaemon::Picked { folder: None, .. })
+        ));
+        act_for(request, Act::PasteImage, Reach::Network, outbox).await;
+        assert!(matches!(says.recv().await, Some(FromDaemon::Pasted { .. })));
+    }
+
+    /// What the hello of a line over the network says it can do: nothing on this machine's
+    /// desktop, and no editors to open folders in.
+    #[tokio::test]
+    async fn the_hello_of_a_network_line_says_it_is_not_local() {
+        let (line, asks, mut says) = Line::pair();
+        let (hub, _hub_requests) = mpsc::channel(8);
+        let window = tokio::spawn(window_over(line, Reach::Network, WindowId(1), hub));
+        asks.send(ToDaemon::Hello {
+            protocol: ipc::PROTOCOL,
+        })
+        .await
+        .expect("sent");
+        let Some(FromDaemon::Hello {
+            local,
+            openers,
+            finds_windows,
+            ..
+        }) = says.recv().await
+        else {
+            panic!("the daemon greets the window");
+        };
+        assert!(!local && !finds_windows && openers.is_empty());
+        drop(asks);
+        window
+            .await
+            .expect("the window's connection ends with its line");
+    }
+
     fn launch() -> Launch {
         Launch {
             backend: crate::claude::Backend::Claude,
@@ -1431,7 +1608,7 @@ mod tests {
     fn a_connection_works_out_what_requests_come_to() {
         let key = Generation::default().next();
         let unused_key = key.next();
-        let mut connection = Connection::new(WindowId(1));
+        let mut connection = Connection::new(WindowId(1), Reach::Local);
         assert_eq!(
             connection.handle(ToDaemon::Start {
                 key,
@@ -1753,7 +1930,7 @@ mod tests {
     /// A window's shutdown goes to the hub as it is.
     #[test]
     fn a_window_asks_the_hub_to_shut_down() {
-        let mut connection = Connection::new(WindowId(1));
+        let mut connection = Connection::new(WindowId(1), Reach::Local);
         assert_eq!(
             connection.handle(ToDaemon::ShutDown),
             [Effect::Hub(Ask::ShutDown)]
