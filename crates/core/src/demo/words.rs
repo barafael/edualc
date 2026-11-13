@@ -2,10 +2,10 @@
 //! Claude Code wrote). A closed set we own is an enum instead (`lint/rules/static-str-wants-enum.yml`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display, derive_more::Deref)]
-pub(crate) struct Words(pub(crate) &'static str);
+pub struct Words(pub &'static str);
 
 impl Words {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         self.0
     }
 }

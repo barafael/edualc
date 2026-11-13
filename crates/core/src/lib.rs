@@ -11,6 +11,8 @@ pub mod cjk;
 pub mod claude;
 pub mod colour;
 pub mod decode;
+#[cfg(feature = "demo")]
+pub mod demo;
 pub mod desktop;
 pub mod external;
 pub mod folder;

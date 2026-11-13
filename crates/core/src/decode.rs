@@ -162,6 +162,18 @@ fn decoded(bytes: &[u8], max_side_px: u32) -> Result<Picture, Refusal> {
     })
 }
 
+/// What an image's bytes make to send, made in the page, which is the sandbox the helper is on
+/// Linux (sans-io, as [`decoded`]).
+///
+/// # Errors
+/// If the image is refused (too large, not a PNG, JPEG, GIF or WebP, or it doesn't decode).
+pub fn to_send(bytes: &[u8]) -> Result<Picture, Refusal> {
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(Refusal::TooManyBytes);
+    }
+    decoded(bytes, MAX_SIDE_PX)
+}
+
 /// What the helper makes of an image's bytes to show: its pixels, scaled down to fit
 /// [`SHOWN_SIDE_PX`] (sans-io, as [`decoded`]). The browser demo calls it in the page.
 pub fn shown(bytes: &[u8]) -> Result<Pixels, Refusal> {
