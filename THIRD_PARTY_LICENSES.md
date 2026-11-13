@@ -2192,16 +2192,16 @@ insights.
 
 Used by:
 
-- slint 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-backend-selector 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-backend-winit 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-common 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-compiler 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-core-macros 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-core 1.19.0 (https://github.com/slint-ui/slint)
-- i-slint-renderer-femtovg 1.19.0 (https://github.com/slint-ui/slint)
-- slint-build 1.19.0 (https://github.com/slint-ui/slint)
-- slint-macros 1.19.0 (https://github.com/slint-ui/slint)
+- slint 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-backend-selector 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-backend-winit 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-common 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-compiler 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-core-macros 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-core 1.20.0 (https://github.com/slint-ui/slint)
+- i-slint-renderer-femtovg 1.20.0 (https://github.com/slint-ui/slint)
+- slint-build 1.20.0 (https://github.com/slint-ui/slint)
+- slint-macros 1.20.0 (https://github.com/slint-ui/slint)
 
 ```text
 GNU GENERAL PUBLIC LICENSE

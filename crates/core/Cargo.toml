@@ -75,7 +75,7 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 [dev-dependencies]
 proptest.workspace = true
 # The Slint window's Markdown, which the block splitter is checked against.
-slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2"] }
+slint = { git = "https://github.com/barafael/slint", rev = "9d7cc772c0f48032e077637f1bed18191de5ad12", version = "1.20.0", default-features = false, features = ["std", "compat-1-2"] }
 
 [features]
 # The demo: Claude Code played by a script, on a demo project (`demo`).
