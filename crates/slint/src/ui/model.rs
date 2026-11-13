@@ -3,13 +3,10 @@
 
 //! The presentation model as Slint's types, and the window's globals brought in line with it.
 
-#![allow(clippy::wildcard_imports, clippy::too_many_lines)]
-
 use slint::ComponentHandle;
 
-use super::{Drawing, ToSlint, resync};
+use super::{Drawing, ToSlint, md_body, resync};
 use crate::generated::{self as slint_ui, AppWindow};
-use crate::present::Styled;
 use crate::present::model as present;
 
 impl ToSlint for present::BlockKind {
@@ -298,16 +295,7 @@ impl ToSlint for present::MdBlock {
     fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::MdBlock {
             kind: self.kind.to_slint(images),
-            body: match (self.kind, &self.body) {
-                (present::BlockKind::Text, Styled::Markdown(text)) => {
-                    Styled::Markdown(crate::markdown::spaced_for_slint(text)).to_slint(images)
-                }
-                // The conversation's is coloured later, on a thread of its own.
-                (present::BlockKind::Code, _) if !images.code_later => {
-                    images.highlighter.code(&self.lang, &self.raw, &mut None)
-                }
-                _ => self.body.to_slint(images),
-            },
+            body: md_body(self, images),
             cjk: self.cjk.to_slint(images),
             lang: self.lang.to_slint(images),
             level: self.level.to_slint(images),

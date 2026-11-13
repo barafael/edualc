@@ -20,7 +20,6 @@ use crate::present::model as present;
 use crate::present::{Command, EntriesChange, Frontend, Image, Look, Styled};
 
 mod callbacks;
-#[allow(clippy::wildcard_enum_match_arm)]
 mod model;
 
 pub(crate) use callbacks::wire;
@@ -42,6 +41,20 @@ impl Drawing {
             highlighter: Highlighter::new(colours),
             code_later: false,
         }
+    }
+}
+
+/// A Markdown block's body as the Slint window draws it: a text block with the space between its
+/// paragraphs that Slint leaves out, code in colour (the conversation's later, by the thread).
+fn md_body(block: &present::MdBlock, drawing: &Drawing) -> slint::StyledText {
+    match (block.kind, &block.body) {
+        (present::BlockKind::Text, Styled::Markdown(text)) => {
+            Styled::Markdown(crate::markdown::spaced_for_slint(text)).to_slint(drawing)
+        }
+        (present::BlockKind::Code, _) if !drawing.code_later => {
+            drawing.highlighter.code(&block.lang, &block.raw, &mut None)
+        }
+        _ => block.body.to_slint(drawing),
     }
 }
 

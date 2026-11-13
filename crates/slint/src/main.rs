@@ -21,27 +21,13 @@ mod web;
 mod words;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).
-// Slint's code, not ours: it shares state through `Rc` and cells, and discards what it likes.
+// Slint's code, not ours: it indexes and discards results as it likes. Only what it trips is let
+// off, and only here.
 #[allow(
-    clippy::disallowed_types,
+    clippy::indexing_slicing,
     clippy::let_underscore_must_use,
     clippy::let_underscore_untyped,
-    clippy::wildcard_enum_match_arm,
-    clippy::indexing_slicing,
-    clippy::match_same_arms,
-    clippy::redundant_clone,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::needless_pass_by_value,
-    clippy::default_trait_access,
-    clippy::redundant_closure_for_method_calls,
-    clippy::items_after_statements,
-    clippy::unneeded_field_pattern,
-    clippy::ignored_unit_patterns,
-    clippy::map_unwrap_or,
-    clippy::derive_partial_eq_without_eq,
-    clippy::bool_to_int_with_if
+    reason = "Slint's generated code"
 )]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/window.rs"));

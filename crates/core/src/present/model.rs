@@ -4,9 +4,6 @@
 //! What the window shows, as plain data: the same types as the Slint window's, which every
 //! frontend shows.
 
-// Every type of the window's, mirrored: not every frontend uses each.
-#![allow(clippy::derive_partial_eq_without_eq, dead_code)]
-
 use super::{Image, Styled};
 
 #[derive(
