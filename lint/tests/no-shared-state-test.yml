@@ -12,7 +12,32 @@ valid:
     struct Counters { delivered: AtomicU64 }
   - |
     use std::sync::atomic::AtomicBool;
+  - |
+    #[expect(clippy::disallowed_types, reason = "rustls takes its configuration behind an Arc")]
+    fn acceptor() { let shared = Arc::new(config); }
+  - |
+    #[expect(clippy::disallowed_types, reason = "rustls takes its configuration behind an Arc")]
+    use std::sync::Arc;
+  - |
+    #[expect(
+        clippy::disallowed_types,
+        reason = "rustls takes its configuration behind an Arc"
+    )]
+    fn acceptor() { let shared = Arc::new(config); }
 invalid:
+  - |
+    #[allow(clippy::disallowed_types, reason = "rustls takes its configuration behind an Arc")]
+    fn acceptor() { let shared = Arc::new(config); }
+  - |
+    #[expect(clippy::disallowed_types)]
+    fn acceptor() { let shared = Arc::new(config); }
+  - |
+    #[expect(clippy::disallowed_types, reason = "")]
+    fn acceptor() { let shared = Arc::new(config); }
+  - |
+    #[expect(clippy::disallowed_types, reason = "a reason")]
+    fn one() {}
+    fn another() { let shared = Arc::new(config); }
   - |
     struct Shared { table: Arc<Mutex<HashMap<u64, Tx>>> }
   - |

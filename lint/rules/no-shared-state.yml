@@ -2,24 +2,41 @@ id: no-shared-state
 language: Rust
 severity: error
 message: "State shared between tasks or threads (a reference count, a lock, a semaphore, a cell, a lazy or mutable static, a thread-local): give it one owner and send it messages"
-note: "A reference count shares its value as much as a lock does, so Arc, Rc and Weak are matched too. Atomics are not matched: whether one fits is left to judgement. There is no exception: `no-shared-state-escape` refuses any suppression of this rule."
+note: "A reference count shares its value as much as a lock does, so Arc, Rc and Weak are matched too. Atomics are not matched: whether one fits is left to judgement. The one exception is an item that carries `#[expect(clippy::disallowed_types, reason = \"…\")]`, the same exception as clippy's, with its reason: where a library asks for the type (rustls takes its configuration behind an Arc), at the item that builds it and nowhere else. `no-shared-state-escape` refuses every other suppression of this rule."
 # edualc's change to the harness's rule: its crates sit one folder down, edualc's at the root.
 files:
   - "**/src/**"
+utils:
+  # Attributes and comments directly above an item.
+  above-item:
+    any:
+      - kind: attribute_item
+      - kind: line_comment
 rule:
-  any:
-    - kind: type_identifier
-      regex: '^(Arc|Rc|Weak|Mutex|RwLock|ReentrantMutex|Condvar|Semaphore|Barrier|Cell|RefCell|UnsafeCell|OnceCell|LazyCell|OnceLock|LazyLock)$'
-    - kind: identifier
-      regex: '^(Arc|Rc|Weak|Mutex|RwLock|ReentrantMutex|Condvar|Semaphore|Barrier|Cell|RefCell|UnsafeCell|OnceCell|LazyCell|OnceLock|LazyLock)$'
-      inside:
-        any:
-          - kind: scoped_identifier
-          - kind: use_declaration
-    - kind: macro_invocation
-      has:
-        field: macro
-        regex: '^(std::)?thread_local$'
-    - kind: static_item
-      has:
-        kind: mutable_specifier
+  all:
+    - any:
+        - kind: type_identifier
+          regex: '^(Arc|Rc|Weak|Mutex|RwLock|ReentrantMutex|Condvar|Semaphore|Barrier|Cell|RefCell|UnsafeCell|OnceCell|LazyCell|OnceLock|LazyLock)$'
+        - kind: identifier
+          regex: '^(Arc|Rc|Weak|Mutex|RwLock|ReentrantMutex|Condvar|Semaphore|Barrier|Cell|RefCell|UnsafeCell|OnceCell|LazyCell|OnceLock|LazyLock)$'
+          inside:
+            any:
+              - kind: scoped_identifier
+              - kind: use_declaration
+        - kind: macro_invocation
+          has:
+            field: macro
+            regex: '^(std::)?thread_local$'
+        - kind: static_item
+          has:
+            kind: mutable_specifier
+    # Unless the item says why it is let off: clippy's lint, expected, with its reason.
+    - not:
+        inside:
+          stopBy: end
+          follows:
+            kind: attribute_item
+            regex: '^#\[expect\(\s*clippy::disallowed_types,\s*reason = "[^"]+",?\s*\)\]$'
+            stopBy:
+              not:
+                matches: above-item

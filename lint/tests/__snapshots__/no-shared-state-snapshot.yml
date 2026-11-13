@@ -1,5 +1,45 @@
 id: no-shared-state
 snapshots:
+  "#[allow(clippy::disallowed_types, reason = \"rustls takes its configuration behind an Arc\")]\nfn acceptor() { let shared = Arc::new(config); }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 121
+      end: 124
+    - source: Arc::new
+      style: secondary
+      start: 121
+      end: 129
+  "#[expect(clippy::disallowed_types)]\nfn acceptor() { let shared = Arc::new(config); }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 65
+      end: 68
+    - source: Arc::new
+      style: secondary
+      start: 65
+      end: 73
+  "#[expect(clippy::disallowed_types, reason = \"\")]\nfn acceptor() { let shared = Arc::new(config); }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 78
+      end: 81
+    - source: Arc::new
+      style: secondary
+      start: 78
+      end: 86
+  "#[expect(clippy::disallowed_types, reason = \"a reason\")]\nfn one() {}\nfn another() { let shared = Arc::new(config); }\n":
+    labels:
+    - source: Arc
+      style: primary
+      start: 97
+      end: 100
+    - source: Arc::new
+      style: secondary
+      start: 97
+      end: 105
   "let lock = std::sync::Mutex::new(0);\n":
     labels:
     - source: Mutex
