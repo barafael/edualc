@@ -350,7 +350,7 @@ pub async fn recv<T: DeserializeOwned>(
 const READ: usize = 16 * 1024;
 
 /// The largest frame: a message COBS-encoded, at most one byte more per 254, and its `0`.
-const MAX_FRAME: usize = MAX_MESSAGE + MAX_MESSAGE / 254 + 2;
+pub const MAX_FRAME: usize = MAX_MESSAGE + MAX_MESSAGE / 254 + 2;
 
 /// A connection's bytes, as they come, made into messages (sans-io: the window's blocking reads
 /// and the daemon's tokio reads feed the same one). Frames are postcard's COBS, each ended by a
@@ -414,6 +414,13 @@ impl<Message: DeserializeOwned> Deframer<Message> {
     pub fn take(&mut self) -> Option<Message> {
         self.ready.pop_front()
     }
+}
+
+/// The message in one frame (as [`frame`] makes it, its `0` left off or on): for a frame that
+/// came whole, the first of a line.
+pub fn deframe<T: DeserializeOwned>(frame: &[u8]) -> Result<T, Error> {
+    let mut bytes = frame.strip_suffix(&[0]).unwrap_or(frame).to_vec();
+    postcard::from_bytes_cobs::<T>(&mut bytes).map_err(|_unreadable| Error::Unreadable)
 }
 
 /// A message as a frame: postcard's COBS, ended by a `0`.

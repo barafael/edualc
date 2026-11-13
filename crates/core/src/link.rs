@@ -88,6 +88,8 @@ pub struct Greeting {
     pub openers: Vec<Opener>,
     /// Other programs' windows can be found.
     pub finds_windows: bool,
+    /// The window is on the daemon's machine (see `FromDaemon::Hello`).
+    pub local: bool,
 }
 
 /// What the daemon says, made the app's events (sans-io): the pieces a line, a pasted image or a
