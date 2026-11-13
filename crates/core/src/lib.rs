@@ -19,6 +19,8 @@ pub mod external;
 pub mod folder;
 pub mod grouping;
 pub mod ipc;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod line;
 pub mod link;
 pub mod markdown;
 pub mod overview;
@@ -26,6 +28,7 @@ pub mod plan;
 pub mod present;
 pub mod process;
 pub mod repeat;
+pub mod replace;
 pub mod sessions;
 pub mod settings;
 pub mod sidebar;

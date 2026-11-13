@@ -475,7 +475,7 @@ mod tests {
     /// attached to was kept running before, so it counts as used from the start.
     #[test]
     fn a_session_is_used_once_prompted_or_given_a_command() {
-        let (link, _daemon) = std::sync::mpsc::sync_channel(link::QUEUE);
+        let (link, _daemon) = async_channel::bounded(link::QUEUE);
         let launch = || Launch {
             backend: Backend::Claude,
             cwd: PathBuf::from("/work"),

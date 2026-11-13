@@ -439,6 +439,9 @@ pub fn Composer() -> Element {
     let onpaste = move |_event: ClipboardEvent| {
         #[cfg(feature = "web")]
         dom::paste_images(&_event, view);
+        // The app reads Android's clipboard for an image itself.
+        #[cfg(feature = "mobile")]
+        view.act(Action::PasteImage);
     };
 
     rsx! {
@@ -610,6 +613,15 @@ pub fn Composer() -> Element {
                                 label: "Context used",
                             }
                             span { class: "caption", "{session.context}" }
+                        }
+                    }
+                    // A phone's keyboard has no Ctrl+V: the clipboard's image is pasted here.
+                    if cfg!(feature = "mobile") {
+                        IconButton {
+                            icon: Lucide::ImagePlus,
+                            label: "Paste the clipboard's image",
+                            class: "tint-faint",
+                            onclick: move |_| view.act(Action::PasteImage),
                         }
                     }
                     IconButton {

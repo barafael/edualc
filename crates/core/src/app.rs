@@ -296,7 +296,6 @@ pub enum Event {
         path: PathBuf,
         result: Result<crate::changes::Diff, String>,
     },
-
     /// Something watched changed: the running sessions' records, or a followed transcript.
     Changed(Watched),
     /// Now and then: sessions whose process ended without saying so are let go.
@@ -318,6 +317,15 @@ pub enum Event {
     },
     /// A change to the settings wasn't kept, and why.
     SettingsNotKept(String),
+    /// The line to edualcd over the network is lost, and is being reached again: what was asked
+    /// on it isn't answered, and the sessions it ran for this window are no longer shown here
+    /// (they run on there).
+    LineLost,
+    /// The line to edualcd was reached again: the sessions it runs and those running now.
+    Reconnected {
+        hosted: Vec<Hosted>,
+        live: Vec<LiveSession>,
+    },
 }
 
 /// A prompt as sent, to send again once the sign-in works.
@@ -1648,6 +1656,17 @@ impl<F: Frontend> App<F> {
                     Daemon::ShuttingDown => {}
                 }
             }
+            Event::LineLost => {
+                self.process = None;
+                self.forget_process();
+                // Asked on the lost line: no answer comes.
+                self.answers.clear();
+                self.acting.clear();
+                self.listing_live = Refresh::Idle;
+                self.chat
+                    .error("Lost the line to edualcd, which runs Claude Code; reaching it again.");
+            }
+            Event::Reconnected { hosted, live } => self.reconnected(hosted, live),
             Event::DaemonShuttingDown => {
                 self.daemon = Daemon::ShuttingDown;
                 self.chat.info(
@@ -3364,6 +3383,29 @@ impl<F: Frontend> App<F> {
         }
     }
 
+    /// The line to edualcd is back: what was watched is watched again, and the session shown
+    /// is opened again, from its transcript, which has what was said meanwhile. One this window
+    /// ran was let go of as the window came again (see the daemon's hub), and is attached to.
+    fn reconnected(&mut self, hosted: Vec<Hosted>, live: Vec<LiveSession>) {
+        self.view.set_running_sessions(hosted.len());
+        self.hosted = hosted;
+        self.live = live;
+        // A listing asked on the lost line, or while it was lost (dropped unsent), is answered
+        // never: waiting on it, the running sessions would be listed no more.
+        self.listing_live = Refresh::Idle;
+        self.redraw.sessions = true;
+        self.records = self.watch(Target::Records);
+        match self.status.session_id.take() {
+            Some(id) => {
+                self.watch = None;
+                self.open_session(id);
+            }
+            None => self.new_session(self.status.backend, self.status.sign_in_with),
+        }
+        self.load_sessions();
+        self.render();
+    }
+
     /// Lists the slash commands the draft could become.
     fn draft_edited(&mut self, draft: &str) {
         // An edit makes the draft the user's own, a recalled prompt changed too.
@@ -4074,7 +4116,7 @@ mod tests {
         app: App<Recorder>,
         sessions: std::sync::mpsc::Receiver<present::model::Session>,
         commands: std::sync::mpsc::Receiver<present::Command>,
-        sent: std::sync::mpsc::Receiver<ToDaemon>,
+        sent: Receiver<ToDaemon>,
         cwd: PathBuf,
     }
 
@@ -4082,7 +4124,7 @@ mod tests {
         fn new() -> Self {
             let (shown_sessions, sessions) = std::sync::mpsc::channel();
             let (shown_commands, commands) = std::sync::mpsc::channel();
-            let (link, sent) = std::sync::mpsc::sync_channel(link::QUEUE);
+            let (link, sent) = async_channel::bounded(link::QUEUE);
             let (events, _unread) = async_channel::unbounded();
             let cwd = PathBuf::from("/nowhere/edualc-app-test");
             let app = App::new(
@@ -4123,7 +4165,7 @@ mod tests {
 
         /// What the app sent the daemon since last asked.
         fn sent(&self) -> Vec<ToDaemon> {
-            self.sent.try_iter().collect()
+            std::iter::from_fn(|| self.sent.try_recv().ok()).collect()
         }
 
         /// The session as it was last shown.
@@ -4922,7 +4964,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     struct TestApp {
         app: App<RecordingFrontend>,
-        to_daemon: std::sync::mpsc::Receiver<ToDaemon>,
+        to_daemon: Receiver<ToDaemon>,
         navs: std::sync::mpsc::Receiver<crate::present::model::Nav>,
         last_nav: crate::present::model::Nav,
         commands: std::sync::mpsc::Receiver<Command>,
@@ -4933,7 +4975,7 @@ mod tests {
     impl TestApp {
         fn start(cwd: Option<PathBuf>, settings: Settings) -> Self {
             let (events_tx, events_rx) = async_channel::bounded(64);
-            let (link_tx, link_rx) = std::sync::mpsc::sync_channel(link::QUEUE);
+            let (link_tx, link_rx) = async_channel::bounded(link::QUEUE);
             let (nav_tx, nav_rx) = std::sync::mpsc::channel();
             let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
             let app = App::new(
@@ -4973,7 +5015,7 @@ mod tests {
         }
 
         fn drain_daemon(&self) -> Vec<ToDaemon> {
-            self.to_daemon.try_iter().collect()
+            std::iter::from_fn(|| self.to_daemon.try_recv().ok()).collect()
         }
 
         fn drain_commands(&self) -> Vec<Command> {

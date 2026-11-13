@@ -2,3 +2,9 @@
 # itself is built by `dx build -p edualc-server --platform web --fullstack`).
 [alias]
 edualcd = "build -p edualc-server --features server"
+
+# Android 15 and later run on devices with 16 KB memory pages, where a native library must be
+# linked with its segments 16 KB aligned (Google Play requires it too). NDK r28 does so by
+# default; r27 and earlier align to 4 KB unless told.
+[target.'cfg(target_os = "android")']
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

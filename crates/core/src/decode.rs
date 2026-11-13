@@ -28,8 +28,14 @@ pub const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;
 /// The longest side decoded: Anthropic's vision docs, "The maximum dimensions for each image
 /// are 8000x8000 px". Larger is refused from its header, before its pixels are allocated.
 const MAX_SIDE_PX: u32 = 8000;
-/// The most memory decoding allocates.
+/// The most memory decoding allocates. In a process of its own, the confined helper, which
+/// only dies if a crafted image takes more; the Android app decodes in itself, which a phone
+/// would stop for that, so its images are bounded tighter there (an 8000×3000 photo still
+/// decodes, an 8000×8000 one is refused).
+#[cfg(not(target_os = "android"))]
 const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(target_os = "android")]
+const MAX_DECODE_BYTES: u64 = 96 * 1024 * 1024;
 /// What the current models take at most; larger is scaled down to fit both. Anthropic's vision
 /// docs: "High-resolution | Claude 4.7 and later models | 2,576 px | 4,784" (long edge, visual
 /// tokens), "Images larger than either limit are downscaled before processing", and an image

@@ -28,8 +28,12 @@ pub use socket::{AsyncChannel, Channel, Folder, Listener, Writing, recv, send};
 
 pub mod pairing;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod servers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tls;
 mod token;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ws;
 pub use token::{Auth, Token};
 
 /// Where edualcd takes the token windows must show, if not from the file it keeps it in.
@@ -39,7 +43,7 @@ use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
 use crate::external::wire::{SessionId, TaskId};
-use crate::sessions::{LiveSession, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{LiveSession, ProjectInfo, Saved, SessionInfo, Worktree};
 use crate::settings::Settings;
 
 /// The largest message either side sends: more is a broken or hostile peer. Text is cut to fit
@@ -152,7 +156,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 27;
+pub const PROTOCOL: u32 = 28;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -352,6 +356,9 @@ pub enum Read {
         root: PathBuf,
         path: PathBuf,
     },
+    /// Where a session's transcript is kept, and the folder it was started in: `Answer::Saved`.
+    /// For a window that opens it again before it knows where to work (the Android app).
+    Saved(SessionId),
 }
 
 /// Why a session's changes weren't read: the daemon's words.
@@ -386,6 +393,7 @@ pub enum Answer {
     Folder(Result<PathBuf, String>),
     Changes(Result<crate::changes::ChangeSet, Unkept>),
     Diff(Result<crate::changes::Diff, Unkept>),
+    Saved(Saved),
 }
 
 /// What the daemon tells the window.

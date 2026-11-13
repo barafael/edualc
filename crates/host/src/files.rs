@@ -414,6 +414,7 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
                 .map(crate::changes::Diff::fitted)
                 .map_err(|error| unkept(&error))
         })),
+        Read::Saved(id) => Answer::Saved(sessions::saved(&id)),
     }
 }
 

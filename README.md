@@ -14,6 +14,9 @@ steering it.
 **[Try it in your browser](https://felintusun.github.io/edualc/)**: the real window, compiled to
 WebAssembly, with a demo project. A script plays Claude, so nothing you type leaves the page.
 
+**And on Android.** The same window again, as an app that reaches edualcd over the network (see
+[In a browser, or from another machine](#in-a-browser-or-from-another-machine)).
+
 ## What you get
 
 - **You see what a folder would run before it runs.** If you haven't trusted a folder yet, the
@@ -92,6 +95,10 @@ folder alone, so you can copy anything you still need from it. Their transcripts
 - Jumping to another session's window works only on niri.
 - You can't mention files with `@` yet, and you paste images rather than drag them in.
 - edualc builds Slint from a fork, until the features it needs are in a Slint release.
+- The Android app keeps its connection only while it's on screen. Android stops an app in the
+  background, and the app reaches edualcd again when it comes back, so you hear of a session
+  waiting for you only then. It draws images on the window's thread, which many large ones slow
+  down. There is no release of it yet: build it as described below.
 
 ## In a browser, or from another machine
 
@@ -105,6 +112,15 @@ web page that is the same window:
 To reach edualcd from other machines, see the comments in `edualcd.service`. `edualcd --demo`
 serves the page to anyone, with a script in place of Claude Code, on a demo project.
 
+**On Android,** the app lists the edualcds it's paired with, and pairs with another by the
+address `edualcd --pair` prints. When it starts, it reaches the one it reached last, and opens the
+session it showed last there. A demo's address (`http://host:port/`) works too, and the window
+says its connection isn't encrypted. "Choose another edualcd" in the settings goes back to the
+list. The app keeps its pairings out of Android's backups. Links open in Android's browser,
+notifications are Android's (it asks you the first time the window opens), and the composer's
+image button pastes the clipboard's image. On the screen's keyboard, Enter starts a new line and
+the send button sends; on a keyboard with keys, Enter sends.
+
 ## Building
 
 Run `cargo build --release` to build the window and the daemon, without its page. `just
@@ -115,6 +131,20 @@ To try a change, `just run` builds edualc and its daemon and starts the window, 
 edualc. `just try` starts one apart, with a daemon and settings of its own. `just` lists the
 rest. [docs/architecture.md](docs/architecture.md) explains how the code is laid out and how a
 release is made.
+
+dx builds the Android app too. It needs the Android SDK and NDK (`ANDROID_HOME`,
+`ANDROID_NDK_HOME`), a JDK 17 or later as `JAVA_HOME`, and the Rust target: run `dx build --android
+-p edualc-server --features mobile --target aarch64-linux-android` (for the emulator,
+`x86_64-linux-android`). `dx serve` with the same arguments installs and starts it on a running
+emulator or a connected phone. In the emulator, the machine it runs on is `10.0.2.2`, so
+`edualcd --demo` there is `http://10.0.2.2:7878/`.
+
+The Android app is built by dx too, with the Android SDK and NDK (`ANDROID_HOME`,
+`ANDROID_NDK_HOME`, a JDK 17 or later as `JAVA_HOME`) and the Rust target:
+`dx build --android -p edualc-server --features mobile --target aarch64-linux-android` (for the
+emulator, `x86_64-linux-android`); `dx serve` with the same arguments installs and starts it on
+a running emulator or a connected phone. In the emulator, the machine it runs on is `10.0.2.2`:
+`edualcd --demo` there is `http://10.0.2.2:7878/`.
 
 ## License
 

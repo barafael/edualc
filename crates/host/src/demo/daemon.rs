@@ -131,6 +131,8 @@ fn read_for(outbox: &Sender<FromDaemon>, request: ActId, read: Read) {
         // The demo's sessions change no folder.
         Read::Changes { .. } => Answer::Changes(Ok(crate::changes::ChangeSet::default())),
         Read::Diff { .. } => Answer::Diff(Ok(crate::changes::Diff::default())),
+        // The demo keeps nothing between its runs: a session shown before isn't there.
+        Read::Saved(_) => Answer::Saved(crate::sessions::Saved::Nowhere),
     };
     tell(outbox, FromDaemon::Answer { request, answer });
 }

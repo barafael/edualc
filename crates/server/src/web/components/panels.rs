@@ -574,6 +574,20 @@ fn SettingsPanel() -> Element {
                             }
                         }
                         DaemonSettings { running: preferences.running_sessions }
+                        // The app reaches one edualcd at a time; the start screen lists the others.
+                        if cfg!(feature = "mobile") {
+                            h3 { class: "settings-heading spaced", "edualcd" }
+                            p { class: "small",
+                                "edualcd runs Claude Code, and keeps its sessions going while the app is away. Choosing another closes this window; its sessions go on."
+                            }
+                            div { class: "settings-actions",
+                                Button {
+                                    icon: Lucide::RefreshCw,
+                                    onclick: move |_| view.act(Action::Quit),
+                                    "Choose another edualcd"
+                                }
+                            }
+                        }
                         // Kana and Hangul tell a text's language themselves; Han characters
                         // alone don't.
                         h3 { id: "han-language", class: "settings-heading spaced",

@@ -17,12 +17,9 @@ use crate::ipc::{
 use crate::sessions::{self, LiveSession};
 use crate::settings::Settings;
 
-/// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
-/// taking messages loses the line rather than the window its memory.
-#[cfg(not(target_arch = "wasm32"))]
-pub type Link = std::sync::mpsc::SyncSender<ToDaemon>;
-/// In the browser demo, the line is a channel to the script in the same page.
-#[cfg(target_arch = "wasm32")]
+/// What the window asks of the daemon goes this way, in order, to whatever writes it (a thread
+/// of the window's, a task of its line's, the browser demo's script). Bounded: a daemon that
+/// stopped taking messages loses the line rather than the window its memory.
 pub type Link = async_channel::Sender<ToDaemon>;
 
 /// Messages waiting to be written to the daemon.
@@ -34,21 +31,10 @@ pub struct Lost;
 
 /// Sends a message the window doesn't wait on.
 pub fn send(link: &Link, message: ToDaemon) -> Result<(), Lost> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::sync::mpsc::TrySendError;
-        match link.try_send(message) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => Err(Lost),
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        use async_channel::TrySendError;
-        match link.try_send(message) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_) | TrySendError::Closed(_)) => Err(Lost),
-        }
+    use async_channel::TrySendError;
+    match link.try_send(message) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_) | TrySendError::Closed(_)) => Err(Lost),
     }
 }
 
@@ -226,7 +212,8 @@ impl Inbox {
                     | ipc::Answer::Worktree(_)
                     | ipc::Answer::Folder(_)
                     | ipc::Answer::Changes(_)
-                    | ipc::Answer::Diff(_)) => other,
+                    | ipc::Answer::Diff(_)
+                    | ipc::Answer::Saved(_)) => other,
                 };
                 Some(Event::Answered {
                     request,
