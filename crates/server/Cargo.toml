@@ -29,6 +29,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # The daemon and the server: Linux only.
 edualc-host = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+# The Android app's errors (`android::java`).
+thiserror = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 # The page's line to the server: a plain WebSocket, so frames may be as large as messages.
@@ -36,11 +38,29 @@ gloo-net = { version = "0.6", optional = true, default-features = false, feature
 # The page's timers: the prompt's buttons arm a moment after a request shows.
 gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 
+# The Android app's: Android's own (the clipboard, notifications, its files) through JNI, from
+# the activity `ndk-context` holds, and links opened in its browser. All three already built for
+# Dioxus's WebView there (wry, dioxus-desktop).
+jni = { version = "0.21", optional = true }
+ndk-context = { version = "0.1", optional = true }
+# The app's own files: the session shown last.
+serde_json = { workspace = true, optional = true }
+webbrowser = { version = "1.2", optional = true }
+
 [build-dependencies]
 lucide-static-svg = "1.55"
 
 [features]
 default = []
+mobile = [
+    "dioxus/mobile",
+    "dep:tokio",
+    "dep:thiserror",
+    "dep:jni",
+    "dep:ndk-context",
+    "dep:serde_json",
+    "dep:webbrowser",
+]
 web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net", "dep:js-sys"]
 server = [
     "dioxus/server",

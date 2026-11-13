@@ -203,6 +203,94 @@ fn authority(host: &str, port: u16) -> String {
     }
 }
 
+/// The demo (`edualcd --demo`), as a window reaches it: Claude Code played by a script, over
+/// plain HTTP, which lets anyone in. It runs nothing and holds nothing, so neither end has
+/// anything to keep secret; what is typed to it is the script's to read, and whoever stands
+/// between's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Demo {
+    pub host: String,
+    pub port: u16,
+}
+
+/// An edualcd a window reaches: one paired with, or a demo.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Server {
+    Paired(Pairing),
+    Demo(Demo),
+}
+
+impl Server {
+    /// An address as edualcd prints it: `https://…#token=…&fingerprint=…` pairs, and the
+    /// demo's `http://host:port/` reaches the demo.
+    pub fn parse(url: &str) -> Result<Self, PairingError> {
+        match url.trim().strip_prefix("http://") {
+            Some(rest) => {
+                let (host, port, _fragment) = split_address(rest)?;
+                Ok(Self::Demo(Demo { host, port }))
+            }
+            None => Pairing::parse(url).map(Self::Paired),
+        }
+    }
+
+    #[must_use]
+    pub fn host(&self) -> &str {
+        match self {
+            Self::Paired(Pairing { host, .. }) | Self::Demo(Demo { host, .. }) => host,
+        }
+    }
+
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Paired(Pairing { port, .. }) | Self::Demo(Demo { port, .. }) => *port,
+        }
+    }
+
+    /// `host:port`, an IPv6 address in brackets.
+    #[must_use]
+    pub fn authority(&self) -> String {
+        authority(self.host(), self.port())
+    }
+
+    /// The window's line: a paired edualcd's over TLS; the demo's in plain. Either way the token
+    /// goes in the line's first frame (`Auth`), the demo's empty.
+    #[must_use]
+    pub fn line_url(&self) -> String {
+        match self {
+            Self::Paired(pairing) => pairing.line_url(),
+            Self::Demo(_) => format!(
+                "ws://{}/api/line?protocol={}",
+                self.authority(),
+                super::PROTOCOL
+            ),
+        }
+    }
+
+    /// The token the line shows: a paired edualcd's, or none for the demo, which lets any in.
+    #[must_use]
+    pub fn token(&self) -> Token {
+        match self {
+            Self::Paired(pairing) => pairing.token.clone(),
+            Self::Demo(_) => Token::new(String::new()),
+        }
+    }
+
+    #[must_use]
+    pub fn is_demo(&self) -> bool {
+        matches!(self, Self::Demo(_))
+    }
+
+    /// Whether `other` is reached the same way: at the same address, both a demo or both
+    /// paired (a demo can listen where an edualcd did, and must not take its place).
+    #[must_use]
+    pub fn same_place(&self, other: &Self) -> bool {
+        self.authority() == other.authority() && self.is_demo() == other.is_demo()
+    }
+}
+
 /// `text` as a URL's query or fragment may hold it: all but letters, digits and `-._~`
 /// percent-encoded.
 pub fn encoded(text: &str) -> String {
@@ -321,8 +409,40 @@ mod tests {
         assert!(!pairing.line_url().contains("to%20ken"));
     }
 
+    /// The demo's address reaches it in plain; a paired edualcd's pairs; each prints back as
+    /// it was read, and is kept so.
+    #[test]
+    fn a_demo_is_reached_by_its_plain_address() {
+        let demo = Server::parse("http://10.0.2.2:7878/").expect("the demo's address");
+        assert_eq!(
+            demo,
+            Server::Demo(Demo {
+                host: "10.0.2.2".to_owned(),
+                port: 7878
+            })
+        );
+        assert!(demo.line_url().starts_with("ws://10.0.2.2:7878/api/line?"));
+        assert_eq!(Server::parse(&url_of(&demo)), Ok(demo.clone()));
+        let paired = Server::Paired(pairing("box"));
+        assert_eq!(Server::parse(&url_of(&paired)), Ok(paired.clone()));
+        assert!(paired.line_url().starts_with("wss://box:7878/"));
+        for server in [demo, paired] {
+            let kept = serde_json::to_string(&server).expect("written");
+            assert_eq!(serde_json::from_str::<Server>(&kept).ok(), Some(server));
+        }
+    }
+
+    /// The address `server` pairs by, as edualcd prints it.
+    fn url_of(server: &Server) -> String {
+        match server {
+            Server::Paired(pairing) => pairing.url(),
+            Server::Demo(demo) => format!("http://{}/", authority(&demo.host, demo.port)),
+        }
+    }
+
     #[test]
     fn the_token_stays_out_of_the_log() {
         assert!(!format!("{:?}", pairing("h")).contains("to ken"));
+        assert!(!format!("{:?}", Server::Paired(pairing("h"))).contains("to ken"));
     }
 }

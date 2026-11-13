@@ -1,10 +1,87 @@
 //! What the window does on the platform it runs on, chosen here once: in a browser, the
-//! browser's; rendered on the server, nothing.
+//! browser's; in the Android app, Android's (`android::java`); rendered on the server, nothing.
 //! The window's code calls each alike everywhere.
 
 pub use here::*;
 
-#[cfg(feature = "web")]
+/// The Android app: Android's browser, notifications and clipboard, and its runtime's clock.
+#[cfg(feature = "mobile")]
+mod here {
+    use dioxus::prelude::ReadableExt as _;
+    use edualc_core::app::Event;
+    use edualc_core::decode;
+    use edualc_core::ipc::{ActId, PasteFailure};
+
+    use crate::android::java;
+    use crate::web::View;
+
+    /// Opens `url` in Android's browser.
+    pub fn open_url(url: &str) {
+        if let Err(error) = webbrowser::open(url) {
+            tracing::warn!(%error, "Android opened no browser");
+        }
+    }
+
+    /// Shows Android's notification, if the user lets the app (asked as the window opens).
+    pub fn notify(summary: &str, body: &str) {
+        java::notify(summary.to_owned(), body.to_owned());
+    }
+
+    /// Puts `text` on Android's clipboard.
+    pub fn copy(text: &str) {
+        java::copy(text.to_owned());
+    }
+
+    /// The clipboard's image, read and made ready to send beside the window (the decoder's
+    /// sandbox is Linux's), for the next message.
+    pub fn paste_image(view: View) {
+        let Some(events) = view.events.peek().clone() else {
+            return;
+        };
+        java::clipboard_image(decode::MAX_INPUT_BYTES, move |read| {
+            let pasted = match read {
+                Ok(Some(bytes)) => decode::to_send(&bytes).map_err(PasteFailure::Refused),
+                Ok(None) => Err(PasteFailure::NoImage),
+                Err(error) => Err(PasteFailure::Clipboard(error.to_string())),
+            };
+            let pasted = Event::Pasted {
+                request: ActId::default(),
+                pasted,
+            };
+            if events.send_blocking(pasted).is_err() {
+                tracing::debug!("the app ended");
+            }
+        });
+    }
+
+    /// Waits `ms` milliseconds.
+    pub async fn sleep(ms: u32) {
+        tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
+    }
+
+    /// Whether a keyboard with keys is attached, so that Enter sends: on the screen's keyboard
+    /// alone, which has no Shift+Enter, Enter starts a new line. Asked of Android beside the
+    /// window.
+    pub async fn keyboard_attached() -> bool {
+        let (answer, answered) = async_channel::bounded(1);
+        java::has_keyboard(move |has| {
+            if answer.send_blocking(has).is_err() {
+                tracing::debug!("the keyboard was asked of for nothing");
+            }
+        });
+        match answered.recv().await {
+            Ok(Ok(has)) => has,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "no keyboard known of");
+                false
+            }
+            Err(_gone) => false,
+        }
+    }
+}
+
+/// A browser's page: a tab, the browser's notifications and clipboard, and its timers.
+#[cfg(all(feature = "web", not(feature = "mobile")))]
 mod here {
     use crate::web::View;
 
@@ -74,7 +151,7 @@ mod here {
 }
 
 /// Rendered on the server: nothing runs.
-#[cfg(not(feature = "web"))]
+#[cfg(not(any(feature = "web", feature = "mobile")))]
 mod here {
     pub fn copy(_text: &str) {}
 

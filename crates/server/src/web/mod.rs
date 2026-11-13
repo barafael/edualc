@@ -1,7 +1,9 @@
 //! The page: edualc's window, drawn by Dioxus. It runs the same app as the native window
 //! (`edualc-core`): the presenter's frontend here (`view::PageFrontend`) puts what it shows in
 //! signals, which the components draw; what the user does goes back as the app's actions. In a
-//! browser its line is a WebSocket to the server that served it (`line`).
+//! browser its line is a WebSocket to the server that served it (`line`); in the Android app
+//! (`android`), which draws the same components, a native line over the network
+//! (`edualc_core::line`).
 
 use dioxus::prelude::*;
 
@@ -66,7 +68,7 @@ pub fn Shell() -> Element {
             Stylesheets {}
             if let Some(lost) = &page.lost {
                 div { class: "lost", role: "alert", "{lost}" }
-            } else if page.closed {
+            } else if page.closed && cfg!(not(feature = "mobile")) {
                 div { class: "lost", "This window was closed. Reload the page to open it again." }
             }
             components::Window {}
@@ -151,7 +153,7 @@ fn decoded(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 /// Starts the window's app on a line edualcd greeted (`link`), in `cwd`, opening `resume` if
 /// given: what it shows goes to `view`, and it hears `events`' receiver's (as `app.run` is
 /// given it). The page starts it so, and the Android app on each edualcd it reaches.

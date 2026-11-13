@@ -156,3 +156,4 @@
 
 /* The daemon's shutdown: the button, and its cancel while it asks again. */
 .daemon-shutdown { display: flex; gap: var(--space-s); align-items: center; }
+.settings-actions { display: flex; margin-top: var(--space-s); }

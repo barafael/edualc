@@ -3,18 +3,18 @@
 //! commands. `PageFrontend` is the presenter's frontend that writes them.
 
 use std::collections::HashMap;
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 use std::collections::HashSet;
 
 use dioxus::prelude::*;
 use edualc_core::app::{Action, Event};
 use edualc_core::chat::ImageKey;
 use edualc_core::decode::Pixels;
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 use edualc_core::present::{Command, EntriesChange, Frontend, Seat};
 use edualc_core::present::{Image, Look, model};
 
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 use crate::web::platform;
 
 /// What the app sets of the page itself, besides the presenter's state.
@@ -78,6 +78,23 @@ pub struct View {
 }
 
 impl View {
+    /// What a line opened afresh starts from in a window that showed another (the app reaches
+    /// another edualcd): not closed, nothing lost, no session shown, no draft; `unencrypted`, a
+    /// demo's line. What the presenter shows it sets anew.
+    #[cfg(feature = "mobile")]
+    pub fn fresh_line(self, unencrypted: bool) {
+        {
+            let mut page = self.page;
+            let mut page = page.write();
+            page.closed = false;
+            page.lost = None;
+            page.session = None;
+            page.unencrypted = unencrypted;
+        }
+        let mut draft = self.draft;
+        draft.set(String::new());
+    }
+
     pub fn new() -> Self {
         Self {
             session: Signal::new(model::Session {
@@ -123,21 +140,21 @@ impl View {
     }
 }
 
-/// The page, as the presenter's frontend. Only in the browser: the server renders the page as it
-/// is before its line opens.
-#[cfg(feature = "web")]
+/// The page, as the presenter's frontend. Only in the browser and the Android app: the server
+/// renders the page as it is before its line opens.
+#[cfg(any(feature = "web", feature = "mobile"))]
 pub struct PageFrontend {
     view: View,
 }
 
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 impl PageFrontend {
     pub fn new(view: View) -> Self {
         Self { view }
     }
 }
 
-#[cfg(feature = "web")]
+#[cfg(any(feature = "web", feature = "mobile"))]
 impl Frontend for PageFrontend {
     fn session(&mut self, _old: Option<&model::Session>, session: &model::Session) {
         let mut shown = self.view.session;
@@ -279,7 +296,7 @@ fn png(pixels: &Pixels) -> Option<Vec<u8>> {
 /// `pixels` as a PNG the browser holds, named by a short `blob:` URL: the conversation's images
 /// are drawn again as rows change, and copying a URL of megabytes each time would cost. Let go
 /// of with [`let_go`].
-#[cfg(feature = "web")]
+#[cfg(all(feature = "web", not(feature = "mobile")))]
 fn object_url(pixels: &Pixels) -> Option<String> {
     let bytes = png(pixels)?;
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
@@ -290,12 +307,22 @@ fn object_url(pixels: &Pixels) -> Option<String> {
 }
 
 /// Lets go of an image [`object_url`] made: the browser frees it.
-#[cfg(feature = "web")]
+#[cfg(all(feature = "web", not(feature = "mobile")))]
 fn let_go(url: &str) {
     if url.starts_with("blob:") && web_sys::Url::revoke_object_url(url).is_err() {
         tracing::debug!("an image's URL was let go of already");
     }
 }
+
+/// In the Android app, an image's URL is a `data:` URL: its WebView holds no blobs of the app's.
+#[cfg(feature = "mobile")]
+fn object_url(pixels: &Pixels) -> Option<String> {
+    data_url(pixels)
+}
+
+/// A `data:` URL is let go of with the text that holds it.
+#[cfg(feature = "mobile")]
+fn let_go(_url: &str) {}
 
 /// An image of the presentation model as a URL to show; empty for none (yet).
 pub fn image_url(image: &Image, images: &HashMap<ImageKey, String>) -> String {

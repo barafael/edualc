@@ -73,6 +73,27 @@ in place of Claude Code.
 are served from `DIOXUS_PUBLIC_PATH`, or from `public` beside edualcd's program. A package puts them
 in `/usr/share/edualc/public`, and the user service says so.
 
+## The Android app
+
+The Android app is the page's components, drawn by Dioxus in Android's WebView and run by native
+code (dx's `--android`, the `mobile` feature). It runs the same app and presenter, with the page's
+frontend (`web/view.rs`). It reaches edualcd over the network as a page does, but natively
+(`core/src/line.rs`): TLS with the certificate pinned, and again by itself when the network comes
+back. Its sessions run on in edualcd meanwhile, and it attaches to them again.
+
+What the page does through the browser, the app does through the WebView's script
+(`document::eval`: the focus, scrolling, the composer's caret) and through Android
+(`android/java.rs`, over JNI from the activity `ndk-context` holds: the clipboard's text and
+image, notifications, its files folder). Links open in Android's browser. It starts no programs:
+it decodes images itself, on the thread the Slint window starts its locked-down decoder from.
+
+The app keeps the edualcds it paired with, and the session it showed last, in its own files. To
+open that session again, it asks edualcd where it was started (`Read::Saved`).
+
+A narrow window (a phone's, or a browser's on one) gets a layout of its own (`edualc.css`): the
+sidebar comes over the conversation, starts hidden, and hides when a session opens; the side panel
+takes the whole width.
+
 ## The network side
 
 Windows that aren't on this machine, such as a web page or an app on another device, reach
@@ -126,7 +147,7 @@ edualc is a Cargo workspace of four crates:
 |---|---|
 | `crates/core` (`edualc-core`) | what every window shares: the conversation, `App` that owns its state, what a window shows (`present`), the protocol, and the window's connection to the daemon. It builds for Linux and for `wasm32` (the browser demo); what only Linux has is behind `#[cfg(not(target_arch = "wasm32"))]`. |
 | `crates/host` (`edualc-host`) | the daemon: it runs `claude` or agy's adapter, reads Claude Code's files, and acts on the desktop |
-| `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon with its command line, and the Dioxus fullstack server that serves the window as a web page, drawn from the same presenter |
+| `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon with its command line, and the Dioxus fullstack server that serves the window as a web page, drawn from the same presenter. With the `mobile` feature it is the Android app instead, which draws the page's components. |
 | `crates/slint` (`edualc`) | the window, drawn with Slint, and the browser demo |
 
 In `crates/core/src`:
@@ -138,7 +159,8 @@ In `crates/core/src`:
 | `demo/` | the demo: Claude Code played by a script, on a demo project, for `edualcd --demo` and the Slint window's browser demo (the `demo` feature) |
 | `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
-| `ipc/pairing.rs`, `ipc/tls.rs`, `ipc/token.rs` | the address a window pairs with, edualcd's TLS (its own certificate, pinned by its SHA-256), and the token a connection over the network shows |
+| `ipc/pairing.rs`, `ipc/tls.rs`, `ipc/token.rs` | the address a window pairs with (a demo's is plain), edualcd's TLS (its own certificate, pinned by its SHA-256), and the token a connection over the network shows |
+| `ipc/ws.rs`, `line.rs`, `ipc/servers.rs` | the Android app's connection over the network: the WebSocket's end, carrying it on a thread of its own and reaching edualcd again when it's lost, and the edualcds the app is paired with |
 | `link.rs` | the window's connection, whatever carries it: the channel its messages go on, the daemon's greeting, and the `Inbox` that turns the daemon's messages into `Event`s |
 | `claude.rs` | a session's process as the window sees it: what it is started with, what its output means, and the handle that writes to it |
 | `chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `sidebar.rs` | the conversation as entries; how tool calls, Markdown and plan comments are shown; runs of tool calls folded into one line; the sidebar's list |
@@ -164,6 +186,7 @@ In `crates/server/src`:
 | `main.rs`, `serve.rs` | edualcd's command line, and starting the daemon, its network side and the page |
 | `web/` | the page: its frontend of the presenter (`web/view.rs`), and its components, one for each area of `ui/app.slint` |
 | `line.rs` | the page's connection to edualcd |
+| `android/` | the Android app: its start screen (the paired edualcds, pairing), and what it asks of Android through JNI (`java.rs`: the clipboard, notifications, its files folder) |
 
 In `crates/slint/src`:
 

@@ -209,7 +209,9 @@ fn save_to(path: PathBuf, settings: &Settings) -> Result<(), Error> {
         })?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(Error::Encode)?;
-    std::fs::write(&path, text).map_err(|source| Error::Write { path, source })
+    // Whole or not at all: a file that doesn't parse would be kept from then on, not written.
+    crate::replace::replace(&path, text.as_bytes(), 0o666)
+        .map_err(|source| Error::Write { path, source })
 }
 
 #[cfg(test)]

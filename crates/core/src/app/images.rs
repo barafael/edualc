@@ -1,7 +1,8 @@
 //! The conversation's images, decoded for showing by the confined helper (see `decode`), which
 //! the window starts itself: an image's bytes go to it from here, not through the daemon. One
 //! is decoded at a time, on a thread of its own, so a conversation of many images doesn't run
-//! many helpers at once.
+//! many helpers at once. The Android app starts no programs of its own: it decodes on that
+//! thread itself, in the sandbox Android keeps every app in, as a page does in its browser's.
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -11,6 +12,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use super::Event;
 use crate::chat::{ImageBytes, ImageKey};
+#[cfg(target_os = "android")]
+use crate::decode::Refusal;
 use crate::decode::{self, Pixels};
 
 /// Why an image isn't shown.
@@ -20,6 +23,9 @@ pub enum ShowError {
     NotBase64(#[from] base64::DecodeError),
     #[error(transparent)]
     Decoder(#[from] decode::Error),
+    #[cfg(target_os = "android")]
+    #[error(transparent)]
+    Refused(#[from] Refusal),
     /// Why is in the log, once.
     #[error("the window couldn't start decoding images")]
     NoRuntime,
@@ -94,5 +100,8 @@ async fn show(bytes: ImageBytes) -> Result<Pixels, ShowError> {
         ImageBytes::Base64(text) => BASE64.decode(text)?,
         ImageBytes::Sent(bytes) => bytes,
     };
+    #[cfg(target_os = "android")]
+    return Ok(decode::shown(&bytes)?);
+    #[cfg(not(target_os = "android"))]
     Ok(decode::show(&bytes).await?)
 }

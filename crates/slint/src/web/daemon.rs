@@ -88,6 +88,8 @@ fn read_for(events: &Sender<Event>, request: ActId, read: Read) {
         Read::WorktreeOf { .. } | Read::LinkedWorktree { .. } => Answer::Worktree(None),
         Read::TypedFolder(typed) => Answer::Folder(demo_folder(Path::new(typed.trim()))),
         Read::Folder(path) => Answer::Folder(demo_folder(&path)),
+        // The demo keeps nothing between its runs: a session shown before isn't there.
+        Read::Saved(_) => Answer::Saved(crate::sessions::Saved::Nowhere),
     };
     let event = Event::Answered {
         request,

@@ -127,6 +127,8 @@ fn read_for(outbox: &Sender<FromDaemon>, request: ActId, read: Read) {
         Read::WorktreeOf { .. } | Read::LinkedWorktree { .. } => Answer::Worktree(None),
         Read::TypedFolder(typed) => Answer::Folder(demo_folder(Path::new(typed.trim()))),
         Read::Folder(path) => Answer::Folder(demo_folder(&path)),
+        // The demo keeps nothing between its runs: a session shown before isn't there.
+        Read::Saved(_) => Answer::Saved(crate::sessions::Saved::Nowhere),
     };
     tell(outbox, FromDaemon::Answer { request, answer });
 }

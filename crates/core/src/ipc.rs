@@ -27,8 +27,12 @@ pub use socket::{AsyncChannel, Channel, Folder, Listener, Writing, recv, send};
 
 pub mod pairing;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod servers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tls;
 mod token;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ws;
 pub use token::{Auth, Token};
 
 /// Where edualcd takes the token windows must show, if not from the file it keeps it in.
@@ -38,7 +42,7 @@ use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
 use crate::external::wire::{SessionId, TaskId};
-use crate::sessions::{LiveSession, ProjectInfo, SessionInfo, Worktree};
+use crate::sessions::{LiveSession, ProjectInfo, Saved, SessionInfo, Worktree};
 use crate::settings::Settings;
 
 /// The largest message either side sends: more is a broken or hostile peer. Text is cut to fit
@@ -151,7 +155,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 20;
+pub const PROTOCOL: u32 = 21;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -321,6 +325,9 @@ pub enum Read {
     /// The folder at a path (the picker's, a worktree's), made whole, if it is one:
     /// `Answer::Folder`.
     Folder(PathBuf),
+    /// Where a session's transcript is kept, and the folder it was started in: `Answer::Saved`.
+    /// For a window that opens it again before it knows where to work (the Android app).
+    Saved(SessionId),
 }
 
 /// What the daemon read for a window.
@@ -338,6 +345,7 @@ pub enum Answer {
     },
     Worktree(Option<Worktree>),
     Folder(Result<PathBuf, String>),
+    Saved(Saved),
 }
 
 /// What the daemon tells the window.

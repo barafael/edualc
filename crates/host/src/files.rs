@@ -94,6 +94,7 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
                 .map(Folder::into_path)
                 .map_err(|problem| problem.to_string()),
         ),
+        Read::Saved(id) => Answer::Saved(sessions::saved(&id)),
     }
 }
 

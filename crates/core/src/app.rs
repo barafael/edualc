@@ -184,6 +184,15 @@ pub enum Event {
     SeatFailed(String),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
+    /// The line to edualcd over the network is lost, and is being reached again: what was asked
+    /// on it isn't answered, and the sessions it ran for this window are no longer shown here
+    /// (they run on there).
+    LineLost,
+    /// The line to edualcd was reached again: the sessions it runs and those running now.
+    Reconnected {
+        hosted: Vec<Hosted>,
+        live: Vec<LiveSession>,
+    },
     /// A window asked the daemon to shut down: the sessions end, and then it.
     DaemonShuttingDown,
     /// The sessions the daemon runs, anew.
@@ -1207,6 +1216,17 @@ impl<F: Frontend> App<F> {
                     Daemon::ShuttingDown => {}
                 }
             }
+            Event::LineLost => {
+                self.process = None;
+                self.forget_process();
+                // Asked on the lost line: no answer comes.
+                self.answers.clear();
+                self.acting.clear();
+                self.listing_live = Refresh::Idle;
+                self.chat
+                    .error("Lost the line to edualcd, which runs Claude Code; reaching it again.");
+            }
+            Event::Reconnected { hosted, live } => self.reconnected(hosted, live),
             Event::DaemonShuttingDown => {
                 self.daemon = Daemon::ShuttingDown;
                 self.chat.info(
@@ -2111,6 +2131,29 @@ impl<F: Frontend> App<F> {
         };
         let pid = watch.session.pid;
         self.ask_desktop(Act::FocusWindowOf { pid }, Acting::Desktop);
+    }
+
+    /// The line to edualcd is back: what was watched is watched again, and the session shown
+    /// is opened again, from its transcript, which has what was said meanwhile. One this window
+    /// ran was let go of as the window came again (see the daemon's hub), and is attached to.
+    fn reconnected(&mut self, hosted: Vec<Hosted>, live: Vec<LiveSession>) {
+        self.view.set_running_sessions(hosted.len());
+        self.hosted = hosted;
+        self.live = live;
+        // A listing asked on the lost line, or while it was lost (dropped unsent), is answered
+        // never: waiting on it, the running sessions would be listed no more.
+        self.listing_live = Refresh::Idle;
+        self.redraw.sessions = true;
+        self.records = self.watch(Target::Records);
+        match self.status.session_id.take() {
+            Some(id) => {
+                self.watch = None;
+                self.open_session(id);
+            }
+            None => self.new_session(),
+        }
+        self.load_sessions();
+        self.render();
     }
 
     fn tick(&mut self) {

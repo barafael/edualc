@@ -88,9 +88,9 @@ pub(crate) fn run(line: Line, events: Sender<Event>) -> Result<Link, Error> {
         deframer,
     } = line;
     let reading = channel.try_clone()?;
-    let (link, queue) = std::sync::mpsc::sync_channel(QUEUE);
+    let (link, queue) = async_channel::bounded(QUEUE);
     std::thread::spawn(move || {
-        for message in queue {
+        while let Ok(message) = queue.recv_blocking() {
             if let Err(error) = channel.send(&message) {
                 tracing::warn!(%error, "lost the daemon");
                 break;
