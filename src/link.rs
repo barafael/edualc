@@ -1,5 +1,5 @@
-//! The window's line to its daemon, which runs Claude Code and does what the window's sandbox
-//! keeps it from. The daemon is started if none runs, and checked as it checks the window. Two
+//! The window's line to its daemon, which runs Claude Code and does what the window asks of the
+//! desktop. The daemon is started if none runs, and checked as it checks the window. Two
 //! threads carry the line: one writes what the window asks, in order; the other reads what the
 //! daemon says, puts lines together again (sans-io, `ipc::Assembler`) and hands them to the app.
 
@@ -15,8 +15,8 @@ use crate::app::Event;
 use crate::claude::Output;
 use crate::decode;
 use crate::ipc::{
-    self, ActId, Assembler, Buses, Channel, Deframer, Folder, FromDaemon, Generation, Hosted,
-    PROTOCOL, PasteFailure, Pasted, Stream, ToDaemon,
+    self, ActId, Assembler, Channel, Deframer, Folder, FromDaemon, Generation, Hosted, PROTOCOL,
+    PasteFailure, Pasted, Stream, ToDaemon,
 };
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
@@ -78,15 +78,12 @@ pub(crate) fn send_input(link: &Link, key: Generation, line: &str) -> Result<(),
 pub(crate) struct Connected {
     channel: Channel,
     deframer: Deframer<FromDaemon>,
-    /// The D-Bus the window is to use.
-    pub(crate) buses: Buses,
     /// The sessions the daemon runs as the window connected: known before the window opens
     /// one, so that one it runs is attached to rather than started a second time.
     pub(crate) hosted: Vec<Hosted>,
 }
 
-/// Connects to the daemon, starting it if none runs: before the window is confined, which the
-/// daemon must not be.
+/// Connects to the daemon, starting it if none runs.
 pub(crate) fn connect() -> Result<Connected, Error> {
     let folder = Folder::open()?;
     let mut channel = match Channel::connect(&folder) {
@@ -107,8 +104,8 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    let buses = match greeting {
-        FromDaemon::Hello { protocol, buses } if protocol == PROTOCOL => buses,
+    match greeting {
+        FromDaemon::Hello { protocol } if protocol == PROTOCOL => {}
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
         | FromDaemon::Failed { .. }
@@ -120,7 +117,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Hosted(_)
         | FromDaemon::ShuttingDown
         | FromDaemon::Pasted { .. } => return Err(Error::Version),
-    };
+    }
     let hosted = match channel.recv(&mut deframer)? {
         FromDaemon::Hosted(hosted) => hosted,
         FromDaemon::Hello { .. }
@@ -137,7 +134,6 @@ pub(crate) fn connect() -> Result<Connected, Error> {
     Ok(Connected {
         channel,
         deframer,
-        buses,
         hosted,
     })
 }

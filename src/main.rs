@@ -3,21 +3,17 @@
 //! speak to it; this window shows what it does and asks what it asks.
 //!
 //! The same window also runs in a browser, as a demo (`web`): there the daemon is a script in
-//! the page, and what only Linux has (processes, sockets, the sandbox) is left out.
+//! the page, and what only Linux has (processes, sockets) is left out.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod agy;
 mod app;
 mod appearance;
-#[cfg(not(target_arch = "wasm32"))]
-mod buses;
 mod chat;
 mod cjk;
 mod claude;
 #[cfg_attr(target_arch = "wasm32", path = "web/colouring.rs")]
 mod colouring;
-#[cfg(not(target_arch = "wasm32"))]
-mod confine;
 #[cfg(not(target_arch = "wasm32"))]
 mod daemon;
 mod decode;

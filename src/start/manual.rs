@@ -36,7 +36,7 @@ fn manual() -> String {
     entry(
         &mut roff,
         "1",
-        "edualc couldn't start: its daemon, its confinement or its window.",
+        "edualc couldn't start: its daemon or its window.",
     );
     entry(&mut roff, "2", "The command line was wrong.");
 

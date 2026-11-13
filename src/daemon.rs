@@ -1,6 +1,6 @@
 //! The daemon (`edualc --daemon`): runs Claude Code's processes for the windows, and does for
-//! them what their sandbox keeps them from (opening editors, notifying, stopping sessions that
-//! run elsewhere). One per user, started by the first window, gone a while after the last window
+//! them what they ask of the desktop (opening editors, notifying, stopping sessions that run
+//! elsewhere). One per user, started by the first window, gone a while after the last window
 //! and session are. Sessions outlive the window that started them: closing it leaves them
 //! running, and a window opened later attaches to them.
 //!
@@ -29,14 +29,13 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::buses;
 use crate::claude::{Conversation, Launch};
 use crate::decode::{self, Refusal};
 use crate::desktop;
 use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Buses, Deframer, FolderUse, FromDaemon, Generation, Hosted,
-    HostedId, LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
+    self, Act, ActFailure, ActId, Deframer, FolderUse, FromDaemon, Generation, Hosted, HostedId,
+    LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
 };
 use crate::{spawn, trust};
 
@@ -59,8 +58,6 @@ const MAX_CLIPBOARD_TYPES_BYTES: usize = 64 * 1024;
 
 /// Runs the daemon; it returns as it ends.
 pub(crate) fn run() -> std::process::ExitCode {
-    // What the daemon and its children make (its socket, the proxies') is the user's alone.
-    rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
     // Closed to the user's other processes: its memory, and the descriptors it holds (the
     // claude processes' and the image decoder's pipes). Windows check it by user, not program.
     if let Err(error) =
@@ -96,7 +93,7 @@ pub(crate) fn run() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(listener, folder.path())) {
+    match runtime.block_on(serve(listener)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(%error, "the daemon failed");
@@ -106,10 +103,8 @@ pub(crate) fn run() -> std::process::ExitCode {
 }
 
 /// Takes windows as they connect, until no window and no session is left for [`IDLE`].
-async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), ipc::Error> {
+async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
     let (listener, _lock) = listener.into_tokio()?;
-    // Ended with the daemon.
-    let (buses, _proxies) = buses::start(folder).await;
     let (hub, requests) = mpsc::channel(QUEUE);
     let (running, mut sessions) = watch::channel(0usize);
     let hub_task = tokio::spawn(Hub::default().event_loop(
@@ -131,7 +126,7 @@ async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), 
             accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
                 Ok(channel) => {
                     last_window = last_window.next();
-                    windows.spawn(window(channel, last_window, buses.clone(), hub.clone()));
+                    windows.spawn(window(channel, last_window, hub.clone()));
                     quiet_since = None;
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
@@ -170,7 +165,7 @@ async fn serve(listener: ipc::Listener, folder: &std::path::Path) -> Result<(), 
 
 /// A window's connection: hello, then its requests to its [`Connection`], and what the hub,
 /// sessions and the desktop say back, until it hangs up.
-async fn window(channel: ipc::AsyncChannel, id: WindowId, buses: Buses, hub: mpsc::Sender<ToHub>) {
+async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHub>) {
     let (mut reading, mut writing) = channel.split();
     let mut deframer = Deframer::default();
     let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
@@ -178,7 +173,6 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, buses: Buses, hub: mps
         Ok(Ok(ToDaemon::Hello { protocol })) => {
             let answer = FromDaemon::Hello {
                 protocol: ipc::PROTOCOL,
-                buses,
             };
             if let Err(error) = ipc::send(&mut writing, &answer).await {
                 tracing::warn!(%error, "a window left as it came");
@@ -467,8 +461,8 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
     tell(&outbox, FromDaemon::Done { request, result }).await;
 }
 
-/// The clipboard's image, read with `wl-paste` (the window, confined, never holds its raw
-/// bytes) and decoded in the confined helper (see `decode`).
+/// The clipboard's image, read with `wl-paste` and decoded in the confined helper (see
+/// `decode`).
 async fn paste_image() -> ipc::Pasted {
     let listed = clipboard(&["--list-types"], MAX_CLIPBOARD_TYPES_BYTES).await?;
     let format = String::from_utf8_lossy(&listed)

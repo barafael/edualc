@@ -2929,8 +2929,7 @@ fn watch_transcript(watcher: Option<&Watcher>, path: &Path) -> Option<Watched> {
     })
 }
 
-/// What the desktop has and says: asked before the window is confined, of programs it may not
-/// run then.
+/// What the desktop has and says, asked as the window starts.
 #[derive(Debug)]
 pub(crate) struct Desktop {
     openers: Vec<desktop::Opener>,

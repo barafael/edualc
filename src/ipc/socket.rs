@@ -60,10 +60,6 @@ pub(crate) struct Folder {
 }
 
 impl Folder {
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// `$XDG_RUNTIME_DIR/edualc/protocol-<PROTOCOL>`, made if it isn't there, and checked to be
     /// the user's alone. Each protocol has a folder of its own, so a daemon of an earlier build
     /// runs on beside this build's until its sessions end, instead of keeping its windows out.

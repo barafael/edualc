@@ -151,16 +151,6 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 /// self-describing, so both ends must agree on every type.
 pub(crate) const PROTOCOL: u32 = 17;
 
-/// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Buses {
-    /// The session bus, filtered.
-    pub(crate) session: Option<PathBuf>,
-    /// The accessibility bus, filtered.
-    pub(crate) accessibility: Option<PathBuf>,
-}
-
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
 #[derive(
@@ -232,9 +222,8 @@ pub(crate) enum ToDaemon {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum FromDaemon {
-    /// With the D-Bus the window is to use (see `buses`). `Hosted` follows, before anything
-    /// else.
-    Hello { protocol: u32, buses: Buses },
+    /// `Hosted` follows, before anything else.
+    Hello { protocol: u32 },
     /// The process runs: started for the window, or running already as it attaches.
     Started {
         key: Generation,
@@ -454,7 +443,7 @@ pub(crate) enum SandboxAccess {
     Write,
 }
 
-/// What the window can have the desktop do; it does nothing else outside its sandbox.
+/// What the window can have the desktop do, through the daemon.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum Act {
