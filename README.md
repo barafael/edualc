@@ -93,12 +93,28 @@ folder alone, so you can copy anything you still need from it. Their transcripts
 - You can't mention files with `@` yet, and you paste images rather than drag them in.
 - edualc builds Slint from a fork, until the features it needs are in a Slint release.
 
+## In a browser, or from another machine
+
+edualcd, the daemon the window starts, can also serve windows that aren't on this machine, and a
+web page that is the same window:
+
+1. Run `systemctl --user enable --now edualcd`. It listens on the loopback address.
+2. Run `edualcd --pair`. It prints an address that opens the page, or pairs a window or an app.
+   The token is in the part of the address that is never sent to a server.
+
+To reach edualcd from other machines, see the comments in `edualcd.service`. `edualcd --demo`
+serves the page to anyone, with a script in place of Claude Code, on a demo project.
+
 ## Building
 
-Run `cargo build --release`. To try a change, `just run` builds edualc and its daemon and starts
-the window, as you use edualc. `just try` starts one apart, with a daemon and settings of its
-own. `just` lists the rest. [docs/architecture.md](docs/architecture.md) explains how the code
-is laid out and how a release is made.
+Run `cargo build --release` to build the window and the daemon, without its page. `just
+release-build` also builds edualcd with its page; it needs
+[dioxus-cli](https://dioxuslabs.com) (`cargo install --locked dioxus-cli`).
+
+To try a change, `just run` builds edualc and its daemon and starts the window, as you use
+edualc. `just try` starts one apart, with a daemon and settings of its own. `just` lists the
+rest. [docs/architecture.md](docs/architecture.md) explains how the code is laid out and how a
+release is made.
 
 ## License
 
