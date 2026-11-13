@@ -177,7 +177,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         }
     };
     let link::Connected { line, greeting } = connected;
-    let desktop = app::Desktop::find(greeting.openers);
+    let desktop = app::Desktop::find(&greeting);
     let (events, received) = async_channel::unbounded();
     let link = match link::run(line, events.clone()) {
         Ok(link) => link,

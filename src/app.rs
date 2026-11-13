@@ -681,8 +681,8 @@ pub(crate) enum Request {
 #[derive(Debug)]
 pub(crate) struct Watch {
     pub(crate) session: LiveSession,
-    /// Where its transcript is; corrected by the first read, which looks for it.
-    path: PathBuf,
+    /// Where its transcript is; found by the first read, which looks for it.
+    place: ipc::Place,
     /// How far the transcript has been read.
     offset: u64,
     reading: Refresh,
@@ -876,10 +876,11 @@ impl App {
     ) -> Self {
         let Desktop {
             openers,
+            finds_windows,
             fonts,
             text_size: desktop_text_size,
         } = desktop_found;
-        let mut view = View::new(window, &openers, fonts, events.clone());
+        let mut view = View::new(window, &openers, fonts, events.clone(), finds_windows);
         let (settings, settings_problem) = match settings {
             Ok(settings) => (settings, None),
             Err(problem) => {
@@ -1920,7 +1921,7 @@ impl App {
                 self.view.open_at_end();
                 if let Some(watch) = watching {
                     watch.watched = watched;
-                    watch.path = path;
+                    watch.place = ipc::Place::Path(path);
                     watch.offset = offset;
                     if watch.reading.done() {
                         self.read_on();
@@ -1931,7 +1932,7 @@ impl App {
                 // Not written yet, perhaps: it is watched for, and read once it is.
                 if let Some(watch) = watching {
                     watch.watched = watched;
-                    watch.path = path;
+                    watch.place = ipc::Place::Path(path);
                     watch.reading = Refresh::Idle;
                 }
                 self.chat
@@ -1986,7 +1987,10 @@ impl App {
         self.load_session(session.id.clone(), session.cwd.clone());
         self.forget_watch();
         self.watch = Some(Watch {
-            path: sessions::transcript_path(&session.cwd, &session.id),
+            place: ipc::Place::Session {
+                cwd: session.cwd.clone(),
+                id: session.id.clone(),
+            },
             session,
             offset: 0,
             reading: Refresh::Reading,
@@ -2088,8 +2092,7 @@ impl App {
             return;
         };
         if watch.reading.wanted() {
-            let (id, path, from) = (watch.session.id.clone(), watch.path.clone(), watch.offset);
-            let place = ipc::Place::Path(path);
+            let (id, place, from) = (watch.session.id.clone(), watch.place.clone(), watch.offset);
             self.read(Read::Transcript { place, from }, move |answer, lines| {
                 let ipc::Answer::Transcript { read, .. } = answer else {
                     return None;
@@ -2901,20 +2904,23 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
 #[derive(Debug)]
 pub(crate) struct Desktop {
     openers: Vec<desktop::Opener>,
+    /// Other programs' windows can be found, as the daemon says.
+    finds_windows: bool,
     fonts: crate::appearance::Fonts,
     /// In logical pixels.
     text_size: f32,
 }
 
 impl Desktop {
-    /// Asks several programs at once, before the first frame.
-    /// `openers` as the daemon found them.
-    pub(crate) fn find(openers: Vec<desktop::Opener>) -> Self {
+    /// What the daemon told, and what else the desktop is asked, at once, before the first frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn find(greeting: &link::Greeting) -> Self {
         std::thread::scope(|scope| {
             let fonts = scope.spawn(crate::appearance::fonts);
             let text_size = crate::appearance::desktop_text_size();
             Self {
-                openers,
+                openers: greeting.openers.clone(),
+                finds_windows: greeting.finds_windows,
                 fonts: joined(fonts),
                 text_size,
             }
@@ -2927,6 +2933,7 @@ impl Desktop {
     pub(crate) fn in_the_browser() -> Self {
         Self {
             openers: Vec::new(),
+            finds_windows: false,
             fonts: crate::appearance::Fonts {
                 sans: None,
                 mono: None,

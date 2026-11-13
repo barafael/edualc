@@ -185,6 +185,7 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHu
                 settings,
                 openers,
                 live,
+                finds_windows: std::env::var_os("NIRI_SOCKET").is_some(),
             };
             if let Err(error) = ipc::send(&mut writing, &answer).await {
                 tracing::warn!(%error, "a window left as it came");

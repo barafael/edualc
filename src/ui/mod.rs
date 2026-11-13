@@ -113,6 +113,7 @@ impl View {
         openers: &[Opener],
         fonts: crate::appearance::Fonts,
         events: async_channel::Sender<crate::app::Event>,
+        finds_windows: bool,
     ) -> Self {
         if let Some(family) = fonts.sans {
             window.global::<Theme>().set_sans(family.into());
@@ -134,7 +135,7 @@ impl View {
         window.global::<Composer>().set_commands(commands.clone());
         window
             .global::<Session>()
-            .set_can_go_to_window(std::env::var_os("NIRI_SOCKET").is_some());
+            .set_can_go_to_window(finds_windows);
         let openers: Vec<String> = std::iter::once("This window".to_owned())
             .chain(openers.iter().map(|opener| opener.label()))
             .collect();

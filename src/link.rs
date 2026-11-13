@@ -105,6 +105,8 @@ pub(crate) struct Greeting {
     pub(crate) settings: Result<Settings, String>,
     /// What folders open in, besides the window.
     pub(crate) openers: Vec<Opener>,
+    /// Other programs' windows can be found.
+    pub(crate) finds_windows: bool,
 }
 
 /// Connects to the daemon, starting it if none runs.
@@ -128,13 +130,14 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    let (settings, openers, live) = match greeting {
+    let (settings, openers, live, finds_windows) = match greeting {
         FromDaemon::Hello {
             protocol,
             settings,
             openers,
             live,
-        } if protocol == PROTOCOL => (settings, openers, live),
+            finds_windows,
+        } if protocol == PROTOCOL => (settings, openers, live, finds_windows),
         FromDaemon::Hello { .. }
         | FromDaemon::Started { .. }
         | FromDaemon::Failed { .. }
@@ -171,6 +174,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         live,
         settings,
         openers,
+        finds_windows,
     };
     Ok(Connected {
         line: Line { channel, deframer },

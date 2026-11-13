@@ -347,6 +347,8 @@ pub(crate) enum FromDaemon {
         settings: Result<Settings, String>,
         openers: Vec<Opener>,
         live: Vec<LiveSession>,
+        /// Other programs' windows can be found (niri runs).
+        finds_windows: bool,
     },
     /// The process runs: started for the window, or running already as it attaches.
     Started {
