@@ -1,0 +1,271 @@
+/* The conversation (ui/transcript.slint, and the transcript's list in ui/app.slint). */
+
+.transcript-area {
+    flex: 1; min-height: 0; position: relative;
+    display: flex; flex-direction: column;
+}
+.transcript-area > .transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+/* A transcript just opened: hidden until its height holds still. */
+.transcript.settling { opacity: 0; }
+/* Scrolled by the keys: a ring inside its edge. A click doesn't show it. */
+.transcript:focus { outline: none; }
+.transcript:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.rows {
+    display: flex; flex-direction: column; gap: calc(2 * var(--space-s));
+    padding: var(--space-xl) var(--column-margin);
+}
+.entry { display: flex; flex-direction: column; min-width: 0; }
+.entry.nested { padding-left: var(--space-xl); }
+
+/* The prose's measure, centered in the row. */
+.lane { width: min(100%, var(--measure)); margin: 0 auto; box-sizing: border-box; min-width: 0; }
+
+/* Code, tables and cards: from the prose's left edge, as wide as they need up to the wide
+   measure; the space before them gives way only where they run out of room to the right. */
+.wide-row, .tool-row { display: flex; align-items: flex-start; min-width: 0; }
+.wide-row > .inset, .tool-row > .inset {
+    flex: 0 1 calc((100% - min(100%, var(--measure))) / 2); min-width: 0;
+}
+.wide-row > .wide {
+    flex: 0 0 auto; width: fit-content; box-sizing: border-box;
+    min-width: min(100%, var(--measure)); max-width: min(100%, var(--wide-measure));
+}
+
+.cjk { line-height: 1.75; }
+
+/* Markdown, at the messages' size. */
+.md { display: flex; flex-direction: column; gap: var(--space-s); font-size: var(--message); }
+.md .block.text, .md .block.quote { line-height: 1.5; }
+.md .block.heading { line-height: 1.3; }
+.md .block.heading.h1 { font-size: 1.3em; }
+.md .block.heading.h2 { font-size: 1.1em; }
+.md .block.heading.h3 { font-size: 1em; }
+.md > :not(:first-child) > .block.heading { padding-top: var(--space-xs); }
+.md .block.rule { margin: var(--space-xs) 0; }
+/* Code keeps its lines whole: one wider than the box scrolls sideways. */
+.md .block.code { font-size: calc(var(--code-size) * 1.1); min-width: 0; }
+.md .block.code pre { white-space: pre; overflow-x: auto; overflow-wrap: normal; }
+.md .table-wide { display: flex; align-items: flex-start; gap: var(--space-xs); }
+.md .block.table {
+    flex: 0 1 auto; min-width: 0; border: 1px solid var(--divider); border-radius: var(--radius-m);
+}
+.md .block.table table { border-collapse: separate; border-spacing: 0; }
+.md .block.table th, .md .block.table td {
+    border: none; padding: var(--space-xs) var(--space-s); line-height: 1.3; font-weight: inherit;
+}
+.md .block.table tr:first-child > * { background: var(--code); }
+.md .block.table tr:nth-child(2n + 3) > * { background: var(--subtle); }
+/* In a tool's card, every block fills the width. */
+.md.flat .lane { width: auto; margin: 0; }
+.md.flat .wide-row > .inset { display: none; }
+.md.flat .wide-row > .wide { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+
+/* Small buttons beside text: copying. */
+.icon-button.tiny { width: 24px; height: 24px; color: var(--text-faint); flex: none; }
+.icon-button.tiny .icon { width: var(--icon-small); height: var(--icon-small); }
+
+/* The user's messages, and other sessions'. */
+.user-row { display: flex; justify-content: flex-end; }
+.peer-row { display: flex; justify-content: flex-start; }
+.bubble {
+    max-width: 85%; box-sizing: border-box; border-radius: var(--bubble-radius);
+    padding: 10px var(--space-l); font-size: var(--message); line-height: 1.5; min-width: 0;
+}
+.bubble .cjk, .bubble.cjk { line-height: 1.75; }
+.bubble.user { background: var(--bubble); }
+.bubble.peer { border: 1px solid var(--control-border); display: flex; flex-direction: column; gap: var(--space-xs); }
+.peer-sender {
+    display: flex; align-items: center; gap: var(--space-s);
+    color: var(--text-tertiary); font-size: var(--small); line-height: 1.4;
+}
+.user-images { display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-s); }
+.user-images > * { max-width: 85%; }
+.user-images > .shown-image { max-width: min(85%, 480px); }
+
+/* Claude's messages. */
+.assistant { display: flex; flex-direction: column; gap: 2px; }
+
+/* Thinking. */
+.thinking { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); }
+.thinking-head {
+    display: inline-flex; align-items: center; gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-s) var(--space-xs) var(--space-xs);
+    border: none; border-radius: var(--radius-s); background: transparent; cursor: pointer;
+    color: var(--text-tertiary);
+}
+.thinking-head:hover { background: var(--hover); }
+.thinking-head:active { background: var(--pressed); }
+.thinking-body { display: flex; gap: var(--space-m); padding-left: var(--space-s); align-self: stretch; }
+.thinking-body > .bar { width: 2px; flex: none; background: var(--divider); }
+.thinking-text {
+    flex: 1; min-width: 0; color: var(--text-tertiary); font-size: var(--message); line-height: 1.5;
+}
+.thinking-text.cjk { line-height: 1.75; }
+
+/* How far a tool call got. */
+.state-mark {
+    width: var(--icon-small); height: var(--icon-small); flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.state-mark .dot { width: 8px; height: 8px; border-radius: 4px; background: var(--claude); }
+.state-mark.done { color: var(--success); }
+.state-mark.failed { color: var(--danger-text); }
+.state-mark.awaiting { color: var(--warning); }
+.state-mark.faint { color: var(--text-faint); }
+
+/* A run of tool calls in one line. */
+.run-line {
+    display: flex; align-items: center; gap: var(--space-s); height: var(--row);
+    padding: 0 var(--space-s); border: none; border-radius: var(--radius-s);
+    background: transparent; cursor: pointer; text-align: left;
+}
+.run-line:hover { background: var(--hover); }
+.run-line:active { background: var(--pressed); }
+.icon.faint { color: var(--text-faint); }
+.run-summary {
+    flex: 1; min-width: 0; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.run-summary.failed { color: var(--danger-text); }
+
+/* A tool call's card. */
+.tool-row { --indent: 0px; }
+.tool-row.in-run { --indent: var(--space-l); }
+.tool-row.head { padding-top: var(--space-xs); }
+.tool-card {
+    flex: 0 0 auto; width: fit-content; box-sizing: border-box; margin-left: var(--indent);
+    min-width: calc(min(100%, var(--measure)) - var(--indent));
+    max-width: calc(min(100%, var(--wide-measure)) - var(--indent));
+    border: 1px solid var(--divider); border-radius: var(--radius-m); background: var(--card);
+}
+.tool-card.awaiting { border-color: var(--warning); }
+.tool-head {
+    display: flex; align-items: center; gap: var(--space-s); width: 100%; box-sizing: border-box;
+    padding: var(--space-s) var(--space-s) var(--space-s) var(--space-m);
+    border: none; border-radius: var(--radius-m); background: transparent; cursor: pointer;
+    text-align: left; color: var(--text-secondary);
+}
+.tool-head:hover { background: var(--hover); }
+.tool-head:active { background: var(--pressed); }
+.tool-title { font-weight: 600; color: var(--text); white-space: nowrap; }
+/* Its summary shortens rather than widening the card. */
+.tool-summary {
+    flex: 1 1 0; width: 0; min-width: 0; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tool-summary.mono { font-family: var(--mono); font-size: var(--code-size); }
+.tool-state { color: var(--text-tertiary); white-space: nowrap; }
+.tool-state.failed { color: var(--danger-text); }
+.tool-body {
+    display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-s);
+    padding: 0 var(--space-s) var(--space-s);
+}
+.tool-body > .diff, .tool-body > .codebox, .tool-body > .tool-md { align-self: stretch; }
+/* Its Markdown wraps to the card rather than widening it. */
+.tool-md {
+    contain: inline-size; border-radius: var(--radius-m); background: var(--surface);
+    padding: var(--space-m);
+}
+
+/* A tool's input or output. */
+.codebox {
+    position: relative; background: var(--code); border-radius: var(--radius-m);
+    padding: var(--space-m); font-family: var(--mono); font-size: var(--code-size);
+    line-height: 1.4; color: var(--text); min-width: 0;
+    display: flex; flex-direction: column; gap: var(--space-xs);
+}
+.codebox.secondary { color: var(--text-secondary); }
+.codebox.danger { color: var(--danger-text); }
+.codebox.copyable { padding-right: calc(var(--space-m) + 24px); }
+.codebox .caption { font-family: var(--sans); }
+.codebox-copy { position: absolute; top: var(--space-s); right: var(--space-s); }
+
+/* A diff. */
+.diff {
+    background: var(--code); border-radius: var(--radius-m); overflow: hidden;
+    padding: var(--space-xs) 0; font-family: var(--mono); font-size: var(--code-size); line-height: 1.4;
+}
+.diff-line { display: flex; gap: var(--space-s); padding: 0 var(--space-m) 0 var(--space-s); }
+.diff-line.added { background: var(--added); }
+.diff-line.removed { background: var(--removed); }
+.diff-sign { width: 10px; flex: none; }
+.diff-line.added .diff-sign { color: var(--success); }
+.diff-line.removed .diff-sign { color: var(--danger-text); }
+.diff-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-line.hunk .diff-text { color: var(--text-faint); }
+
+/* Images. */
+.shown-image {
+    display: block; max-width: min(100%, 480px); height: auto; border-radius: var(--radius-m);
+}
+.image-pending {
+    width: min(100%, 160px); height: 90px; border-radius: var(--radius-m); background: var(--surface);
+    display: flex; align-items: center; justify-content: center;
+}
+.image-failed { color: var(--text-tertiary); overflow-wrap: anywhere; }
+
+/* Notes and errors. */
+.info {
+    text-align: center; color: var(--text-tertiary); font-size: var(--small); line-height: 1.5;
+}
+.error {
+    display: flex; gap: var(--space-s); padding: var(--space-m); border-radius: var(--radius-m);
+    background: var(--danger-fill); color: var(--danger-text);
+}
+.error-text { flex: 1; min-width: 0; line-height: 1.5; }
+
+/* Back to the end, while reading back. */
+.icon-button.to-end {
+    position: absolute; right: var(--space-xl); bottom: var(--space-m); z-index: 5;
+    background: var(--surface-raised); border: 1px solid var(--divider);
+}
+.icon-button.to-end:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
+.icon-button.to-end:active { background-image: linear-gradient(var(--pressed), var(--pressed)); }
+
+/* A new session's greeting, over the conversation; clicks go through it. */
+.greeting {
+    position: absolute; inset: 0; pointer-events: none; container-type: size;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: var(--space-m); overflow: hidden;
+}
+.greeting-words {
+    display: flex; flex-direction: column; align-items: center; gap: var(--space-m);
+    max-width: 100%; transition: opacity 250ms ease-out, visibility 250ms;
+}
+.greeting-words.gone { opacity: 0; visibility: hidden; }
+.greeting-title {
+    font-size: var(--display); font-weight: 600; color: var(--text); text-align: center;
+    padding: 0 var(--space-l);
+}
+.greeting-place {
+    color: var(--text-tertiary); max-width: calc(100% - 2 * var(--space-l));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The heron: across and up, each at its own pace, and fading. */
+.heron { width: 64px; height: 64px; flex: none; }
+.heron-x, .heron-y { width: 100%; height: 100%; position: relative; }
+.heron-bird {
+    position: absolute; inset: 0; background: var(--claude); visibility: hidden;
+    mask-size: contain; mask-repeat: no-repeat; mask-position: center;
+    -webkit-mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+}
+.heron-bird.shown { visibility: visible; }
+/* Up first, then away: it climbs at once and gathers speed sideways. */
+.heron.leaving .heron-x {
+    transform: translateX(calc(-50cqw - 64px)); transition: transform 1100ms ease-in;
+}
+.heron.leaving .heron-y {
+    transform: translateY(calc(-50cqh - 64px)); opacity: 0;
+    transition: transform 1100ms ease-out, opacity 1100ms ease-in;
+}
+.heron.away .heron-x { transform: translateX(calc(50cqw + 64px)); }
+.heron.away .heron-y { transform: translateY(calc(-50cqh - 64px)); opacity: 0; }
+.heron.away .heron-bird.shown { visibility: hidden; }
+/* Gliding in: it slows as it comes, and comes down last. */
+.heron.arriving .heron-x { transition: transform 1100ms ease-out; }
+.heron.arriving .heron-y { transition: transform 1100ms ease-in, opacity 550ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+    .heron-x, .heron-y { transition: none !important; }
+}

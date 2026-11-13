@@ -1,0 +1,136 @@
+/* What Claude asks, above the composer (ui/app.slint's PromptBar), and the review of its plan
+   (ui/plan.slint). */
+
+/* At most half the window: the conversation stays in view. Claude's questions scroll within it. */
+.prompt {
+    display: flex; flex-direction: column; gap: var(--space-s); max-height: 50vh; min-height: 0;
+    padding: var(--space-m); box-sizing: border-box;
+    border: 1px solid var(--warning); border-radius: var(--radius-l); background: var(--card);
+}
+.prompt-heading { display: flex; align-items: center; gap: var(--space-s); flex: none; }
+.prompt-heading > .icon { color: var(--warning); }
+.prompt-title { flex: 1; min-width: 0; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.prompt-note { font-size: var(--small); color: var(--text-tertiary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-part { display: flex; flex-direction: column; gap: var(--space-s); min-height: 0; }
+
+/* A tool's request: what it would do, as code or as words. */
+.prompt-summary {
+    background: var(--code); border-radius: var(--radius-m); padding: var(--space-m);
+    color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.prompt-summary.code { font-family: var(--mono); font-size: var(--code-size); }
+.prompt-summary.prose { font-family: var(--sans); }
+
+/* The buttons: in a row, which wraps where it hasn't room, except a tool's, whose long
+   "Always allow" gives way instead (said in full on hover). */
+.prompt-actions { display: flex; align-items: center; gap: var(--space-s); flex-wrap: wrap; flex: none; }
+.prompt-actions:has(.shortens) { flex-wrap: nowrap; }
+.prompt-actions .button { flex: none; }
+.prompt-actions .button.shortens { flex: 0 1 auto; min-width: 0; }
+.button.shortens span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-spacer { flex: 1; }
+
+.prompt-field { width: 100%; flex: none; }
+.prompt-field::placeholder { color: var(--text-faint); }
+.prompt-field:focus { border-color: var(--accent); outline: none; }
+
+/* Claude's questions: the tabs and the buttons stay in view, what is between them scrolls. */
+.prompt-questions { flex: 0 1 auto; }
+.prompt-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); flex: none; }
+.prompt-tab {
+    display: inline-flex; align-items: center; gap: var(--space-xs);
+    padding: var(--space-s) var(--space-m); border: none; border-radius: var(--radius-s);
+    background: transparent; color: var(--text-secondary); font-size: var(--small); cursor: pointer;
+}
+.prompt-tab:hover { background: var(--hover); }
+.prompt-tab.selected { background: var(--selected); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.prompt-tab .icon { color: var(--text-faint); }
+.prompt-tab .icon.answered { color: var(--accent); }
+.prompt-body { flex: 0 1 auto; min-height: calc(var(--base) * 6); overflow-y: auto; }
+.prompt-question { display: flex; flex-direction: column; gap: var(--space-xs); color: var(--text); }
+.prompt-question[hidden] { display: none; }
+.prompt-choice { display: flex; gap: var(--space-m); align-items: flex-start; }
+
+/* The options: one stop for Tab, the arrow keys going through them; the one they are on is
+   ringed, as the focus. */
+.prompt-options { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.prompt-options:focus-visible { outline: none; }
+.prompt-option {
+    position: relative; display: flex; gap: var(--space-s); padding: var(--space-s);
+    border-radius: var(--radius-s); cursor: pointer;
+}
+.prompt-option:hover, .prompt-option.ringed { background: var(--hover); }
+.prompt-option:active { background: var(--pressed); }
+.prompt-option.selected { background: var(--selected); }
+.prompt-option.selected::before {
+    content: ""; position: absolute; left: 0; top: var(--space-s); bottom: var(--space-s);
+    width: 3px; border-radius: 1.5px; background: var(--accent);
+}
+.prompt-option.ringed { outline: 2px solid var(--accent); outline-offset: -2px; }
+.prompt-option > .icon { color: var(--text-tertiary); }
+.prompt-option.selected > .icon { color: var(--accent); }
+.prompt-option-text { flex: 1; min-width: 0; }
+.prompt-option-label { color: var(--text); overflow-wrap: anywhere; }
+
+/* An option's preview, as it is laid out: not wrapped, and cut at the box's edge. */
+.prompt-preview {
+    flex: 1; min-width: 0; align-self: stretch; overflow: hidden;
+    background: var(--code); border-radius: var(--radius-m); padding: var(--space-m); box-sizing: border-box;
+}
+.prompt-preview pre {
+    margin: 0; font-family: var(--mono); font-size: var(--code-size); color: var(--text); white-space: pre;
+}
+
+/* The plan's review takes the transcript's place: the transcript folds away (keeping where it was
+   scrolled, and out of reach of the keys and screen readers), and the review fills the column
+   down to the prompt. */
+.column:has(.plan-review) { container-type: inline-size; }
+.column:has(.plan-review) > .transcript,
+.column:has(.plan-review) > :has(> .transcript) { flex: 0 0 0; min-height: 0; overflow: hidden; visibility: hidden; }
+.column:has(.plan-review) > .dock { flex: 1; min-height: 0; }
+.plan-review {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface);
+    margin-inline: calc((100% - 100cqw) / 2);
+}
+.plan-review-header {
+    display: flex; align-items: center; gap: var(--space-m); height: 56px; flex: none;
+    padding: 0 var(--space-m) 0 var(--space-xl); border-bottom: 1px solid var(--divider);
+}
+.plan-review-icon { width: 22px; height: 22px; color: var(--claude); }
+.plan-review-titles { flex: 1; min-width: 0; }
+.plan-review-title { margin: 0; font-size: var(--title); font-weight: 600; color: var(--text); }
+.plan-review-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-review-sections { flex: 1; min-height: 0; overflow-y: auto; }
+.plan-section {
+    display: flex; gap: var(--space-s); margin: 0 auto; padding: var(--space-xs) 0;
+    width: min(calc(100% - 2 * var(--column-margin)), var(--wide-measure));
+}
+.plan-section:first-child { padding-top: var(--space-xl); }
+.plan-section:last-child { padding-bottom: var(--space-xl); }
+.plan-section-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.plan-section > .icon-button { align-self: flex-start; }
+.icon-button.plan-comment-button { color: var(--text-faint); }
+.icon-button.plan-comment-button.commented { color: var(--accent); }
+.icon-button.plan-comment-button:hover { color: var(--text); }
+
+/* The comment on a part. */
+.plan-comment {
+    display: flex; align-items: flex-start; gap: var(--space-s); border-radius: var(--radius-m);
+    background: var(--selected); padding: var(--space-s) var(--space-s) var(--space-s) var(--space-m);
+}
+.plan-comment-mark { color: var(--accent); margin-top: 2px; }
+.plan-comment-text { flex: 1; min-width: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-comment .icon-button { width: 24px; height: 24px; }
+.icon-button.small .icon { width: var(--icon-small); height: var(--icon-small); }
+
+/* Writing one. */
+.plan-editor {
+    display: flex; flex-direction: column; gap: var(--space-s); padding: var(--space-s);
+    border: 1px solid var(--accent); border-radius: var(--radius-m); background: var(--field);
+}
+.plan-editor-input {
+    width: 100%; box-sizing: border-box; min-height: 2lh; field-sizing: content; resize: none;
+    border: none; outline: none; padding: 0; background: transparent; color: var(--text);
+}
+.plan-editor-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-s); flex-wrap: wrap; }
