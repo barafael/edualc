@@ -8,8 +8,9 @@ const GENERATED: &str =
 // rather than editing this file.
 ";
 
-/// Fields the Slint window draws in its own way, by a function of `ui/mod.rs`: a text block's
-/// paragraphs, which Slint draws with no space between them, and a code block's colours.
+/// Fields the Slint window draws in its own way, by functions of `ui/mod.rs`: a text block's
+/// paragraphs, which Slint draws with no space between them, and a code block's colours, which
+/// code that only grew keeps until it is coloured again.
 const DRAWN_BY_THE_WINDOW: [(&str, &str); 1] = [("MdBlock", "body")];
 
 /// `kebab-case` to `CamelCase`.
@@ -96,7 +97,7 @@ pub fn slint(model: &Model) -> String {
 
 use slint::ComponentHandle;
 
-use super::{{Drawing, ToSlint, md_body, resync}};
+use super::{{Drawing, ToSlint, keeps_colours, md_body, resync}};
 use crate::generated::{{self as slint_ui, AppWindow}};
 use crate::present::model as present;
 "
@@ -137,6 +138,15 @@ use crate::present::model as present;
                     .to_owned(),
             );
             out.push("        let mut row = self.to_slint(images);".to_owned());
+            for (_, drawn) in DRAWN_BY_THE_WINDOW
+                .iter()
+                .filter(|(record, _)| record == name)
+            {
+                let f = snake(drawn);
+                out.push(format!(
+                    "        if keeps_colours(old, self, images) {{\n            row.{f} = shown.{f};\n        }}"
+                ));
+            }
             for field in record.fields.iter().filter(|field| field.kind.is_list()) {
                 let f = snake(&field.name);
                 out.push(format!(

@@ -43,7 +43,8 @@ If a file can't be read, the window says so rather than leaving it out.
 - **Markdown is rendered:** headings, lists, tables, quotes, and code blocks with a copy button.
   Text appears as Claude writes it.
 - **Code is coloured** by its language, using bat's grammars in the window's own colours, a line at
-  a time as it streams in.
+  a time as it streams in, on a thread of its own: a long session opens, and the colours change,
+  without the window waiting.
 - **You can select and copy everything** with Ctrl+C, tool output included.
 - **Your last message stays pinned** at the top while it is out of view, and the conversation
   scrolls under it. Click it to go back to it.

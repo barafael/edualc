@@ -5,7 +5,7 @@
 
 use slint::ComponentHandle;
 
-use super::{Drawing, ToSlint, md_body, resync};
+use super::{Drawing, ToSlint, keeps_colours, md_body, resync};
 use crate::generated::{self as slint_ui, AppWindow};
 use crate::present::model as present;
 
@@ -407,6 +407,9 @@ impl ToSlint for present::MdBlock {
     }
     fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
+        if keeps_colours(old, self, images) {
+            row.body = shown.body;
+        }
         row.rows = resync(&shown.rows, &old.rows, &self.rows, images).unwrap_or(shown.rows);
         row.column_stretch = resync(
             &shown.column_stretch,

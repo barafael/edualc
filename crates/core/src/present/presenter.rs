@@ -24,7 +24,6 @@ use crate::app::{
 use crate::changes;
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
-use crate::colour::Coloured;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::tool_input::{BashInput, IncomingMessageInput, WebFetchInput};
@@ -175,11 +174,6 @@ impl<F: Frontend> Presenter<F> {
 
     pub fn command(&mut self, command: Command) {
         self.frontend.command(command);
-    }
-
-    /// A code block of the conversation, coloured: for the frontend that asked for it.
-    pub fn code_coloured(&mut self, coloured: Coloured) {
-        self.frontend.code_coloured(coloured);
     }
 
     /// The language text with Han characters alone is set in, from the next row drawn on, and

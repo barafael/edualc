@@ -292,6 +292,7 @@ impl Frontend for PageFrontend {
             Command::SessionShown(session) => page.write().session = session,
             // The page shows code as it is, and has no start page, project page or switcher.
             Command::RecolourCode
+            | Command::DrawColouredCode
             | Command::NewProjectCreated
             | Command::FocusPage
             | Command::ToggleSwitcher
@@ -332,18 +333,18 @@ fn object_url(pixels: &Pixels) -> Option<String> {
     web_sys::Url::create_object_url_with_blob(&blob).ok()
 }
 
+/// In the Android app, an image's URL is a `data:` URL: its WebView holds no blobs of the app's.
+#[cfg(feature = "mobile")]
+fn object_url(pixels: &Pixels) -> Option<String> {
+    data_url(pixels)
+}
+
 /// Lets go of an image [`object_url`] made: the browser frees it.
 #[cfg(all(feature = "web", not(feature = "mobile")))]
 fn let_go(url: &str) {
     if url.starts_with("blob:") && web_sys::Url::revoke_object_url(url).is_err() {
         tracing::debug!("an image's URL was let go of already");
     }
-}
-
-/// In the Android app, an image's URL is a `data:` URL: its WebView holds no blobs of the app's.
-#[cfg(feature = "mobile")]
-fn object_url(pixels: &Pixels) -> Option<String> {
-    data_url(pixels)
 }
 
 /// A `data:` URL is let go of with the text that holds it.
