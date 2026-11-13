@@ -55,7 +55,7 @@ pub struct ToolServer {
 }
 
 /// What is to be done.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
     /// A line to agy.
     ToAgy(Value),

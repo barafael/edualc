@@ -959,10 +959,13 @@ impl<F: Frontend> App<F> {
         link: Link,
         desktop_found: Desktop,
         settings: Result<Settings, String>,
-        cwd: PathBuf,
-        backend: claude::Backend,
-        model: Option<String>,
+        start: Start,
     ) -> Self {
+        let Start {
+            cwd,
+            backend,
+            model,
+        } = start;
         let Desktop {
             openers,
             finds_windows,
@@ -2931,6 +2934,15 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
             None
         }
     }
+}
+
+/// What the window was started for: the folder to work in, the program to work with, and the
+/// model, or the program's default if none.
+#[derive(Debug)]
+pub struct Start {
+    pub cwd: PathBuf,
+    pub backend: claude::Backend,
+    pub model: Option<String>,
 }
 
 /// What the desktop has and says: the daemon's word, and what the window's desktop says.

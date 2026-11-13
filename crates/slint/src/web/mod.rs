@@ -4,7 +4,7 @@
 
 use slint::ComponentHandle;
 
-use crate::app::{App, Desktop};
+use crate::app::{self, App, Desktop};
 use crate::external::wire::SessionId;
 use crate::settings::Settings;
 use crate::{generated, ui};
@@ -41,9 +41,11 @@ pub(crate) fn main() {
         link,
         Desktop::in_the_browser(crate::appearance::DEFAULT_TEXT_SIZE),
         Ok(Settings::default()),
-        demo::Folder::Trailhead.path().to_path_buf(),
-        crate::claude::Backend::Claude,
-        None,
+        app::Start {
+            cwd: demo::Folder::Trailhead.path().to_path_buf(),
+            backend: crate::claude::Backend::Claude,
+            model: None,
+        },
     );
     app.begin(
         Vec::new(),

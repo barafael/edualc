@@ -195,9 +195,11 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         link,
         desktop,
         greeting.settings,
-        cwd,
-        backend,
-        model,
+        app::Start {
+            cwd,
+            backend,
+            model,
+        },
     );
     app.begin(
         greeting.hosted,
