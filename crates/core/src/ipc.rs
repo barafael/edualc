@@ -25,7 +25,16 @@ mod socket;
 pub use socket::{AsyncChannel, Channel, Deframer, Error, Folder, Listener, Writing, recv, send};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use socket::frame;
+pub use socket::{MAX_FRAME, deframe, frame};
+
+pub mod pairing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tls;
+mod token;
+pub use token::{Auth, Token};
+
+/// Where edualcd takes the token windows must show, if not from the file it keeps it in.
+pub const TOKEN_VARIABLE: &str = "EDUALC_TOKEN";
 
 use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
@@ -149,7 +158,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 25;
+pub const PROTOCOL: u32 = 26;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -398,6 +407,11 @@ pub enum FromDaemon {
         live: Vec<LiveSession>,
         /// Other programs' windows can be found (niri runs).
         finds_windows: bool,
+        /// The window is on the daemon's machine, by its Unix socket: the daemon does what the
+        /// desktop is asked for it (links, notifications, the clipboard, editors, the folder
+        /// picker, finding windows). A line over the network is no such window's: what the
+        /// desktop is asked there is the window's own to do, and the daemon refuses it.
+        local: bool,
     },
     /// The process runs: started for the window, or running already as it attaches.
     Started {
@@ -735,6 +749,8 @@ pub enum ActFailure {
     /// Claude Code's settings couldn't be read or written: the daemon's words.
     #[error("couldn't record the folder as trusted for Claude Code: {0}")]
     ClaudeCodeTrust(String),
+    #[error("the daemon is on another machine: its desktop isn't yours")]
+    NotHere,
 }
 
 impl From<crate::desktop::Error> for ActFailure {
@@ -870,6 +886,35 @@ pub enum Act {
         session: SessionId,
         path: PathBuf,
     },
+}
+
+impl Act {
+    /// Whether it is done on the desktop of the daemon's machine, which only a window there
+    /// (its Unix socket) has any say in.
+    #[must_use]
+    pub fn needs_its_desktop(&self) -> bool {
+        match self {
+            Self::OpenIn { .. }
+            | Self::OpenUrl(_)
+            | Self::PickFolder
+            | Self::PasteImage
+            | Self::Notify { .. }
+            | Self::FocusWindowOf { .. } => true,
+            // edualcd's machine's, where the window's sessions run: its keyring holds the API key
+            // they sign in with.
+            Self::CheckTrust { .. }
+            | Self::CheckClaudeTrust { .. }
+            | Self::TrustForClaudeCode { .. }
+            | Self::StopSession(_)
+            | Self::StoreApiKey(_)
+            | Self::RemoveApiKey
+            | Self::CheckApiKey
+            | Self::CreateProject { .. }
+            | Self::ChangesLooked { .. }
+            | Self::MarkReviewed { .. }
+            | Self::UnmarkReviewed { .. } => false,
+        }
+    }
 }
 
 #[cfg(test)]

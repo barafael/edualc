@@ -9,10 +9,12 @@ mod acp;
 mod daemon;
 mod files;
 mod keyring;
+pub mod net;
 mod snapshots;
 mod spawn;
 
-// What `edualcd` starts as: the daemon, or an ACP session's adapter or its messaging tool. The
-// image decoder's helper is the window's crate's (`edualc_core::decode`).
+// What `edualcd` starts as: the daemon (with its network side, [`net`], if it is given one), or
+// an ACP session's adapter or its messaging tool. The image decoder's helper is the window's
+// crate's (`edualc_core::decode`).
 pub use acp::{ADAPTER_FLAG, TOOL_FLAG, run_adapter, run_tool};
-pub use daemon::run;
+pub use daemon::{Line, Options, run};
