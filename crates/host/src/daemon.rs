@@ -146,7 +146,11 @@ async fn serve(listener: ipc::Listener, options: Options) -> Result<(), ipc::Err
     let mut network = options.network.map(|config| {
         let (lines, taken) = mpsc::channel(QUEUE);
         let access = crate::net::Access::new(config.token, lines);
-        let app = crate::net::router(access);
+        let line = crate::net::router(access);
+        let app = match config.page {
+            Some(page) => page.merge(line),
+            None => line,
+        };
         tokio::spawn(async move {
             if let Err(error) = crate::net::serve(config.listen, config.acceptor, app).await {
                 tracing::error!(%error, "the network side failed");
@@ -732,11 +736,7 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         Act::Notify { summary, body } => desktop::notify(&summary, &body)?,
         Act::OpenUrl(link) => {
             // Claude writes the links: a file or another app's scheme could run what it wrote.
-            let web = ["https://", "http://", "mailto:"].iter().any(|scheme| {
-                link.get(..scheme.len())
-                    .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
-            });
-            if !web {
+            if !desktop::is_web_link(&link) {
                 return Err(ActFailure::NotAWebLink(link));
             }
             open::that_detached(&link).map_err(|error| ActFailure::Open {

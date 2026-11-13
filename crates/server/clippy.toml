@@ -1,0 +1,17 @@
+# The page crate's own list (clippy reads the nearest clippy.toml, not a merge): the workspace's
+# (../../clippy.toml) but for `OnceLock`. Dioxus's `rsx!` keeps each of a component's templates in
+# a `OnceLock` it makes itself: its state, not ours, at every one of the page's hundred-odd
+# templates, where an `#[expect]` for each would say nothing. A `OnceLock` of the page's own is
+# still refused, by ast-grep's `no-shared-state` rule, which reads the source.
+disallowed-types = [
+    { path = "std::cell::Cell", reason = "no interior mutability; send the owner a message" },
+    { path = "std::cell::RefCell", reason = "no interior mutability; send the owner a message" },
+    { path = "std::cell::OnceCell", reason = "no interior mutability" },
+    { path = "std::sync::Mutex", reason = "no mutable state shared between threads; send a message" },
+    { path = "std::sync::RwLock", reason = "no mutable state shared between threads; send a message" },
+    { path = "std::sync::LazyLock", reason = "no global state" },
+    { path = "std::rc::Rc", reason = "hold, move or borrow it; Slint's own handles are fine" },
+    { path = "std::rc::Weak", reason = "hold, move or borrow it" },
+    { path = "std::sync::Arc", reason = "hold, move or borrow it" },
+    { path = "std::thread::LocalKey", reason = "no thread-local state" },
+]

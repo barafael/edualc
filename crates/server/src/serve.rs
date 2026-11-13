@@ -1,7 +1,7 @@
-//! The daemon, `edualcd`, which the first window starts beside itself (or as the image
-//! decoder, confined: see `decode`; or as an agy session's adapter or its messaging tool: see
-//! `agy`), and which a user service runs to serve windows that aren't on this machine too
-//! (`--listen`).
+//! edualcd's command line and what it runs: the daemon the first window starts beside itself
+//! (or the image decoder, confined: see `decode`; or an agy session's adapter or its messaging
+//! tool: see `agy`), and with `--listen`, as a user service runs it, its network side and the
+//! page.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -18,12 +18,12 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 #[command(
     name = "edualcd",
     version,
-    about = "edualc's daemon: runs Claude Code for edualc's windows",
+    about = "edualc's daemon: runs Claude Code for edualc's windows, and serves its page",
     after_help = AFTER_HELP
 )]
 struct Args {
-    /// Also serve windows that aren't on this machine (a page, an app) at this address, over
-    /// TLS, once they show the token. Without it, only windows on this machine, by the Unix
+    /// Also serve windows that aren't on this machine (a page, an app) and the page itself at
+    /// this address, over TLS, once they show the token. Without it, only windows on this machine, by the Unix
     /// socket, are served, and edualcd ends a few seconds after the last of them and its
     /// sessions.
     #[arg(long, value_name = "ADDRESS")]
@@ -33,8 +33,13 @@ struct Args {
     #[arg(long, value_name = "HOST")]
     name: Option<String>,
     /// Print the address a window pairs with, which holds the token, and end.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "demo")]
     pair: bool,
+    /// Serve the demo instead, over plain HTTP (at --listen's address): Claude Code played by a
+    /// script, on a demo project, for anyone (no token); nothing runs and nothing on the disk is
+    /// read.
+    #[arg(long)]
+    demo: bool,
 }
 
 const AFTER_HELP: &str = "edualcd makes its certificate and its token on its first start and \
@@ -42,7 +47,7 @@ keeps them in $XDG_STATE_HOME/edualcd (~/.local/state/edualcd); remove that fold
 anew. EDUALC_TOKEN, if set, is the token instead. Neither is taken on the command line, which \
 every user of the machine can read.";
 
-fn main() -> std::process::ExitCode {
+pub fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -63,7 +68,15 @@ fn main() -> std::process::ExitCode {
     {
         return edualc_host::decode::run(job);
     }
-    let Args { listen, name, pair } = Args::parse();
+    let Args {
+        listen,
+        name,
+        pair,
+        demo,
+    } = Args::parse();
+    if demo {
+        return serve_demo(listen.unwrap_or_else(default_listen));
+    }
     if listen.is_none() && !pair {
         return edualc_host::daemon::run(edualc_host::daemon::Options::default());
     }
@@ -103,6 +116,7 @@ fn network(
         println!("{}", pairing.url());
         return Ok(None);
     }
+    page_files()?;
     let acceptor = ipc::tls::acceptor(state.certificate, state.key)
         .map_err(|error| format!("its certificate doesn't serve: {error}"))?;
     tell_address(&pairing);
@@ -111,6 +125,7 @@ fn network(
             listen,
             acceptor,
             token,
+            page: Some(dioxus::server::router(crate::web::App)),
         }),
     }))
 }
@@ -177,5 +192,65 @@ fn tell_address(pairing: &Pairing) {
             pairing.authority(),
             pairing.fingerprint
         );
+    }
+}
+
+/// The folder the page's files are served from: `DIOXUS_PUBLIC_PATH`'s, else `public` beside this
+/// program, where `dx bundle` puts it. Dioxus panics if it isn't there, so it is checked first.
+fn page_files() -> Result<(), String> {
+    let folder = std::env::var_os("DIOXUS_PUBLIC_PATH")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()?
+                .parent()
+                .map(|beside| beside.join("public"))
+        })
+        .unwrap_or_default();
+    if folder.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the page's files aren't in {}: set DIOXUS_PUBLIC_PATH to their folder (the user \
+             service does)",
+            folder.display()
+        ))
+    }
+}
+
+/// The demo, over plain HTTP: it runs nothing and holds no secret.
+fn serve_demo(listen: SocketAddr) -> std::process::ExitCode {
+    if let Err(message) = page_files() {
+        eprintln!("edualcd: {message}");
+        return std::process::ExitCode::FAILURE;
+    }
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("edualcd: no runtime: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    eprintln!("edualcd: edualc's demo is at http://{listen}/");
+    let served = runtime.block_on(async move {
+        let (lines, mut taken) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(line) = taken.recv().await {
+                tokio::spawn(edualc_host::demo::run(line));
+            }
+        });
+        let app =
+            dioxus::server::router(crate::web::App).merge(net::router(net::Access::demo(lines)));
+        net::serve_plain(listen, app).await
+    });
+    match served {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("edualcd: couldn't serve the demo: {error}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }

@@ -37,6 +37,14 @@ pub async fn serve(
     axum::serve(TlsListener { taken, local }, app).await
 }
 
+/// Serves `app` over plain HTTP at `listen`: the demo, which runs nothing and holds no secret.
+///
+/// # Errors
+/// If `listen` can't be bound, or serving ends in error.
+pub async fn serve_plain(listen: SocketAddr, app: axum::Router) -> std::io::Result<()> {
+    axum::serve(TcpListener::bind(listen).await?, app).await
+}
+
 /// Takes connections and shakes hands with each on a task of its own.
 async fn handshakes(
     tcp: TcpListener,

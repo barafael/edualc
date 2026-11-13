@@ -1,0 +1,54 @@
+[package]
+name = "edualc-server"
+description = "edualcd: edualc's daemon, and the Dioxus fullstack server that serves edualc's window as a page"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "edualcd"
+path = "src/main.rs"
+
+[dependencies]
+edualc-core.workspace = true
+dioxus = { version = "0.7.10", features = ["fullstack", "router"] }
+serde.workspace = true
+async-channel.workspace = true
+tracing.workspace = true
+futures-util.workspace = true
+base64 = "0.23"
+# Inline Markdown as HTML, raw HTML in it escaped.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# The page's own: its address (the token), the clipboard, opening links, encoding images.
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "Navigator", "Clipboard", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "HtmlDocument", "NodeList", "Event", "EventTarget", "MouseEvent", "Blob", "BlobPropertyBag", "Url", "Notification", "NotificationOptions", "NotificationPermission", "ClipboardEvent", "DataTransfer", "FileList", "File"] }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The daemon and the server: Linux only.
+edualc-host = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+# The page's line to the server: a plain WebSocket, so frames may be as large as messages.
+gloo-net = { version = "0.6", optional = true, default-features = false, features = ["websocket"] }
+# The page's timers: the prompt's buttons arm a moment after a request shows.
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+
+[build-dependencies]
+lucide-static-svg = "1.55"
+
+[features]
+default = []
+web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net", "dep:js-sys"]
+server = [
+    "dioxus/server",
+    "dep:edualc-host",
+    "dep:tokio",
+    "dep:tracing-subscriber",
+    "dep:clap",
+]
+
+[lints]
+workspace = true

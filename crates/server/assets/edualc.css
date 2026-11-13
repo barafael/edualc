@@ -1,0 +1,238 @@
+/* edualc's page: the native window's look (ui/theme.slint) as CSS. Each area's own rules are in
+   its stylesheet beside this one. */
+
+
+/* Gruvbox, dark: the default. */
+.window {
+    --surface: #282828; --surface-raised: #1d2021; --card: #32302f; --shadow: #0009; --dim: #0004;
+    --bubble: #3c3836; --code: #1d2021; --field: #32302f; --divider: #3c3836;
+    --control-border: #837769; --text: #ebdbb2; --text-secondary: #bdae93;
+    --text-tertiary: #a89984; --text-faint: #928374; --accent: #fe8019; --on-accent: #1d2021;
+    --link: #83a598; --selection: #504945; --selection-text: #fbf1c7; --claude: #fe8019;
+    --success: #b8bb26; --warning: #fabd2f; --warning-text: #fabd2f; --danger: #fb4934;
+    --danger-text: #fb5841; --info: #8ec07c; --added-base: #b8bb26;
+}
+.window.plain {
+    --surface: #202020; --surface-raised: #181818; --card: #262626; --shadow: #0009; --dim: #0004;
+    --bubble: #2f2f2f; --code: #181818; --field: #262626; --divider: #2f2f2f;
+    --control-border: #7a7a7a; --text: #e8e8e8; --text-secondary: #c4c4c4;
+    --text-tertiary: #adadad; --text-faint: #959595; --accent: #6ea8fe; --on-accent: #0b0d10;
+    --link: #8ab4f8; --selection: #2d4f7c; --selection-text: #ffffff; --claude: #d97757;
+    --success: #6bc46d; --warning: #e5b443; --warning-text: #e5b443; --danger: #f0645c;
+    --danger-text: #f47b74; --info: #5bb8d6; --added-base: #6bc46d;
+}
+@media (prefers-color-scheme: light) {
+    .window {
+        --surface: #fbf1c7; --surface-raised: #f2e5bc; --card: #f9f5d7; --shadow: #0005; --dim: #0002;
+        --bubble: #ebdbb2; --code: #f2e5bc; --field: #f9f5d7; --divider: #d5c4a1;
+        --control-border: #968977; --text: #3c3836; --text-secondary: #504945;
+        --text-tertiary: #665c54; --text-faint: #7c6f64; --accent: #af3a03; --on-accent: #fbf1c7;
+        --link: #076678; --selection: #d5c4a1; --selection-text: #282828; --claude: #d65d0e;
+        --success: #736f10; --warning: #b57614; --warning-text: #926219; --danger: #9d0006;
+        --danger-text: #9d0006; --info: #417756; --added-base: #79740e;
+    }
+    .window.plain {
+        --surface: #ffffff; --surface-raised: #f3f3f3; --card: #fafafa; --shadow: #0005; --dim: #0002;
+        --bubble: #ececec; --code: #f5f5f5; --field: #ffffff; --divider: #e2e2e2;
+        --control-border: #858585; --text: #1c1c1c; --text-secondary: #3d3d3d;
+        --text-tertiary: #555555; --text-faint: #6b6b6b; --accent: #1f5fd1; --on-accent: #ffffff;
+        --link: #1a56c4; --selection: #c8dbff; --selection-text: #111111; --claude: #b8532f;
+        --success: #1e7b34; --warning: #b26a00; --warning-text: #8a5300; --danger: #c0281e;
+        --danger-text: #b3261e; --info: #0b6e78; --added-base: #1e7b34;
+    }
+}
+
+.window {
+    /* Scrollbars in the look's colours, thin, with no track of the toolkit's own (Firefox draws one white
+       beside the sidebar's list, the conversation and the settings otherwise). Inherited. */
+    scrollbar-color: color-mix(in srgb, var(--text) 35%, transparent) transparent;
+    scrollbar-width: thin;
+    /* Fills laid over a surface, and the diffs' faint backgrounds. */
+    --hover: color-mix(in srgb, var(--text) 7%, transparent);
+    --pressed: color-mix(in srgb, var(--text) 12%, transparent);
+    --subtle: color-mix(in srgb, var(--text) 4%, transparent);
+    --selected: color-mix(in srgb, var(--accent) 16%, transparent);
+    --danger-fill: color-mix(in srgb, var(--danger) 12%, transparent);
+    --added: color-mix(in srgb, var(--added-base) 16%, transparent);
+    --removed: color-mix(in srgb, var(--danger) 16%, transparent);
+    /* Type, in multiples of the base size (Theme.caption and the rest). */
+    --base: var(--base-size, 15px);
+    --caption: calc(var(--base) * 0.93);
+    --small: calc(var(--base) * 0.9);
+    --message: calc(var(--base) * 1.1);
+    --code-size: calc(var(--base) * 0.95);
+    --title: calc(var(--base) * 1.1);
+    --heading: calc(var(--base) * 1.3);
+    --display: calc(var(--base) * 1.6);
+    --sans: "Fira Sans", system-ui, sans-serif;
+    --mono: "Fira Code", ui-monospace, monospace;
+    /* Corners, spacing on a 4px grid, sizes growing with the text from a floor. */
+    --radius-s: 6px; --radius-m: 8px; --radius-l: 12px; --bubble-radius: 16px;
+    --space-xs: 4px; --space-s: 8px; --space-m: 12px; --space-l: 16px; --space-xl: 24px;
+    --icon: max(18px, calc(var(--base) * 1.2));
+    --icon-small: max(14px, calc(var(--base) * 0.95));
+    --button: max(32px, calc(var(--base) * 2.2));
+    --control: max(32px, calc(var(--base) * 2.2));
+    --row: max(34px, calc(var(--base) * 2.3));
+    --chip: max(28px, calc(var(--base) * 2));
+    --row-tall: max(42px, calc(var(--base) * 2.9));
+    --header: max(46px, calc(var(--base) * 3.1));
+    --sidebar: max(272px, calc(var(--base) * 18));
+    --side-panel: max(340px, calc(var(--base) * 24));
+    /* The conversation's measure: its column, and what is wider (tables, the bars). */
+    --measure: calc(var(--base) * 46);
+    --wide-measure: calc(var(--base) * 56);
+    --column-margin: var(--space-xl);
+}
+
+html, body { margin: 0; height: 100%; }
+body { overflow: hidden; }
+#main { height: 100%; }
+.window {
+    height: 100%;
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: var(--base);
+    line-height: 1.4;
+}
+.window ::selection { background: var(--selection); color: var(--selection-text); }
+.window a { color: var(--link); }
+.window :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.lost {
+    position: fixed; inset: auto var(--space-l) var(--space-l) auto; z-index: 100;
+    background: var(--danger-fill); color: var(--danger-text);
+    border: 1px solid var(--danger); border-radius: var(--radius-m);
+    padding: var(--space-m) var(--space-l); max-width: 32em;
+}
+
+/* The window's areas. */
+.layout { display: flex; height: 100%; }
+.sidebar {
+    width: var(--sidebar); flex: none; background: var(--surface-raised);
+    border-right: 1px solid var(--divider); display: flex; flex-direction: column; min-height: 0;
+}
+.column { flex: 1; min-width: 360px; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.transcript { flex: 1; min-height: 0; overflow-y: auto; }
+.dock {
+    width: min(calc(100% - 2 * var(--column-margin)), var(--wide-measure)); margin: 0 auto;
+    padding-bottom: var(--space-s); display: flex; flex-direction: column; gap: var(--space-s);
+}
+.side {
+    width: var(--side-panel); min-width: 280px; flex: none; background: var(--surface-raised);
+    border-left: 1px solid var(--divider); display: flex; flex-direction: column; min-height: 0;
+}
+
+/* A narrow window (a phone's, the Android app's): the conversation takes the whole width, and
+   the sidebar and the side panel come over it, the sidebar over a scrim that hides it as it is
+   tapped. The sidebar starts hidden there, and hides as a session opens (components/mod.rs). */
+.scrim { display: none; }
+@media (max-width: 640px) {
+    .window { --column-margin: var(--space-m); }
+    .layout { position: relative; }
+    .column { min-width: 0; }
+    .layout > aside.sidebar {
+        position: absolute; inset: 0 auto 0 0; z-index: 30;
+        width: min(85vw, 340px) !important; min-width: 0; box-shadow: 0 0 24px var(--shadow);
+    }
+    .layout > .side { position: absolute; inset: 0; z-index: 30; width: auto; min-width: 0; border-left: none; }
+    .scrim { display: block; position: absolute; inset: 0; z-index: 29; background: var(--dim); }
+}
+
+/* Controls (ui/widgets.slint). */
+.icon { display: inline-flex; width: var(--icon); height: var(--icon); flex: none; }
+.icon svg { width: 100%; height: 100%; }
+.icon.small { width: var(--icon-small); height: var(--icon-small); }
+button { font: inherit; color: inherit; }
+.icon-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: var(--button); height: var(--button); padding: 0; border: none; border-radius: var(--radius-m);
+    background: transparent; color: var(--text-secondary); cursor: pointer;
+}
+.icon-button:hover { background: var(--hover); color: var(--text); }
+.icon-button:active { background: var(--pressed); }
+.icon-button[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
+.icon-button:disabled { color: var(--text-faint); cursor: default; background: transparent; }
+.button {
+    display: inline-flex; align-items: center; gap: var(--space-s); min-height: var(--control);
+    padding: 0 var(--space-l); border: 1px solid var(--control-border); border-radius: var(--radius-m);
+    background: transparent; cursor: pointer; white-space: nowrap;
+}
+.button:hover { background: var(--hover); }
+.button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.button.primary:hover { filter: brightness(1.08); }
+.button.danger { color: var(--danger-text); border-color: var(--danger); }
+.button:disabled { opacity: 0.5; cursor: default; }
+input, textarea { font: inherit; color: inherit; }
+.field {
+    background: var(--field); border: 1px solid var(--control-border); border-radius: var(--radius-m);
+    padding: var(--space-s) var(--space-m); min-height: var(--control); box-sizing: border-box;
+}
+.popup {
+    background: var(--surface-raised); border: 1px solid var(--divider); border-radius: var(--radius-l);
+    box-shadow: 0 6px 24px var(--shadow); z-index: 50;
+}
+.menu { position: relative; display: inline-block; }
+.menu-button {
+    display: inline-flex; align-items: center; gap: var(--space-xs); border: none; background: transparent;
+    border-radius: var(--radius-m); padding: var(--space-xs) var(--space-s); cursor: pointer; color: var(--text-secondary);
+}
+.menu-button:hover { background: var(--hover); color: var(--text); }
+.menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.menu-items {
+    position: absolute; left: 0; min-width: 18em; max-height: 60vh; overflow-y: auto;
+    padding: var(--space-xs); display: flex; flex-direction: column;
+}
+.menu-items.down { top: 100%; margin-top: var(--space-xs); }
+.menu-items.up { bottom: 100%; margin-bottom: var(--space-xs); }
+.menu-item {
+    text-align: left; border: none; background: transparent; border-radius: var(--radius-m);
+    padding: var(--space-s) var(--space-m); cursor: pointer;
+}
+.menu-item:hover { background: var(--hover); }
+.menu-item.chosen { background: var(--selected); }
+.menu-title { color: var(--text); }
+.menu-description { color: var(--text-tertiary); font-size: var(--small); }
+.meter { height: 4px; border-radius: 2px; background: var(--subtle); overflow: hidden; min-width: 3em; }
+.meter-fill { height: 100%; background: var(--info); }
+.meter.warning .meter-fill { background: var(--warning); }
+.meter.danger .meter-fill { background: var(--danger); }
+.caption { color: var(--text-tertiary); font-size: var(--caption); }
+.small { font-size: var(--small); }
+
+/* Text (src/web/text.rs). */
+.plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 0.6em; }
+.markdown ul, .markdown ol { margin: 0 0 0.6em; padding-left: 1.5em; }
+.markdown code, .plain code {
+    font-family: var(--mono); font-size: 0.95em; background: var(--code);
+    border-radius: 4px; padding: 0.05em 0.3em;
+}
+.blocks { display: flex; flex-direction: column; gap: 0.6em; }
+.block.text { line-height: 1.5; }
+.block.text[lang="ja"], .block.text[lang^="zh"], .block.text[lang="ko"] { line-height: 1.75; }
+.block.heading { font-weight: 600; line-height: 1.3; }
+.block.heading.h1 { font-size: 1.4em; }
+.block.heading.h2 { font-size: 1.25em; }
+.block.heading.h3 { font-size: 1.1em; }
+.block.code {
+    position: relative; background: var(--code); border-radius: var(--radius-m);
+    padding: var(--space-m); font-family: var(--mono); font-size: var(--code-size); line-height: 1.4;
+}
+.block.code pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.block.code .code-lang { color: var(--text-faint); font-size: var(--caption); margin-bottom: var(--space-xs); font-family: var(--sans); }
+.block.code .copy {
+    position: absolute; top: var(--space-s); right: var(--space-s); border: none; background: transparent;
+    color: var(--text-faint); cursor: pointer; opacity: 0; border-radius: var(--radius-s);
+}
+.block.code:hover .copy, .block.code .copy:focus-visible { opacity: 1; }
+.block.code .copy:hover { background: var(--hover); color: var(--text); }
+.block.quote { margin: 0; padding-left: var(--space-m); border-left: 3px solid var(--divider); color: var(--text-secondary); }
+.block.table { overflow-x: auto; }
+.block.table table { border-collapse: collapse; }
+.block.table th, .block.table td { border: 1px solid var(--divider); padding: var(--space-xs) var(--space-s); text-align: left; vertical-align: top; }
+.block.rule { border: none; border-top: 1px solid var(--divider); width: 100%; }
+.link { color: var(--link); text-decoration: underline; }
