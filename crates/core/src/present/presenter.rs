@@ -120,43 +120,28 @@ impl<F: Frontend> Presenter<F> {
 
     /// Tells the frontend what changed since it was told last.
     pub fn flush(&mut self) {
-        let parts = Parts {
-            session: self.session.clone(),
-            composer: self.composer.clone(),
-            sessions: self.sessions.clone(),
-            prompt: self.prompt.clone(),
-            peek: self.peek.clone(),
-            side: self.side.clone(),
-            preferences: self.preferences.clone(),
-            usage: self.usage.clone(),
-        };
-        let shown = self.shown.as_ref();
-        let frontend = &mut self.frontend;
-        if shown.is_none_or(|shown| shown.session != parts.session) {
-            frontend.session(&parts.session);
+        let first = self.shown.is_none();
+        let shown = self.shown.get_or_insert_with(Parts::default);
+        // Each part told and kept again only when it differs from what was shown.
+        macro_rules! tell {
+            ($($part:ident),*) => {$(
+                if first || shown.$part != self.$part {
+                    let old = (!first).then_some(&shown.$part);
+                    self.frontend.$part(old, &self.$part);
+                    shown.$part.clone_from(&self.$part);
+                }
+            )*};
         }
-        if shown.is_none_or(|shown| shown.composer != parts.composer) {
-            frontend.composer(&parts.composer);
-        }
-        if shown.is_none_or(|shown| shown.sessions != parts.sessions) {
-            frontend.sessions(&parts.sessions);
-        }
-        if shown.is_none_or(|shown| shown.prompt != parts.prompt) {
-            frontend.prompt(&parts.prompt);
-        }
-        if shown.is_none_or(|shown| shown.peek != parts.peek) {
-            frontend.peek(&parts.peek);
-        }
-        if shown.is_none_or(|shown| shown.side != parts.side) {
-            frontend.side(&parts.side);
-        }
-        if shown.is_none_or(|shown| shown.preferences != parts.preferences) {
-            frontend.preferences(&parts.preferences);
-        }
-        if shown.is_none_or(|shown| shown.usage != parts.usage) {
-            frontend.usage(&parts.usage);
-        }
-        self.shown = Some(parts);
+        tell!(
+            session,
+            composer,
+            sessions,
+            prompt,
+            peek,
+            side,
+            preferences,
+            usage
+        );
         if let Some((model, mode)) = self.menu_choice.take() {
             self.frontend.command(Command::ModelIndex(model));
             self.frontend.command(Command::ModeIndex(mode));
@@ -260,6 +245,11 @@ impl<F: Frontend> Presenter<F> {
 
     pub fn copy(&mut self, text: &str) {
         self.command(Command::Copy(text.to_owned()));
+    }
+
+    /// Has the frontend do something on its desktop, at once.
+    pub fn seat(&mut self, seat: super::Seat) {
+        self.frontend.seat(seat);
     }
 
     pub fn set_draft(&mut self, text: &str) {

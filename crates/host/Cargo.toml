@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-edualc-core.workspace = true
+edualc-core = { workspace = true, features = ["demo"] }
 async-channel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,6 +40,10 @@ axum.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+
+# rfd's Wayland client, loaded as it is needed rather than linked: edualcd also runs where no
+# Wayland is installed. The window's Slint asks the same; edualcd alone doesn't.
+wayland-backend = { version = "0.3", features = ["dlopen"] }
 
 [dev-dependencies]
 proptest.workspace = true

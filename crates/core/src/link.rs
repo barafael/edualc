@@ -2,23 +2,17 @@
 //! network line, the browser demo's script): what the window asks goes on a channel to whatever
 //! writes it, and what the daemon says comes back as the app's events (`Inbox`, sans-io).
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::{BTreeMap, HashMap};
 
 use crate::app::Event;
 use crate::claude::Output;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::decode;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::desktop::Opener;
 use crate::ipc::{self, Generation, ToDaemon};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::ipc::{
     ActId, Assembler, FromDaemon, Hosted, LineSplitter, PasteFailure, Pasted, Stream,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::sessions::{self, LiveSession};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::settings::Settings;
 
 /// What the window asks of the daemon goes this way, in order. Bounded: a daemon that stopped
@@ -74,7 +68,6 @@ pub fn send_input(link: &Link, key: Generation, line: &str) -> Result<(), Lost> 
 }
 
 /// What the daemon tells a window as it connects.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct Greeting {
     /// The sessions the daemon runs: known before the window opens one, so that one it runs
@@ -90,11 +83,60 @@ pub struct Greeting {
     pub finds_windows: bool,
     /// The window is on the daemon's machine (see `FromDaemon::Hello`).
     pub local: bool,
+    /// The daemon's user's home folder.
+    pub home: std::path::PathBuf,
+}
+
+/// Why what the daemon said as a line opened isn't a greeting.
+#[derive(Debug, thiserror::Error)]
+pub enum NotGreeted {
+    #[error(
+        "the edualc daemon is another version; update the older of the two (a daemon started by \
+         a window ends once its windows and sessions do)"
+    )]
+    Version,
+    #[error("the edualc daemon said something out of turn as the window connected")]
+    OutOfTurn,
+}
+
+/// The daemon's greeting, from its first two messages (its hello, then the sessions it runs),
+/// and the D-Bus the window is to use, which only a window on its machine has any use for.
+///
+/// # Errors
+/// If the first is another version's hello or not one, or the second isn't the sessions.
+pub fn greeted(hello: FromDaemon, hosted: FromDaemon) -> Result<Greeting, NotGreeted> {
+    let FromDaemon::Hello {
+        protocol,
+        settings,
+        openers,
+        live,
+        finds_windows,
+        local,
+        home,
+    } = hello
+    else {
+        return Err(NotGreeted::Version);
+    };
+    if protocol != crate::ipc::PROTOCOL {
+        return Err(NotGreeted::Version);
+    }
+    let FromDaemon::Hosted(hosted) = hosted else {
+        return Err(NotGreeted::OutOfTurn);
+    };
+    let greeting = Greeting {
+        hosted,
+        live,
+        settings,
+        openers,
+        finds_windows,
+        local,
+        home,
+    };
+    Ok(greeting)
 }
 
 /// What the daemon says, made the app's events (sans-io): the pieces a line, a pasted image or a
 /// transcript comes in are put together again, and an event made when one is whole.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 pub struct Inbox {
     lines: Assembler<(Generation, Stream)>,
@@ -103,7 +145,6 @@ pub struct Inbox {
     transcripts: HashMap<ActId, (LineSplitter, Vec<String>)>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Inbox {
     /// What `message` makes of the app's events, if it makes one (a piece of a line doesn't).
     pub fn take(&mut self, message: FromDaemon) -> Option<Event> {
@@ -179,7 +220,6 @@ fn claude(generation: Generation, output: Output) -> Event {
 }
 
 /// A pasted image's pieces, as they come.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 enum Joining {
     Bytes(Vec<u8>),
@@ -189,7 +229,6 @@ enum Joining {
 
 /// A pasted image, once its last piece came (sans-io); `None` while pieces come, and for the
 /// rest of one that overflowed.
-#[cfg(not(target_arch = "wasm32"))]
 fn joined(
     pasting: &mut BTreeMap<ActId, Joining>,
     request: ActId,
@@ -224,7 +263,7 @@ fn joined(
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 

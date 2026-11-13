@@ -17,8 +17,6 @@ mod highlight;
 mod start;
 #[cfg(target_arch = "wasm32")]
 mod web;
-#[cfg(target_arch = "wasm32")]
-mod words;
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`).
 // Slint's code, not ours: it indexes and discards results as it likes. Only what it trips is let

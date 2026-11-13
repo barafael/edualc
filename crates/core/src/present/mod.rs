@@ -63,6 +63,22 @@ pub enum EntriesChange {
     Set(usize, model::Entry),
 }
 
+/// What the window does on the desktop it is on, which is the user's, when edualcd isn't on that
+/// machine (a window on edualcd's own machine has edualcd do it for it): edualcd may run where
+/// no one is at the desktop. What fails is told as `Event::SeatFailed`, but for a notification
+/// (a desktop without a notification service would have an error for each); a paste comes back
+/// as `Event::Pasted`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seat {
+    /// A web page or mail, in the desktop's browser (checked to be one, see
+    /// `desktop::is_web_link`).
+    OpenUrl(String),
+    /// A notification; its texts come from other sessions' records, and are taken as text.
+    Notify { summary: String, body: String },
+    /// The clipboard's image, if it holds one, made ready to send.
+    PasteImage,
+}
+
 /// What the window is told to do, rather than to show: its own state the app sets now and
 /// then (the draft, a menu's choice), focus, and moving about.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,19 +116,23 @@ pub enum Command {
     RecolourCode,
     /// The window closes.
     Quit,
+    /// The session the window shows now, by its id; none for a new one not started yet. A
+    /// frontend that is ended and started again by its system (an app) opens it again.
+    SessionShown(Option<crate::external::wire::SessionId>),
 }
 
-/// What draws the window: told the state of each of its parts as it changes, and what to do.
+/// What draws the window: told the state of each of its parts as it changes (with what it was
+/// told before, if anything), and what to do.
 pub trait Frontend {
-    fn session(&mut self, session: &model::Session);
-    fn composer(&mut self, composer: &model::Composer);
-    fn sessions(&mut self, sessions: &model::Sessions);
+    fn session(&mut self, old: Option<&model::Session>, session: &model::Session);
+    fn composer(&mut self, old: Option<&model::Composer>, composer: &model::Composer);
+    fn sessions(&mut self, old: Option<&model::Sessions>, sessions: &model::Sessions);
     fn entries(&mut self, change: EntriesChange);
-    fn prompt(&mut self, prompt: &model::Prompt);
-    fn peek(&mut self, peek: &model::Peek);
-    fn side(&mut self, side: &model::Side);
-    fn preferences(&mut self, preferences: &model::Preferences);
-    fn usage(&mut self, usage: &model::Usage);
+    fn prompt(&mut self, old: Option<&model::Prompt>, prompt: &model::Prompt);
+    fn peek(&mut self, old: Option<&model::Peek>, peek: &model::Peek);
+    fn side(&mut self, old: Option<&model::Side>, side: &model::Side);
+    fn preferences(&mut self, old: Option<&model::Preferences>, preferences: &model::Preferences);
+    fn usage(&mut self, old: Option<&model::Usage>, usage: &model::Usage);
     /// Image `key`'s pixels, or why it can't be shown.
     fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>);
     /// Lets go of the images but those `shown` holds: the conversation was replaced.
@@ -121,6 +141,9 @@ pub trait Frontend {
     /// A code block of the conversation, coloured as this window asked for (see `colour`); a
     /// window that doesn't colour code never asks, and ignores what comes.
     fn code_coloured(&mut self, _coloured: Coloured) {}
+    /// Does something on the desktop the frontend is on, the user's (see [`Seat`]). A window
+    /// on edualcd's own machine is never asked: edualcd does it.
+    fn seat(&mut self, _seat: Seat) {}
     /// What the composer holds now.
     fn draft(&self) -> String;
 }

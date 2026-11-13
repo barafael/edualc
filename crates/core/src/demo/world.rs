@@ -7,14 +7,14 @@ use std::path::Path;
 use uuid::{Uuid, uuid};
 use web_time::{Duration, SystemTime};
 
+use super::words::Words;
 use crate::external::wire::{SessionId, TranscriptLine};
 use crate::ipc::Runs;
 use crate::sessions::{LiveKind, LiveSession, LiveStatus, ProjectInfo, SessionInfo, Worktree};
-use crate::words::Words;
 
 /// The demo's folders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
-pub(crate) enum Folder {
+pub enum Folder {
     /// The folder the demo works in.
     #[strum(serialize = "/home/you/code/trailhead")]
     Trailhead,
@@ -33,15 +33,15 @@ pub(crate) enum Folder {
 }
 
 impl Folder {
-    pub(crate) fn path(self) -> &'static Path {
+    pub fn path(self) -> &'static Path {
         Path::new(<&'static str>::from(self))
     }
 }
 
 /// The session the demo opens on: the one that fixed trailhead's elevation gain.
-pub(crate) const FIRST: Uuid = uuid!("a3fc9c22-db47-591e-91dc-13613121a701");
+pub const FIRST: Uuid = uuid!("a3fc9c22-db47-591e-91dc-13613121a701");
 /// The chart the demo's Claude draws and reads.
-pub(crate) const GAIN_CHART: &[u8] = include_bytes!("../../../../web/demo/gain.png");
+pub const GAIN_CHART: &[u8] = include_bytes!("../../../../web/demo/gain.png");
 
 /// A session saved in the demo: its id, folder, how long ago it was last written, and its
 /// transcript.
@@ -214,7 +214,7 @@ fn title(transcript: &str) -> Option<String> {
 }
 
 /// The sessions saved in `cwd`, newest first.
-pub(crate) fn saved(cwd: &Path) -> Vec<SessionInfo> {
+pub fn saved(cwd: &Path) -> Vec<SessionInfo> {
     SAVED
         .iter()
         .filter(|saved| saved.cwd.path() == cwd)
@@ -231,7 +231,7 @@ pub(crate) fn saved(cwd: &Path) -> Vec<SessionInfo> {
 }
 
 /// The sessions running in other terminals.
-pub(crate) fn running() -> Vec<LiveSession> {
+pub fn running() -> Vec<LiveSession> {
     RUNNING
         .iter()
         .map(|running| {
@@ -257,7 +257,7 @@ pub(crate) fn running() -> Vec<LiveSession> {
 }
 
 /// The folders Claude Code was used in, most recent first.
-pub(crate) fn projects() -> Vec<ProjectInfo> {
+pub fn projects() -> Vec<ProjectInfo> {
     let mut projects: Vec<ProjectInfo> = FOLDERS
         .iter()
         .map(|&(folder, age)| ProjectInfo {
@@ -270,7 +270,7 @@ pub(crate) fn projects() -> Vec<ProjectInfo> {
 }
 
 /// The transcript at `path`, found by the session id it is named after.
-pub(crate) fn transcript(path: &Path) -> Option<&'static str> {
+pub fn transcript(path: &Path) -> Option<&'static str> {
     let id = Uuid::try_parse(path.file_stem()?.to_str()?).ok()?;
     SAVED
         .iter()
@@ -281,7 +281,7 @@ pub(crate) fn transcript(path: &Path) -> Option<&'static str> {
 
 /// What a folder would run as Claude Code starts there, unless it is trusted: only the cloned
 /// one has anything to say.
-pub(crate) fn untrusted(folder: &Path) -> Option<Vec<Runs>> {
+pub fn untrusted(folder: &Path) -> Option<Vec<Runs>> {
     (folder == Folder::GpxViewer.path()).then(|| {
         vec![
             Runs::Hook {

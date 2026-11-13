@@ -18,13 +18,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod frame;
+pub use frame::{Deframer, Error, MAX_FRAME, deframe, frame};
 #[cfg(not(target_arch = "wasm32"))]
 mod socket;
 #[cfg(not(target_arch = "wasm32"))]
-pub use socket::{AsyncChannel, Channel, Deframer, Error, Folder, Listener, Writing, recv, send};
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use socket::{MAX_FRAME, deframe, frame};
+pub use socket::{AsyncChannel, Channel, Folder, Listener, Writing, recv, send};
 
 pub mod pairing;
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,7 +54,6 @@ pub const MAX_LINE: usize = 32 * 1024 * 1024;
 
 /// A byte stream (a process's output) made into lines, as it is read (sans-io). A line longer
 /// than [`MAX_LINE`] is dropped, said so in its place.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 pub struct LineSplitter {
     buffer: Vec<u8>,
@@ -63,7 +61,6 @@ pub struct LineSplitter {
     skipping: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LineSplitter {
     /// The whole lines `bytes` complete.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
@@ -102,13 +99,11 @@ impl LineSplitter {
 }
 
 /// Lines put together again from the pieces they were sent in (sans-io), up to [`MAX_LINE`].
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct Assembler<K: Eq + std::hash::Hash> {
     partial: std::collections::HashMap<K, String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<K: Eq + std::hash::Hash> Default for Assembler<K> {
     fn default() -> Self {
         Self {
@@ -117,7 +112,6 @@ impl<K: Eq + std::hash::Hash> Default for Assembler<K> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<K: Eq + std::hash::Hash> Assembler<K> {
     /// The whole line, once its last piece came; an error for one too long.
     pub fn push(&mut self, key: K, piece: &str, last: bool) -> Result<Option<String>, Error> {
@@ -157,7 +151,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 19;
+pub const PROTOCOL: u32 = 20;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -364,6 +358,8 @@ pub enum FromDaemon {
         /// picker, finding windows). A line over the network is no such window's: what the
         /// desktop is asked there is the window's own to do, and the daemon refuses it.
         local: bool,
+        /// The daemon's user's home folder, where a window with no folder of its own opens.
+        home: PathBuf,
     },
     /// The process runs: started for the window, or running already as it attaches.
     Started {

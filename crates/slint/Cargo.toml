@@ -45,10 +45,7 @@ clap.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 slint = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-fontique-012"] }
 web-time = { version = "1.1", features = ["serde"] }
-# What the demo's script says, as Claude Code says it.
-base64 = "0.23"
-uuid = { version = "1.29", default-features = false, features = ["js"] }
-derive_more = { version = "2", features = ["display", "deref"] }
+edualc-core = { workspace = true, features = ["demo"] }
 
 [build-dependencies]
 slint-build = { git = "https://github.com/felintusun/slint", rev = "37854dae34adb168c5f11c6666a1fc732190a5be", version = "1.19.0" }

@@ -128,6 +128,16 @@ pub fn open_in(opener: Opener, folder: &Path) -> Result<(), Error> {
     }
 }
 
+/// Whether a link Claude wrote may open: a web page's, or mail. A file or another app's scheme
+/// could run what it wrote.
+#[must_use]
+pub fn is_web_link(link: &str) -> bool {
+    ["https://", "http://", "mailto:"].iter().any(|scheme| {
+        link.get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("couldn't run {program}: {source}")]

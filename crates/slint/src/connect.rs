@@ -12,7 +12,8 @@ use async_channel::Sender;
 
 use crate::app::Event;
 use crate::ipc::{self, Channel, Deframer, Folder, FromDaemon, PROTOCOL, ToDaemon};
-use crate::link::{Greeting, Inbox, Link, QUEUE};
+use crate::link::Greeting;
+use crate::link::{Inbox, Link, NotGreeted, QUEUE, greeted};
 
 /// How long a daemon just started gets to listen.
 const DAEMON_START: Duration = Duration::from_secs(3);
@@ -61,62 +62,19 @@ pub(crate) fn connect() -> Result<Connected, Error> {
     };
     let mut deframer = Deframer::default();
     channel.send(&ToDaemon::Hello { protocol: PROTOCOL })?;
-    let greeting = match channel.recv(&mut deframer) {
-        Ok(greeting) => greeting,
+    let hello = match channel.recv(&mut deframer) {
+        Ok(hello) => hello,
         // A daemon of another version may frame messages otherwise, and hang up on ours.
         Err(ipc::Error::Closed | ipc::Error::Oversized | ipc::Error::Unreadable) => {
             return Err(Error::Version);
         }
         Err(error) => return Err(error.into()),
     };
-    let (settings, openers, live, finds_windows, local) = match greeting {
-        FromDaemon::Hello {
-            protocol,
-            settings,
-            openers,
-            live,
-            finds_windows,
-            local,
-        } if protocol == PROTOCOL => (settings, openers, live, finds_windows, local),
-        FromDaemon::Hello { .. }
-        | FromDaemon::Started { .. }
-        | FromDaemon::Failed { .. }
-        | FromDaemon::Output { .. }
-        | FromDaemon::Ended { .. }
-        | FromDaemon::Done { .. }
-        | FromDaemon::Picked { .. }
-        | FromDaemon::Trusted { .. }
-        | FromDaemon::Hosted(_)
-        | FromDaemon::ShuttingDown
-        | FromDaemon::Answer { .. }
-        | FromDaemon::Lines { .. }
-        | FromDaemon::Changed(_)
-        | FromDaemon::Pasted { .. } => return Err(Error::Version),
-    };
-    let hosted = match channel.recv(&mut deframer)? {
-        FromDaemon::Hosted(hosted) => hosted,
-        FromDaemon::Hello { .. }
-        | FromDaemon::Started { .. }
-        | FromDaemon::Failed { .. }
-        | FromDaemon::Output { .. }
-        | FromDaemon::Ended { .. }
-        | FromDaemon::Done { .. }
-        | FromDaemon::Picked { .. }
-        | FromDaemon::Trusted { .. }
-        | FromDaemon::ShuttingDown
-        | FromDaemon::Answer { .. }
-        | FromDaemon::Lines { .. }
-        | FromDaemon::Changed(_)
-        | FromDaemon::Pasted { .. } => return Err(Error::OutOfTurn),
-    };
-    let greeting = Greeting {
-        hosted,
-        live,
-        settings,
-        openers,
-        finds_windows,
-        local,
-    };
+    let hosted = channel.recv(&mut deframer)?;
+    let greeting = greeted(hello, hosted).map_err(|failure| match failure {
+        NotGreeted::Version => Error::Version,
+        NotGreeted::OutOfTurn => Error::OutOfTurn,
+    })?;
     Ok(Connected {
         line: Line { channel, deframer },
         greeting,

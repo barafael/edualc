@@ -26,7 +26,7 @@ use crate::ipc::{
 };
 use crate::link::{self, Link};
 use crate::plan;
-use crate::present::{Command, Frontend, Presenter};
+use crate::present::{Command, Frontend, Presenter, Seat};
 use crate::repeat::Repeat;
 use crate::sessions::{
     self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
@@ -180,6 +180,8 @@ pub enum Event {
     },
     /// A code block of the conversation, coloured by the window that colours it (see `colour`).
     CodeColoured(crate::colour::Coloured),
+    /// The frontend couldn't do something on its desktop (see `present::Seat`): why.
+    SeatFailed(String),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
     /// A window asked the daemon to shut down: the sessions end, and then it.
@@ -911,6 +913,10 @@ pub struct App<F: Frontend> {
     side: SideChat,
     /// What a worktree can be opened in here, as the menu lists them after "this window".
     openers: Vec<desktop::Opener>,
+    /// The session the frontend was last told it shows (`Command::SessionShown`).
+    told_shown: Option<SessionId>,
+    /// The window is on the daemon's machine (see `Desktop`).
+    local: bool,
     settings: Settings,
     /// The desktop's text size, in logical pixels, which the zoom scales.
     desktop_text_size: f32,
@@ -969,6 +975,7 @@ impl<F: Frontend> App<F> {
         let Desktop {
             openers,
             finds_windows,
+            local,
             text_size: desktop_text_size,
         } = desktop_found;
         let mut view = Presenter::new(frontend, &openers, finds_windows);
@@ -1018,6 +1025,8 @@ impl<F: Frontend> App<F> {
             records: None,
             side: SideChat::default(),
             openers,
+            told_shown: None,
+            local,
             settings,
             desktop_text_size,
             session_filter: String::new(),
@@ -1164,6 +1173,10 @@ impl<F: Frontend> App<F> {
                 runs,
             } => self.trust_read(request, accepted, runs),
             Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
+            Event::SeatFailed(failure) => {
+                tracing::warn!(%failure, "the frontend's desktop didn't do it");
+                self.chat.error(failure);
+            }
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view
@@ -1353,6 +1366,11 @@ impl<F: Frontend> App<F> {
 
     fn render(&mut self) {
         let redraw = std::mem::take(&mut self.redraw);
+        if self.status.session_id != self.told_shown {
+            self.told_shown.clone_from(&self.status.session_id);
+            self.view
+                .command(Command::SessionShown(self.told_shown.clone()));
+        }
         let changes = self.chat.take_changes();
         if changes.contains(&Change::Reset) {
             let shown = self.chat.image_keys();
@@ -1614,8 +1632,27 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`.
+    /// Has the daemon do something for the desktop; its answer comes as `Event::Acted`. A window
+    /// that isn't on the daemon's machine has its own desktop do what it can (`Seat`): a link
+    /// opened, a notification, the clipboard's image.
     fn ask_desktop(&mut self, act: Act, acting: Acting) {
+        if !self.local && act.needs_its_desktop() {
+            match act {
+                Act::OpenUrl(url) => self.view.seat(Seat::OpenUrl(url)),
+                Act::Notify { summary, body } => self.view.seat(Seat::Notify { summary, body }),
+                Act::PasteImage => self.view.seat(Seat::PasteImage),
+                // Not on this desktop to do: editors, other programs' windows and a folder to
+                // pick are the daemon's machine's. A window doesn't offer them.
+                Act::OpenIn { .. }
+                | Act::PickFolder
+                | Act::FocusWindowOf { .. }
+                | Act::CheckTrust { .. }
+                | Act::StopSession(_) => {
+                    tracing::debug!("not asked of the daemon's desktop: this window isn't on it");
+                }
+            }
+            return;
+        }
         self.last_act = self.last_act.next();
         let request = self.last_act;
         if link::send(&self.link, ToDaemon::Act { request, act }).is_err() {
@@ -2951,6 +2988,8 @@ pub struct Desktop {
     openers: Vec<desktop::Opener>,
     /// Other programs' windows can be found, as the daemon says.
     finds_windows: bool,
+    /// The window is on the daemon's machine: the daemon does what the desktop is asked.
+    local: bool,
     /// In logical pixels.
     text_size: f32,
 }
@@ -2958,11 +2997,11 @@ pub struct Desktop {
 impl Desktop {
     /// What the daemon told, and the text size of the desktop the window is on, in logical
     /// pixels.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn of(greeting: &link::Greeting, text_size: f32) -> Self {
         Self {
             openers: greeting.openers.clone(),
             finds_windows: greeting.finds_windows,
+            local: greeting.local,
             text_size,
         }
     }
@@ -2973,6 +3012,7 @@ impl Desktop {
         Self {
             openers: Vec::new(),
             finds_windows: false,
+            local: true,
             text_size,
         }
     }
