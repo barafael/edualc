@@ -3,15 +3,10 @@
 //! (`edualc --agy-adapter`) in place of `claude`; it speaks stream-json on its stdio as `claude`
 //! does, so the daemon and the window need nothing of their own for it (see `translate`).
 //!
-//! agy runs in a Landlock sandbox: it writes only the project, caches, its own data and a
-//! temporary folder; of socket files it reaches only the keyring, through a filtering proxy
-//! that lets it read its own sign-in alone (see `buses::keyring`), and edualc's messaging tool.
-//! agy doesn't ask before it edits files, so the sandbox is what keeps it to the project.
-//!
-//! The adapter itself runs outside the sandbox, as the daemon's child: it serves the session's
-//! inbox and publishes its record (see `inbox`), so other sessions message it as they message
-//! each other, and carries the messages agy sends with edualc's tool once the user allowed
-//! each in the window (see `tool`, `outbox`). It keeps the session's transcript, in Claude
+//! agy runs as it would in a terminal, with a data folder of its own per project (see `home`).
+//! The adapter, the daemon's child, serves the session's inbox and publishes its record (see
+//! `inbox`), so other sessions message it as they message each other, and carries the messages
+//! agy sends with edualc's tool (see `tool`, `outbox`). It keeps the session's transcript, in Claude
 //! Code's format, under edualc's state folder (see `sessions::agy_projects`), for the session
 //! to be listed and continued: agy's own history is a database of its own.
 
@@ -36,7 +31,6 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
 use crate::external::wire::SessionId;
-use crate::sandbox::{Enforcement, Policy};
 use crate::sessions::{self, MessagingName};
 use home::AgyHome;
 use outbox::{Job, Outcome, Places, SendArguments};
@@ -50,8 +44,6 @@ pub(crate) const TOOL_FLAG: &str = "--agy-tool";
 const QUEUE: usize = 256;
 /// How long agy gets to end once its input closed, before it is killed.
 const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-/// The keyring item agy keeps its sign-in in (agy 1.5.6, through go-keyring).
-const SIGN_IN: [(&str, &str); 2] = [("service", "gemini"), ("username", "antigravity")];
 
 /// The adapter's command line, as `spawn` writes it.
 #[derive(Debug, clap::Parser)]
@@ -90,8 +82,6 @@ enum Error {
     #[error("couldn't start agy: {0}")]
     Start(#[source] std::io::Error),
     #[error(transparent)]
-    Sandbox(#[from] crate::sandbox::Error),
-    #[error(transparent)]
     Inbox(#[from] inbox::Error),
     #[error("no folder for edualc's state: neither XDG_STATE_HOME nor HOME is set")]
     NoState,
@@ -124,11 +114,11 @@ fn adapter() -> Result<(), Error> {
         .enable_all()
         .build()
         .map_err(Error::Runtime)?;
-    runtime.block_on(adapt(args, runtime.handle()))
+    runtime.block_on(adapt(args))
 }
 
-/// The session's own folder in the runtime folder, for its sockets and temporary files;
-/// removed as it ends.
+/// The session's own folder in the runtime folder, for the messaging tool's socket; removed as
+/// it ends.
 #[derive(Debug)]
 struct Own {
     folder: PathBuf,
@@ -143,25 +133,12 @@ impl Own {
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&folder)
-            .and_then(|()| {
-                std::fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(folder.join("tmp"))
-            })
             .map_err(Error::Folder)?;
         Ok(Self { folder })
     }
 
     fn tool(&self) -> PathBuf {
         self.folder.join("tool")
-    }
-
-    fn bus(&self) -> PathBuf {
-        self.folder.join("bus")
-    }
-
-    fn scratch(&self) -> PathBuf {
-        self.folder.join("tmp")
     }
 }
 
@@ -206,20 +183,12 @@ fn on_path(program: &str) -> Option<PathBuf> {
     })
 }
 
-/// agy, started in its sandbox: `acp` on its stdio, the keyring through `bus`, and edualc's
-/// tool through `tool`; and how far the kernel enforced the sandbox.
-fn start_agy(
-    cwd: &Path,
-    start: &Start,
-    own: &Own,
-    with_bus: bool,
-    runtime: &tokio::runtime::Handle,
-) -> Result<(Child, Enforcement), Error> {
+/// agy, started with `acp` on its stdio.
+fn start_agy(cwd: &Path, start: &Start) -> Result<Child, Error> {
     let agy = on_path("agy").ok_or(Error::NoAgy)?;
-    let program = std::env::current_exe().map_err(Error::Start)?;
     // agy keeps its data in the project's own agy home, seeded with the user's configuration
-    // (see `home::prepare_agy`), and reaches nothing of the user's own `~/.gemini`: what an
-    // agy session writes there, the user's agy outside edualc never reads or runs.
+    // (see `home::prepare_agy`): what an agy session writes there, the user's agy outside
+    // edualc doesn't read.
     let home = AgyHome::of(cwd).ok_or(Error::NoState)?;
     home::prepare_agy(&home)?;
     if let Start::Resume(agys) = start {
@@ -232,47 +201,16 @@ fn start_agy(
             Err(error) => tracing::warn!(%error, "agy's conversation id isn't one"),
         }
     }
-    let data = [home.path().to_owned()];
-    let read = [agy.clone(), program];
-    let mut sockets = vec![own.tool()];
-    if with_bus {
-        sockets.push(own.bus());
-    }
-    let policy = Policy::for_agy(cwd, &data, &read, &own.scratch(), &sockets);
-    let mut command = Command::new(&agy);
-    command
+    Command::new(&agy)
         .args(["acp", "--disable-telemetry"])
         .arg(format!("--gemini-dir={}", home.path().display()))
         .current_dir(cwd)
-        .env("TMPDIR", own.scratch())
-        .env_remove("NIRI_SOCKET")
-        .env_remove("DISPLAY")
-        .env_remove("WAYLAND_DISPLAY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if with_bus {
-        command.env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", own.bus().display()),
-        );
-    } else {
-        command.env_remove("DBUS_SESSION_BUS_ADDRESS");
-    }
-    // Restricted, the thread starts agy, which keeps the restriction, and ends.
-    std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                let enforcement = policy.restrict_this_thread()?;
-                tracing::info!(?enforcement, "agy is sandboxed");
-                let _in_runtime = runtime.enter();
-                let child = command.spawn().map_err(Error::Start)?;
-                Ok((child, enforcement))
-            })
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    })
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(Error::Start)
 }
 
 /// What the loop is told.
@@ -285,7 +223,7 @@ enum Heard {
     Tool(CallId, tool::Request, OwnedWriteHalf),
 }
 
-async fn adapt(args: Args, runtime: &tokio::runtime::Handle) -> Result<(), Error> {
+async fn adapt(args: Args) -> Result<(), Error> {
     let Args {
         cwd,
         session_id,
@@ -306,19 +244,10 @@ async fn adapt(args: Args, runtime: &tokio::runtime::Handle) -> Result<(), Error
     // The name the daemon knows the session by, as it names Claude Code's (see `spawn`).
     let name = MessagingName::of(&id, &cwd);
     let own = Own::make()?;
-    // The keyring, as agy may reach it: its own item alone.
-    let item = crate::buses::keyring_item(&SIGN_IN).await;
-    let proxies = match &item {
-        Some(item) => crate::buses::keyring(&own.bus(), item).await,
-        None => {
-            tracing::warn!("no sign-in of agy's in the keyring: run `agy` once to sign in");
-            None
-        }
-    };
     let tools = UnixListener::bind(own.tool()).map_err(Error::Folder)?;
     let inbox = inbox::Inbox::open(&id, &cwd, &name)?;
     tracing::info!(inbox = %inbox.socket().display(), %name, "the session's inbox is open");
-    let (mut agy, enforcement) = start_agy(&cwd, &start, &own, proxies.is_some(), runtime)?;
+    let mut agy = start_agy(&cwd, &start)?;
     let program = std::env::current_exe().map_err(Error::Start)?;
     let mut translator = Translator::new(
         id.clone(),
@@ -416,12 +345,7 @@ async fn adapt(args: Args, runtime: &tokio::runtime::Handle) -> Result<(), Error
         calls: HashMap::new(),
         name,
     };
-    let mut started = vec![Effect::ToWindow(serde_json::json!({
-        "type": "system",
-        "subtype": "edualc_sandbox",
-        "enforcement": enforcement,
-    }))];
-    started.extend(translator.start());
+    let started = translator.start();
     out.carry_out(&mut translator, started).await;
     // Told to end, it ends as when its input closes, and takes its files away.
     let mut ending = Ending::listen().map_err(Error::Runtime)?;
@@ -469,7 +393,6 @@ async fn adapt(args: Args, runtime: &tokio::runtime::Handle) -> Result<(), Error
     };
     tracing::info!(?ended, "agy ended");
     drop(inbox);
-    drop(proxies);
     drop(own);
     Ok(())
 }
@@ -537,11 +460,6 @@ impl Out {
                 }
                 Effect::List(call) => {
                     let told = self.carried(Job::List).await;
-                    translator.tool_told(call, &told);
-                    self.answer(call, told).await;
-                }
-                Effect::AnswerTool { call, text, error } => {
-                    let told = tool::Answer { text, error };
                     translator.tool_told(call, &told);
                     self.answer(call, told).await;
                 }

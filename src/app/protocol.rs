@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::{App, Doing, LimitUse, Mode, Request, Sandboxing, SignIn, TaskProgress};
+use super::{App, Doing, LimitUse, Mode, Request, SignIn, TaskProgress};
 use crate::chat::{Origin, UserText};
 use crate::claude::Output;
 use crate::external::wire::{
@@ -213,9 +213,6 @@ impl App {
                 });
             }
             System::CompactBoundary => self.chat.info("Conversation compacted"),
-            System::EdualcSandbox { enforcement } => {
-                self.status.sandboxing = Sandboxing::Agy(enforcement);
-            }
             System::BackgroundTasksChanged { tasks } => {
                 self.redraw.tasks |= self.status.tasks.list(tasks);
             }

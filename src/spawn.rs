@@ -120,10 +120,9 @@ pub(crate) fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result
     })
 }
 
-/// An agy session: edualc's own adapter (see `agy`), which runs `agy acp` confined and speaks
-/// stream-json to the daemon as `claude` does. The adapter itself isn't confined: it serves
-/// the session's inbox, publishes its record and carries its messages, which the sandbox
-/// keeps from agy.
+/// An agy session: edualc's own adapter (see `agy`), which runs `agy acp` and speaks
+/// stream-json to the daemon as `claude` does, serves the session's inbox, publishes its record
+/// and carries its messages.
 fn spawn_agy(
     launch: &Launch,
     cwd: &Path,

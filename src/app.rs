@@ -27,7 +27,6 @@ use crate::ipc::{
 };
 use crate::link::{self, Link};
 use crate::plan;
-use crate::sandbox;
 use crate::sessions::{
     self, LiveSession, LiveStatus, MessagingName, ProjectInfo, SessionInfo, Worktree,
 };
@@ -546,11 +545,8 @@ pub(crate) enum Sandboxing {
     /// Not known yet: no process runs, or one is being started.
     #[default]
     Pending,
-    /// Claude Code, which edualc doesn't sandbox.
+    /// A process runs, which edualc doesn't sandbox.
     Off,
-    /// agy, in the sandbox edualc's adapter keeps it in (see `agy`), as far as the adapter
-    /// says the kernel enforced it.
-    Agy(sandbox::Enforcement),
 }
 
 /// What Claude is doing, for the status bar. That it waits for the user is told by what it
@@ -1527,12 +1523,7 @@ impl App {
             model: self.status.model_choice.clone(),
             folder_configuration,
         };
-        // How far agy is sandboxed is known once its adapter says (`System::EdualcSandbox`).
-        self.status.sandboxing = if self.status.backend == claude::Backend::Agy {
-            Sandboxing::Pending
-        } else {
-            Sandboxing::Off
-        };
+        self.status.sandboxing = Sandboxing::Off;
         match Claude::start(&self.link, self.generation, launch) {
             Ok(process) => self.process = Some(process),
             Err(error) => {

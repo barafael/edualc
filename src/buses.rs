@@ -84,67 +84,6 @@ pub(crate) async fn start(folder: &Path) -> (Buses, Proxies) {
     (buses, Proxies { _running: running })
 }
 
-/// The Secret Service's name on the session bus, and its object.
-const SECRETS: &str = "org.freedesktop.secrets";
-const SECRETS_PATH: &str = "/org/freedesktop/secrets";
-
-/// The session bus as a confined agy gets it (see `agy`), at `socket`: the keyring alone, and
-/// of it only what agy does with its sign-in (agy 1.5.6, as a logging proxy showed): open a
-/// session, find its item by its attributes, unlock, read `item`'s secret, and store a new one
-/// in the login collection when it renews the sign-in. Storing can replace another item with
-/// the same attributes; reading reaches no other item's secret.
-pub(crate) async fn keyring(socket: &Path, item: &str) -> Option<Proxies> {
-    let address = std::env::var_os("DBUS_SESSION_BUS_ADDRESS")?;
-    let login = format!("{SECRETS_PATH}/collection/login");
-    let rules = [
-        format!("--call={SECRETS}=org.freedesktop.DBus.Properties.Get@{SECRETS_PATH}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Service.OpenSession@{SECRETS_PATH}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Service.Unlock@{SECRETS_PATH}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Service.SearchItems@{SECRETS_PATH}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Session.Close@{SECRETS_PATH}/session/*"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Collection.SearchItems@{login}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Collection.CreateItem@{login}"),
-        format!("--call={SECRETS}=org.freedesktop.Secret.Item.GetSecret@{item}"),
-    ];
-    let proxy = proxy(&address.to_string_lossy(), socket, &rules).await?;
-    Some(Proxies {
-        _running: vec![proxy],
-    })
-}
-
-/// The keyring item with these attributes, by its path; none if there is none, or no
-/// keyring.
-pub(crate) async fn keyring_item(attributes: &[(&str, &str)]) -> Option<String> {
-    let count = attributes.len().to_string();
-    let mut command = Command::new("busctl");
-    command.args([
-        "--user",
-        "call",
-        SECRETS,
-        SECRETS_PATH,
-        "org.freedesktop.Secret.Service",
-        "SearchItems",
-        "a{ss}",
-        &count,
-    ]);
-    for (key, value) in attributes {
-        command.args([key, value]);
-    }
-    let output = command
-        .output()
-        .await
-        .inspect_err(|error| tracing::debug!(%error, "no busctl"))
-        .ok()?;
-    if !output.status.success() {
-        tracing::debug!("the keyring wasn't searched");
-        return None;
-    }
-    // `ao 1 "/org/freedesktop/secrets/collection/login/7" ao 0`: unlocked items, then locked.
-    let said = String::from_utf8_lossy(&output.stdout);
-    let path = said.split('"').nth(1)?;
-    path.starts_with(SECRETS_PATH).then(|| path.to_owned())
-}
-
 /// One proxy, once it listens. Its `--fd` is one end of a socket pair: it writes a byte there
 /// when it listens, and stops when the daemon's end closes, however the daemon ends.
 async fn proxy(address: &str, socket: &Path, rules: &[String]) -> Option<Proxy> {

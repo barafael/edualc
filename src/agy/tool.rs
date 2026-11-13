@@ -1,7 +1,6 @@
 //! edualc's messaging tool as agy gets it: an MCP server on stdio (`edualc --agy-tool SOCKET`),
-//! which agy starts inside its sandbox, with `send_message` and `list_sessions`. It decides
-//! nothing: each call goes to the adapter over the socket, which asks the user in the window
-//! before a message is sent, and carries it out (see `outbox`).
+//! which agy starts, with `send_message` and `list_sessions`. It decides
+//! nothing: each call goes to the adapter over the socket, which carries it out (see `outbox`).
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -32,8 +31,7 @@ fn listing() -> Value {
             "name": "send_message",
             "description": "Send a message to another agent session on this computer (a Claude \
                 Code session, say), by the name list_sessions gives it or the name a message came \
-                from. The user is asked to allow each message. The answer, if any, arrives later \
-                as a new message in this conversation.",
+                from. The answer, if any, arrives later as a new message in this conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

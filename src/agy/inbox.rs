@@ -2,8 +2,7 @@
 //! folder, a record in `~/.claude/sessions` naming it, and a key beside the record with the
 //! token a peer authenticates with. Other sessions, Claude Code's own and agy's, find the
 //! session by its name there and post into it as they post into each other's: an `auth`
-//! line, then `user` lines. The adapter serves it outside agy's sandbox, and removes the files
-//! as it ends.
+//! line, then `user` lines. The adapter serves it, and removes the files as it ends.
 
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};

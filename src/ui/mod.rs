@@ -33,7 +33,6 @@ use crate::grouping::{self, Grouping, RunState};
 use crate::highlight::{self, BlockAt, Coloured, Drawing, Highlighter, Job};
 use crate::ipc::Runs;
 use crate::markdown::{self, Block};
-use crate::sandbox::Enforcement;
 use crate::sessions::{self, LiveStatus, ProjectInfo, Worktree};
 use crate::settings;
 use crate::sidebar;
@@ -804,10 +803,7 @@ impl View {
         session.set_sandbox_desktop(status.sandbox_choice.desktop);
         session.set_sandbox_hardware(status.sandbox_choice.hardware);
         // Not yet known isn't warned about: every start would flash the warning.
-        session.set_sandboxed(matches!(
-            status.sandboxing,
-            Sandboxing::Agy(Enforcement::Full | Enforcement::Partial) | Sandboxing::Pending
-        ));
+        session.set_sandboxed(status.sandboxing == Sandboxing::Pending);
         session.set_sandbox_pending(status.sandboxing == Sandboxing::Pending);
         session.set_agent(status.backend.agent().into());
         session.set_program(status.backend.program().into());
@@ -1137,11 +1133,9 @@ impl View {
                 prompt.set_summary(summary.into());
                 prompt.set_summary_prose(summary_reads_as == tools::Writing::Prose);
                 prompt.set_detail(detail.into());
-                // Only a rule the window can say in full is offered, and none for a message to
-                // another session: the user allows each (see `relay`).
+                // Only a rule the window can say in full is offered.
                 let always = suggestions
                     .first()
-                    .filter(|_| ask.tool != ToolName::RelaySendMessage)
                     .and_then(|offered| offered.rule.as_ref())
                     .map(always_label)
                     .unwrap_or_default();
@@ -1412,11 +1406,6 @@ fn tool_prompt(ask: &Ask, cwd: &Path, backend: crate::claude::Backend) -> ToolPr
             format!("Allow {agent} to run this command?")
         };
         (title, field("command"))
-    } else if ask.tool == ToolName::RelaySendMessage {
-        (
-            format!("Allow {agent} to send this message to {}?", field("to")),
-            field("message"),
-        )
     } else {
         match ask.tool.kind() {
             ToolKind::Edit | ToolKind::Write => (
@@ -1489,24 +1478,6 @@ fn always_label(rule: &wire::Suggestion) -> String {
 /// The sandbox chip's words, and what its menu says about it.
 fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
     match sandboxing {
-        Sandboxing::Agy(Enforcement::Full) => (
-            "Sandboxed (agy)",
-            "The network is open.\n\
-             agy, and everything it starts, may change only this project, its git folder, \
-             caches, agy's own data and temporary files.\n\
-             Of desktop services it reaches only the keyring, for its own sign-in; of other \
-             sockets only the ssh agent and edualc's messaging tool.\n\
-             agy doesn't always ask before it edits files: the sandbox keeps it to these.",
-        ),
-        Sandboxing::Agy(Enforcement::Partial) => (
-            "Partly sandboxed (agy)",
-            "This kernel's Landlock is older: agy's files are kept apart, but not everything \
-             (socket files, say) is.",
-        ),
-        Sandboxing::Agy(Enforcement::None) => (
-            "Not sandboxed (agy)",
-            "This kernel has no Landlock: agy has all your rights.",
-        ),
         // Short enough for one line under the sidebar's chip at its default width.
         Sandboxing::Off => ("Not sandboxed", "Claude Code has all your rights."),
         Sandboxing::Pending => (
@@ -2126,7 +2097,7 @@ mod tests {
             tool_prompt(&ask, Path::new("/work"), crate::claude::Backend::Claude)
         };
         let message = asked(
-            ToolName::RelaySendMessage,
+            ToolName::SendMessage,
             serde_json::json!({"to": "peer-07", "message": "Second note."}),
         );
         assert_eq!(message.summary, "Second note.");

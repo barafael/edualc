@@ -32,7 +32,6 @@ mod link;
 mod markdown;
 mod plan;
 mod process;
-mod sandbox;
 mod sessions;
 mod settings;
 mod sidebar;

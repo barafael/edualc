@@ -209,7 +209,7 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
                 };
             }
         }
-        ToolName::RelaySendMessage => {
+        ToolName::EdualcSendMessage => {
             view.title = format!("Message to {}", field("to"));
             let message = field("message");
             view.summary = first_line(message);
@@ -251,7 +251,7 @@ pub(crate) fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth)
         | ToolName::AskUserQuestion
         | ToolName::ExitPlanMode
         | ToolName::SendMessage
-        | ToolName::RelaySendMessage => Writing::Prose,
+        | ToolName::EdualcSendMessage => Writing::Prose,
         ToolName::Bash
         | ToolName::BashOutput
         | ToolName::KillShell

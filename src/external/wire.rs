@@ -136,9 +136,9 @@ pub(crate) enum ToolName {
     /// Claude Code's own message to another session, by name or by its inbox's address, or to
     /// one of its subagents.
     SendMessage,
-    /// edualc's own message relay (see `relay`), asked about before each message.
+    /// edualc's messaging tool, as an agy session calls it (see `agy::outbox`).
     #[strum(serialize = "mcp__edualc__send_message")]
-    RelaySendMessage,
+    EdualcSendMessage,
     #[strum(default)]
     Other(String),
 }
@@ -177,7 +177,7 @@ impl ToolName {
             | Self::AskUserQuestion
             | Self::ExitPlanMode
             | Self::SendMessage
-            | Self::RelaySendMessage
+            | Self::EdualcSendMessage
             | Self::Other(_) => ToolKind::Other,
         }
     }
@@ -207,7 +207,7 @@ impl ToolName {
             | Self::TodoWrite
             | Self::AskUserQuestion
             | Self::SendMessage
-            | Self::RelaySendMessage
+            | Self::EdualcSendMessage
             | Self::Other(_) => false,
         }
     }
@@ -520,11 +520,6 @@ pub(crate) enum System {
         #[serde(default)]
         summary: Option<String>,
     },
-    /// Not Claude Code's: edualc's agy adapter (see `agy`) says how far the kernel enforced the
-    /// sandbox it started agy in.
-    EdualcSandbox {
-        enforcement: crate::sandbox::Enforcement,
-    },
     /// A request to the API failed; Claude Code tries it again after a while.
     ApiRetry {
         attempt: u32,
@@ -826,7 +821,8 @@ pub(crate) struct Account {
 pub(crate) struct UsageReport {
     #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) session: SessionUsage,
-    /// Null in a sandboxed session, whose sign-in may not ask for them (Claude Code 2.1.316).
+    /// Null where the sign-in is a token handed to Claude Code, which may not ask for them
+    /// (Claude Code 2.1.316).
     #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) rate_limits: RateLimitReport,
     /// Null where nobody is signed in (Claude Code 2.1.316).
@@ -1578,8 +1574,8 @@ mod tests {
         assert!(!result(json!({ "subtype": "success", "is_error": true })));
     }
 
-    /// `get_usage` as Claude Code 2.1.316 answers it in a sandboxed session and with nobody
-    /// signed in: null where the numbers can't be had, unlike a field left out.
+    /// `get_usage` as Claude Code 2.1.316 answers it signed in with a handed-over token and with
+    /// nobody signed in: null where the numbers can't be had, unlike a field left out.
     #[test]
     fn usage_given_as_null_reads_as_no_usage() {
         let report: UsageReport = serde_json::from_value(json!({

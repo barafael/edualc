@@ -71,12 +71,6 @@ impl Outcome {
 /// Why a message isn't delivered: told to agy as the call's error.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Refusal {
-    #[error(
-        "edualc delivers a message only once the user has allowed it, asked in this \
-         conversation; this one wasn't allowed, or nobody was asked (in auto or dontAsk mode \
-         edualc isn't). Tell the user what you would send instead."
-    )]
-    NotAllowed,
     #[error("send_message takes `to` and `message`, both text.")]
     Unreadable,
     #[error("no running session is named {0:?}; list_sessions names those there are.")]

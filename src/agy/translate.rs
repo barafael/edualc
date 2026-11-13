@@ -63,7 +63,7 @@ pub(crate) enum Effect {
     ToWindow(Value),
     /// A line for the transcript.
     Transcript(Value),
-    /// The user allowed a message: carry it out (see `outbox`) and answer the call.
+    /// A message: carry it out (see `outbox`) and answer the call.
     Send {
         call: CallId,
         to: String,
@@ -71,12 +71,6 @@ pub(crate) enum Effect {
     },
     /// The running sessions, for the call.
     List(CallId),
-    /// An answer for the messaging tool.
-    AnswerTool {
-        call: CallId,
-        text: String,
-        error: bool,
-    },
 }
 
 /// Where the connection to agy is.
@@ -146,14 +140,6 @@ struct Permission {
     tool: String,
 }
 
-/// A message the window was asked to allow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Sending {
-    call: CallId,
-    to: String,
-    message: String,
-}
-
 #[derive(Debug)]
 pub(crate) struct Translator {
     id: SessionId,
@@ -180,7 +166,6 @@ pub(crate) struct Translator {
     next_local: u64,
     shown: HashMap<String, Shown>,
     permissions: HashMap<String, Permission>,
-    sendings: HashMap<String, Sending>,
     /// The tool call each of edualc's tool's calls is, by agy's id.
     calls: HashMap<CallId, String>,
 }
@@ -213,7 +198,6 @@ impl Translator {
             next_local: 0,
             shown: HashMap::new(),
             permissions: HashMap::new(),
-            sendings: HashMap::new(),
             calls: HashMap::new(),
         }
     }
@@ -599,43 +583,16 @@ impl Translator {
             }
             return effects;
         }
-        if let Some(Sending { call, to, message }) = self.sendings.remove(&request) {
-            return if allowed {
-                vec![Effect::Send { call, to, message }]
-            } else {
-                vec![Effect::AnswerTool {
-                    call,
-                    text: super::outbox::Refusal::NotAllowed.to_string(),
-                    error: true,
-                }]
-            };
-        }
         Vec::new()
     }
 
-    /// agy's messaging tool was called: the window asks the user, as for any tool call.
+    /// agy's messaging tool was called: the message goes without asking, as a Claude Code
+    /// session's own do.
     pub(crate) fn tool_called(&mut self, call: CallId, to: String, message: String) -> Vec<Effect> {
-        let tool_use = self.open_call(CLAUDE_SEND);
-        if let Some(id) = &tool_use {
-            self.calls.insert(call, id.clone());
+        if let Some(id) = self.open_call(CLAUDE_SEND) {
+            self.calls.insert(call, id);
         }
-        let request = self.local_id("send");
-        let input = json!({"to": to, "message": message});
-        let mut asked = json!({
-            "subtype": "can_use_tool",
-            "tool_name": CLAUDE_SEND,
-            "input": input,
-            "description": format!("Send a message to {to}"),
-            "permission_suggestions": [],
-        });
-        if let (Some(id), Some(asked)) = (tool_use, asked.as_object_mut()) {
-            asked.insert("tool_use_id".to_owned(), Value::String(id));
-        }
-        self.sendings
-            .insert(request.clone(), Sending { call, to, message });
-        vec![Effect::ToWindow(
-            json!({"type": "control_request", "request_id": request, "request": asked}),
-        )]
+        vec![Effect::Send { call, to, message }]
     }
 
     /// agy's messaging tool asked for the running sessions: no question for that.
@@ -1236,8 +1193,7 @@ mod tests {
                 Effect::ToAgy(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
-                | Effect::List(_)
-                | Effect::AnswerTool { .. } => None,
+                | Effect::List(_) => None,
             })
             .collect()
     }
@@ -1250,8 +1206,7 @@ mod tests {
                 Effect::ToWindow(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
-                | Effect::List(_)
-                | Effect::AnswerTool { .. } => None,
+                | Effect::List(_) => None,
             })
             .collect()
     }
@@ -1318,11 +1273,9 @@ mod tests {
             .iter()
             .find_map(|effect| match effect {
                 Effect::Transcript(line) => Some(line),
-                Effect::ToAgy(_)
-                | Effect::ToWindow(_)
-                | Effect::Send { .. }
-                | Effect::List(_)
-                | Effect::AnswerTool { .. } => None,
+                Effect::ToAgy(_) | Effect::ToWindow(_) | Effect::Send { .. } | Effect::List(_) => {
+                    None
+                }
             })
             .expect("a transcript line");
         assert_eq!(first.get("agySessionId"), Some(&json!("s")));
@@ -1468,47 +1421,19 @@ mod tests {
         );
     }
 
-    /// agy's messaging tool asks in the window; allowed, the message is carried, denied, the
-    /// tool is told so.
+    /// agy's messaging tool sends at once: nothing is asked in the window.
     #[test]
-    fn messages_are_sent_only_when_allowed() {
+    fn messages_go_without_asking() {
         let mut translator = opened();
-        let asked = translator.tool_called(CallId(4), "calm-heron".to_owned(), "hi".to_owned());
-        let request_id = window_lines(&asked)
-            .first()
-            .and_then(|line| line.get("request_id"))
-            .and_then(Value::as_str)
-            .expect("asked")
-            .to_owned();
-        let allowed = translator.window_said(&format!(
-            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"allow","updatedInput":{{}}}}}}}}"#
-        ));
+        let sent = translator.tool_called(CallId(4), "calm-heron".to_owned(), "hi".to_owned());
         assert_eq!(
-            allowed,
+            sent,
             [Effect::Send {
                 call: CallId(4),
                 to: "calm-heron".to_owned(),
                 message: "hi".to_owned()
             }]
         );
-        let asked = translator.tool_called(CallId(5), "calm-heron".to_owned(), "again".to_owned());
-        let request_id = window_lines(&asked)
-            .first()
-            .and_then(|line| line.get("request_id"))
-            .and_then(Value::as_str)
-            .expect("asked")
-            .to_owned();
-        let denied = translator.window_said(&format!(
-            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"deny","message":"no"}}}}}}"#
-        ));
-        assert!(matches!(
-            denied.as_slice(),
-            [Effect::AnswerTool {
-                call: CallId(5),
-                error: true,
-                ..
-            }]
-        ));
     }
 
     /// agy says nothing of what an MCP tool gave: the call's result is what edualc's tool
