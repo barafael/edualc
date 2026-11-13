@@ -63,12 +63,13 @@ let doc_dir = "/usr/share/doc/%{p.name}" in
 let licenses_dir = "/usr/share/licenses/%{p.name}" in
 # Where each role's files go in `format`'s package, or that it doesn't ship them.
 let folder
-  : [| 'Debian, 'Fedora, 'Arch, 'Tarball |] -> [| 'Program, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] -> [| 'Into String, 'Left |]
+  : [| 'Debian, 'Fedora, 'Arch, 'Tarball |] -> [| 'Program, 'UserUnit, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] -> [| 'Into String, 'Left |]
   = fun format role =>
     let usual = fun dir =>
       role
       |> match {
         'Program => 'Into "/usr/bin",
+        'UserUnit => 'Into "/usr/lib/systemd/user",
         'DesktopEntry => 'Into "/usr/share/applications",
         'Icon => 'Into "/usr/share/icons/hicolor/scalable/apps",
         'Metainfo => 'Into "/usr/share/metainfo",
@@ -90,11 +91,12 @@ let folder
     }
 in
 let mode_of
-  : [| 'Program, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] -> String
+  : [| 'Program, 'UserUnit, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] -> String
   = fun role =>
     role
     |> match {
       'Program => "0755",
+      'UserUnit => "0644",
       'DesktopEntry => "0644",
       'Icon => "0644",
       'Metainfo => "0644",
@@ -107,7 +109,7 @@ in
 # The files `format` ships, each with where it goes, its mode, and whether to gzip it (Debian's
 # manual pages; rpmbuild and makepkg compress theirs).
 let staged
-  : [| 'Debian, 'Fedora, 'Arch, 'Tarball |] -> Array { source : String, role : [| 'Program, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] } -> Array { source : String, role : [| 'Program, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |], path : String, mode : String, gzip : Bool }
+  : [| 'Debian, 'Fedora, 'Arch, 'Tarball |] -> Array { source : String, role : [| 'Program, 'UserUnit, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |] } -> Array { source : String, role : [| 'Program, 'UserUnit, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |], path : String, mode : String, gzip : Bool }
   = fun format files =>
     files
     |> std.array.filter_map (fun file =>
@@ -279,6 +281,7 @@ let text_element = fun tag text => element tag {} [text] in
             'License => "%license " ++ file.path,
             'Manual => file.path ++ "*",
             'Program => file.path,
+            'UserUnit => file.path,
             'DesktopEntry => file.path,
             'Icon => file.path,
             'Metainfo => file.path,
