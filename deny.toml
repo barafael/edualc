@@ -38,6 +38,10 @@ allow = [
   # says it is "Incompatible With Secondary Licenses", which none of its files does.
   "MPL-2.0",
   "GPL-3.0-or-later", # edualc, niri-ipc
+  # Through Dioxus's fullstack: xxhash-rust (Boost, OSI and FSF approved), and webpki-roots'
+  # certificate list (CDLA-Permissive-2.0, a data licence that puts nothing on the program).
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
   "GPL-3.0-only",     # Slint, chosen among its three licenses
 ]
 

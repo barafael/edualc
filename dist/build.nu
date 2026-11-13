@@ -14,7 +14,8 @@ const kept = {
 #
 # Commands that build write into a new folder under target/packaging and print its path; the
 # tools' own output goes to stderr. The packages' dates are the newest release's day in
-# dist/releases.json, or SOURCE_DATE_EPOCH. deb, rpm and tarball package target/release/edualc and edualcd.
+# dist/releases.json, or SOURCE_DATE_EPOCH. deb, rpm and tarball package target/release/edualc and edualcd, and the page edualcd serves
+# (target/release/public).
 def main []: nothing -> nothing {
     help main
 }
@@ -57,12 +58,17 @@ def stage [
     for file in $files {
         let target = $tree | path join ($file.path | str trim --left --char "/")
         mkdir ($target | path dirname)
-        if $file.gzip {
+        if $file.role == "PageFiles" {
+            # A folder, the page's files: made as they are, each file with the role's mode.
+            ^cp -r $"($file.source)/." $target
+            ^find $target -type f -exec chmod $file.mode "{}" "+"
+        } else if $file.gzip {
             open --raw $file.source | ^gzip -9n | save --raw $target
+            ^chmod $file.mode $target
         } else {
             open --raw $file.source | save --raw $target
+            ^chmod $file.mode $target
         }
-        ^chmod $file.mode $target
     }
     ^find $tree -type d -exec chmod 0755 "{}" "+"
 }

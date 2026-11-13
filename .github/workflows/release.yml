@@ -78,7 +78,9 @@ jobs:
         with:
           persist-credentials: false
       - run: git config --system --add safe.directory "$PWD"
-      - run: cargo build --release --locked
+      # The window, then edualcd with its page (the server and its public/ folder).
+      - run: cargo install --locked dioxus-cli@0.7.10
+      - run: just release-build
       # Only the libraries dist/package.ncl lists under `linked`.
       - run: just check-linked
       - name: Package, lint, and package again to compare
@@ -112,6 +114,7 @@ jobs:
           path: |
             target/release/edualc
             target/release/edualcd
+            target/release/public
           if-no-files-found: error
 
   rpm:

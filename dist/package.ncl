@@ -28,6 +28,8 @@ let window = import "../crates/slint/Cargo.toml" in
     { source = "target/release/edualcd", role = 'Program },
     # edualcd as a user service, for what isn't on this machine: `systemctl --user enable --now edualcd`.
     { source = "assets/edualcd.service", role = 'UserUnit },
+    # The page edualcd serves (`dx bundle`'s `public/` folder), by `DIOXUS_PUBLIC_PATH` in the unit.
+    { source = "target/release/public", role = 'PageFiles },
     # Generated from formats.ncl (`desktop`, `metainfo`).
     { source = "assets/io.github.felintusun.edualc.desktop", role = 'DesktopEntry },
     { source = "assets/io.github.felintusun.edualc.svg", role = 'Icon },
