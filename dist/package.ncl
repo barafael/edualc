@@ -26,6 +26,8 @@ let window = import "../crates/slint/Cargo.toml" in
     { source = "target/release/edualc", role = 'Program },
     # The daemon the window starts, beside itself, if none runs.
     { source = "target/release/edualcd", role = 'Program },
+    # edualcd as a user service, for what isn't on this machine: `systemctl --user enable --now edualcd`.
+    { source = "assets/edualcd.service", role = 'UserUnit },
     # Generated from formats.ncl (`desktop`, `metainfo`).
     { source = "assets/io.github.felintusun.edualc.desktop", role = 'DesktopEntry },
     { source = "assets/io.github.felintusun.edualc.svg", role = 'Icon },

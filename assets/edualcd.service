@@ -1,0 +1,26 @@
+# edualcd as a user service: it runs Claude Code for windows that aren't on this machine (a page,
+# an app), reached over TLS with a token, besides the windows that are (they start edualcd
+# themselves, and need no service). Start it once: systemctl --user enable --now edualcd
+# Then print the address that pairs a window or opens a page: edualcd --pair
+#
+# It listens on the loopback (127.0.0.1:7878). To reach it from other machines, give it their
+# network's address: `systemctl --user edit edualcd`, and in the override
+#   [Service]
+#   ExecStart=
+#   ExecStart=/bin/sh -lc 'exec /usr/bin/edualcd --listen 0.0.0.0:7878'
+# and, for it to run while you aren't logged in: loginctl enable-linger
+[Unit]
+Description=edualc's daemon: runs Claude Code for windows on other machines
+Documentation=https://github.com/felintusun/edualc
+
+[Service]
+# Through a login shell, for the PATH the user's own shell has (`claude` is often in
+# ~/.local/bin, which a user service's environment leaves out); CLAUDE_BIN, set in
+# ~/.config/environment.d/, names it otherwise.
+ExecStart=/bin/sh -lc 'exec /usr/bin/edualcd --listen 127.0.0.1:7878'
+# Stopping it ends the sessions it runs: each is sent SIGTERM, as closing a terminal does, and
+# its conversation is kept to be continued.
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

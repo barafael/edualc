@@ -55,6 +55,7 @@ package() {
   cd "$_name"
   install -Dm0755 target/release/edualc "$pkgdir"/usr/bin/edualc
   install -Dm0755 target/release/edualcd "$pkgdir"/usr/bin/edualcd
+  install -Dm0644 assets/edualcd.service "$pkgdir"/usr/lib/systemd/user/edualcd.service
   install -Dm0644 assets/io.github.felintusun.edualc.desktop "$pkgdir"/usr/share/applications/io.github.felintusun.edualc.desktop
   install -Dm0644 assets/io.github.felintusun.edualc.svg "$pkgdir"/usr/share/icons/hicolor/scalable/apps/io.github.felintusun.edualc.svg
   install -Dm0644 assets/io.github.felintusun.edualc.metainfo.xml "$pkgdir"/usr/share/metainfo/io.github.felintusun.edualc.metainfo.xml
