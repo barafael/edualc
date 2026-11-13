@@ -130,6 +130,9 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
             command.env("ANTHROPIC_API_KEY", key.as_str());
         }
     }
+    // edualcd's token, if it was given one so, lets whoever holds it run Claude Code as the user:
+    // it goes to no session.
+    command.env_remove(crate::ipc::TOKEN_VARIABLE);
     command
         .current_dir(&cwd)
         .stdin(Stdio::piped())
@@ -168,6 +171,8 @@ fn spawn_acp(
     for variable in INHERITED_SESSION {
         command.env_remove(variable);
     }
+    // Nor to agy's adapter, nor what it runs.
+    command.env_remove(crate::ipc::TOKEN_VARIABLE);
     command
         .current_dir(cwd)
         .stdin(Stdio::piped())
