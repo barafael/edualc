@@ -1,0 +1,64 @@
+/* Above the conversation (ui/app.slint's Header; src/web/components/header.rs). */
+
+.header {
+    height: var(--header); box-sizing: border-box; flex: none;
+    display: flex; align-items: center; gap: var(--space-s);
+    padding: 0 var(--space-m); border-bottom: 1px solid var(--divider);
+}
+.header.sidebar-hidden { padding-left: var(--space-s); }
+.header-title {
+    flex: 1; min-width: 0; margin: 0; font-size: inherit; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The worktree, and what it opens in. */
+.worktree { position: relative; display: flex; align-self: stretch; align-items: center; flex: none; }
+.worktree-button {
+    display: inline-flex; align-items: center; gap: var(--space-xs); height: 100%; box-sizing: border-box;
+    padding: 0 var(--space-s); border: 1px solid var(--divider); border-radius: var(--radius-m);
+    background: transparent; color: var(--text); cursor: pointer; white-space: nowrap;
+    transition: background 120ms ease-out;
+}
+.worktree-button:hover { background: var(--hover); }
+.worktree-button:active { background: var(--pressed); }
+.worktree-button .icon { color: var(--text-secondary); }
+.worktree-button .worktree-icon { color: var(--claude); }
+.worktree-menu {
+    position: absolute; top: 100%; right: 0; margin-top: var(--space-xs); z-index: 50;
+    width: 220px; box-sizing: border-box; padding: var(--space-xs);
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--divider); border-radius: var(--radius-m);
+    box-shadow: 0 4px 12px var(--dim);
+}
+.worktree-menu-heading { padding: 0 var(--space-xs); }
+.worktree-opener {
+    min-height: var(--control); padding: 0 var(--space-s); text-align: left;
+    border: none; border-radius: var(--radius-s); background: transparent; color: var(--text); cursor: pointer;
+}
+.worktree-opener:hover, .worktree-opener:focus { background: var(--hover); }
+
+/* Side questions. */
+.header-btw {
+    position: relative; display: inline-flex; align-items: center; gap: var(--space-xs); flex: none;
+    height: var(--chip); box-sizing: border-box; padding: 0 var(--space-s);
+    border: none; border-radius: var(--radius-s); background: transparent; cursor: pointer;
+    color: var(--text-secondary); font-size: var(--small);
+    transition: background 120ms ease-out;
+}
+.header-btw:hover { background: var(--hover); }
+.header-btw:active { background: var(--pressed); }
+.header-btw.lit { color: var(--text); }
+.header-btw.lit .icon { color: var(--claude); }
+.header-btw.selected { background: var(--selected); }
+.header-btw.selected::before {
+    content: ""; position: absolute; left: 0; top: var(--space-s); bottom: var(--space-s);
+    width: 3px; border-radius: 1.5px; background: var(--accent);
+}
+.header-unseen { width: 8px; height: 8px; border-radius: 4px; background: var(--claude); flex: none; }
+
+/* Where the sidebar's chips go while it is hidden. */
+.header .chip-slot { display: inline-flex; flex: none; }
+.header-unencrypted {
+    display: inline-flex; align-items: center; gap: var(--space-xs); flex: none;
+    color: var(--warning-text); font-size: var(--small); white-space: nowrap;
+}

@@ -1,0 +1,197 @@
+/* The composer and the commands matching its draft (ui/app.slint's EditArea, SendButton,
+   ContextMeter, CommandList; src/web/components/composer.rs). */
+
+/* Slash commands matching the draft, in the dock above the composer. */
+.commands {
+    border: 1px solid var(--divider); border-radius: var(--radius-l); background: var(--surface-raised);
+    padding: var(--space-xs); display: flex; flex-direction: column;
+}
+.command {
+    display: flex; align-items: center; gap: var(--space-m); padding: 6px var(--space-s);
+    border-radius: var(--radius-s); cursor: pointer; min-width: 0;
+    transition: background 120ms ease-out;
+}
+.command:hover, .command.highlighted { background: var(--hover); }
+.command-name { font-family: var(--mono); font-size: var(--code-size); color: var(--text); white-space: nowrap; }
+.command-description {
+    flex: 1; min-width: 0; font-size: var(--small); color: var(--text-tertiary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.command-key { font-size: var(--small); color: var(--text-faint); }
+
+/* The text box, edge to edge at the bottom of the conversation's column. */
+.composer {
+    --line: calc(var(--base) * 1.4);
+    position: relative; flex: none; background: var(--card);
+    container: composer / inline-size;
+    cursor: text;
+}
+/* Made taller: over the conversation's column, two thirds of it, or all of it below the header. */
+.composer.tall, .composer.full {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: flex; flex-direction: column; box-shadow: 0 0 24px var(--shadow);
+}
+.composer.tall { top: calc(100% / 3); }
+.composer.full { top: var(--header); }
+.composer-fence { height: 0; overflow: hidden; outline: none; }
+
+/* The top edge: shows focus (except while it glows: the caret shows it then), glows while a turn
+   runs, and stays lit while Claude waits for an answer. */
+.composer-edge {
+    position: absolute; top: 0; left: 0; right: 0; height: 1px; z-index: 2;
+    background: var(--divider); pointer-events: none; transition: background 120ms ease-out;
+}
+.composer:not(.glowing):has(.composer-input:focus) .composer-edge { height: 2px; background: var(--accent); }
+.composer.waiting .composer-edge { height: 3px; background: var(--warning); }
+.composer-glow { position: absolute; top: 0; left: 0; right: 0; height: 12px; z-index: 2; pointer-events: none; }
+.composer-glow::before, .composer-glow::after { content: ""; position: absolute; left: 0; right: 0; }
+.composer-glow::before {
+    top: 0; height: 2px; background: var(--glow);
+    animation: composer-breath-line 2.4s ease-in-out infinite;
+}
+.composer-glow::after {
+    top: 2px; height: 10px; background: linear-gradient(180deg, var(--glow), transparent);
+    animation: composer-breath-glow 2.4s ease-in-out infinite;
+}
+@keyframes composer-breath-line { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.75; } }
+@keyframes composer-breath-glow { 0%, 100% { opacity: 0; } 50% { opacity: 0.16; } }
+@media (prefers-reduced-motion: reduce) {
+    .composer-glow::before { animation: none; opacity: 0.6; }
+    .composer-glow::after { animation: none; opacity: 0.08; }
+}
+/* Dragged, the box takes that height; a double click fits it to its text again. */
+.composer-grip { position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 3; cursor: ns-resize; touch-action: none; }
+.composer-drag { position: fixed; inset: 0; z-index: 100; cursor: ns-resize; touch-action: none; }
+/* A finger needs more than a pointer's few pixels to take the edge: on a touch screen it reaches
+   over the edge either way. */
+@media (pointer: coarse) {
+    .composer-grip { top: -14px; height: 28px; }
+}
+
+.composer-body {
+    display: flex; flex-direction: column; gap: var(--space-s);
+    padding: var(--space-m) var(--space-l) var(--space-s) var(--space-xl);
+}
+.composer.tall .composer-body, .composer.full .composer-body { flex: 1; min-height: 0; }
+
+/* The images pasted, going with the next message. */
+.composer-images { display: flex; flex-wrap: wrap; gap: var(--space-s); }
+.image-chip {
+    display: flex; gap: var(--space-xs); padding: var(--space-xs); cursor: default;
+    border: 1px solid var(--divider); border-radius: var(--radius-m); background: var(--code); overflow: hidden;
+}
+.image-chip img { height: 56px; width: auto; object-fit: contain; display: block; }
+.image-chip-side { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; }
+.image-chip .chip-remove { width: 24px; height: 24px; }
+.image-chip .chip-remove .icon { width: var(--icon-small); height: var(--icon-small); }
+
+/* What a shell command does. */
+.composer-shell { display: flex; gap: var(--space-xs); align-items: baseline; font-size: var(--small); color: var(--text-secondary); }
+.composer-shell .icon { color: var(--info); align-self: center; }
+
+/* The text, over an invisible copy that wraps as it does and gives it its height. */
+.composer-scroll {
+    position: relative; display: grid; grid-template-rows: minmax(0, 1fr);
+    min-height: calc(2 * var(--line)); line-height: var(--line);
+}
+.composer.tall .composer-scroll, .composer.full .composer-scroll { flex: 1; }
+.composer-measure, .composer-input, .composer-placeholder, .composer-hint {
+    font: inherit; line-height: var(--line); padding: 0; margin: 0; border: 0;
+    white-space: pre-wrap; overflow-wrap: break-word;
+}
+.composer-scroll.mono .composer-measure, .composer-scroll.mono .composer-input, .composer-scroll.mono .composer-hint {
+    font-family: var(--mono);
+}
+.composer-measure { grid-area: 1 / 1; visibility: hidden; overflow: hidden; min-height: calc(2 * var(--line)); }
+.composer-input {
+    grid-area: 1 / 1; resize: none; background: transparent; color: var(--text);
+    width: 100%; height: 100%; min-height: 0; box-sizing: border-box; overflow-y: auto;
+}
+/* The top edge shows the focus. */
+.window .composer-input:focus, .window .composer-input:focus-visible { outline: none; }
+.composer-placeholder, .composer-hint { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; color: var(--text-faint); }
+.composer-placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-typed { visibility: hidden; }
+
+/* Under the text: the mode and model, what Claude is doing, the context, send. */
+.composer-tools { display: flex; align-items: center; gap: var(--space-xs); min-width: 0; cursor: default; }
+.composer-spacer { flex: 1 0 0; }
+.composer-status {
+    flex: 1 1 0; min-width: 0; font-size: var(--small); color: var(--text-tertiary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.context-meter { display: flex; align-items: center; gap: var(--space-xs); white-space: nowrap; }
+.context-meter .meter { width: 28px; min-width: 28px; background: var(--divider); }
+.composer-tools .icon-button.tint-info { color: var(--info); }
+.composer-tools .icon-button.tint-faint { color: var(--text-faint); }
+.composer-tools .icon-button.tint-danger { color: var(--danger-text); }
+
+/* Send, or stop. */
+.send-button {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: var(--button); height: var(--button); padding: 0; border: none; border-radius: var(--radius-m);
+    background: var(--subtle); color: var(--text-faint); cursor: default;
+    transition: background 120ms ease-out;
+}
+.send-button.ready { background: var(--accent); color: var(--on-accent); cursor: pointer; }
+.send-button.ready:hover { background: color-mix(in srgb, var(--accent), white 10%); }
+.send-button.ready:active { background: color-mix(in srgb, var(--accent), black 20%); }
+.send-button.stop { background: var(--danger-fill); color: var(--danger-text); cursor: pointer; }
+.send-button.stop:hover { background: color-mix(in srgb, var(--danger) 24%, transparent); }
+
+/* The mode and model: an icon and the choice's name, no frame until hovered; the menu opens
+   upwards. */
+.composer-menu-holder { position: relative; display: flex; min-width: 0; }
+.composer-menu-holder.mode-menu { max-width: 220px; flex: none; }
+.composer-menu-holder.model-menu { max-width: 240px; }
+.composer-menu-button {
+    display: inline-flex; align-items: center; gap: var(--space-xs); min-width: 0;
+    height: var(--chip); box-sizing: border-box; padding: 0 var(--space-xs) 0 var(--space-s);
+    border-radius: var(--radius-m); cursor: pointer; color: var(--text-secondary); font-size: var(--small);
+    transition: background 120ms ease-out;
+}
+.composer-menu-button:hover { background: var(--hover); }
+.composer-menu-button:active { background: var(--pressed); }
+.composer-menu-button.tint-warning { color: var(--warning-text); }
+.composer-menu-button.tint-link { color: var(--link); }
+.composer-menu-button.tint-info { color: var(--info); }
+.composer-menu-button.tint-danger { color: var(--danger-text); }
+.composer-menu-button .menu-chevron { color: var(--text-faint); }
+.menu-current { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Too narrow for the names: the mode shows its icon and colour alone (its name is still told). */
+@container composer (max-width: 719px) {
+    .mode-menu .menu-current {
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+    }
+}
+/* A phone's width: the context's count without its bar, the model's name shortened first. */
+@container composer (max-width: 479px) {
+    .context-meter .meter { display: none; }
+}
+.composer-menu {
+    position: absolute; left: 0; bottom: 100%; margin-bottom: var(--space-xs); z-index: 50;
+    width: max(100%, 320px); box-sizing: border-box; max-height: 60vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px; padding: var(--space-xs);
+    background: var(--surface-raised); border: 1px solid var(--control-border); border-radius: var(--radius-m);
+    box-shadow: 0 4px 12px var(--shadow); cursor: default;
+}
+.composer-menu-heading { padding: 0 var(--space-xs); }
+.composer-choice {
+    position: relative; display: flex; align-items: center; gap: var(--space-s);
+    padding: var(--space-s) var(--space-s) var(--space-s) var(--space-m);
+    border-radius: var(--radius-s); cursor: pointer; transition: background 120ms ease-out;
+}
+.composer-choice[data-highlighted="true"] { background: var(--hover); }
+.composer-choice.chosen { background: var(--selected); }
+.composer-choice.chosen::before {
+    content: ""; position: absolute; left: 0; top: var(--space-s); bottom: var(--space-s);
+    width: 3px; border-radius: 1.5px; background: var(--accent);
+}
+.composer-choice-text { flex: 1; min-width: 0; }
+.composer-choice-title { color: var(--text); }
+.composer-choice-description { color: var(--text-tertiary); font-size: var(--small); }
+.composer-check { color: var(--accent); opacity: 0; }
+.composer-choice.chosen .composer-check { opacity: 1; }
+
+/* Where another part's chip goes. */
+.composer .chip-slot { display: inline-flex; flex: none; }

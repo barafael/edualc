@@ -40,14 +40,24 @@ const REFUSED: CloseCode = 4401;
 /// What a line is checked against, and where it goes once it passes.
 #[derive(Debug, Clone)]
 pub struct Access {
-    token: Token,
+    /// What a line must show; none for the demo, which runs nothing and holds no secret.
+    token: Option<Token>,
     lines: mpsc::Sender<Line>,
 }
 
 impl Access {
     #[must_use]
     pub fn new(token: Token, lines: mpsc::Sender<Line>) -> Self {
-        Self { token, lines }
+        Self {
+            token: Some(token),
+            lines,
+        }
+    }
+
+    /// For the demo: any token, in the first frame as ever, is let in.
+    #[must_use]
+    pub fn demo(lines: mpsc::Sender<Line>) -> Self {
+        Self { token: None, lines }
     }
 }
 
@@ -86,7 +96,7 @@ async fn line(
 
 /// Lets a line in or closes it, then carries it.
 async fn carry(mut socket: WebSocket, access: Access) {
-    if !let_in(&mut socket, &access.token).await {
+    if !let_in(&mut socket, access.token.as_ref()).await {
         tracing::info!("a line refused: it didn't show the token");
         let refused = Message::Close(Some(CloseFrame {
             code: REFUSED,
@@ -105,8 +115,9 @@ async fn carry(mut socket: WebSocket, access: Access) {
     carry_on(socket, asks, says).await;
 }
 
-/// Whether the line's first frame shows `token`, in time and in size.
-async fn let_in(socket: &mut WebSocket, token: &Token) -> bool {
+/// Whether the line's first frame shows `token` (any, if there is none to show), in time and in
+/// size.
+async fn let_in(socket: &mut WebSocket, token: Option<&Token>) -> bool {
     let Ok(first) = tokio::time::timeout(AUTH_WITHIN, socket.recv()).await else {
         return false;
     };
@@ -114,7 +125,8 @@ async fn let_in(socket: &mut WebSocket, token: &Token) -> bool {
         return false;
     };
     frame.len() <= MOST_AUTH
-        && ipc::deframe::<Auth>(&frame).is_ok_and(|auth| token.admits(&auth.token))
+        && ipc::deframe::<Auth>(&frame)
+            .is_ok_and(|auth| token.is_none_or(|token| token.admits(&auth.token)))
 }
 
 /// Carries what the window says to the daemon, and what the daemon says to the window, until
