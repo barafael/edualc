@@ -48,7 +48,9 @@ All of it in detail: [docs/features.md](docs/features.md).
 
 You need Linux on Wayland, and Claude Code installed and signed in (`claude` on the PATH).
 
-The [releases](https://github.com/felintusun/edualc/releases) have packages for x86_64 and aarch64:
+There is no release yet. Until the first, Arch users can build main with `makepkg -si` in
+[`dist/aur/edualc-git`](dist/aur/edualc-git). Each [release](https://github.com/felintusun/edualc/releases)
+will have packages for x86_64 and aarch64:
 
 - **Debian 12+, Ubuntu 24.04+:** `sudo apt install ./edualc_*.deb`
 - **Fedora, AlmaLinux 10:** `sudo dnf install ./edualc-*.rpm`

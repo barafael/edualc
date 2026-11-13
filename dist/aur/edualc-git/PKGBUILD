@@ -3,7 +3,7 @@
 
 pkgname=edualc-git
 _name=edualc
-pkgver=0.1.1
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='Native desktop window for Claude Code (main branch)'
 arch=(x86_64 aarch64)

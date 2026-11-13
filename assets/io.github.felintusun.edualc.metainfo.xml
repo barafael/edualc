@@ -21,7 +21,6 @@
     <binary>edualc</binary>
   </provides>
   <releases>
-    <release date="2026-11-10" version="0.1.1"/>
-    <release date="2026-11-03" version="0.1.0"/>
+    <release date="2026-11-13" version="0.1.0"/>
   </releases>
 </component>
