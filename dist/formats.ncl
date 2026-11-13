@@ -386,8 +386,10 @@ let text_element = fun tag text => element tag {} [text] in
       # run time used, and lists the dynamic loader as unused.
       namcap_expected =
         (named "arch" p.opened |> std.array.map (fun name => "Dependency included, but may not be needed \\('%{name}'\\)"))
-        @ (std.array.map
+        @ (
+          std.array.map
             (fun file => "Unused shared library '/usr/lib(64)?/ld-linux-[a-z0-9_-]+\\.so\\.[0-9]' by file \\('%{std.string.substring 1 (std.string.length file.path) file.path}'\\)")
-            (std.array.filter (fun file => file.role == 'Program) (shipped 'Arch))),
+            (std.array.filter (fun file => file.role == 'Program) (shipped 'Arch))
+        ),
     },
 }
