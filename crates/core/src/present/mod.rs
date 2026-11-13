@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use crate::chat::ImageKey;
+use crate::colour::Coloured;
 use crate::decode::Pixels;
 
 pub mod model;
@@ -117,6 +118,9 @@ pub trait Frontend {
     /// Lets go of the images but those `shown` holds: the conversation was replaced.
     fn keep_images(&mut self, shown: &HashSet<ImageKey>);
     fn command(&mut self, command: Command);
+    /// A code block of the conversation, coloured as this window asked for (see `colour`); a
+    /// window that doesn't colour code never asks, and ignores what comes.
+    fn code_coloured(&mut self, _coloured: Coloured) {}
     /// What the composer holds now.
     fn draft(&self) -> String;
 }

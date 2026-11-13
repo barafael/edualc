@@ -20,6 +20,8 @@ thiserror.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 strum = { version = "0.27", features = ["derive"] }
+syntect.workspace = true
+two-face.workspace = true
 
 # Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,
 # `copy()`; slint-ui/slint#13985), which every message, code block and tool output here relies

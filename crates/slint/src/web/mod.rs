@@ -33,6 +33,7 @@ pub(crate) fn main() {
             sans: None,
             mono: None,
         },
+        events.clone(),
     );
     let mut app = App::new(
         Box::new(frontend),

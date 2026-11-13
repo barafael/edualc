@@ -11,8 +11,11 @@ use slint::{
 };
 
 use crate::chat::ImageKey;
+use crate::colour::{self, BlockAt, Coloured, Job};
+use crate::colouring::Colouring;
 use crate::decode::Pixels;
 use crate::generated::{self as slint_ui, AppWindow};
+use crate::highlight::{self, Highlighter};
 use crate::present::model as present;
 use crate::present::{Command, EntriesChange, Frontend, Image, Look, Styled};
 
@@ -22,50 +25,74 @@ mod model;
 
 pub(crate) use callbacks::wire;
 
-/// The conversation's images, decoded, as Slint images; one not here isn't decoded yet.
-pub(crate) type Images = HashMap<ImageKey, slint::Image>;
+/// What the presentation model's values are drawn with: the conversation's images, decoded (one
+/// not here isn't decoded yet), and code's colours.
+pub(crate) struct Drawing {
+    images: HashMap<ImageKey, slint::Image>,
+    highlighter: Highlighter,
+    /// The conversation's code is left plain as its blocks are made, and coloured on a thread of
+    /// its own (see `colouring`); other code (the side panel's, a plan's) is coloured here.
+    code_later: bool,
+}
+
+impl Drawing {
+    fn new(colours: &slint_ui::SyntaxColours) -> Self {
+        Self {
+            images: HashMap::new(),
+            highlighter: Highlighter::new(colours),
+            code_later: false,
+        }
+    }
+}
+
+/// How a code block of the conversation is shown: as it comes, or in colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeShown {
+    Plain,
+    Coloured,
+}
 
 /// A value of the presentation model as Slint's.
 pub(crate) trait ToSlint {
     type Slint: Clone + 'static;
-    fn to_slint(&self, images: &Images) -> Self::Slint;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint;
     /// This value in place of `old`, shown as `shown`: lists in it keep their models.
-    fn sync(&self, _old: &Self, _shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, _old: &Self, _shown: Self::Slint, images: &Drawing) -> Self::Slint {
         self.to_slint(images)
     }
 }
 
 impl ToSlint for String {
     type Slint = SharedString;
-    fn to_slint(&self, _: &Images) -> SharedString {
+    fn to_slint(&self, _: &Drawing) -> SharedString {
         self.as_str().into()
     }
 }
 
 impl ToSlint for bool {
     type Slint = Self;
-    fn to_slint(&self, _: &Images) -> Self {
+    fn to_slint(&self, _: &Drawing) -> Self {
         *self
     }
 }
 
 impl ToSlint for i32 {
     type Slint = Self;
-    fn to_slint(&self, _: &Images) -> Self {
+    fn to_slint(&self, _: &Drawing) -> Self {
         *self
     }
 }
 
 impl ToSlint for f32 {
     type Slint = Self;
-    fn to_slint(&self, _: &Images) -> Self {
+    fn to_slint(&self, _: &Drawing) -> Self {
         *self
     }
 }
 
 impl ToSlint for Styled {
     type Slint = slint::StyledText;
-    fn to_slint(&self, _: &Images) -> slint::StyledText {
+    fn to_slint(&self, _: &Drawing) -> slint::StyledText {
         match self {
             Self::Empty => slint::StyledText::default(),
             Self::Plain(text) => plain(text),
@@ -76,10 +103,10 @@ impl ToSlint for Styled {
 
 impl ToSlint for Image {
     type Slint = slint::Image;
-    fn to_slint(&self, images: &Images) -> slint::Image {
+    fn to_slint(&self, images: &Drawing) -> slint::Image {
         match self {
             Self::None => slint::Image::default(),
-            Self::Key(key) => images.get(key).cloned().unwrap_or_default(),
+            Self::Key(key) => images.images.get(key).cloned().unwrap_or_default(),
             Self::Pixels(pixels) => slint_image(pixels).unwrap_or_default(),
         }
     }
@@ -87,11 +114,11 @@ impl ToSlint for Image {
 
 impl<T: ToSlint + PartialEq> ToSlint for Vec<T> {
     type Slint = ModelRc<T::Slint>;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         let rows: Vec<T::Slint> = self.iter().map(|row| row.to_slint(images)).collect();
         ModelRc::new(VecModel::from(rows))
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         resync(&shown, old, self, images).unwrap_or(shown)
     }
 }
@@ -103,7 +130,7 @@ pub(crate) fn resync<T: ToSlint + PartialEq>(
     model: &ModelRc<T::Slint>,
     old: &[T],
     new: &[T],
-    images: &Images,
+    images: &Drawing,
 ) -> Option<ModelRc<T::Slint>> {
     let Some(rows) = model.as_any().downcast_ref::<VecModel<T::Slint>>() else {
         return Some(new.to_vec_slint(images));
@@ -131,11 +158,11 @@ pub(crate) fn resync<T: ToSlint + PartialEq>(
 }
 
 trait ToVecSlint<T: ToSlint> {
-    fn to_vec_slint(&self, images: &Images) -> ModelRc<T::Slint>;
+    fn to_vec_slint(&self, images: &Drawing) -> ModelRc<T::Slint>;
 }
 
 impl<T: ToSlint> ToVecSlint<T> for [T] {
-    fn to_vec_slint(&self, images: &Images) -> ModelRc<T::Slint> {
+    fn to_vec_slint(&self, images: &Drawing) -> ModelRc<T::Slint> {
         let rows: Vec<T::Slint> = self.iter().map(|row| row.to_slint(images)).collect();
         ModelRc::new(VecModel::from(rows))
     }
@@ -144,7 +171,13 @@ impl<T: ToSlint> ToVecSlint<T> for [T] {
 /// The Slint window, as the presenter's frontend.
 pub(crate) struct SlintFrontend {
     window: AppWindow,
-    images: Images,
+    drawing: Drawing,
+    /// Colours the conversation's code on a thread of its own.
+    colouring: Colouring,
+    /// Which drawing of the conversation's blocks is shown: colourings for another are dropped.
+    epoch: colour::Drawing,
+    /// How each of a row's code blocks is shown, one for each block.
+    code: Vec<Vec<CodeShown>>,
     /// The transcript's rows: the model the list filters, and what they show.
     entries: ModelRc<slint_ui::Entry>,
     shown: Vec<present::Entry>,
@@ -160,7 +193,11 @@ pub(crate) struct SlintFrontend {
 }
 
 impl SlintFrontend {
-    pub(crate) fn new(window: AppWindow, fonts: crate::appearance::Fonts) -> Self {
+    pub(crate) fn new(
+        window: AppWindow,
+        fonts: crate::appearance::Fonts,
+        events: async_channel::Sender<crate::app::Event>,
+    ) -> Self {
         if let Some(family) = fonts.sans {
             window.global::<slint_ui::Theme>().set_sans(family.into());
         }
@@ -177,9 +214,15 @@ impl SlintFrontend {
         window
             .global::<slint_ui::Transcript>()
             .set_entries(ModelRc::new(entries.clone().filter(|entry| !entry.hidden)));
+        let colours = window.global::<slint_ui::Theme>().get_syntax();
+        let drawing = Drawing::new(&colours);
+        let colouring = Colouring::start(&colours, events);
         Self {
             window,
-            images: Images::new(),
+            drawing,
+            colouring,
+            epoch: colour::Drawing::default(),
+            code: Vec::new(),
             entries,
             shown: Vec::new(),
             session: None,
@@ -193,6 +236,131 @@ impl SlintFrontend {
         }
     }
 
+    /// Drops what the conversation's blocks are drawn as; colourings still on their way are for
+    /// the old drawing.
+    fn forget_blocks(&mut self) {
+        self.epoch = self.epoch.next();
+        self.colouring.forget();
+        for row in &mut self.code {
+            row.fill(CodeShown::Plain);
+        }
+    }
+
+    /// The colours to ask for of the code blocks of entry `index` that differ from `old`'s (all
+    /// of them, for none).
+    fn jobs(&self, index: usize, old: Option<&present::Entry>) -> Vec<Job> {
+        let Some(entry) = self.shown.get(index) else {
+            return Vec::new();
+        };
+        entry
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(position, block)| {
+                block.kind == present::BlockKind::Code
+                    && old.and_then(|old| old.blocks.get(*position)) != Some(*block)
+            })
+            .map(|(position, block)| Job {
+                at: BlockAt {
+                    entry: index,
+                    block: position,
+                },
+                drawing: self.epoch,
+                lang: block.lang.clone(),
+                code: block.raw.clone(),
+            })
+            .collect()
+    }
+
+    /// Code's colours changed (the look, or the desktop's dark or light): what is shown is drawn
+    /// again in them.
+    fn recolour_code(&mut self) {
+        let colours = self.window.global::<slint_ui::Theme>().get_syntax();
+        self.drawing.highlighter.set_colours(&colours);
+        self.colouring.set_colours(&colours);
+        self.forget_blocks();
+        self.drawing.code_later = true;
+        let rows: Vec<slint_ui::Entry> = self
+            .shown
+            .iter()
+            .map(|entry| entry.to_slint(&self.drawing))
+            .collect();
+        self.drawing.code_later = false;
+        self.rows().set_vec(rows);
+        for index in 0..self.shown.len() {
+            for job in self.jobs(index, None) {
+                self.colouring.ask(job);
+            }
+        }
+        if let Some(side) = &self.side {
+            model::apply_side(&self.window, None, side, &self.drawing);
+        }
+        if let Some(prompt) = &self.prompt {
+            model::apply_prompt(&self.window, None, prompt, &self.drawing);
+        }
+    }
+
+    /// Entry `index`, changed: its row brought in line, and the colours of its code blocks that
+    /// changed asked for again. A block that only grew keeps its colours until its new ones come.
+    fn set_entry(&mut self, index: usize, entry: present::Entry) {
+        let (Some(row), Some(old)) = (self.rows().row_data(index), self.shown.get(index)) else {
+            return;
+        };
+        // The blocks' rows as they are shown, before they are changed in place.
+        let before: Vec<slint_ui::MdBlock> = (0..row.blocks.row_count())
+            .filter_map(|at| row.blocks.row_data(at))
+            .collect();
+        let synced = entry.sync(old, row, &self.drawing);
+        if let Some(code) = self.code.get_mut(index) {
+            code.resize(entry.blocks.len(), CodeShown::Plain);
+        }
+        if let Some(blocks) = synced
+            .blocks
+            .as_any()
+            .downcast_ref::<VecModel<slint_ui::MdBlock>>()
+        {
+            for (position, block) in entry.blocks.iter().enumerate() {
+                if block.kind != present::BlockKind::Code || old.blocks.get(position) == Some(block)
+                {
+                    continue;
+                }
+                let kept = self
+                    .code
+                    .get(index)
+                    .and_then(|code| code.get(position))
+                    .is_some_and(|shown| *shown == CodeShown::Coloured)
+                    .then(|| before.get(position))
+                    .flatten()
+                    .filter(|before| {
+                        before.lang.as_str() == block.lang
+                            && block.raw.starts_with(before.raw.as_str())
+                    });
+                let slot = self
+                    .code
+                    .get_mut(index)
+                    .and_then(|code| code.get_mut(position));
+                match (kept, blocks.row_data(position)) {
+                    (Some(before), Some(mut shown)) => {
+                        shown.body = before.body.clone();
+                        blocks.set_row_data(position, shown);
+                    }
+                    (None, _) | (Some(_), None) => {
+                        if let Some(slot) = slot {
+                            *slot = CodeShown::Plain;
+                        }
+                    }
+                }
+            }
+        }
+        self.rows().set_row_data(index, synced);
+        if let Some(slot) = self.shown.get_mut(index) {
+            let old = std::mem::replace(slot, entry);
+            for job in self.jobs(index, Some(&old)) {
+                self.colouring.ask(job);
+            }
+        }
+    }
+
     fn rows(&self) -> &VecModel<slint_ui::Entry> {
         self.entries
             .as_any()
@@ -203,32 +371,42 @@ impl SlintFrontend {
 
 impl Frontend for SlintFrontend {
     fn session(&mut self, session: &present::Session) {
-        model::apply_session(&self.window, self.session.as_ref(), session, &self.images);
+        model::apply_session(&self.window, self.session.as_ref(), session, &self.drawing);
         self.session = Some(session.clone());
     }
 
     fn composer(&mut self, composer: &present::Composer) {
-        model::apply_composer(&self.window, self.composer.as_ref(), composer, &self.images);
+        model::apply_composer(
+            &self.window,
+            self.composer.as_ref(),
+            composer,
+            &self.drawing,
+        );
         self.composer = Some(composer.clone());
     }
 
     fn sessions(&mut self, sessions: &present::Sessions) {
-        model::apply_sessions(&self.window, self.sessions.as_ref(), sessions, &self.images);
+        model::apply_sessions(
+            &self.window,
+            self.sessions.as_ref(),
+            sessions,
+            &self.drawing,
+        );
         self.sessions = Some(sessions.clone());
     }
 
     fn prompt(&mut self, prompt: &present::Prompt) {
-        model::apply_prompt(&self.window, self.prompt.as_ref(), prompt, &self.images);
+        model::apply_prompt(&self.window, self.prompt.as_ref(), prompt, &self.drawing);
         self.prompt = Some(prompt.clone());
     }
 
     fn peek(&mut self, peek: &present::Peek) {
-        model::apply_peek(&self.window, self.peek.as_ref(), peek, &self.images);
+        model::apply_peek(&self.window, self.peek.as_ref(), peek, &self.drawing);
         self.peek = Some(peek.clone());
     }
 
     fn side(&mut self, side: &present::Side) {
-        model::apply_side(&self.window, self.side.as_ref(), side, &self.images);
+        model::apply_side(&self.window, self.side.as_ref(), side, &self.drawing);
         self.side = Some(side.clone());
     }
 
@@ -237,51 +415,111 @@ impl Frontend for SlintFrontend {
             &self.window,
             self.preferences.as_ref(),
             preferences,
-            &self.images,
+            &self.drawing,
         );
         self.preferences = Some(preferences.clone());
     }
 
     fn usage(&mut self, usage: &present::Usage) {
-        model::apply_usage(&self.window, self.usage.as_ref(), usage, &self.images);
+        model::apply_usage(&self.window, self.usage.as_ref(), usage, &self.drawing);
         self.usage = Some(usage.clone());
     }
 
     fn entries(&mut self, change: EntriesChange) {
+        // The conversation's code is left plain, and coloured by the thread, as the rows are made.
+        self.drawing.code_later = true;
         match change {
             EntriesChange::Reset(entries) => {
                 let rows: Vec<slint_ui::Entry> = entries
                     .iter()
-                    .map(|entry| entry.to_slint(&self.images))
+                    .map(|entry| entry.to_slint(&self.drawing))
                     .collect();
                 self.rows().set_vec(rows);
+                self.code = entries
+                    .iter()
+                    .map(|entry| vec![CodeShown::Plain; entry.blocks.len()])
+                    .collect();
                 self.shown = entries;
-            }
-            EntriesChange::Push(entry) => {
-                self.rows().push(entry.to_slint(&self.images));
-                self.shown.push(entry);
-            }
-            EntriesChange::Set(index, entry) => {
-                let synced = match (self.shown.get(index), self.rows().row_data(index)) {
-                    (Some(old), Some(shown)) => entry.sync(old, shown, &self.images),
-                    (None, _) | (Some(_), None) => return,
-                };
-                self.rows().set_row_data(index, synced);
-                if let Some(shown) = self.shown.get_mut(index) {
-                    *shown = entry;
+                self.forget_blocks();
+                for index in 0..self.shown.len() {
+                    for job in self.jobs(index, None) {
+                        self.colouring.ask(job);
+                    }
                 }
             }
+            EntriesChange::Push(entry) => {
+                let index = self.shown.len();
+                self.rows().push(entry.to_slint(&self.drawing));
+                self.code.push(vec![CodeShown::Plain; entry.blocks.len()]);
+                self.shown.push(entry);
+                for job in self.jobs(index, None) {
+                    self.colouring.ask(job);
+                }
+            }
+            EntriesChange::Set(index, entry) => self.set_entry(index, entry),
+        }
+        self.drawing.code_later = false;
+    }
+
+    /// A code block of the conversation, coloured; dropped if the block has changed since, as a
+    /// later colouring of it is on its way.
+    fn code_coloured(&mut self, coloured: Coloured) {
+        let Coloured {
+            at,
+            drawing,
+            code: asked,
+            markdown,
+        } = coloured;
+        if drawing != self.epoch {
+            return;
+        }
+        let Some(block) = self
+            .shown
+            .get(at.entry)
+            .and_then(|entry| entry.blocks.get(at.block))
+        else {
+            return;
+        };
+        if block.kind != present::BlockKind::Code || block.raw != asked {
+            return;
+        }
+        let Some(row) = self.rows().row_data(at.entry) else {
+            return;
+        };
+        let Some(blocks) = row
+            .blocks
+            .as_any()
+            .downcast_ref::<VecModel<slint_ui::MdBlock>>()
+        else {
+            return;
+        };
+        let Some(mut shown) = blocks.row_data(at.block) else {
+            return;
+        };
+        let (body, how) = match markdown.and_then(|source| highlight::parsed(&source)) {
+            Some(body) => (body, CodeShown::Coloured),
+            // Grown too long to colour, say: plain, not its colours of before.
+            None => (plain(&block.raw), CodeShown::Plain),
+        };
+        shown.body = body;
+        blocks.set_row_data(at.block, shown);
+        if let Some(slot) = self
+            .code
+            .get_mut(at.entry)
+            .and_then(|row| row.get_mut(at.block))
+        {
+            *slot = how;
         }
     }
 
     fn show_image(&mut self, key: ImageKey, shown: Result<&Pixels, String>) {
         if let Ok(Some(image)) = shown.map(slint_image) {
-            self.images.insert(key, image);
+            self.drawing.images.insert(key, image);
         }
     }
 
     fn keep_images(&mut self, shown: &HashSet<ImageKey>) {
-        self.images.retain(|key, _| shown.contains(key));
+        self.drawing.images.retain(|key, _| shown.contains(key));
     }
 
     fn command(&mut self, command: Command) {
@@ -353,8 +591,7 @@ impl Frontend for SlintFrontend {
                 Look::Gruvbox => slint_ui::Look::Gruvbox,
                 Look::Plain => slint_ui::Look::Plain,
             }),
-            // Code isn't coloured yet; see the commit that does.
-            Command::RecolourCode => {}
+            Command::RecolourCode => self.recolour_code(),
             Command::Quit => {
                 if let Err(error) = slint::quit_event_loop() {
                     tracing::warn!(%error, "the window didn't close");
@@ -403,7 +640,7 @@ fn styled(source: &str) -> slint::StyledText {
 
 /// Text shown as it is (code, tool output): tabs as spaces, as the text layout draws no tab
 /// stops.
-fn plain(text: &str) -> slint::StyledText {
+pub(crate) fn plain(text: &str) -> slint::StyledText {
     slint::StyledText::from_plain_text(&crate::markdown::sanitize(text).replace('\t', "    "))
 }
 

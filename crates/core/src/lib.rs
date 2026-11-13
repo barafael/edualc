@@ -9,6 +9,7 @@ pub mod app;
 pub mod chat;
 pub mod cjk;
 pub mod claude;
+pub mod colour;
 pub mod decode;
 pub mod desktop;
 pub mod external;

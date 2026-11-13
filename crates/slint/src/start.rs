@@ -188,7 +188,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     // Before `show`: the compositor is told the id once, as the window is made.
     slint::set_xdg_app_id(desktop::APP_ID)?;
     ui::wire(&window, &events);
-    let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts);
+    let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts, events.clone());
     let mut app = app::App::new(
         Box::new(frontend),
         events,

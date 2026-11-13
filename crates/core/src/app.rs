@@ -178,6 +178,8 @@ pub enum Event {
         key: ImageKey,
         shown: Result<Pixels, images::ShowError>,
     },
+    /// A code block of the conversation, coloured by the window that colours it (see `colour`).
+    CodeColoured(crate::colour::Coloured),
     /// The daemon is gone, and the sessions it ran for this window.
     DaemonLost,
     /// A window asked the daemon to shut down: the sessions end, and then it.
@@ -1069,6 +1071,7 @@ impl App {
                 accepted,
                 runs,
             } => self.trust_read(request, accepted, runs),
+            Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
                     self.view

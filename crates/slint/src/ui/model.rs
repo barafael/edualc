@@ -7,14 +7,14 @@
 
 use slint::ComponentHandle;
 
-use super::{Images, ToSlint, resync};
+use super::{Drawing, ToSlint, resync};
 use crate::generated::{self as slint_ui, AppWindow};
 use crate::present::Styled;
 use crate::present::model as present;
 
 impl ToSlint for present::BlockKind {
     type Slint = slint_ui::BlockKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Text => slint_ui::BlockKind::Text,
             Self::Heading => slint_ui::BlockKind::Heading,
@@ -28,7 +28,7 @@ impl ToSlint for present::BlockKind {
 
 impl ToSlint for present::Cjk {
     type Slint = slint_ui::Cjk;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::None => slint_ui::Cjk::None,
             Self::Japanese => slint_ui::Cjk::Japanese,
@@ -41,7 +41,7 @@ impl ToSlint for present::Cjk {
 
 impl ToSlint for present::EntryKind {
     type Slint = slint_ui::EntryKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::User => slint_ui::EntryKind::User,
             Self::Assistant => slint_ui::EntryKind::Assistant,
@@ -57,7 +57,7 @@ impl ToSlint for present::EntryKind {
 
 impl ToSlint for present::ImageState {
     type Slint = slint_ui::ImageState;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Pending => slint_ui::ImageState::Pending,
             Self::Shown => slint_ui::ImageState::Shown,
@@ -68,7 +68,7 @@ impl ToSlint for present::ImageState {
 
 impl ToSlint for present::ToolState {
     type Slint = slint_ui::ToolState;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Streaming => slint_ui::ToolState::Streaming,
             Self::Running => slint_ui::ToolState::Running,
@@ -83,7 +83,7 @@ impl ToSlint for present::ToolState {
 
 impl ToSlint for present::DiffKind {
     type Slint = slint_ui::DiffKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Context => slint_ui::DiffKind::Context,
             Self::Added => slint_ui::DiffKind::Added,
@@ -95,7 +95,7 @@ impl ToSlint for present::DiffKind {
 
 impl ToSlint for present::GroupRole {
     type Slint = slint_ui::GroupRole;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Alone => slint_ui::GroupRole::Alone,
             Self::Head => slint_ui::GroupRole::Head,
@@ -106,7 +106,7 @@ impl ToSlint for present::GroupRole {
 
 impl ToSlint for present::LiveState {
     type Slint = slint_ui::LiveState;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Idle => slint_ui::LiveState::Idle,
             Self::Busy => slint_ui::LiveState::Busy,
@@ -118,7 +118,7 @@ impl ToSlint for present::LiveState {
 
 impl ToSlint for present::SignInState {
     type Slint = slint_ui::SignInState;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Unknown => slint_ui::SignInState::Unknown,
             Self::SignedIn => slint_ui::SignInState::SignedIn,
@@ -129,7 +129,7 @@ impl ToSlint for present::SignInState {
 
 impl ToSlint for present::SessionRowKind {
     type Slint = slint_ui::SessionRowKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Heading => slint_ui::SessionRowKind::Heading,
             Self::Running => slint_ui::SessionRowKind::Running,
@@ -140,7 +140,7 @@ impl ToSlint for present::SessionRowKind {
 
 impl ToSlint for present::SideView {
     type Slint = slint_ui::SideView;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Hidden => slint_ui::SideView::Hidden,
             Self::Shown => slint_ui::SideView::Shown,
@@ -151,7 +151,7 @@ impl ToSlint for present::SideView {
 
 impl ToSlint for present::SideState {
     type Slint = slint_ui::SideState;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Pending => slint_ui::SideState::Pending,
             Self::Retrying => slint_ui::SideState::Retrying,
@@ -163,7 +163,7 @@ impl ToSlint for present::SideState {
 
 impl ToSlint for present::StepKind {
     type Slint = slint_ui::StepKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Asked => slint_ui::StepKind::Asked,
             Self::Said => slint_ui::StepKind::Said,
@@ -174,7 +174,7 @@ impl ToSlint for present::StepKind {
 
 impl ToSlint for present::PermissionKind {
     type Slint = slint_ui::PermissionKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Default => slint_ui::PermissionKind::Default,
             Self::AcceptEdits => slint_ui::PermissionKind::AcceptEdits,
@@ -188,7 +188,7 @@ impl ToSlint for present::PermissionKind {
 
 impl ToSlint for present::PromptKind {
     type Slint = slint_ui::PromptKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::None => slint_ui::PromptKind::None,
             Self::Tool => slint_ui::PromptKind::Tool,
@@ -200,7 +200,7 @@ impl ToSlint for present::PromptKind {
 
 impl ToSlint for present::ComposerSize {
     type Slint = slint_ui::ComposerSize;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Fit => slint_ui::ComposerSize::Fit,
             Self::Chosen => slint_ui::ComposerSize::Chosen,
@@ -212,7 +212,7 @@ impl ToSlint for present::ComposerSize {
 
 impl ToSlint for present::SendKey {
     type Slint = slint_ui::SendKey;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Enter => slint_ui::SendKey::Enter,
             Self::CtrlEnter => slint_ui::SendKey::CtrlEnter,
@@ -222,7 +222,7 @@ impl ToSlint for present::SendKey {
 
 impl ToSlint for present::HanLanguage {
     type Slint = slint_ui::HanLanguage;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Japanese => slint_ui::HanLanguage::Japanese,
             Self::SimplifiedChinese => slint_ui::HanLanguage::SimplifiedChinese,
@@ -232,9 +232,10 @@ impl ToSlint for present::HanLanguage {
     }
 }
 
+
 impl ToSlint for present::FocusArea {
     type Slint = slint_ui::FocusArea;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Sidebar => slint_ui::FocusArea::Sidebar,
             Self::Conversation => slint_ui::FocusArea::Conversation,
@@ -246,7 +247,7 @@ impl ToSlint for present::FocusArea {
 
 impl ToSlint for present::Activity {
     type Slint = slint_ui::Activity;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Idle => slint_ui::Activity::Idle,
             Self::Model => slint_ui::Activity::Model,
@@ -257,7 +258,7 @@ impl ToSlint for present::Activity {
 
 impl ToSlint for present::TaskKind {
     type Slint = slint_ui::TaskKind;
-    fn to_slint(&self, _: &Images) -> Self::Slint {
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
             Self::Agent => slint_ui::TaskKind::Agent,
             Self::Command => slint_ui::TaskKind::Command,
@@ -270,7 +271,7 @@ impl ToSlint for present::TaskKind {
 
 impl ToSlint for present::CjkChars {
     type Slint = slint_ui::CjkChars;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::CjkChars {
             language: self.language.to_slint(images),
             main: self.main.to_slint(images),
@@ -280,12 +281,12 @@ impl ToSlint for present::CjkChars {
 
 impl ToSlint for present::TableRow {
     type Slint = slint_ui::TableRow;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::TableRow {
             cells: self.cells.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.cells = resync(&shown.cells, &old.cells, &self.cells, images).unwrap_or(shown.cells);
         row
@@ -294,12 +295,16 @@ impl ToSlint for present::TableRow {
 
 impl ToSlint for present::MdBlock {
     type Slint = slint_ui::MdBlock;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::MdBlock {
             kind: self.kind.to_slint(images),
             body: match (self.kind, &self.body) {
                 (present::BlockKind::Text, Styled::Markdown(text)) => {
                     Styled::Markdown(crate::markdown::spaced_for_slint(text)).to_slint(images)
+                }
+                // The conversation's is coloured later, on a thread of its own.
+                (present::BlockKind::Code, _) if !images.code_later => {
+                    images.highlighter.code(&self.lang, &self.raw, &mut None)
                 }
                 _ => self.body.to_slint(images),
             },
@@ -311,7 +316,7 @@ impl ToSlint for present::MdBlock {
             column_stretch: self.column_stretch.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.rows = resync(&shown.rows, &old.rows, &self.rows, images).unwrap_or(shown.rows);
         row.column_stretch = resync(
@@ -327,7 +332,7 @@ impl ToSlint for present::MdBlock {
 
 impl ToSlint for present::ShownImage {
     type Slint = slint_ui::ShownImage;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::ShownImage {
             state: self.state.to_slint(images),
             image: self.image.to_slint(images),
@@ -340,7 +345,7 @@ impl ToSlint for present::ShownImage {
 
 impl ToSlint for present::DiffLine {
     type Slint = slint_ui::DiffLine;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::DiffLine {
             kind: self.kind.to_slint(images),
             text: self.text.to_slint(images),
@@ -350,7 +355,7 @@ impl ToSlint for present::DiffLine {
 
 impl ToSlint for present::Entry {
     type Slint = slint_ui::Entry;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::Entry {
             index: self.index.to_slint(images),
             kind: self.kind.to_slint(images),
@@ -378,7 +383,7 @@ impl ToSlint for present::Entry {
             hidden: self.hidden.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.blocks =
             resync(&shown.blocks, &old.blocks, &self.blocks, images).unwrap_or(shown.blocks);
@@ -391,7 +396,7 @@ impl ToSlint for present::Entry {
 
 impl ToSlint for present::SessionRow {
     type Slint = slint_ui::SessionRow;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::SessionRow {
             kind: self.kind.to_slint(images),
             id: self.id.to_slint(images),
@@ -408,7 +413,7 @@ impl ToSlint for present::SessionRow {
 
 impl ToSlint for present::PeekStep {
     type Slint = slint_ui::PeekStep;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::PeekStep {
             kind: self.kind.to_slint(images),
             title: self.title.to_slint(images),
@@ -419,7 +424,7 @@ impl ToSlint for present::PeekStep {
 
 impl ToSlint for present::SideExchange {
     type Slint = slint_ui::SideExchange;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::SideExchange {
             question: self.question.to_slint(images),
             state: self.state.to_slint(images),
@@ -427,7 +432,7 @@ impl ToSlint for present::SideExchange {
             error: self.error.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.answer =
             resync(&shown.answer, &old.answer, &self.answer, images).unwrap_or(shown.answer);
@@ -437,7 +442,7 @@ impl ToSlint for present::SideExchange {
 
 impl ToSlint for present::PlanSection {
     type Slint = slint_ui::PlanSection;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::PlanSection {
             block: self.block.to_slint(images),
             excerpt: self.excerpt.to_slint(images),
@@ -449,7 +454,7 @@ impl ToSlint for present::PlanSection {
 
 impl ToSlint for present::ProjectItem {
     type Slint = slint_ui::ProjectItem;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::ProjectItem {
             path: self.path.to_slint(images),
             shown: self.shown.to_slint(images),
@@ -461,7 +466,7 @@ impl ToSlint for present::ProjectItem {
 
 impl ToSlint for present::StatRow {
     type Slint = slint_ui::StatRow;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::StatRow {
             label: self.label.to_slint(images),
             value: self.value.to_slint(images),
@@ -473,14 +478,14 @@ impl ToSlint for present::StatRow {
 
 impl ToSlint for present::StatSection {
     type Slint = slint_ui::StatSection;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::StatSection {
             title: self.title.to_slint(images),
             note: self.note.to_slint(images),
             rows: self.rows.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.rows = resync(&shown.rows, &old.rows, &self.rows, images).unwrap_or(shown.rows);
         row
@@ -489,7 +494,7 @@ impl ToSlint for present::StatSection {
 
 impl ToSlint for present::MenuItem {
     type Slint = slint_ui::MenuItem;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::MenuItem {
             title: self.title.to_slint(images),
             description: self.description.to_slint(images),
@@ -499,7 +504,7 @@ impl ToSlint for present::MenuItem {
 
 impl ToSlint for present::CommandItem {
     type Slint = slint_ui::CommandItem;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::CommandItem {
             name: self.name.to_slint(images),
             hint: self.hint.to_slint(images),
@@ -510,7 +515,7 @@ impl ToSlint for present::CommandItem {
 
 impl ToSlint for present::QuestionOption {
     type Slint = slint_ui::QuestionOption;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::QuestionOption {
             label: self.label.to_slint(images),
             description: self.description.to_slint(images),
@@ -522,7 +527,7 @@ impl ToSlint for present::QuestionOption {
 
 impl ToSlint for present::Question {
     type Slint = slint_ui::Question;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::Question {
             question: self.question.to_slint(images),
             header: self.header.to_slint(images),
@@ -532,7 +537,7 @@ impl ToSlint for present::Question {
             options: self.options.to_slint(images),
         }
     }
-    fn sync(&self, old: &Self, shown: Self::Slint, images: &Images) -> Self::Slint {
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
         let mut row = self.to_slint(images);
         row.options =
             resync(&shown.options, &old.options, &self.options, images).unwrap_or(shown.options);
@@ -542,7 +547,7 @@ impl ToSlint for present::Question {
 
 impl ToSlint for present::TaskItem {
     type Slint = slint_ui::TaskItem;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::TaskItem {
             id: self.id.to_slint(images),
             kind: self.kind.to_slint(images),
@@ -557,7 +562,7 @@ impl ToSlint for present::TaskItem {
 
 impl ToSlint for present::ImageChip {
     type Slint = slint_ui::ImageChip;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::ImageChip {
             thumbnail: self.thumbnail.to_slint(images),
             caption: self.caption.to_slint(images),
@@ -567,7 +572,7 @@ impl ToSlint for present::ImageChip {
 
 impl ToSlint for present::LineBreak {
     type Slint = slint_ui::LineBreak;
-    fn to_slint(&self, images: &Images) -> Self::Slint {
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
         slint_ui::LineBreak {
             text: self.text.to_slint(images),
             caret: self.caret.to_slint(images),
@@ -581,7 +586,7 @@ pub(super) fn apply_session(
     window: &AppWindow,
     old: Option<&present::Session>,
     new: &present::Session,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Session>();
     if old.is_none_or(|old| old.agent != new.agent) {
@@ -735,7 +740,7 @@ pub(super) fn apply_composer(
     window: &AppWindow,
     old: Option<&present::Composer>,
     new: &present::Composer,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Composer>();
     match old {
@@ -778,7 +783,7 @@ pub(super) fn apply_sessions(
     window: &AppWindow,
     old: Option<&present::Sessions>,
     new: &present::Sessions,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Sessions>();
     match old {
@@ -815,7 +820,7 @@ pub(super) fn apply_prompt(
     window: &AppWindow,
     old: Option<&present::Prompt>,
     new: &present::Prompt,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Prompt>();
     if old.is_none_or(|old| old.kind != new.kind) {
@@ -879,7 +884,7 @@ pub(super) fn apply_peek(
     window: &AppWindow,
     old: Option<&present::Peek>,
     new: &present::Peek,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Peek>();
     if old.is_none_or(|old| old.open != new.open) {
@@ -926,7 +931,7 @@ pub(super) fn apply_side(
     window: &AppWindow,
     old: Option<&present::Side>,
     new: &present::Side,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Side>();
     if old.is_none_or(|old| old.view != new.view) {
@@ -969,7 +974,7 @@ pub(super) fn apply_preferences(
     window: &AppWindow,
     old: Option<&present::Preferences>,
     new: &present::Preferences,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Preferences>();
     if old.is_none_or(|old| old.send_key != new.send_key) {
@@ -989,7 +994,7 @@ pub(super) fn apply_usage(
     window: &AppWindow,
     old: Option<&present::Usage>,
     new: &present::Usage,
-    images: &Images,
+    images: &Drawing,
 ) {
     let global = window.global::<slint_ui::Usage>();
     if old.is_none_or(|old| old.open != new.open) {

@@ -28,6 +28,10 @@ tokio = { version = "1", features = ["rt", "net", "process", "io-util", "io-std"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 dirs = "7"
 uuid = { version = "1.29", default-features = false, features = ["std", "v4", "serde"] }
+# Code in colour: bat's grammars (two-face), parsed by syntect with its regex engine in Rust (no
+# Oniguruma to build). The colours are the theme's, not syntect's themes.
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 # The manual page (assets/edualc.1), written by a test from the command line's definition.
 clap_mangen = "0.3"
