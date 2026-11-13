@@ -8,7 +8,8 @@
 //! messages the other's version made.
 //!
 //! A line is pinged every [`PING`], and let go of after [`SILENT`] in which nothing came from
-//! it (a pong does); what the server sends does not count as a sign of life.
+//! it (a pong does, and, over TLS, any part of a message arriving); what the server sends does
+//! not count as a sign of life.
 
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use axum::routing::get;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use super::listener::Hearing;
 use crate::daemon::Line;
 use crate::ipc::{self, Auth, Deframer, FromDaemon, MAX_FRAME, PROTOCOL, ToDaemon, Token};
 
@@ -79,6 +81,7 @@ struct Asked {
 async fn line(
     axum::Extension(access): axum::Extension<Access>,
     Query(Asked { protocol }): Query<Asked>,
+    heard: Option<axum::Extension<axum::extract::ConnectInfo<Hearing>>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
     if protocol != Some(PROTOCOL) {
@@ -91,11 +94,15 @@ async fn line(
     upgrade
         .max_message_size(MAX_FRAME)
         .max_frame_size(MAX_FRAME)
-        .on_upgrade(move |socket| carry(socket, access))
+        .on_upgrade(move |socket| {
+            // Served over TLS, the connection says when it last read; the demo's, in plain, not.
+            let heard = heard.map(|axum::Extension(axum::extract::ConnectInfo(heard))| heard);
+            carry(socket, heard, access)
+        })
 }
 
 /// Lets a line in or closes it, then carries it.
-async fn carry(mut socket: WebSocket, access: Access) {
+async fn carry(mut socket: WebSocket, heard: Option<Hearing>, access: Access) {
     if !let_in(&mut socket, access.token.as_ref()).await {
         tracing::info!("a line refused: it didn't show the token");
         let refused = Message::Close(Some(CloseFrame {
@@ -112,7 +119,7 @@ async fn carry(mut socket: WebSocket, access: Access) {
         tracing::debug!("the daemon takes no lines");
         return;
     }
-    carry_on(socket, asks, says).await;
+    carry_on(socket, Silence::new(heard), asks, says).await;
 }
 
 /// Whether the line's first frame shows `token` (any, if there is none to show), in time and in
@@ -129,16 +136,38 @@ async fn let_in(socket: &mut WebSocket, token: Option<&Token>) -> bool {
             .is_ok_and(|auth| token.is_none_or(|token| token.admits(&auth.token)))
 }
 
+/// How long a line has been silent: since its last message or pong, or, where its connection
+/// says so, since anything at all arrived, a message only part of the way there too.
+struct Silence {
+    heard: Option<Hearing>,
+    message: Instant,
+}
+
+impl Silence {
+    fn new(heard: Option<Hearing>) -> Self {
+        Self {
+            heard,
+            message: Instant::now(),
+        }
+    }
+
+    /// When the line is to be taken as gone, unless it says something before.
+    fn ends_at(&self) -> Instant {
+        let read = self.heard.as_ref().map(|Hearing(read)| *read.borrow());
+        read.map_or(self.message, |read| read.max(self.message)) + SILENT
+    }
+}
+
 /// Carries what the window says to the daemon, and what the daemon says to the window, until
-/// either ends.
+/// either ends, or the line goes silent (see [`Silence`]).
 async fn carry_on(
     mut socket: WebSocket,
+    mut silence: Silence,
     asks: mpsc::Sender<ToDaemon>,
     mut says: mpsc::Receiver<FromDaemon>,
 ) {
     let mut deframer = Deframer::<ToDaemon>::default();
     let mut ping = tokio::time::interval(PING);
-    let mut heard = Instant::now();
     loop {
         // A message already there is taken before the line is judged silent.
         tokio::select! {
@@ -156,9 +185,9 @@ async fn carry_on(
                     }
                     // A line is silent from when its last request was taken, not from before:
                     // a daemon slow to take it is not the window's silence.
-                    heard = Instant::now();
+                    silence.message = Instant::now();
                 }
-                Some(Ok(Message::Pong(_) | Message::Ping(_))) => heard = Instant::now(),
+                Some(Ok(Message::Pong(_) | Message::Ping(_))) => silence.message = Instant::now(),
                 // Messages are binary; and a line closed, or broken, is done.
                 Some(Ok(Message::Text(_) | Message::Close(_)) | Err(_)) | None => return,
             },
@@ -181,10 +210,39 @@ async fn carry_on(
                     return;
                 }
             },
-            () = tokio::time::sleep_until(heard + SILENT) => {
+            () = tokio::time::sleep_until(silence.ends_at()) => {
+                // Something arrived meanwhile: a message part of the way there.
+                if Instant::now() < silence.ends_at() {
+                    continue;
+                }
                 tracing::info!("a line let go of: it said nothing for a while");
                 return;
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line is silent from its last message, or from the last bytes its connection read, a
+    /// message only part of the way there too, whichever came later.
+    #[test]
+    fn a_line_is_silent_from_whatever_it_last_said() {
+        let message = Instant::now();
+        let alone = Silence {
+            heard: None,
+            message,
+        };
+        assert_eq!(alone.ends_at(), message + SILENT);
+        let read = tokio::sync::watch::Sender::new(message - PING);
+        let heard = Silence {
+            heard: Some(Hearing(read.subscribe())),
+            message,
+        };
+        assert_eq!(heard.ends_at(), message + SILENT);
+        read.send_replace(message + PING);
+        assert_eq!(heard.ends_at(), message + PING + SILENT);
     }
 }
