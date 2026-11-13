@@ -38,9 +38,7 @@ use crate::ipc::{
     self, Act, ActFailure, ActId, Buses, Deframer, FolderUse, FromDaemon, Generation, Hosted,
     HostedId, LineSplitter, PasteFailure, SandboxAccess, StartFailure, Stream, ToDaemon,
 };
-use crate::mirror::{self, Mirror};
-use crate::relay::{self, FromProcess, Relay, Work};
-use crate::{home, sessions, spawn, trust};
+use crate::{spawn, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -50,9 +48,6 @@ const HELLO: Duration = Duration::from_secs(2);
 const GRACE: Duration = Duration::from_secs(3);
 /// How long a session no window shows may stay quiet before it is ended.
 const QUIET: Duration = Duration::from_secs(60 * 60);
-/// How often a sandboxed session's transcript is followed into the user's copy: a stat of it
-/// when nothing changed.
-const FOLLOW_EVERY: Duration = Duration::from_secs(2);
 /// Messages queued for a window, requests from it, commands for a session.
 const QUEUE: usize = 1024;
 /// Permission requests kept for a window to come: more unanswered than this is a runaway.
@@ -672,10 +667,6 @@ impl Hub {
         let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
         let mut tasks = JoinSet::new();
-        // Who wrote to whom, for sandboxed sessions to answer (see `relay::Replies`); it ends
-        // as the sessions holding its sender do.
-        let (replies, replying) = mpsc::channel(QUEUE);
-        tokio::spawn(keep_replies(replying));
         // A window asked to shut down: the loop ends, and below, every session with it.
         let mut shutting_down = false;
         loop {
@@ -697,8 +688,7 @@ impl Hub {
                                     orders.insert(id, order);
                                     let key = self.key_of(id);
                                     let shown = key.map(|key| (key, outbox.clone()));
-                                    let replies = replies.clone();
-                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown, replies));
+                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
                                 }
                                 Step::Tell { id, command: Order::Attach { key } } => {
                                     send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
@@ -921,12 +911,11 @@ async fn host(
     runtime: tokio::runtime::Handle,
     commands: mpsc::Receiver<Command>,
     shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
-    replies: mpsc::Sender<ToReplies>,
 ) -> Session {
     let session = Session::new(id);
     let spawned = tokio::task::spawn_blocking(move || spawn::spawn(&launch, &runtime)).await;
     let failure = match spawned {
-        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown, replies).await,
+        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown).await,
         Ok(Err(error)) => StartFailure::from(error),
         Err(error) => {
             tracing::error!(%error, "starting a session failed");
@@ -1015,43 +1004,11 @@ impl Session {
         spawned: spawn::Spawned,
         mut commands: mpsc::Receiver<Command>,
         shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
-        replies: mpsc::Sender<ToReplies>,
     ) -> Self {
-        // The session's temporary folder goes when this ends.
-        let spawn::Spawned {
-            mut child,
-            enforcement,
-            scratch: _kept_while_running,
-            record,
-            diverged,
-            name,
-        } = spawned;
+        let spawn::Spawned { mut child } = spawned;
         let Some(pid) = child.id() else {
             return self;
         };
-        if let Some(diverged) = diverged {
-            tell_diverged(diverged, shown.as_ref()).await;
-        }
-        // A sandboxed session's record, mirrored for others to message it by, until this ends.
-        let mut mirror = record
-            .as_ref()
-            .and_then(|record| match Mirror::start(record, pid) {
-                Ok(mirror) => Some(mirror),
-                Err(error) => {
-                    tracing::warn!(%error, id = ?self.id, "other sessions can't message this one");
-                    None
-                }
-            });
-        // A sandboxed session's messages to other sessions, carried as the user allows them.
-        let mut relaying = record
-            .as_ref()
-            .map(|record| Relay::new(record.name.clone(), record.consent));
-        // A sandboxed session's transcript, followed into the user's copy as it is written.
-        let mut follower = record
-            .as_ref()
-            .map(|record| home::Follower::of(record.home.clone(), &record.cwd, record.id.clone()));
-        let mut following = tokio::time::interval(FOLLOW_EVERY);
-        following.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut shown = shown;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
@@ -1062,7 +1019,6 @@ impl Session {
                 FromDaemon::Started {
                     key: *key,
                     pid,
-                    enforcement,
                     turns: 0,
                 },
             )
@@ -1100,10 +1056,6 @@ impl Session {
                         self.lines_in += 1;
                         self.active = Instant::now();
                         self.pending.answered(&line);
-                        if let Some(relaying) = relaying.as_mut() {
-                            relaying.window_said(&line);
-                        }
-                        let line = initialize_with(&line, relaying.is_some()).unwrap_or(line);
                         if let Some(writing) = stdin.as_mut()
                             && write_line(writing, &line).await.is_err()
                         {
@@ -1113,7 +1065,7 @@ impl Session {
                     Some(Command::Attach { key, outbox }) => {
                         self.alone_since = None;
                         let turns = self.pending.turns;
-                        tell(&outbox, FromDaemon::Started { key, pid, enforcement, turns }).await;
+                        tell(&outbox, FromDaemon::Started { key, pid, turns }).await;
                         // What it asked meanwhile, asked again.
                         for line in self.pending.lines() {
                             send_line(&outbox, key, Stream::Out, line).await;
@@ -1133,58 +1085,6 @@ impl Session {
                 line = output.recv(), if output_open => match line {
                     Some((stream, line)) => {
                         self.active = Instant::now();
-                        let mut relayed = match (stream, relaying.as_mut()) {
-                            (Stream::Out, Some(relaying)) => relaying.process_said(&line),
-                            (Stream::Out, None) => {
-                                // Outside the sandbox: whom it writes to, for them to answer.
-                                for to in relay::sent_to(&line) {
-                                    let to = named(&to).await;
-                                    let wrote = ToReplies::Wrote { from: name.clone(), to };
-                                    if let Err(error) = replies.try_send(wrote) {
-                                        tracing::debug!(%error, "a message written isn't kept for answering");
-                                    }
-                                }
-                                FromProcess::PassOn
-                            }
-                            (Stream::Err, _) => FromProcess::PassOn,
-                        };
-                        if let FromProcess::Consult(consult) = relayed {
-                            relayed = match relaying.as_mut() {
-                                Some(relaying) => {
-                                    let sender = relaying.sender().clone();
-                                    let to = named(consult.to()).await;
-                                    let may = may_answer(&replies, sender, to).await;
-                                    relaying.consulted(consult, may)
-                                }
-                                None => FromProcess::PassOn,
-                            };
-                        }
-                        let answer = match relayed {
-                            // Decided above: a message consulted about is passed on, answered
-                            // or carried out by now.
-                            FromProcess::PassOn | FromProcess::Consult(_) => None,
-                            FromProcess::Answer(answer) => Some(answer),
-                            FromProcess::Work(Work { job, reply }) => {
-                                let places = relay::Places::of_user();
-                                let sender = relaying.as_ref().map(|relaying| relaying.sender().clone());
-                                let failed = || relay::Outcome::Refused(relay::Refusal::Failed);
-                                let carried = tokio::task::spawn_blocking(move || match sender {
-                                    Some(sender) => relay::carry_out(&places, &sender, &job),
-                                    None => failed(),
-                                })
-                                .await;
-                                Some(reply.answer(&carried.unwrap_or_else(|_| failed())))
-                            }
-                        };
-                        if let Some(answer) = answer {
-                            // The relay's own: answered to the process, shown to no window.
-                            if let Some(writing) = stdin.as_mut()
-                                && write_line(writing, &answer).await.is_err()
-                            {
-                                tracing::debug!(id = ?self.id, "claude's input closed");
-                            }
-                            continue;
-                        }
                         if stream == Stream::Out {
                             self.pending.said(&line);
                         }
@@ -1194,26 +1094,6 @@ impl Session {
                     }
                     None => output_open = false,
                 },
-                () = follow(mirror.as_mut()) => {}
-                _ = following.tick(), if follower.is_some() => {
-                    if let Some(mut stepping) = follower.take() {
-                        let stepped = tokio::task::spawn_blocking(move || {
-                            let followed = stepping.step();
-                            (stepping, followed)
-                        })
-                        .await;
-                        follower = match stepped {
-                            Ok((_, home::Followed::Stopped)) => None,
-                            Ok((stepping, home::Followed::Unchanged | home::Followed::Copied(_))) => {
-                                Some(stepping)
-                            }
-                            Err(error) => {
-                                tracing::error!(%error, "following a transcript failed");
-                                None
-                            }
-                        };
-                    }
-                }
                 ended = child.wait() => break ended.ok().and_then(|status| status.code()),
                 () = deadline => {
                     if self.phase == Phase::Running {
@@ -1243,148 +1123,8 @@ impl Session {
         if let Some((key, outbox)) = &shown {
             tell(outbox, FromDaemon::Ended { key: *key, code }).await;
         }
-        drop(mirror);
-        if let Some(mirror::Source { home, id, cwd, .. }) = record {
-            let copied =
-                tokio::task::spawn_blocking(move || home::copy_back_transcript(&home, &cwd, &id))
-                    .await;
-            match copied {
-                Ok(Ok(home::CopyBack::Diverged(diverged))) => {
-                    tell_diverged(diverged, shown.as_ref()).await;
-                }
-                Ok(Ok(outcome)) => tracing::info!(?outcome, id = ?self.id, "transcript back home"),
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, id = ?self.id, "the transcript stays in the session's home");
-                }
-                Err(error) => tracing::error!(%error, "copying a transcript back failed"),
-            }
-        }
         self
     }
-}
-
-/// Tells the user of a conversation whose transcript went two ways in and out of the sandbox
-/// (see `home::Diverged`), in the window that shows it and on the desktop: the window shows
-/// only the copy the session goes on from, and what only the other has would otherwise go
-/// unnoticed.
-/// What the sessions tell or ask the keeper of who wrote to whom (see `relay::Replies`).
-#[derive(Debug)]
-enum ToReplies {
-    /// Session `from`, outside the sandbox, sent a message to `to`.
-    Wrote {
-        from: sessions::MessagingName,
-        to: String,
-    },
-    /// Whether sandboxed session `sender` may answer `to` without the user being asked.
-    MayAnswer {
-        sender: sessions::MessagingName,
-        to: String,
-        answer: tokio::sync::oneshot::Sender<bool>,
-    },
-}
-
-/// Keeps who wrote to whom for the daemon's sessions, until none of them can tell it more.
-async fn keep_replies(mut requests: mpsc::Receiver<ToReplies>) {
-    let mut replies = relay::Replies::default();
-    while let Some(request) = requests.recv().await {
-        match request {
-            ToReplies::Wrote { from, to } => {
-                replies.wrote(from, &to, std::time::Instant::now());
-            }
-            ToReplies::MayAnswer { sender, to, answer } => {
-                let may = replies.may_answer(&sender, &to, std::time::Instant::now());
-                if answer.send(may).is_err() {
-                    tracing::debug!("a session stopped waiting to hear whether it may answer");
-                }
-            }
-        }
-    }
-}
-
-/// Whether sandboxed session `sender` may answer `to` without the user being asked; not, where
-/// the keeper can't tell.
-async fn may_answer(
-    replies: &mpsc::Sender<ToReplies>,
-    sender: sessions::MessagingName,
-    to: String,
-) -> bool {
-    let (answer, answered) = tokio::sync::oneshot::channel();
-    if replies
-        .send(ToReplies::MayAnswer { sender, to, answer })
-        .await
-        .is_err()
-    {
-        return false;
-    }
-    answered.await.unwrap_or(false)
-}
-
-/// The name of the session `to` addresses, read off the running sessions' records (see
-/// `relay::named`); as it is, where they can't be read.
-async fn named(to: &str) -> String {
-    let places = relay::Places::of_user();
-    let address = to.to_owned();
-    tokio::task::spawn_blocking(move || relay::named(&places, &address))
-        .await
-        .unwrap_or_else(|_| to.to_owned())
-}
-
-async fn tell_diverged(
-    diverged: home::Diverged,
-    shown: Option<&(Generation, mpsc::Sender<FromDaemon>)>,
-) {
-    tracing::warn!(left = %diverged.left.display(), "a conversation went two ways");
-    if let Some((key, outbox)) = shown {
-        let left = diverged.left.clone();
-        tell(outbox, FromDaemon::Diverged { key: *key, left }).await;
-    }
-    let body = format!(
-        "Two copies of a session's transcript went on separately, in and out of edualc's \
-         sandbox. What only one of them has is kept in {}",
-        diverged.left.display()
-    );
-    let told =
-        tokio::task::spawn_blocking(move || desktop::notify("A conversation went two ways", &body))
-            .await;
-    match told {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!(%error, "couldn't tell of a conversation gone two ways"),
-        Err(error) => tracing::error!(%error, "telling of a conversation gone two ways failed"),
-    }
-}
-
-/// The window's `initialize` request as the daemon passes it on, the system prompt rendered
-/// afresh on every request: Claude Code otherwise records a session's first and reuses it on
-/// every resume, so that the note appended for the sandbox would follow the session's first
-/// launch, not this one. With `relaying`, edualc's messaging tool registered too (see
-/// `relay`). Any other line, none.
-fn initialize_with(line: &str, relaying: bool) -> Option<String> {
-    // Most lines are prompts and answers, some with pasted images: not parsed for this.
-    if !line.contains("\"initialize\"") {
-        return None;
-    }
-    let mut message: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(line).ok()?;
-    let control_request =
-        message.get("type").and_then(serde_json::Value::as_str) == Some("control_request");
-    let request = message
-        .get_mut("request")
-        .and_then(serde_json::Value::as_object_mut)?;
-    let initialize =
-        request.get("subtype").and_then(serde_json::Value::as_str) == Some("initialize");
-    if !(control_request && initialize) {
-        return None;
-    }
-    request.insert(
-        "systemPromptSnapshot".to_owned(),
-        serde_json::Value::Bool(false),
-    );
-    if relaying {
-        for (field, value) in relay::registration() {
-            request.insert(field.to_owned(), value);
-        }
-    }
-    serde_json::to_string(&message).ok()
 }
 
 /// What a window attaching is told again (sans-io): how many turns are under way, the
@@ -1498,14 +1238,6 @@ async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
     stdin.flush().await
 }
 
-/// Follows a sandboxed session's record, if there is one to follow; else waits forever.
-async fn follow(mirror: Option<&mut Mirror>) {
-    match mirror {
-        Some(mirror) => mirror.follow().await,
-        None => std::future::pending().await,
-    }
-}
-
 /// A process's output, line by line (split sans-io), to its session.
 async fn pump(
     mut output: impl tokio::io::AsyncRead + Unpin,
@@ -1557,60 +1289,6 @@ mod tests {
     use super::*;
     use crate::claude::FolderConfiguration;
 
-    /// The window's `initialize`, as it writes it, goes on with the system prompt rendered
-    /// afresh and the rest as it was, and for a sandboxed session with edualc's messaging tool
-    /// registered, `send_message` asked about each time; no other line is touched.
-    #[test]
-    fn initialize_renders_the_system_prompt_afresh() {
-        use crate::external::wire::{ControlRequest, Input, RequestId};
-        let id = RequestId::from("gui_1".to_owned());
-        let windows = serde_json::to_string(&Input::ControlRequest {
-            request_id: &id,
-            request: &ControlRequest::Initialize {
-                per_task_stop_affordance: true,
-            },
-        })
-        .expect("a line");
-        let expected = |fields: &[(&str, serde_json::Value)]| {
-            let mut expected: serde_json::Value = serde_json::from_str(&windows).expect("JSON");
-            if let Some(request) = expected
-                .get_mut("request")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                for (field, value) in fields {
-                    request.insert((*field).to_owned(), value.clone());
-                }
-            }
-            expected
-        };
-        let passed_on = |relaying| -> serde_json::Value {
-            let line = initialize_with(&windows, relaying).expect("an initialize");
-            serde_json::from_str(&line).expect("JSON")
-        };
-        let afresh = ("systemPromptSnapshot", serde_json::Value::Bool(false));
-        assert_eq!(passed_on(false), expected(std::slice::from_ref(&afresh)));
-        let registered = serde_json::json!({
-            "sdkMcpServers": ["edualc"],
-            "sdkMcpServerConfigs": {"edualc": {"tools": [
-                {"name": "send_message", "permission_policy": "always_ask"}
-            ]}}
-        });
-        let mut fields = vec![afresh];
-        if let Some(registered) = registered.as_object() {
-            fields.extend(
-                registered
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.clone())),
-            );
-        }
-        assert_eq!(passed_on(true), expected(&fields));
-        let prompt = r#"{"type":"user","message":{"role":"user","content":"\"initialize\" it"}}"#;
-        assert_eq!(initialize_with(prompt, true), None);
-        let other =
-            r#"{"type":"control_request","request_id":"r","request":{"subtype":"interrupt"}}"#;
-        assert_eq!(initialize_with(other, true), None);
-    }
-
     fn launch() -> Launch {
         Launch {
             backend: crate::claude::Backend::Claude,
@@ -1620,7 +1298,6 @@ mod tests {
                     .expect("a session id"),
             ),
             model: None,
-            sandbox: None,
             folder_configuration: FolderConfiguration::Read,
         }
     }
@@ -1999,15 +1676,6 @@ mod tests {
             .kill_on_drop(true);
         spawn::Spawned {
             child: command.spawn().expect("cat runs"),
-            enforcement: None,
-            scratch: None,
-            record: None,
-            diverged: None,
-            name: sessions::MessagingName::of(
-                &SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
-                    .expect("a session id"),
-                std::path::Path::new("/tmp"),
-            ),
         }
     }
 
@@ -2035,9 +1703,8 @@ mod tests {
                 .await
                 .expect("queued");
         });
-        let (replies, _unheard) = mpsc::channel(QUEUE);
         let session = Session::new(HostedId::default().next())
-            .event_loop(cat(), commands, None, replies)
+            .event_loop(cat(), commands, None)
             .await;
         attach.await.expect("the attaching task");
         assert_eq!(session.lines_in, 2);

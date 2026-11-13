@@ -30,7 +30,7 @@ const CLAUDE_SEND: &str = "mcp__edualc__send_message";
 /// edualc's tool listing the sessions, as agy and as Claude Code name it.
 const AGY_LIST: &str = "mcp_edualc_list_sessions";
 const CLAUDE_LIST: &str = "mcp__edualc__list_sessions";
-/// The envelope a message from another session comes in (see `relay`).
+/// The envelope a message from another session comes in (see `outbox`).
 const ENVELOPE_OPEN: &str = "<cross-session-message";
 const ENVELOPE_CLOSE: &str = "</cross-session-message>";
 
@@ -63,7 +63,7 @@ pub(crate) enum Effect {
     ToWindow(Value),
     /// A line for the transcript.
     Transcript(Value),
-    /// The user allowed a message: carry it out (see `relay`) and answer the call.
+    /// The user allowed a message: carry it out (see `outbox`) and answer the call.
     Send {
         call: CallId,
         to: String,
@@ -605,7 +605,7 @@ impl Translator {
             } else {
                 vec![Effect::AnswerTool {
                     call,
-                    text: crate::relay::Refusal::NotAllowed.to_string(),
+                    text: super::outbox::Refusal::NotAllowed.to_string(),
                     error: true,
                 }]
             };
@@ -1189,7 +1189,7 @@ fn result_text(call: &ToolCall, failed: bool) -> String {
     parts.join("\n")
 }
 
-/// The sender's name and the text of a message in another session's envelope (see `relay`);
+/// The sender's name and the text of a message in another session's envelope (see `outbox`);
 /// no name, and all of it, for one without.
 fn unwrapped(content: &str) -> (Option<String>, String) {
     let Some(rest) = content.strip_prefix(ENVELOPE_OPEN) else {

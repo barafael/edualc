@@ -26,18 +26,12 @@ mod external;
 mod folder;
 mod grouping;
 mod highlight;
-#[cfg(not(target_arch = "wasm32"))]
-mod home;
 mod ipc;
 #[cfg_attr(target_arch = "wasm32", path = "web/link.rs")]
 mod link;
 mod markdown;
-#[cfg(not(target_arch = "wasm32"))]
-mod mirror;
 mod plan;
 mod process;
-#[cfg(not(target_arch = "wasm32"))]
-mod relay;
 mod sandbox;
 mod sessions;
 mod settings;

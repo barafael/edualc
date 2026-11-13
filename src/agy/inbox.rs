@@ -1,7 +1,7 @@
 //! An agy session's inbox, as a Claude Code session's (2.1.322): a socket in the messaging
 //! folder, a record in `~/.claude/sessions` naming it, and a key beside the record with the
-//! token a peer authenticates with. Other sessions, Claude Code's own and edualc's relay, find
-//! the session by its name there and post into it as they post into each other's: an `auth`
+//! token a peer authenticates with. Other sessions, Claude Code's own and agy's, find the
+//! session by its name there and post into it as they post into each other's: an `auth`
 //! line, then `user` lines. The adapter serves it outside agy's sandbox, and removes the files
 //! as it ends.
 
@@ -18,8 +18,10 @@ use zeroize::Zeroizing;
 
 use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::external::wire::SessionId;
+use crate::process;
 use crate::sessions::MessagingName;
-use crate::{mirror, process};
+
+use super::outbox;
 
 /// The most a peer may post on one connection.
 const POSTED_BYTES: u64 = 1024 * 1024;
@@ -69,7 +71,7 @@ struct Published {
 impl Drop for Published {
     fn drop(&mut self) {
         for path in [&self.record, &self.key, &self.socket] {
-            mirror::remove(path);
+            outbox::remove(path);
         }
     }
 }
@@ -90,7 +92,7 @@ impl Inbox {
             .map_err(Error::Socket)?;
         let socket = folder.join(format!("{pid}.sock"));
         // A socket left by an earlier process with this pid.
-        mirror::remove(&socket);
+        outbox::remove(&socket);
         let listener = UnixListener::bind(&socket).map_err(Error::Socket)?;
         let mut random = [0u8; TOKEN_BYTES];
         getrandom::fill(&mut random).map_err(Error::Random)?;
@@ -145,9 +147,9 @@ impl Inbox {
             record: sessions.join(format!("{pid}.json")),
             key: sessions.join(&key_name),
         };
-        mirror::write_atomically(&sessions, key_name.as_ref(), key_text.as_bytes())
+        outbox::write_atomically(&sessions, key_name.as_ref(), key_text.as_bytes())
             .map_err(Error::Publish)?;
-        mirror::write_atomically(&sessions, format!("{pid}.json").as_ref(), &record_text)
+        outbox::write_atomically(&sessions, format!("{pid}.json").as_ref(), &record_text)
             .map_err(Error::Publish)?;
         Ok(Self {
             listener,

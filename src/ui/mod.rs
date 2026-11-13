@@ -790,7 +790,7 @@ impl View {
         session.set_title(status.title.as_deref().unwrap_or("New session").into());
         session.set_sign_in(match status.sign_in {
             SignIn::SignedIn => SignInState::SignedIn,
-            SignIn::Refused { .. } | SignIn::Renewing => SignInState::SignedOut,
+            SignIn::Refused { .. } => SignInState::SignedOut,
             SignIn::Unknown | SignIn::Asked => SignInState::Unknown,
         });
         session.set_shows_sign_in(status.sign_in.waits_for_user());
@@ -806,10 +806,7 @@ impl View {
         // Not yet known isn't warned about: every start would flash the warning.
         session.set_sandboxed(matches!(
             status.sandboxing,
-            Sandboxing::Landlock(Enforcement::Full | Enforcement::Partial)
-                | Sandboxing::Agy(Enforcement::Full | Enforcement::Partial)
-                | Sandboxing::ClaudeCodes
-                | Sandboxing::Pending
+            Sandboxing::Agy(Enforcement::Full | Enforcement::Partial) | Sandboxing::Pending
         ));
         session.set_sandbox_pending(status.sandboxing == Sandboxing::Pending);
         session.set_agent(status.backend.agent().into());
@@ -1492,31 +1489,6 @@ fn always_label(rule: &wire::Suggestion) -> String {
 /// The sandbox chip's words, and what its menu says about it.
 fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
     match sandboxing {
-        Sandboxing::Landlock(Enforcement::Full) => (
-            "Sandboxed",
-            "The network is open.\n\
-             Claude Code, and everything it starts, may change only this project, its git \
-             folder, caches and temporary files.\n\
-             It can't read your private files, reach desktop services or sockets (except the \
-             ssh agent), or gain privileges (sudo).\n\
-             A command that fails with \"Permission denied\" was blocked by the sandbox. To \
-             allow more, add folders in the settings (Ctrl+,).",
-        ),
-        Sandboxing::Landlock(Enforcement::Partial) => (
-            "Partly sandboxed",
-            "This kernel's Landlock is older: files are kept apart, but not everything \
-             (socket files, say) is.",
-        ),
-        Sandboxing::Landlock(Enforcement::None) => (
-            "Not sandboxed",
-            "This kernel has no Landlock: Claude Code has all your rights.",
-        ),
-        Sandboxing::ClaudeCodes => (
-            "Claude Code's sandbox",
-            "Your Claude Code settings turn on its own sandbox, for its shell commands; this \
-             window's would break it, so it stays off. Claude Code's file tools, hooks and MCP \
-             servers run with all your rights.",
-        ),
         Sandboxing::Agy(Enforcement::Full) => (
             "Sandboxed (agy)",
             "The network is open.\n\

@@ -18,8 +18,6 @@ use crate::external::wire::{
     self, MessageOrigin, SessionId, TranscriptCwd, TranscriptLine, UserContent,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::home::Home;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::process;
 
 /// A session's two words, an adjective and a noun picked by its id, so the same each time it
@@ -266,22 +264,19 @@ fn project_dir(cwd: &Path) -> PathBuf {
     projects_dir().join(project_name(cwd))
 }
 
-/// The folders a project's transcripts are in: the user's own home's, the home of its
-/// sandboxed sessions (see `home`), and edualc's for agy's sessions (see `agy`).
+/// The folders a project's transcripts are in: the user's own home's, and edualc's for agy's
+/// sessions (see `agy`).
 fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
     let name = project_name(cwd);
-    std::iter::once(projects_dir())
-        .chain(sandboxed_projects(cwd))
-        .chain(agy_projects())
+    all_projects_dirs()
+        .into_iter()
         .map(|projects| projects.join(&name))
         .collect()
 }
 
-/// Every folder of transcripts' folders: the user's own home's, every sandboxed home's, and
-/// agy's sessions'.
+/// Every folder of transcripts' folders: the user's own home's, and agy's sessions'.
 fn all_projects_dirs() -> Vec<PathBuf> {
     std::iter::once(projects_dir())
-        .chain(all_sandboxed_projects())
         .chain(agy_projects())
         .collect()
 }
@@ -301,38 +296,14 @@ pub(crate) fn backend_of(transcript: &Path) -> crate::claude::Backend {
     }
 }
 
-/// The folder of transcripts' folders in the home of `cwd`'s sandboxed sessions.
-#[cfg(not(target_arch = "wasm32"))]
-fn sandboxed_projects(cwd: &Path) -> Option<PathBuf> {
-    Home::of(cwd).map(|home| home.projects())
-}
-
-/// Every sandboxed home's folder of transcripts' folders.
-#[cfg(not(target_arch = "wasm32"))]
-fn all_sandboxed_projects() -> Vec<PathBuf> {
-    Home::all().iter().map(Home::projects).collect()
-}
-
-/// The browser demo has no sandbox, and so no sandboxed homes.
-#[cfg(target_arch = "wasm32")]
-fn sandboxed_projects(_cwd: &Path) -> Option<PathBuf> {
-    None
-}
-
-#[cfg(target_arch = "wasm32")]
-fn all_sandboxed_projects() -> Vec<PathBuf> {
-    Vec::new()
-}
-
-/// Where a session in `cwd` that runs outside the sandbox keeps its transcript.
+/// Where a Claude Code session in `cwd` keeps its transcript.
 pub(crate) fn transcript_path(cwd: &Path, id: &SessionId) -> PathBuf {
     project_dir(cwd).join(format!("{}.jsonl", id.as_str()))
 }
 
 /// Where a session's transcript is: under its working directory, or under another project's
 /// when it moved there (a session entering a worktree is relocated to the worktree's); in the
-/// user's own home or in the sandboxed sessions'. The newer one, if both have it: a session
-/// from the user's home goes on in the sandboxed one when resumed there.
+/// user's own home or in agy's sessions'. The newest, if more than one has it.
 pub(crate) fn find_transcript(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
     let name = format!("{}.jsonl", id.as_str());
     newest(project_dirs(cwd).into_iter().map(|dir| dir.join(&name)))
@@ -375,25 +346,10 @@ fn saved_in(homes: &[PathBuf], id: &SessionId) -> Saved {
     }
 }
 
-/// The Claude Code home a session's process writes its transcripts in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClaudeHome {
-    /// The user's own.
-    Users,
-    /// Its folder's sandboxed home (see `home`). The user's own follows the session's transcript
-    /// there, not its subagents'.
-    Sandboxed,
-}
-
-/// Where session `id` working in `cwd` writes its transcript in `home`, or will once it writes
-/// (see [`transcript_in`]).
-pub(crate) fn written_transcript(home: ClaudeHome, cwd: &Path, id: &SessionId) -> PathBuf {
-    let projects = match home {
-        ClaudeHome::Users => None,
-        ClaudeHome::Sandboxed => sandboxed_projects(cwd),
-    }
-    .unwrap_or_else(projects_dir);
-    transcript_in(&projects, cwd, id)
+/// Where session `id` working in `cwd` writes its transcript, or will once it writes (see
+/// [`transcript_in`]).
+pub(crate) fn written_transcript(cwd: &Path, id: &SessionId) -> PathBuf {
+    transcript_in(&projects_dir(), cwd, id)
 }
 
 /// Where session `id` working in `cwd` has its transcript in the folder of projects' folders
@@ -413,18 +369,6 @@ fn transcript_in(projects: &Path, cwd: &Path, id: &SessionId) -> PathBuf {
             .map(|entry| entry.path().join(&name)),
     )
     .unwrap_or(own)
-}
-
-/// A session's transcript in the user's own home, whatever its project.
-pub(crate) fn find_user_transcript(id: &SessionId) -> Option<PathBuf> {
-    let name = format!("{}.jsonl", id.as_str());
-    newest(
-        std::fs::read_dir(projects_dir())
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join(&name)),
-    )
 }
 
 /// The most recently changed of the files there are.
@@ -1070,10 +1014,10 @@ mod tests {
     #[test]
     fn a_session_goes_on_where_it_was_started() {
         let scratch = std::env::temp_dir().join(format!("edualc-started-{}", std::process::id()));
-        let (users, sandboxed) = (scratch.join("users"), scratch.join("sandboxed"));
+        let (users, agys) = (scratch.join("users"), scratch.join("agy"));
         let id =
             SessionId::try_from("5d6e7f80-91a2-4b3c-8d4e-5f60718293a4".to_owned()).expect("an id");
-        let transcript = sandboxed.join("-w-app").join(format!("{id}.jsonl"));
+        let transcript = agys.join("-w-app").join(format!("{id}.jsonl"));
         std::fs::create_dir_all(transcript.parent().expect("a folder")).expect("a project");
         std::fs::create_dir_all(&users).expect("a home");
         let line = |cwd: &str| json!({ "type": "user", "cwd": cwd, "sessionId": id.as_str() });
@@ -1082,7 +1026,7 @@ mod tests {
             format!("{}\n{}\n", line("/w/app"), line("/somewhere/else")),
         )
         .expect("a transcript");
-        let homes = [users.clone(), sandboxed];
+        let homes = [users.clone(), agys];
         assert_eq!(
             saved_in(&homes, &id),
             Saved::StartedIn(PathBuf::from("/w/app"))

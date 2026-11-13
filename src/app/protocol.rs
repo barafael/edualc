@@ -34,16 +34,9 @@ impl App {
                     self.log.pop_front();
                 }
             }
-            Output::Started {
-                pid,
-                enforcement,
-                turns,
-            } => {
+            Output::Started { pid, turns } => {
                 if let Some(process) = self.process.as_mut() {
                     process.started(pid);
-                }
-                if let Some(enforcement) = enforcement {
-                    self.status.sandboxing = Sandboxing::Landlock(enforcement);
                 }
                 // Attached in the middle of a turn: it runs, doing what isn't told yet. A
                 // process just started counts none; the window's own prompt may be on its way.
@@ -59,11 +52,6 @@ impl App {
                 self.chat.error(failure.to_string());
             }
             Output::Ended(code) => self.ended(code),
-            Output::Diverged(left) => self.chat.info(format!(
-                "This conversation went two ways in and out of the sandbox. What only the other \
-                 copy has is kept in {}",
-                left.display()
-            )),
         }
     }
 
@@ -325,16 +313,9 @@ impl App {
                 _ => "The turn failed.".to_owned(),
             };
             if refused_sign_in || result.sign_in_refused() {
-                let renewable = result.sign_in_refused()
-                    && matches!(self.status.sandboxing, Sandboxing::Landlock(_));
-                self.status.sign_in = self
-                    .status
-                    .sign_in
-                    .after_refusal(renewable, self.last_prompt.take());
-                if self.status.sign_in == SignIn::Renewing {
-                    self.chat.error(text);
-                    self.sign_in_ran_out();
-                }
+                self.status.sign_in = SignIn::Refused {
+                    failed: self.last_prompt.take(),
+                };
             } else {
                 self.chat.error(text);
             }

@@ -30,7 +30,6 @@ use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};
 use crate::external::wire::SessionId;
-use crate::sandbox::Enforcement;
 
 /// The largest message either side sends: more is a broken or hostile peer.
 pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
@@ -150,7 +149,7 @@ pub(crate) fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub(crate) const PROTOCOL: u32 = 16;
+pub(crate) const PROTOCOL: u32 = 17;
 
 /// The sockets of the daemon's filtering D-Bus proxies (see `buses`), for the windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,7 +239,6 @@ pub(crate) enum FromDaemon {
     Started {
         key: Generation,
         pid: u32,
-        enforcement: Option<Enforcement>,
         /// Turns under way: prompts written and not yet ended by a result (none for a process
         /// just started).
         turns: usize,
@@ -258,10 +256,6 @@ pub(crate) enum FromDaemon {
     },
     /// The process ended, with its exit code if it exited on its own.
     Ended { key: Generation, code: Option<i32> },
-    /// The session's transcript went two ways in and out of the sandbox, found as it was
-    /// resumed or as its transcript was copied back: `left` is the copy it doesn't go on from,
-    /// with what only that copy has.
-    Diverged { key: Generation, left: PathBuf },
     Done {
         request: ActId,
         result: Result<(), ActFailure>,
@@ -354,14 +348,10 @@ pub(crate) enum StartFailure {
     NoFolder(PathBuf),
     #[error("{0:?} isn't a model's name")]
     NoModel(String),
-    #[error("{0} isn't a full path")]
-    NotAbsolute(PathBuf),
     #[error(
         "couldn't start claude: {0}. Is Claude Code installed and `claude` on PATH? CLAUDE_BIN can name it."
     )]
     Start(String),
-    #[error("couldn't set up the sandbox: {0}")]
-    Sandbox(String),
     #[error("a session with that key runs already")]
     KeyInUse,
     #[error("a line too long for claude's input")]
@@ -435,12 +425,7 @@ impl From<crate::spawn::Error> for StartFailure {
         match error {
             Error::NoFolder(path) => Self::NoFolder(path),
             Error::NoModel(model) => Self::NoModel(model),
-            Error::NotAbsolute(path) => Self::NotAbsolute(path),
             Error::Start(source) => Self::Start(source.to_string()),
-            error @ (Error::Sandbox(_)
-            | Error::Home(_)
-            | Error::SignIn(_)
-            | Error::SignInPipeShared(_)) => Self::Sandbox(error.to_string()),
             error @ (Error::Adapter(_) | Error::AgyFork) => Self::Agy(error.to_string()),
         }
     }

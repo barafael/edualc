@@ -18,7 +18,7 @@ use crate::sessions;
 use crate::tools::{self, Depth};
 use crate::watcher::Watched;
 
-use super::{App, Event, Refresh, Request, Sandboxing};
+use super::{App, Event, Refresh, Request};
 
 /// How often a followed command's output is asked for while it runs.
 const POLL_OUTPUT: Duration = Duration::from_secs(1);
@@ -69,20 +69,11 @@ impl App {
         }
     }
 
-    /// Where subagent `task` of the session shown keeps its transcript: beside the session's in
-    /// the home its process writes in, as the user's own follows a sandboxed session's
-    /// transcript but not its subagents'.
+    /// Where subagent `task` of the session shown keeps its transcript: beside the session's.
     fn subagent_transcript(&self, task: &TaskId) -> Option<PathBuf> {
         let id = self.status.session_id.as_ref()?;
-        let home = match self.status.sandboxing {
-            Sandboxing::Landlock(_) => sessions::ClaudeHome::Sandboxed,
-            Sandboxing::Pending
-            | Sandboxing::Off
-            | Sandboxing::ClaudeCodes
-            | Sandboxing::Agy(_) => sessions::ClaudeHome::Users,
-        };
         Some(transcript_of(
-            &sessions::written_transcript(home, &self.cwd, id),
+            &sessions::written_transcript(&self.cwd, id),
             task,
         ))
     }

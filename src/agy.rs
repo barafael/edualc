@@ -11,11 +11,13 @@
 //! The adapter itself runs outside the sandbox, as the daemon's child: it serves the session's
 //! inbox and publishes its record (see `inbox`), so other sessions message it as they message
 //! each other, and carries the messages agy sends with edualc's tool once the user allowed
-//! each in the window (see `tool`, `relay`). It keeps the session's transcript, in Claude
+//! each in the window (see `tool`, `outbox`). It keeps the session's transcript, in Claude
 //! Code's format, under edualc's state folder (see `sessions::agy_projects`), for the session
 //! to be listed and continued: agy's own history is a database of its own.
 
+mod home;
 mod inbox;
+mod outbox;
 mod tool;
 mod translate;
 
@@ -33,12 +35,11 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
-use crate::external::mcp::SendArguments;
 use crate::external::wire::SessionId;
-use crate::home::{self, AgyHome};
-use crate::relay::{self, Class, Job, Outcome, Places};
 use crate::sandbox::{Enforcement, Policy};
 use crate::sessions::{self, MessagingName};
+use home::AgyHome;
+use outbox::{Job, Outcome, Places, SendArguments};
 use translate::{CallId, Effect, Start, ToolServer, Translator};
 
 /// The first argument that makes this program an agy session's adapter.
@@ -95,7 +96,7 @@ enum Error {
     #[error("no folder for edualc's state: neither XDG_STATE_HOME nor HOME is set")]
     NoState,
     #[error("couldn't make the project's agy home: {0}")]
-    Home(#[from] crate::home::Error),
+    Home(#[from] home::Error),
     #[error("couldn't run: {0}")]
     Runtime(#[source] std::io::Error),
 }
@@ -530,11 +531,7 @@ impl Out {
                 }
                 Effect::Transcript(line) => self.keep(&line),
                 Effect::Send { call, to, message } => {
-                    let job = Job::Send {
-                        arguments: SendArguments { to, message },
-                        class: Some(Class::Prompting),
-                    };
-                    let told = self.carried(job).await;
+                    let told = self.carried(Job::Send(SendArguments { to, message })).await;
                     translator.tool_told(call, &told);
                     self.answer(call, told).await;
                 }
@@ -552,14 +549,14 @@ impl Out {
         }
     }
 
-    /// A job of the relay's, carried out as for a sandboxed session (see `relay::carry_out`).
+    /// A call of edualc's tool, carried out (see `outbox::carry_out`).
     async fn carried(&self, job: Job) -> tool::Answer {
         let sender = self.name.clone();
         let carried = tokio::task::spawn_blocking(move || {
-            relay::carry_out(&Places::of_user(), &sender, &job)
+            outbox::carry_out(&Places::of_user(), &sender, &job)
         })
         .await
-        .unwrap_or(Outcome::Refused(relay::Refusal::Failed));
+        .unwrap_or(Outcome::Refused(outbox::Refusal::Failed));
         let (text, error) = carried.told();
         tool::Answer { text, error }
     }

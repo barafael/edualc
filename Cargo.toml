@@ -55,7 +55,7 @@ uuid = { version = "1.29", default-features = false, features = ["std", "v4", "s
 # The words of a session's name for other sessions to message it by: curated English adjectives
 # and nouns, picked by the session's id (no random generator).
 petname = { version = "3.2", default-features = false, features = ["default-words"] }
-# The user's sign-in token, cleared from memory once a sandboxed session has it.
+# An agy session's inbox token, cleared from memory once dropped.
 zeroize = "1.9"
 
 # What runs on Linux only: the processes, sockets, sandbox and desktop the browser demo has none of.

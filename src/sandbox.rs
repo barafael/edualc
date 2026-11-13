@@ -28,7 +28,6 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use crate::external::claude_files::UserSettings;
 #[cfg(not(target_arch = "wasm32"))]
 use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
@@ -54,44 +53,6 @@ pub(crate) const CLAUDE_CODE_RUNS: &[&str] = &[
     "keybindings.json",
 ];
 
-// What a sandboxed Claude is told about its sandbox, in parts (see `Policy::note_for_claude`).
-// Not told, it took a denied podman for a broken install, asked for `dangerouslyDisableSandbox`,
-// which lifts only Claude Code's own sandbox, and, finding no other session to tell, left what
-// it had for them in the project as a file.
-const NOTE_FILES: &str = "\
-This session runs in edualc, which keeps Claude Code and everything it starts in a Landlock \
-sandbox. It may change only the project, its git folder, caches, /dev/shm and two folders of \
-its own: its Claude Code home, which $CLAUDE_CONFIG_DIR names, and a temporary folder, which \
-$TMPDIR names. /tmp and /var/tmp can't be written. ~/.claude isn't its home, and it can read \
-only part of it. The system and the usual toolchains are read-only, and the user's other \
-files are out of reach.";
-const NOTE_SOCKETS: &str = "\
-So is every socket file but the ssh agent's: no D-Bus, no container engine (podman, docker), \
-nothing in /run/user.";
-const NOTE_SOCKETS_BUT_DISPLAY: &str = "\
-So is every socket file but the ssh agent's and the Wayland display's: no D-Bus, no container \
-engine (podman, docker), nothing else in /run/user.";
-const NOTE_HARDWARE: &str = "\
-USB devices and the serial ports there were as it started are open to it (debug probes, \
-boards); a port plugged in, or plugged in again, since needs the session started again.";
-const NOTE_NO_HARDWARE: &str = "\
-USB devices and serial ports are closed to it; the user can open them for this folder in \
-edualc's sandbox menu.";
-const NOTE_PRIVILEGES: &str = "Nothing gains privileges (no sudo). The network is open.";
-const NOTE_MESSAGING: &str = "\
-Other Claude Code sessions may message it, but it can't reach them itself: its own SendMessage \
-and ListAgents reach only its own subagents. To message another session, or to answer one, it \
-uses edualc's send_message tool with the session's name (list_sessions lists them); the user is \
-asked to allow each message, and one not allowed isn't sent.";
-const NOTE_ENFORCED: &str = "\
-The kernel enforces this on the whole process, so `dangerouslyDisableSandbox` can't lift it. \
-\"Permission denied\" on a path outside the project, or a socket that can't be reached, comes \
-from this sandbox: don't look for a way around it. Tell the user what was blocked and what \
-for, and let them choose: run the command themselves outside edualc, allow the path \
-(`sandbox_read` or `sandbox_write` in ~/.config/edualc/settings.json, read when edualc's \
-window opens), or turn the sandbox off with the shield button in edualc's window, which \
-restarts the session.";
-
 /// What a sandboxed Claude may reach.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Policy {
@@ -116,20 +77,6 @@ pub(crate) enum Enforcement {
     Partial,
     /// No Landlock in this kernel.
     None,
-}
-
-/// Whether the user turned on Claude Code's own sandbox, in their own settings. A project's
-/// settings don't count: a repository could otherwise turn this sandbox off by asking for the
-/// other, which may not even run here.
-pub(crate) fn claude_codes_own_is_on() -> bool {
-    let dir = crate::sessions::config_dir();
-    ["settings.json", "settings.local.json"].iter().any(|name| {
-        std::fs::read_to_string(dir.join(name))
-            .ok()
-            .and_then(|text| serde_json::from_str::<UserSettings>(&text).ok())
-            .and_then(|settings| settings.sandbox)
-            .is_some_and(|own| own.enabled)
-    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -321,63 +268,6 @@ impl Policy {
         policy.inboxes.clear();
         policy.sockets.extend(sockets.iter().cloned());
         policy
-    }
-
-    /// Whether the user let the desktop in (see [`Allowances::desktop`]).
-    fn lets_in_the_desktop(&self) -> bool {
-        self.devices
-            .iter()
-            .any(|device| device == Path::new("/dev/dri"))
-    }
-
-    /// Whether the user let USB devices and serial ports in (see [`Allowances::hardware`]).
-    fn lets_in_hardware(&self) -> bool {
-        self.devices
-            .iter()
-            .any(|device| device == Path::new("/dev/bus/usb"))
-    }
-
-    /// What a sandboxed Claude is told about its sandbox (`--append-system-prompt`), as far as
-    /// the kernel enforced it; nothing where it enforced none.
-    pub(crate) fn note_for_claude(&self, enforcement: Enforcement) -> Option<String> {
-        let hardware = if self.lets_in_hardware() {
-            NOTE_HARDWARE
-        } else {
-            NOTE_NO_HARDWARE
-        };
-        match enforcement {
-            Enforcement::None => None,
-            // An older kernel: connecting to socket files, the newest of what is asked, isn't
-            // guarded, so the note says nothing of them, nor of the other sessions' sockets.
-            Enforcement::Partial => Some(format!(
-                "{NOTE_FILES} {hardware} {NOTE_PRIVILEGES}\n\n{NOTE_ENFORCED}"
-            )),
-            Enforcement::Full => {
-                let sockets = if self.lets_in_the_desktop() {
-                    NOTE_SOCKETS_BUT_DISPLAY
-                } else {
-                    NOTE_SOCKETS
-                };
-                Some(format!(
-                    "{NOTE_FILES} {sockets} {hardware} {NOTE_PRIVILEGES}\n\n{NOTE_MESSAGING}\n\n{NOTE_ENFORCED}"
-                ))
-            }
-        }
-    }
-
-    /// Variables of this window's environment the child isn't given: ways out of the sandbox
-    /// (the session bus starts programs; niri's socket does too) and displays it may not use.
-    pub(crate) fn hidden_variables(&self) -> &'static [&'static str] {
-        if self.lets_in_the_desktop() {
-            &["DBUS_SESSION_BUS_ADDRESS", "NIRI_SOCKET", "DISPLAY"]
-        } else {
-            &[
-                "DBUS_SESSION_BUS_ADDRESS",
-                "NIRI_SOCKET",
-                "DISPLAY",
-                "WAYLAND_DISPLAY",
-            ]
-        }
     }
 
     /// Restricts the calling thread, and what it starts from now on, to this policy. Call it on
@@ -794,44 +684,6 @@ mod tests {
             policy.read
         );
         std::fs::remove_dir_all(&scratch).expect("the scratch folder goes");
-    }
-
-    /// A sandboxed Claude is told where its own folders are, and only what the kernel guards:
-    /// the display where the user let the desktop in, nothing about socket files or other
-    /// sessions where the kernel can't keep them closed, and nothing without a sandbox.
-    #[test]
-    fn claude_is_told_only_what_the_kernel_guards() {
-        let project = std::env::temp_dir().join(format!("edualc-note-{}", std::process::id()));
-        let home = project.join("home");
-        let session_scratch = project.join("tmp");
-        let note_with = |desktop, hardware, enforcement| {
-            let own = Own {
-                home: &home,
-                scratch: &session_scratch,
-            };
-            let allowances = Allowances {
-                desktop,
-                hardware,
-                read: &[],
-                write: &[],
-            };
-            Policy::for_project(&project, own, allowances).note_for_claude(enforcement)
-        };
-        let note = |desktop, enforcement| note_with(desktop, false, enforcement);
-        let closed = note(false, Enforcement::Full).expect("a note");
-        assert!(closed.contains("$CLAUDE_CONFIG_DIR") && closed.contains("$TMPDIR"));
-        assert!(closed.contains("nothing in /run/user") && !closed.contains("Wayland"));
-        assert!(closed.contains("can't reach them itself") && closed.contains("send_message"));
-        assert!(closed.contains("USB devices and serial ports are closed"));
-        let with_desktop = note(true, Enforcement::Full).expect("a note");
-        assert!(with_desktop.contains("the Wayland display's"));
-        assert!(with_desktop.contains("nothing else in /run/user"));
-        let with_hardware = note_with(false, true, Enforcement::Full).expect("a note");
-        assert!(with_hardware.contains("serial ports there were as it started are open"));
-        let partial = note(false, Enforcement::Partial).expect("a note");
-        assert!(partial.contains("$CLAUDE_CONFIG_DIR") && partial.contains("$TMPDIR"));
-        assert!(!partial.contains("socket file") && !partial.contains("can't reach them"));
-        assert!(note(false, Enforcement::None).is_none());
     }
 
     /// USB devices and serial ports are let in only when asked: USB as a tree, the ports that

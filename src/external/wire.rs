@@ -1022,22 +1022,6 @@ pub(crate) struct Offered {
 }
 
 impl Offered {
-    /// Kept in the user's own settings, for every project.
-    pub(crate) fn for_every_project(&self) -> bool {
-        matches!(
-            self.rule,
-            Some(
-                Suggestion::AddRules {
-                    destination: RuleDestination::UserSettings,
-                    ..
-                } | Suggestion::AddDirectories {
-                    destination: RuleDestination::UserSettings,
-                    ..
-                }
-            )
-        )
-    }
-
     pub(crate) fn read(raw: Value) -> Self {
         let rule = match Suggestion::deserialize(&raw) {
             Ok(Suggestion::Other) => None,

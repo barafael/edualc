@@ -13,8 +13,8 @@ use crate::external::wire::SessionId;
 use crate::sessions::{LiveKind, LiveStatus};
 
 /// A running session's record, `sessions/<pid>.json` in Claude Code's home, in the fields
-/// other sessions read to find it and message it: mirrored from a sandboxed session's own
-/// home into the user's (see `mirror`). Others are dropped.
+/// other sessions read to find it and message it: written for an agy session (see
+/// `agy::inbox`). Others are dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionRecord {
@@ -62,23 +62,6 @@ pub(crate) struct SessionKey {
     pub(crate) pid_domain: Option<String>,
 }
 
-/// `~/.claude/.credentials.json`.
-#[derive(Deserialize)]
-pub(crate) struct Credentials {
-    #[serde(rename = "claudeAiOauth")]
-    pub(crate) sign_in: Option<SignIn>,
-}
-
-/// The claude.ai sign-in in it. Not `Debug`: it holds the token.
-#[derive(Deserialize)]
-pub(crate) struct SignIn {
-    #[serde(rename = "accessToken")]
-    pub(crate) access_token: String,
-    /// Milliseconds since the epoch.
-    #[serde(rename = "expiresAt")]
-    pub(crate) expires_at_ms: Option<i64>,
-}
-
 /// `~/.claude.json`.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ClaudeJson {
@@ -91,20 +74,6 @@ pub(crate) struct ClaudeJson {
 pub(crate) struct Project {
     #[serde(default, rename = "hasTrustDialogAccepted")]
     pub(crate) accepted: bool,
-}
-
-/// `settings.json` or `settings.local.json` in Claude Code's configuration folder.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct UserSettings {
-    #[serde(default)]
-    pub(crate) sandbox: Option<OwnSandbox>,
-}
-
-/// Claude Code's own sandbox, as its settings set it.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct OwnSandbox {
-    #[serde(default)]
-    pub(crate) enabled: bool,
 }
 
 /// A folder's `.claude/settings.json` or `settings.local.json`, in what it has Claude Code run

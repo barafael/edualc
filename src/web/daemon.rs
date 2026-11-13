@@ -15,7 +15,6 @@ use super::scenarios;
 use crate::app::Event;
 use crate::claude::{Launch, Output};
 use crate::ipc::{Act, ActId, Generation, PasteFailure, ToDaemon};
-use crate::sandbox::Enforcement;
 
 /// What the demo's Claude says it runs as.
 const MODEL: &str = "claude-opus-5-5";
@@ -152,16 +151,7 @@ struct Session {
 
 impl Session {
     fn start(key: Generation, events: Sender<Event>, launch: &Launch) -> Self {
-        let enforcement = launch.sandbox.as_ref().map(|_| Enforcement::Full);
-        tell(
-            &events,
-            key,
-            Output::Started {
-                pid: PID,
-                enforcement,
-                turns: 0,
-            },
-        );
+        tell(&events, key, Output::Started { pid: PID, turns: 0 });
         Self {
             out: Out {
                 key,

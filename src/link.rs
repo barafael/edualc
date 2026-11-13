@@ -114,7 +114,6 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Failed { .. }
         | FromDaemon::Output { .. }
         | FromDaemon::Ended { .. }
-        | FromDaemon::Diverged { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
         | FromDaemon::Trusted { .. }
@@ -129,7 +128,6 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Failed { .. }
         | FromDaemon::Output { .. }
         | FromDaemon::Ended { .. }
-        | FromDaemon::Diverged { .. }
         | FromDaemon::Done { .. }
         | FromDaemon::Picked { .. }
         | FromDaemon::Trusted { .. }
@@ -217,19 +215,9 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
             }
         };
         let event = match message {
-            FromDaemon::Started {
-                key,
-                pid,
-                enforcement,
-                turns,
-            } => Some(claude(
-                key,
-                Output::Started {
-                    pid,
-                    enforcement,
-                    turns,
-                },
-            )),
+            FromDaemon::Started { key, pid, turns } => {
+                Some(claude(key, Output::Started { pid, turns }))
+            }
             FromDaemon::Failed { key, failure } => Some(claude(key, Output::Failed(failure))),
             FromDaemon::Output {
                 key,
@@ -255,7 +243,6 @@ fn read(mut channel: Channel, mut deframer: Deframer<FromDaemon>, events: &Sende
                 lines.forget(&(key, Stream::Err));
                 Some(claude(key, Output::Ended(code)))
             }
-            FromDaemon::Diverged { key, left } => Some(claude(key, Output::Diverged(left))),
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
             FromDaemon::Trusted {

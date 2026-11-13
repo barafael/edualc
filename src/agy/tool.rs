@@ -1,8 +1,7 @@
 //! edualc's messaging tool as agy gets it: an MCP server on stdio (`edualc --agy-tool SOCKET`),
-//! which agy starts inside its sandbox, with `send_message` and `list_sessions` as edualc's
-//! relay serves them to sandboxed Claude sessions (see `relay`). It decides nothing: each call
-//! goes to the adapter over the socket, which asks the user in the window before a message is
-//! sent, and carries it out.
+//! which agy starts inside its sandbox, with `send_message` and `list_sessions`. It decides
+//! nothing: each call goes to the adapter over the socket, which asks the user in the window
+//! before a message is sent, and carries it out (see `outbox`).
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -121,7 +120,7 @@ fn called(socket: &std::path::Path, params: Option<&Value>) -> Answer {
             (Some(to), Some(message)) => Request::Send { to, message },
             (None | Some(_), None | Some(_)) => {
                 return Answer {
-                    text: crate::relay::Refusal::Unreadable.to_string(),
+                    text: super::outbox::Refusal::Unreadable.to_string(),
                     error: true,
                 };
             }

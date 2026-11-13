@@ -80,11 +80,6 @@ fn manual() -> String {
     );
     entry(
         &mut roff,
-        "$XDG_STATE_HOME/edualc/claude/",
-        "Claude Code's home for each project's sandboxed sessions (~/.local/state if unset).",
-    );
-    entry(
-        &mut roff,
         "$XDG_RUNTIME_DIR/edualc/",
         "The daemon's socket.",
     );

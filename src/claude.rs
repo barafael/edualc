@@ -14,7 +14,6 @@ use crate::external::wire::{
 };
 use crate::ipc::{Generation, HostedId, StartFailure, ToDaemon};
 use crate::link::{self, Link};
-use crate::sandbox::Enforcement;
 
 /// The `claude` to run: `$CLAUDE_BIN` as the daemon was started with, or the one on `PATH`.
 pub(crate) fn program() -> std::ffi::OsString {
@@ -27,7 +26,6 @@ pub(crate) enum Output {
     /// The daemon started it, or it runs already as the window attaches.
     Started {
         pid: u32,
-        enforcement: Option<Enforcement>,
         /// Turns under way, as the daemon counted them.
         turns: usize,
     },
@@ -38,9 +36,6 @@ pub(crate) enum Output {
     Log(String),
     /// It ended, with its exit code if it exited on its own.
     Ended(Option<i32>),
-    /// Its transcript went two ways in and out of the sandbox; this copy, which it doesn't go
-    /// on from, keeps what only it has.
-    Diverged(PathBuf),
 }
 
 impl Output {
@@ -115,8 +110,6 @@ pub(crate) struct Launch {
     pub(crate) conversation: Conversation,
     /// A model or alias, as the backend takes it; the backend's default if none.
     pub(crate) model: Option<String>,
-    /// Sandboxed, and with what let in, unless `None`.
-    pub(crate) sandbox: Option<SandboxWish>,
     /// Whether the folder's own configuration is read.
     pub(crate) folder_configuration: FolderConfiguration,
 }
@@ -133,19 +126,6 @@ pub(crate) enum FolderConfiguration {
     /// one go on without them. Servers the host serves in `initialize` stay (checked with CLI
     /// 2.1.316).
     Skipped,
-}
-
-/// The sandbox asked for; the daemon makes the policy from it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SandboxWish {
-    pub(crate) desktop: bool,
-    /// USB devices and serial ports, for debug probes and boards.
-    pub(crate) hardware: bool,
-    /// Its messages to other sessions go without the user being asked about each.
-    pub(crate) messages_unasked: bool,
-    pub(crate) read: Vec<PathBuf>,
-    pub(crate) write: Vec<PathBuf>,
 }
 
 /// A saved session for a process to go on with.

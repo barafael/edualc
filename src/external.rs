@@ -8,6 +8,5 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod acp;
 pub(crate) mod claude_files;
-pub(crate) mod mcp;
 pub(crate) mod niri;
 pub(crate) mod wire;

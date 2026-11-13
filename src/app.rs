@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::chat::{Body, Change, Chat, ImageKey, ToolState};
-use crate::claude::{self, Claude, FolderConfiguration, Launch, Output, Resume, SandboxWish};
+use crate::claude::{self, Claude, FolderConfiguration, Launch, Output, Resume};
 use crate::decode::{Picture, Pixels};
 use crate::desktop;
 use crate::external::wire::{
@@ -265,9 +265,6 @@ pub(crate) enum SignIn {
     Unknown,
     /// It named an account, or a model answered.
     SignedIn,
-    /// A sandboxed session's token ran out: Claude Code starts again with the sign-in there is
-    /// now, which needs no help unless that is refused too.
-    Renewing,
     /// A turn failed for want of a sign-in; the prompt it failed on goes again with "Try again".
     Refused { failed: Option<SentPrompt> },
     /// The user asked with `/login`, and is shown how, whatever the state before.
@@ -275,16 +272,6 @@ pub(crate) enum SignIn {
 }
 
 impl SignIn {
-    /// After a turn the sign-in failed on. A token that merely ran out (`renewable`) gets one
-    /// start again by itself.
-    fn after_refusal(&self, renewable: bool, failed: Option<SentPrompt>) -> Self {
-        if renewable && *self != Self::Renewing {
-            Self::Renewing
-        } else {
-            Self::Refused { failed }
-        }
-    }
-
     /// Whether the user is being shown how to sign in.
     pub(crate) fn waits_for_user(&self) -> bool {
         matches!(self, Self::Refused { .. } | Self::Asked)
@@ -559,11 +546,8 @@ pub(crate) enum Sandboxing {
     /// Not known yet: no process runs, or one is being started.
     #[default]
     Pending,
-    /// The sandbox is turned off here.
+    /// Claude Code, which edualc doesn't sandbox.
     Off,
-    /// The user turned on Claude Code's own (for its commands), which Landlock would break.
-    ClaudeCodes,
-    Landlock(sandbox::Enforcement),
     /// agy, in the sandbox edualc's adapter keeps it in (see `agy`), as far as the adapter
     /// says the kernel enforced it.
     Agy(sandbox::Enforcement),
@@ -872,8 +856,8 @@ pub(crate) struct App {
     /// which replaces the conversation, the prompt's bubble with it.
     held_prompt: Option<String>,
     daemon: Daemon,
-    /// The process is to start again, as the sandbox changed or a sandboxed session's sign-in
-    /// ran out, while something was under way that starting it again would interrupt (a
+    /// The process is to start again, as the sandbox changed or the user signed in elsewhere,
+    /// while something was under way that starting it again would interrupt (a
     /// question waiting for its answers, say): it starts again once nothing is.
     restart_waits: bool,
     /// The last prompt sent, for `SignIn::Refused` to keep if its turn fails for that.
@@ -1484,11 +1468,7 @@ impl App {
             self.launch(resume, FolderConfiguration::Read);
             return;
         }
-        self.status.sandboxing = if self.settings.sandbox {
-            Sandboxing::Pending
-        } else {
-            Sandboxing::Off
-        };
+        self.status.sandboxing = Sandboxing::Off;
         self.last_act = self.last_act.next();
         let request = self.last_act;
         let check = ToDaemon::Act {
@@ -1540,28 +1520,15 @@ impl App {
         if self.status.worktree.is_none() {
             self.status.worktree = sessions::linked_worktree(&self.cwd);
         }
-        let own_sandbox = self.settings.sandbox && sandbox::claude_codes_own_is_on();
         let launch = Launch {
             backend: self.status.backend,
             cwd: self.cwd.clone(),
             conversation: Resume::conversation(resume),
             model: self.status.model_choice.clone(),
-            sandbox: (self.settings.sandbox && !own_sandbox).then(|| SandboxWish {
-                desktop: self.settings.sandbox_desktop,
-                hardware: self.settings.hardware_in(&self.cwd),
-                messages_unasked: self.settings.sandbox_messages_unasked,
-                read: self.settings.sandbox_read.clone(),
-                write: self.settings.sandbox_write.clone(),
-            }),
             folder_configuration,
         };
-        // How far it is sandboxed is known once the daemon started it (`Output::Started`), for
-        // agy once its adapter says (`System::EdualcSandbox`).
+        // How far agy is sandboxed is known once its adapter says (`System::EdualcSandbox`).
         self.status.sandboxing = if self.status.backend == claude::Backend::Agy {
-            Sandboxing::Pending
-        } else if own_sandbox {
-            Sandboxing::ClaudeCodes
-        } else if self.settings.sandbox {
             Sandboxing::Pending
         } else {
             Sandboxing::Off
@@ -1707,18 +1674,6 @@ impl App {
         self.forget_process();
     }
 
-    /// A sandboxed session's sign-in ran out: it gets the user's once, as Claude Code starts,
-    /// and can't renew it inside the sandbox (see `spawn`). So it starts again, with the
-    /// sign-in there is now, once nothing is under way, and the conversation goes on.
-    fn sign_in_ran_out(&mut self) {
-        self.chat.info(
-            "This session runs in the sandbox, which gets your sign-in once, as Claude Code \
-             starts, and that sign-in has run out. Claude Code starts again with your current \
-             sign-in once nothing is under way here; then send your message again.",
-        );
-        self.restart_waits = true;
-    }
-
     /// "Try again": Claude Code reads the sign-in as it starts, so it starts again, and what
     /// failed goes again, leaving anything written in the composer since. With something under
     /// way that a start would cut short, it waits for that, and what failed goes back to the
@@ -1727,7 +1682,7 @@ impl App {
         let failed = match std::mem::take(&mut self.status.sign_in) {
             SignIn::Refused { failed } => failed,
             SignIn::Asked => None,
-            other @ (SignIn::Unknown | SignIn::SignedIn | SignIn::Renewing) => {
+            other @ (SignIn::Unknown | SignIn::SignedIn) => {
                 self.status.sign_in = other;
                 return;
             }
@@ -2787,14 +2742,7 @@ impl App {
         } else {
             None
         };
-        // From inside the sandbox the user's own settings can't be written: a rule meant for
-        // every project couldn't be kept, so it isn't offered.
-        let sandboxed = matches!(self.status.sandboxing, Sandboxing::Landlock(_));
-        let suggestions = suggestions
-            .into_iter()
-            .map(wire::Offered::read)
-            .filter(|offered| !(sandboxed && offered.for_every_project()))
-            .collect();
+        let suggestions = suggestions.into_iter().map(wire::Offered::read).collect();
         let kind = special.unwrap_or(AskKind::Tool {
             suggestions,
             description,
@@ -3096,30 +3044,16 @@ mod tests {
         assert_eq!(recall, Recall::Writing);
     }
 
-    /// Being signed out brings up how to sign in at once, keeping the prompt to send again. A
-    /// sandboxed session's token that ran out gets one start again by itself; refused after
-    /// that too, it needs the user.
+    /// Being signed out brings up how to sign in, as does `/login`.
     #[test]
-    fn a_refused_sign_in_asks_the_user_unless_a_new_start_may_mend_it() {
-        let prompt = || SentPrompt {
-            text: "edit the notes".to_owned(),
-            images: Vec::new(),
-        };
+    fn a_refused_sign_in_asks_the_user() {
         let refused = SignIn::Refused {
-            failed: Some(prompt()),
+            failed: Some(SentPrompt {
+                text: "edit the notes".to_owned(),
+                images: Vec::new(),
+            }),
         };
-
-        assert_eq!(
-            SignIn::Unknown.after_refusal(false, Some(prompt())),
-            refused
-        );
         assert!(refused.waits_for_user());
-
-        let renewing = SignIn::SignedIn.after_refusal(true, Some(prompt()));
-        assert_eq!(renewing, SignIn::Renewing);
-        assert!(!renewing.waits_for_user());
-        assert_eq!(renewing.after_refusal(true, Some(prompt())), refused);
-
         assert!(SignIn::Asked.waits_for_user());
         assert!(!SignIn::SignedIn.waits_for_user());
         assert!(!SignIn::Unknown.waits_for_user());
