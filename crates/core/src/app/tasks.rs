@@ -9,8 +9,9 @@ use crate::external::wire::{
 };
 
 use super::{App, Request};
+use crate::present::Frontend;
 
-impl App {
+impl<F: Frontend> App<F> {
     /// The user stopped the turn, which ends only the turn: if tasks run on, their list opens
     /// and says so, for the user to stop them or leave them running.
     pub(super) fn tasks_after_stop(&mut self) {

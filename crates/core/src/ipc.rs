@@ -277,6 +277,7 @@ pub enum Target {
 
 /// Where a transcript is, as a window knows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Place {
     /// Found already.
     Path(PathBuf),
@@ -292,6 +293,7 @@ pub enum Place {
 
 /// What a window reads through the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Read {
     /// The sessions running now: `Answer::Live`.
     Live,
@@ -320,6 +322,7 @@ pub enum Read {
 
 /// What the daemon read for a window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Answer {
     Live(Vec<LiveSession>),
     Projects(Vec<ProjectInfo>),

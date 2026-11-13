@@ -190,7 +190,7 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
     ui::wire(&window, &events);
     let frontend = ui::SlintFrontend::new(window.clone_strong(), fonts, events.clone());
     let mut app = app::App::new(
-        Box::new(frontend),
+        frontend,
         events,
         link,
         desktop,

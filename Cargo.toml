@@ -9,6 +9,8 @@ edition = "2024"
 # Slint is used under GPL-3.0-only, so a built binary goes out under GPL-3.0.
 license = "GPL-3.0-or-later"
 repository = "https://github.com/felintusun/edualc"
+# Shipped as packages, not to crates.io.
+publish = false
 
 [workspace.dependencies]
 edualc-core = { path = "crates/core" }

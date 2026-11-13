@@ -9,8 +9,9 @@ use crate::claude::Resume;
 use crate::desktop::Running;
 use crate::external::wire::{ContextReport, ControlRequest, LimitKind, SessionId, UsageReport};
 use crate::ipc::{Act, ActFailure};
+use crate::present::Frontend;
 
-impl App {
+impl<F: Frontend> App<F> {
     pub(super) fn show_usage(&mut self) {
         self.usage.open = true;
         self.usage.error = None;

@@ -229,7 +229,6 @@ impl ToSlint for present::HanLanguage {
     }
 }
 
-
 impl ToSlint for present::FocusArea {
     type Slint = slint_ui::FocusArea;
     fn to_slint(&self, _: &Drawing) -> Self::Slint {

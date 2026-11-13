@@ -7,6 +7,7 @@ use serde_json::Value;
 use super::{App, Request};
 use crate::claude::Resume;
 use crate::external::wire::{ControlRequest, SideAnswer, SideTurn};
+use crate::present::Frontend;
 
 #[derive(Debug, Default)]
 pub struct SideChat {
@@ -83,7 +84,7 @@ impl SideChat {
     }
 }
 
-impl App {
+impl<F: Frontend> App<F> {
     /// Asks `question` on the side; an empty one only opens the panel to type it there.
     pub(super) fn ask_side(&mut self, question: &str) {
         let question = question.trim();

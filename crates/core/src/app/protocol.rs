@@ -12,8 +12,9 @@ use crate::external::wire::{
     System, TurnResult, UserContent,
 };
 use crate::ipc::Generation;
+use crate::present::Frontend;
 
-impl App {
+impl<F: Frontend> App<F> {
     /// Takes what process `generation` said; an earlier process's output is dropped.
     pub(super) fn take(&mut self, generation: Generation, output: Output) {
         if generation != self.generation {

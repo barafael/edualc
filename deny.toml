@@ -44,6 +44,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's crates depend on one another by path, with no version to name.
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]

@@ -36,7 +36,7 @@ pub(crate) fn main() {
         events.clone(),
     );
     let mut app = App::new(
-        Box::new(frontend),
+        frontend,
         events.clone(),
         link,
         Desktop::in_the_browser(crate::appearance::DEFAULT_TEXT_SIZE),

@@ -502,7 +502,7 @@ mod tests {
     #[test]
     #[ignore = "writes THIRD_PARTY_LICENSES.md, when it is regenerated"]
     fn add_the_grammars_licenses_to_the_report() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/THIRD_PARTY_LICENSES.md");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../THIRD_PARTY_LICENSES.md");
         let mut report = std::fs::read_to_string(path).expect("cargo-about has made the report");
         assert!(
             !report.contains("\n## Grammars\n"),

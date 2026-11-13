@@ -111,6 +111,7 @@ pub fn id_number(id: &SessionId, at: usize) -> usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionInfo {
     /// The program it talks to.
     pub backend: crate::claude::Backend,
@@ -123,6 +124,7 @@ pub struct SessionInfo {
 
 /// A git worktree a session works in (`claude --worktree`, the EnterWorktree tool).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Worktree {
     pub path: PathBuf,
     pub name: String,
@@ -174,6 +176,7 @@ pub fn folder_name(path: &Path) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectInfo {
     pub path: PathBuf,
     pub modified: SystemTime,
@@ -182,6 +185,7 @@ pub struct ProjectInfo {
 /// A session some Claude Code process is running right now (a terminal, an editor, the
 /// background), as that process reports itself.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveSession {
     pub pid: u32,
     /// When its process started, to tell it from a later one with the same pid.

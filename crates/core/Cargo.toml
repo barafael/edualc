@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 # Slint at an unreleased commit (2026-10-31): selecting text in a `StyledText` (`selectable`, `has-selection`,

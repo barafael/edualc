@@ -2,13 +2,11 @@
 // rather than editing this file.
 
 //! What the window shows, as plain data: the same types as the Slint window's, which every
-//! frontend shows.
+//! frontend shows. It never leaves the process, so it has no serde.
 
 use super::{Image, Styled};
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BlockKind {
     #[default]
     Text,
@@ -19,9 +17,7 @@ pub enum BlockKind {
     Rule,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Cjk {
     #[default]
     None,
@@ -31,9 +27,7 @@ pub enum Cjk {
     Korean,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum EntryKind {
     #[default]
     User,
@@ -46,9 +40,7 @@ pub enum EntryKind {
     Error,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ImageState {
     #[default]
     Pending,
@@ -56,9 +48,7 @@ pub enum ImageState {
     Failed,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ToolState {
     #[default]
     Streaming,
@@ -70,9 +60,7 @@ pub enum ToolState {
     Cancelled,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum DiffKind {
     #[default]
     Context,
@@ -81,9 +69,7 @@ pub enum DiffKind {
     Hunk,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum GroupRole {
     #[default]
     Alone,
@@ -91,9 +77,7 @@ pub enum GroupRole {
     Member,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum LiveState {
     #[default]
     Idle,
@@ -102,9 +86,7 @@ pub enum LiveState {
     Other,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SignInState {
     #[default]
     Unknown,
@@ -112,9 +94,7 @@ pub enum SignInState {
     SignedOut,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SessionRowKind {
     #[default]
     Heading,
@@ -122,9 +102,7 @@ pub enum SessionRowKind {
     Earlier,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SideView {
     #[default]
     Hidden,
@@ -132,9 +110,7 @@ pub enum SideView {
     Folded,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SideState {
     #[default]
     Pending,
@@ -143,9 +119,7 @@ pub enum SideState {
     Failed,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum StepKind {
     #[default]
     Asked,
@@ -153,9 +127,7 @@ pub enum StepKind {
     Called,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     #[default]
     Default,
@@ -166,9 +138,7 @@ pub enum PermissionKind {
     Unknown,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum PromptKind {
     #[default]
     None,
@@ -177,9 +147,7 @@ pub enum PromptKind {
     Plan,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ComposerSize {
     #[default]
     Fit,
@@ -188,18 +156,14 @@ pub enum ComposerSize {
     Full,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SendKey {
     #[default]
     Enter,
     CtrlEnter,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum HanLanguage {
     #[default]
     Japanese,
@@ -208,9 +172,7 @@ pub enum HanLanguage {
     Korean,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum FocusArea {
     #[default]
     Sidebar,
@@ -219,9 +181,7 @@ pub enum FocusArea {
     Side,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Activity {
     #[default]
     Idle,
@@ -229,9 +189,7 @@ pub enum Activity {
     Tool,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum TaskKind {
     #[default]
     Agent,
@@ -241,18 +199,18 @@ pub enum TaskKind {
     Other,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CjkChars {
     pub language: Cjk,
     pub main: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableRow {
     pub cells: Vec<Styled>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MdBlock {
     pub kind: BlockKind,
     pub body: Styled,
@@ -264,7 +222,7 @@ pub struct MdBlock {
     pub column_stretch: Vec<f32>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShownImage {
     pub state: ImageState,
     pub image: Image,
@@ -273,13 +231,13 @@ pub struct ShownImage {
     pub note: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffKind,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Entry {
     pub index: i32,
     pub kind: EntryKind,
@@ -307,7 +265,7 @@ pub struct Entry {
     pub hidden: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionRow {
     pub kind: SessionRowKind,
     pub id: String,
@@ -320,14 +278,14 @@ pub struct SessionRow {
     pub agents: i32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeekStep {
     pub kind: StepKind,
     pub title: String,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SideExchange {
     pub question: String,
     pub state: SideState,
@@ -335,7 +293,7 @@ pub struct SideExchange {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlanSection {
     pub block: MdBlock,
     pub excerpt: String,
@@ -343,7 +301,7 @@ pub struct PlanSection {
     pub editing: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectItem {
     pub path: String,
     pub shown: String,
@@ -351,7 +309,7 @@ pub struct ProjectItem {
     pub age: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatRow {
     pub label: String,
     pub value: String,
@@ -359,27 +317,27 @@ pub struct StatRow {
     pub fraction: f32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatSection {
     pub title: String,
     pub note: String,
     pub rows: Vec<StatRow>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MenuItem {
     pub title: String,
     pub description: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandItem {
     pub name: String,
     pub hint: String,
     pub description: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
@@ -387,7 +345,7 @@ pub struct QuestionOption {
     pub selected: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Question {
     pub question: String,
     pub header: String,
@@ -397,7 +355,7 @@ pub struct Question {
     pub options: Vec<QuestionOption>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskItem {
     pub id: String,
     pub kind: TaskKind,
@@ -408,20 +366,20 @@ pub struct TaskItem {
     pub peekable: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageChip {
     pub thumbnail: Image,
     pub caption: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineBreak {
     pub text: String,
     pub caret: i32,
 }
 
 /// The `Session` global's state.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
     pub agent: String,
     pub program: String,
@@ -462,7 +420,7 @@ pub struct Session {
 }
 
 /// The `Composer` global's state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Composer {
     pub commands: Vec<CommandItem>,
     pub argument_hint: String,
@@ -473,7 +431,7 @@ pub struct Composer {
 }
 
 /// The `Sessions` global's state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sessions {
     pub rows: Vec<SessionRow>,
     pub empty: String,
@@ -482,7 +440,7 @@ pub struct Sessions {
 }
 
 /// The `Prompt` global's state.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Prompt {
     pub kind: PromptKind,
     pub title: String,
@@ -499,7 +457,7 @@ pub struct Prompt {
 }
 
 /// The `Peek` global's state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Peek {
     pub open: bool,
     pub kind: TaskKind,
@@ -512,7 +470,7 @@ pub struct Peek {
 }
 
 /// The `Side` global's state.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Side {
     pub view: SideView,
     pub exchanges: Vec<SideExchange>,
@@ -524,7 +482,7 @@ pub struct Side {
 }
 
 /// The `Preferences` global's state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub send_key: SendKey,
     pub han_language: HanLanguage,
@@ -532,7 +490,7 @@ pub struct Preferences {
 }
 
 /// The `Usage` global's state.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
     pub open: bool,
     pub loading: bool,

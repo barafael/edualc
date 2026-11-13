@@ -14,15 +14,16 @@ use crate::chat::strip_ansi;
 use crate::external::wire::{
     ContentBlock, ControlRequest, TaskId, TaskKind, TaskOutput, TranscriptLine, UserContent,
 };
-use crate::ipc::{Answer, Place, Read, Target, Watched};
+use crate::ipc::{Place, Read, Target, Watched};
 use crate::tools::{self, Depth};
 
-use super::{App, Event, Refresh, Request};
+use super::{App, Event, Reading, Refresh, Request};
+use crate::present::Frontend;
 
 /// How often a followed command's output is asked for while it runs.
 const POLL_OUTPUT: Duration = Duration::from_secs(1);
 
-impl App {
+impl<F: Frontend> App<F> {
     /// Shows task `task` in the side panel, followed as it goes: a subagent's conversation, or
     /// what a command prints.
     pub(super) fn open_peek(&mut self, task: TaskId) {
@@ -178,13 +179,7 @@ impl App {
                 conversation.place.clone(),
                 conversation.offset,
             );
-            self.read(Read::Transcript { place, from }, move |answer, lines| {
-                let Answer::Transcript { read, .. } = answer else {
-                    return None;
-                };
-                let result = read.map(|offset| (lines, offset));
-                Some(Event::PeekGrew { task, result })
-            });
+            self.read(Read::Transcript { place, from }, Reading::Peeked { task });
         }
     }
 
