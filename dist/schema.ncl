@@ -79,7 +79,7 @@ in
     ),
 
   # What a shipped file is, which decides where each format puts it.
-  Role = [| 'Program, 'UserUnit, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |],
+  Role = [| 'Program, 'UserUnit, 'PageFiles, 'DesktopEntry, 'Icon, 'Metainfo, 'Manual, 'Documentation, 'Notices, 'License |],
   Format = [| 'Debian, 'Fedora, 'Arch, 'Tarball |],
 
   File = {

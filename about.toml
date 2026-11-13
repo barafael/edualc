@@ -2,7 +2,7 @@
 # package as THIRD_PARTY_LICENSES.md. Keep in step with deny.toml's [licenses] allow list: an
 # `OR` expression is reported under the first of its licenses accepted here.
 #
-#   cargo about generate about.hbs > THIRD_PARTY_LICENSES.md
+#   cargo about generate --workspace --features edualc-server/server about.hbs > THIRD_PARTY_LICENSES.md
 #   cargo test -- --ignored add_the_grammars_licenses_to_the_report
 #
 # The second adds the licenses of the grammars two-face bundles, which cargo-about can't see;
@@ -28,4 +28,6 @@ accepted = [
   "MPL-2.0",
   "GPL-3.0-or-later",
   "GPL-3.0-only",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
 ]

@@ -53,6 +53,26 @@ edualc keeps its own parts private:
 - no network listener, unless you start edualcd with `--listen` (see below);
 - images, decoded in a process of their own that locks itself down before it reads them (`decode`).
 
+## The page
+
+The page is the same app, built for `wasm32`. Its frontend of the presenter
+(`web::view::PageFrontend`) writes Dioxus signals, which the components
+(`crates/server/src/web/components/`) draw, and what you do goes back as `App`'s actions.
+
+The page is served by the edualcd it talks to (`edualcd --listen`), and connects to it over the
+network (see below), at the host the page came from. It gets the token in its address's fragment
+(`#token=…`), which is never sent to a server.
+
+The browser is the page's desktop: links open in it, notifications show through it, and a pasted
+image comes from its clipboard (`present::Seat`). What only the desktop of edualcd's machine could
+do isn't offered: editors, other programs' windows, a folder picker. You type a folder's path on
+edualcd's machine instead. `edualcd --demo` serves the page over plain HTTP to anyone, with a script
+in place of Claude Code.
+
+`dx` builds the page (`just release-build`). Its files (`public/`, whose names carry their hashes)
+are served from `DIOXUS_PUBLIC_PATH`, or from `public` beside edualcd's program. A package puts them
+in `/usr/share/edualc/public`, and the user service says so.
+
 ## The network side
 
 Windows that aren't on this machine, such as a web page or an app on another device, reach
@@ -100,12 +120,13 @@ change, and tells the window. Nothing is checked on a schedule, with two excepti
 
 ## Layout
 
-edualc is a Cargo workspace of three crates:
+edualc is a Cargo workspace of four crates:
 
 | | |
 |---|---|
 | `crates/core` (`edualc-core`) | what every window shares: the conversation, `App` that owns its state, what a window shows (`present`), the protocol, and the window's connection to the daemon. It builds for Linux and for `wasm32` (the browser demo); what only Linux has is behind `#[cfg(not(target_arch = "wasm32"))]`. |
-| `crates/host` (`edualc-host`, the `edualcd` binary) | the daemon: it runs `claude` or agy's adapter, reads Claude Code's files, and acts on the desktop |
+| `crates/host` (`edualc-host`) | the daemon: it runs `claude` or agy's adapter, reads Claude Code's files, and acts on the desktop |
+| `crates/server` (`edualc-server`, the `edualcd` binary) | edualcd: the daemon with its command line, and the Dioxus fullstack server that serves the window as a web page, drawn from the same presenter |
 | `crates/slint` (`edualc`) | the window, drawn with Slint, and the browser demo |
 
 In `crates/core/src`:
@@ -114,6 +135,7 @@ In `crates/core/src`:
 |---|---|
 | `app.rs`, `app/` | `App`, the single owner of all state. Your actions, the daemon's messages, timers (`repeat`) and what the daemon read reach it as `Event`s on one channel. `app/` holds applying what the process says (`protocol`), the side panel (`side`, `peek`), what runs beside the turn (`tasks`), the usage panel (`usage`), images, and worktrees. |
 | `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `scripts/present_gen.py`), handed to a `Frontend` once per batch, each part only when it changed |
+| `demo/` | the demo: Claude Code played by a script, on a demo project, for `edualcd --demo` and the Slint window's browser demo (the `demo` feature) |
 | `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
 | `ipc/pairing.rs`, `ipc/tls.rs`, `ipc/token.rs` | the address a window pairs with, edualcd's TLS (its own certificate, pinned by its SHA-256), and the token a connection over the network shows |
@@ -133,7 +155,15 @@ In `crates/host/src`:
 | `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings |
 | `net/` | the daemon's network side: its certificate and token (`state`), the TLS listener, and the route a connection comes in by (`line`), which lets it in by its first frame |
 | `agy.rs`, `agy/` | an agy session: the adapter (`edualcd --agy-adapter`) that speaks the Agent Client Protocol to `agy acp` and Claude Code's stream-json to the daemon; agy's data folder per project; its inbox; the messages it sends to other sessions |
-| `bin/edualcd.rs` | the daemon's program |
+| `demo/` | `edualcd --demo`: the demo's daemon, which answers a connection as the daemon does |
+
+In `crates/server/src`:
+
+| | |
+|---|---|
+| `main.rs`, `serve.rs` | edualcd's command line, and starting the daemon, its network side and the page |
+| `web/` | the page: its frontend of the presenter (`web/view.rs`), and its components, one for each area of `ui/app.slint` |
+| `line.rs` | the page's connection to edualcd |
 
 In `crates/slint/src`:
 

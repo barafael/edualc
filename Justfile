@@ -22,11 +22,14 @@ lint:
     ast-grep test
     ast-grep scan
     cargo clippy --locked --all-targets -- -D warnings
+    # edualcd: the daemon and the page server (the page itself is checked in `lint-wasm`)
+    cargo clippy --locked -p edualc-server --features server --all-targets -- -D warnings
 
 # Clippy on the browser demo's build, where what only the daemon calls is unused.
 [group('check')]
 lint-wasm:
     cargo clippy --locked -p edualc-core -p edualc --target wasm32-unknown-unknown -- -D warnings -A dead_code
+    cargo clippy --locked -p edualc-server --features web --target wasm32-unknown-unknown -- -D warnings -A dead_code
 
 # The image decoder's confined helper refuses to start with file descriptors open past the
 # standard streams, so the tests run with the others closed.
@@ -34,6 +37,7 @@ lint-wasm:
 [group('check')]
 test:
     python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX")); os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
+    cargo test --locked -p edualc-server --features server
 
 # Licences, bans and sources of the dependencies.
 [group('check')]
@@ -78,7 +82,7 @@ regenerate: licences manual kept
 # THIRD_PARTY_LICENSES.md, then the grammars' licences, which cargo-about doesn't see.
 [group('write')]
 licences:
-    cargo about generate about.hbs | save --force THIRD_PARTY_LICENSES.md
+    cargo about generate --workspace --features edualc-server/server about.hbs | save --force THIRD_PARTY_LICENSES.md
     cargo test --locked add_the_grammars_licenses_to_the_report -- --ignored
 
 # assets/edualc.1, from the command line's definition.
@@ -114,6 +118,18 @@ check-linked:
 [arg('image', pattern='debian|fedora|arch', help='which CI image')]
 in-image image +recipe:
     nu ci/images.nu run {{image}} {{recipe}}
+
+# The programs a package holds: the window, and edualcd with the page it serves (dx bundle's
+# `public/` folder), in target/release. Needs dioxus-cli (`cargo install --locked dioxus-cli`).
+[doc('The window, and edualcd with its page, in target/release.')]
+[group('package')]
+release-build:
+    #!/usr/bin/env nu
+    cargo build --release --locked
+    dx bundle --locked -p edualc-server --platform web --fullstack --release
+    cp target/dx/edualcd/release/web/server target/release/edualcd
+    rm -rf target/release/public
+    cp -r target/dx/edualcd/release/web/public target/release/public
 
 # wasm-bindgen's CLI must match the crate's version in Cargo.lock.
 [doc('The browser demo, into `site`.')]

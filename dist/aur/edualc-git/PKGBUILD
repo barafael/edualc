@@ -12,7 +12,7 @@ license=('GPL-3.0-or-later')
 # Cargo strips the binary (strip = true), which leaves a debug package nothing to hold.
 options=('!debug')
 depends=(glibc libgcc fontconfig wayland libxkbcommon libglvnd hicolor-icon-theme)
-makedepends=(cargo git)
+makedepends=(cargo dioxus-cli git)
 optdepends=(
   'wl-clipboard: pasting images'
   'claude-code: the Claude Code CLI that edualc runs (or Anthropic'\''s installer: claude on the PATH)'
@@ -43,12 +43,18 @@ build() {
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
+  # edualcd with its page: the server, and the public/ folder it serves
+  dx bundle --frozen -p edualc-server --platform web --fullstack --release
+  cp target/dx/edualcd/release/web/server target/release/edualcd
+  rm -rf target/release/public
+  cp -r target/dx/edualcd/release/web/public target/release/public
 }
 
 check() {
   cd "$_name"
   export RUSTUP_TOOLCHAIN=stable
   cargo test --frozen
+  cargo test --frozen -p edualc-server --features server
 }
 
 package() {
@@ -56,6 +62,7 @@ package() {
   install -Dm0755 target/release/edualc "$pkgdir"/usr/bin/edualc
   install -Dm0755 target/release/edualcd "$pkgdir"/usr/bin/edualcd
   install -Dm0644 assets/edualcd.service "$pkgdir"/usr/lib/systemd/user/edualcd.service
+  mkdir -p "$pkgdir"/usr/share/edualc/public && cp -r target/release/public/. "$pkgdir"/usr/share/edualc/public/ && find "$pkgdir"/usr/share/edualc/public -type d -exec chmod 0755 {} + && find "$pkgdir"/usr/share/edualc/public -type f -exec chmod 0644 {} +
   install -Dm0644 assets/io.github.felintusun.edualc.desktop "$pkgdir"/usr/share/applications/io.github.felintusun.edualc.desktop
   install -Dm0644 assets/io.github.felintusun.edualc.svg "$pkgdir"/usr/share/icons/hicolor/scalable/apps/io.github.felintusun.edualc.svg
   install -Dm0644 assets/io.github.felintusun.edualc.metainfo.xml "$pkgdir"/usr/share/metainfo/io.github.felintusun.edualc.metainfo.xml

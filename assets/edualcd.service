@@ -18,6 +18,8 @@ Documentation=https://github.com/felintusun/edualc
 # ~/.local/bin, which a user service's environment leaves out); CLAUDE_BIN, set in
 # ~/.config/environment.d/, names it otherwise.
 ExecStart=/bin/sh -lc 'exec /usr/bin/edualcd --listen 127.0.0.1:7878'
+# The page edualcd serves with it (a folder beside edualcd's program otherwise).
+Environment=DIOXUS_PUBLIC_PATH=/usr/share/edualc/public
 # Stopping it ends the sessions it runs: each is sent SIGTERM, as closing a terminal does, and
 # its conversation is kept to be continued.
 Restart=on-failure

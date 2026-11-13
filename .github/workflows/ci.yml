@@ -68,6 +68,24 @@ jobs:
           python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX"));
           os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
 
+  # The page, bundled as a package holds it. dx isn't in edualc's CI images, so it is installed
+  # here (at the version Cargo.lock's dioxus is).
+  page:
+    name: The page
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml's, with the wasm target
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo install --locked dioxus-cli@0.7.10
+      - run: dx bundle --locked -p edualc-server --platform web --fullstack --release
+      - run: test -s target/dx/edualcd/release/web/public/index.html
+
   deny:
     name: cargo deny
     runs-on: ubuntu-24.04
