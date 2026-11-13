@@ -109,7 +109,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: program-${{ matrix.arch }}
-          path: target/release/edualc
+          path: |
+            target/release/edualc
+            target/release/edualcd
           if-no-files-found: error
 
   rpm:
@@ -142,7 +144,7 @@ jobs:
       - name: Package, lint, and package again to compare
         run: |
           set -eu
-          chmod 0755 target/release/edualc
+          chmod 0755 target/release/edualc target/release/edualcd
           rpms=$(just package rpm)
           nu dist/build.nu lint-rpm "$rpms"
           again=$(just package rpm)

@@ -139,7 +139,7 @@ let newest = std.array.first p.releases in
 let licence = std.record.get p.license schema.licences in
 let maintainer = "%{p.maintainer.name} <%{p.maintainer.email}>" in
 let release_url = fun version => "%{p.homepage}/releases/tag/v%{version}" in
-let debian_program = std.array.first (std.array.filter (fun file => file.role == 'Program) (shipped 'Debian)) in
+let debian_programs = std.array.filter (fun file => file.role == 'Program) (shipped 'Debian) in
 let debian_notices = std.array.first (std.array.filter (fun file => file.role == 'Notices) (shipped 'Debian)) in
 # An XML element in the shape Nushell's `to xml` takes.
 let element = fun name attrs children => { tag = name, attributes = attrs, content = children } in
@@ -150,9 +150,9 @@ let text_element = fun tag text => element tag {} [text] in
   version = p.version,
   # The newest release's day: the changelogs' date, and the packages' files' times.
   date = newest.date,
-  # Where the program is in the Debian package's tree, for dpkg-shlibdeps.
-  program = debian_program.path,
-  # What the program may link (dist/build.nu's `check-linked`).
+  # Where the programs are in the Debian package's tree, for dpkg-shlibdeps.
+  programs = std.array.map (fun file => file.path) debian_programs,
+  # What the programs may link (dist/build.nu's `check-linked`).
   linked = std.array.map (fun library => library.soname) p.linked,
 
   desktop =
@@ -386,6 +386,8 @@ let text_element = fun tag text => element tag {} [text] in
       # run time used, and lists the dynamic loader as unused.
       namcap_expected =
         (named "arch" p.opened |> std.array.map (fun name => "Dependency included, but may not be needed \\('%{name}'\\)"))
-        @ ["Unused shared library '/usr/lib(64)?/ld-linux-[a-z0-9_-]+\\.so\\.[0-9]' by file \\('usr/bin/%{p.name}'\\)"],
+        @ (std.array.map
+            (fun file => "Unused shared library '/usr/lib(64)?/ld-linux-[a-z0-9_-]+\\.so\\.[0-9]' by file \\('%{std.string.substring 1 (std.string.length file.path) file.path}'\\)")
+            (std.array.filter (fun file => file.role == 'Program) (shipped 'Arch))),
     },
 }

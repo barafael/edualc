@@ -209,8 +209,9 @@ fn check_daemon(fd: impl AsFd) -> Result<(), Error> {
     }
 }
 
-/// A window is this user's, running this program: a build that replaced the daemon's own on
-/// disk counts too, and the hello's protocol says whether the two agree.
+/// A window is this user's, running one of the programs installed beside the daemon: a build
+/// that replaced the window's on disk counts too, and the hello's protocol says whether the two
+/// agree.
 fn check_window(fd: impl AsFd) -> Result<(), Error> {
     let (uid, pid) = peer(fd)?;
     let stranger = Error::Stranger { uid, pid };
@@ -220,7 +221,7 @@ fn check_window(fd: impl AsFd) -> Result<(), Error> {
     let theirs = std::fs::read_link(format!("/proc/{pid}/exe"));
     let ours = std::fs::read_link("/proc/self/exe");
     match (theirs, ours) {
-        (Ok(theirs), Ok(ours)) if same_program(&theirs, &ours) => Ok(()),
+        (Ok(theirs), Ok(ours)) if is_window_of(&theirs, &ours) => Ok(()),
         _ => Err(stranger),
     }
 }
@@ -230,15 +231,29 @@ fn peer(fd: impl AsFd) -> Result<(u32, i32), Error> {
     Ok((peer.uid.as_raw(), peer.pid.as_raw_nonzero().get()))
 }
 
-/// Two programs' paths name the same program, the kernel's " (deleted)" aside: it names a
-/// program so once a new build replaced it on disk.
-fn same_program(theirs: &Path, ours: &Path) -> bool {
+/// The programs that are windows, by their names, beside the daemon they talk to.
+const WINDOWS: &[&str] = &["edualc"];
+
+/// `theirs` is a window of the daemon that is `ours`: one of the programs installed beside it
+/// (the window and the daemon are separate programs, a package's or a build's `target/`), or
+/// the daemon's own. The
+/// kernel's " (deleted)" aside: it names a program so once a new build replaced it on disk.
+fn is_window_of(theirs: &Path, ours: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     let path = |program: &Path| {
         let bytes = program.as_os_str().as_bytes();
         bytes.strip_suffix(b" (deleted)").unwrap_or(bytes).to_vec()
     };
-    path(theirs) == path(ours)
+    let ours = path(ours);
+    let Some(beside) = Path::new(std::ffi::OsStr::from_bytes(&ours)).parent() else {
+        return false;
+    };
+    let theirs = path(theirs);
+    // The daemon's own program is as much ours as the windows' (they were one program once).
+    theirs == ours
+        || WINDOWS
+            .iter()
+            .any(|name| theirs == beside.join(name).as_os_str().as_bytes())
 }
 
 /// One end of a connection, sending and taking whole messages (the window's: it waits).
@@ -439,19 +454,29 @@ mod tests {
         Folder { fd, path }
     }
 
-    /// A new build replacing the daemon's program on disk is still this program; another
-    /// program, or another place, isn't.
+    /// The window is the program beside the daemon; a new build replacing either on disk is
+    /// still it; another program, or another place, isn't.
     #[test]
-    fn a_rebuilt_program_is_the_same_program() {
-        let ours = Path::new("/home/someone/edualc/target/release/edualc");
+    fn a_window_is_the_program_beside_the_daemon() {
+        let daemon = Path::new("/home/someone/edualc/target/release/edualcd");
+        let window = Path::new("/home/someone/edualc/target/release/edualc");
         let replaced = Path::new("/home/someone/edualc/target/release/edualc (deleted)");
-        assert!(same_program(ours, ours));
-        assert!(same_program(ours, replaced));
-        assert!(same_program(replaced, ours));
-        assert!(!same_program(Path::new("/usr/bin/python3"), ours));
-        assert!(!same_program(
+        let daemon_replaced = Path::new("/home/someone/edualc/target/release/edualcd (deleted)");
+        assert!(is_window_of(window, daemon));
+        assert!(is_window_of(replaced, daemon));
+        assert!(is_window_of(window, daemon_replaced));
+        assert!(
+            is_window_of(daemon, daemon),
+            "the daemon's own program is ours too"
+        );
+        assert!(!is_window_of(Path::new("/usr/bin/python3"), daemon));
+        assert!(!is_window_of(
             Path::new("/home/someone/edualc/target/debug/edualc"),
-            ours
+            daemon
+        ));
+        assert!(!is_window_of(
+            Path::new("/usr/bin/edualc"),
+            Path::new("/usr/lib/edualc/edualcd")
         ));
     }
 

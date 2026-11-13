@@ -14,7 +14,7 @@ const kept = {
 #
 # Commands that build write into a new folder under target/packaging and print its path; the
 # tools' own output goes to stderr. The packages' dates are the newest release's day in
-# dist/releases.json, or SOURCE_DATE_EPOCH. deb, rpm and tarball package target/release/edualc.
+# dist/releases.json, or SOURCE_DATE_EPOCH. deb, rpm and tarball package target/release/edualc and edualcd.
 def main []: nothing -> nothing {
     help main
 }
@@ -180,15 +180,18 @@ def "main check" []: nothing -> nothing {
     ^appstreamcli validate --no-net --pedantic assets/io.github.felintusun.edualc.metainfo.xml
 }
 
-# Checks that `program` links only the libraries dist/package.ncl lists under `linked`.
-def "main check-linked" [program: path = "target/release/edualc"]: nothing -> nothing {
+# Checks that each of `programs` links only the libraries dist/package.ncl lists under `linked`.
+def "main check-linked" [...programs: path]: nothing -> nothing {
     at-root
+    let programs = if ($programs | is-empty) { ["target/release/edualc", "target/release/edualcd"] } else { $programs }
     let linked = (main generate | path join formats.json | open $in | get linked)
-    let needed = ^readelf -d $program | lines | parse --regex '\(NEEDED\)\s+Shared library: \[(?<soname>[^\]]+)\]' | get soname
-    print --stderr ...$needed
-    let unlisted = $needed | where $it not-in $linked
-    if ($unlisted | is-not-empty) {
-        error make { msg: $"($program) links ($unlisted | str join ', '), which dist/package.ncl doesn't list" }
+    for program in $programs {
+        let needed = ^readelf -d $program | lines | parse --regex '\(NEEDED\)\s+Shared library: \[(?<soname>[^\]]+)\]' | get soname
+        print --stderr ...$needed
+        let unlisted = $needed | where $it not-in $linked
+        if ($unlisted | is-not-empty) {
+            error make { msg: $"($program) links ($unlisted | str join ', '), which dist/package.ncl doesn't list" }
+        }
     }
 }
 
@@ -253,7 +256,7 @@ def "main deb" []: nothing -> path {
     ^chmod 0644 $"($docs)/copyright" $"($docs)/changelog.Debian.gz"
     do {
         cd $work
-        ^dpkg-shlibdeps -Tdebian/substvars $"debian/($name)($formats.program)"
+        ^dpkg-shlibdeps -Tdebian/substvars ...($formats.programs | each {|program| $"debian/($name)($program)" })
         ^dpkg-gencontrol $"-p($name)" $"-Pdebian/($name)" -Tdebian/substvars
     }
     do {

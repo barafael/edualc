@@ -24,6 +24,8 @@ let window = import "../crates/slint/Cargo.toml" in
 
   files = [
     { source = "target/release/edualc", role = 'Program },
+    # The daemon the window starts, beside itself, if none runs.
+    { source = "target/release/edualcd", role = 'Program },
     # Generated from formats.ncl (`desktop`, `metainfo`).
     { source = "assets/io.github.felintusun.edualc.desktop", role = 'DesktopEntry },
     { source = "assets/io.github.felintusun.edualc.svg", role = 'Icon },

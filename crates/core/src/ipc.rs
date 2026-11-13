@@ -1,5 +1,4 @@
-//! The window and its daemon (`edualc --daemon`), speaking over a Unix socket that only they
-//! reach.
+//! The window and its daemon (`edualcd`), speaking over a Unix socket that only they reach.
 //!
 //! - The socket lives in `$XDG_RUNTIME_DIR/edualc`, a folder of the user's alone (0700), which is
 //!   checked through the descriptor it was opened by, never followed through a link, and used by
@@ -8,8 +7,8 @@
 //! - Who is the daemon is decided by a lock held as long as it runs: only its holder removes a
 //!   stale socket and binds anew, so two starting at once can't both bind, nor one unbind the
 //!   other's.
-//! - Each peer is checked as it connects: a window, to be the same user running this same
-//!   program; the daemon, which makes itself non-dumpable (its `/proc` entries closed to the
+//! - Each peer is checked as it connects: a window, to be the same user running a program
+//!   installed beside the daemon (`edualc`); the daemon, which makes itself non-dumpable (its `/proc` entries closed to the
 //!   user's other processes), to be the same user, in the place only the daemon binds.
 //! - Messages are postcard (compact serde), each COBS-framed by postcard: a frame longer than
 //!   one of [`MAX_MESSAGE`] ends the connection once the reader's fixed buffer is full, as does
