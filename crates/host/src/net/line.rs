@@ -128,10 +128,11 @@ async fn carry_on(
     let mut ping = tokio::time::interval(PING);
     let mut heard = Instant::now();
     loop {
+        // A message already there is taken before the line is judged silent.
         tokio::select! {
+            biased;
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
-                    heard = Instant::now();
                     if let Err(error) = deframer.push(&bytes) {
                         tracing::info!(%error, "a line sent what can't be read");
                         return;
@@ -141,6 +142,9 @@ async fn carry_on(
                             return;
                         }
                     }
+                    // A line is silent from when its last request was taken, not from before:
+                    // a daemon slow to take it is not the window's silence.
+                    heard = Instant::now();
                 }
                 Some(Ok(Message::Pong(_) | Message::Ping(_))) => heard = Instant::now(),
                 // Messages are binary; and a line closed, or broken, is done.

@@ -109,6 +109,7 @@ pub fn open_in(opener: Opener, folder: &Path) -> Result<(), Error> {
         Opener::Files => Program::XdgOpen,
     };
     let mut command = Command::new(program.to_string());
+    command.env_remove(crate::ipc::TOKEN_VARIABLE);
     match opener {
         // Terminals start where they are started.
         Opener::Terminal(_) => command.current_dir(folder),
@@ -178,7 +179,10 @@ fn run_within(
     limit: Duration,
 ) -> Result<Vec<u8>, Error> {
     let mut command = Command::new(name);
+    // edualcd's token, if it was given one so, goes to no program it runs (`claude stop`, git),
+    // as it goes to no session.
     command
+        .env_remove(crate::ipc::TOKEN_VARIABLE)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
