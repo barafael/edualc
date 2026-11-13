@@ -120,13 +120,15 @@ in-image image +recipe:
     nu ci/images.nu run {{image}} {{recipe}}
 
 # The programs a package holds: the window, and edualcd with the page it serves (dx bundle's
-# `public/` folder), in target/release. Needs dioxus-cli (`cargo install --locked dioxus-cli`).
+# `public/` folder), in target/release. The page is built with the `web` profile, which isn't
+# stripped (wasm-bindgen refuses a stripped wasm) and is made small. Needs dioxus-cli (`cargo
+# install --locked dioxus-cli`).
 [doc('The window, and edualcd with its page, in target/release.')]
 [group('package')]
 release-build:
     #!/usr/bin/env nu
     cargo build --release --locked
-    dx bundle --locked -p edualc-server --platform web --fullstack --release
+    dx bundle --locked -p edualc-server --platform web --fullstack --profile web
     cp target/dx/edualcd/release/web/server target/release/edualcd
     rm -rf target/release/public
     cp -r target/dx/edualcd/release/web/public target/release/public
