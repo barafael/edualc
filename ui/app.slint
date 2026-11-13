@@ -15,7 +15,7 @@ import { SidePanel } from "side.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, SyntaxColours, Theme } from "theme.slint";
-export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, SandboxAccess, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
+export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
 export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
@@ -40,114 +40,6 @@ component LiveDot inherits Rectangle {
         background: root.state == LiveState.busy ? Theme.claude : transparent;
         border-width: root.state == LiveState.busy ? 0 : 1.5px;
         border-color: Theme.text-faint;
-    }
-}
-
-// What keeps Claude Code in; its menu says what that means and changes it.
-component SandboxChip inherits Pressable {
-    // At the window's foot: the menu opens above it, from its left edge.
-    in property <bool> opens-upward;
-    // Under the label, why it matters when Claude Code isn't sandboxed.
-    in property <bool> explains;
-    border-radius: Theme.radius-m;
-    border-width: 1px;
-    border-color: Session.sandboxed ? Theme.divider : Theme.warning;
-    accessible-label: Session.sandbox-label;
-    clicked => { sandbox-menu.show(); }
-    HorizontalLayout {
-        padding-left: Theme.space-s;
-        padding-right: Theme.space-s;
-        padding-top: root.explains ? Theme.space-xs : 0;
-        padding-bottom: root.explains ? Theme.space-xs : 0;
-        spacing: Theme.space-xs;
-        Icon {
-            // Checked only once the kernel is known to hold it.
-            source: Session.sandbox-pending ? @image-url("@lucide/shield.svg")
-                : Session.sandboxed ? @image-url("@lucide/shield-check.svg") : @image-url("@lucide/shield-off.svg");
-            tint: Session.sandbox-pending ? Theme.text-tertiary : Session.sandboxed ? Theme.info : Theme.warning-text;
-            width: Theme.icon-small;
-            // On the first line where an explanation follows, else in the middle with the label.
-            y: root.explains && !Session.sandboxed ? Theme.space-xs : (parent.height - self.height) / 2;
-        }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: Session.sandbox-label;
-                color: Session.sandboxed ? Theme.text-secondary : Theme.warning-text;
-                font-size: 1rem * Theme.small;
-                font-weight: Session.sandboxed ? 400 : 600;
-                vertical-alignment: center;
-            }
-            if root.explains && !Session.sandboxed: Caption {
-                text: Session.sandbox-detail;
-                wrap: word-wrap;
-            }
-        }
-    }
-    sandbox-menu := PopupWindow {
-        x: root.opens-upward ? 0 : parent.width - self.width;
-        y: root.opens-upward ? -self.height - Theme.space-xs : parent.height + Theme.space-xs;
-        width: 340px;
-        height: sandbox-body.preferred-height;
-        close-policy: close-on-click-outside;
-        Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-m;
-            border-width: 1px;
-            border-color: Theme.divider;
-            drop-shadow-blur: 12px;
-            drop-shadow-color: Theme.shadow;
-            sandbox-body := VerticalLayout {
-                padding: Theme.space-m;
-                spacing: Theme.space-s;
-                Text {
-                    text: Session.sandbox-label;
-                    color: Theme.text;
-                    font-weight: 600;
-                }
-                Small {
-                    text: Session.sandbox-detail;
-                    wrap: word-wrap;
-                }
-                if Session.sandbox-adjustable: TextButton {
-                    text: Session.sandbox-on ? "Turn the sandbox off" : "Sandbox Claude Code";
-                    danger: Session.sandbox-on;
-                    clicked => {
-                        Session.toggle-sandbox();
-                        sandbox-menu.close();
-                    }
-                }
-                if Session.sandbox-adjustable && Session.sandbox-on: TextButton {
-                    text: Session.sandbox-desktop ? "Close the display to Claude" : "Let Claude use the display (UI tests)";
-                    clicked => {
-                        Session.toggle-sandbox-desktop();
-                        sandbox-menu.close();
-                    }
-                }
-                if Session.sandbox-adjustable && Session.sandbox-on: TextButton {
-                    text: Session.sandbox-hardware ? "Close USB and serial ports to Claude here" : "Let Claude use USB and serial ports here";
-                    clicked => {
-                        Session.toggle-sandbox-hardware();
-                        sandbox-menu.close();
-                    }
-                }
-                if Session.sandbox-adjustable && Session.sandbox-on && !Session.sandbox-hardware: Caption {
-                    text: "For this folder: debug probes and boards, but also any other USB device you can open, such as a phone.";
-                    wrap: word-wrap;
-                }
-                // Said while it holds, as it changes what reaches other sessions unseen.
-                if Session.sandbox-adjustable && Session.sandbox-on && Preferences.messages-unasked: Caption {
-                    text: "Its messages to other sessions go without asking you (see the settings, Ctrl+,).";
-                    wrap: word-wrap;
-                    color: Theme.warning-text;
-                }
-                if Session.sandbox-adjustable: Caption {
-                    text: "Changing it starts Claude Code again; the conversation goes on.";
-                    wrap: word-wrap;
-                }
-            }
-        }
     }
 }
 
@@ -681,12 +573,6 @@ component Sidebar inherits Rectangle {
                 height: 1px;
                 background: Theme.divider;
             }
-            // Beside what the session may spend: what it may do.
-            SandboxChip {
-                min-height: Theme.chip;
-                opens-upward: true;
-                explains: true;
-            }
             HorizontalLayout {
                 padding-top: Theme.space-xs;
                 spacing: Theme.space-s;
@@ -736,7 +622,7 @@ component Sidebar inherits Rectangle {
             }
         }
     }
-    // Above the row its button is on, from the sidebar's left margin, as the sandbox's menu.
+    // Above the row its button is on, from the sidebar's left margin.
     account := PopupWindow {
         x: Theme.space-m;
         y: info-button.absolute-position.y - root.absolute-position.y - self.height - Theme.space-xs;
@@ -1634,7 +1520,7 @@ component EditArea inherits Rectangle {
             }
             Small {
                 text: !Session.shell-commands ? "Shell command: " + Session.agent + " sessions don't run these. Ask " + Session.agent + " to run it, or use a terminal."
-                    : (Session.sandboxed ? "Shell command: Enter runs it in the sandbox, beside the conversation." : "Shell command: Enter runs it beside the conversation, not sandboxed.")
+                    : "Shell command: Enter runs it beside the conversation."
                     + " Claude sees it, and what it printed, with your next message.";
                 color: Theme.text-secondary;
                 wrap: word-wrap;
@@ -1982,11 +1868,6 @@ component Header inherits Rectangle {
                     }
                 }
             }
-        }
-        // In the sidebar's foot while that shows; here while it is hidden.
-        if !root.sidebar-shown: SandboxChip {
-            height: Theme.chip;
-            y: (parent.height - self.height) / 2;
         }
         // Side questions: labelled, as a bare question mark reads as help.
         Pressable {

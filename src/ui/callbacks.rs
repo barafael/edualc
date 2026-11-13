@@ -10,9 +10,8 @@ use crate::external::wire::{RequestId, SessionId};
 use crate::folder::Folder;
 use crate::generated::{
     AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, Preferences, Prompt,
-    SandboxAccess, SendKey, Session, Sessions, Side, Transcript, Usage,
+    SendKey, Session, Sessions, Side, Transcript, Usage,
 };
-use crate::ipc;
 use crate::settings::{self, Zoom};
 
 /// A way to the app, for a callback to keep.
@@ -130,9 +129,6 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_dismiss_sign_in(actions.on(|| Action::DismissSignIn));
     session.on_trust_folder(actions.on(|| Action::TrustFolder));
     session.on_start_without_folder_settings(actions.on(|| Action::StartWithoutFolderSettings));
-    session.on_toggle_sandbox(actions.on(|| Action::ToggleSandbox));
-    session.on_toggle_sandbox_desktop(actions.on(|| Action::ToggleSandboxDesktop));
-    session.on_toggle_sandbox_hardware(actions.on(|| Action::ToggleSandboxHardware));
     session.on_show_usage(actions.on(|| Action::ShowUsage));
 
     let usage = window.global::<Usage>();
@@ -148,26 +144,6 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
                 SendKey::Enter => settings::SendKey::Enter,
                 SendKey::CtrlEnter => settings::SendKey::CtrlEnter,
             }));
-        }
-    });
-    let access_of = |access| match access {
-        SandboxAccess::Read => ipc::SandboxAccess::Read,
-        SandboxAccess::Write => ipc::SandboxAccess::Write,
-    };
-    window
-        .global::<Preferences>()
-        .on_toggle_messages_unasked(actions.on(|| Action::ToggleMessagesUnasked));
-    window.global::<Preferences>().on_add_sandbox_folder({
-        let actions = actions.clone();
-        move |access| actions.send(Action::AddSandboxFolder(access_of(access)))
-    });
-    window.global::<Preferences>().on_forget_sandbox_folder({
-        let actions = actions.clone();
-        move |access, folder| {
-            actions.send(Action::ForgetSandboxFolder {
-                access: access_of(access),
-                folder: folder.into(),
-            });
         }
     });
     window

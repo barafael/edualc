@@ -2,7 +2,7 @@
 //! callbacks, which become the app's actions (`wire`).
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use slint::{
     ComponentHandle, Model, ModelExt, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -12,8 +12,8 @@ use strum::IntoEnumIterator;
 
 use crate::app::{
     Answer, Ask, AskKind, CommandOutput, Conversation, Doing, Followed, LimitUse, Mode, Peek,
-    PeekView, PermissionMode, Place, Running, Sandboxing, SideChat, SideView, SignIn, Status,
-    Tasks, UsagePanel, Watch,
+    PeekView, PermissionMode, Place, Running, SideChat, SideView, SignIn, Status, Tasks,
+    UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
@@ -270,33 +270,11 @@ impl View {
         });
     }
 
-    /// The folders the sandbox lets Claude read and change, beyond its own, as the settings page
-    /// lists them.
-    pub(crate) fn set_sandbox_folders(&self, settings: &settings::Settings) {
-        let shown = |folders: &[PathBuf]| {
-            let shown: Vec<SharedString> = folders
-                .iter()
-                .map(|folder| folder.to_string_lossy().as_ref().into())
-                .collect();
-            ModelRc::new(VecModel::from(shown))
-        };
-        let preferences = self.window.global::<Preferences>();
-        preferences.set_sandbox_read(shown(&settings.sandbox_read));
-        preferences.set_sandbox_write(shown(&settings.sandbox_write));
-    }
-
-    /// Whether a sandboxed session's messages to other sessions go without asking.
     /// How many sessions a shutdown would end.
     pub(crate) fn set_running_sessions(&self, count: usize) {
         self.window
             .global::<Preferences>()
             .set_running_sessions(i32::try_from(count).unwrap_or(i32::MAX));
-    }
-
-    pub(crate) fn set_messages_unasked(&self, unasked: bool) {
-        self.window
-            .global::<Preferences>()
-            .set_messages_unasked(unasked);
     }
 
     pub(crate) fn set_look(&self, look: settings::Look) {
@@ -796,20 +774,9 @@ impl View {
         session.set_needs_trust(asking.is_some());
         let runs: Vec<String> = asking.unwrap_or_default().iter().map(run_line).collect();
         session.set_trust_runs(strings(&runs));
-        let (label, detail) = sandbox_text(status.sandboxing);
-        session.set_sandbox_label(label.into());
-        session.set_sandbox_detail(detail.into());
-        session.set_sandbox_on(status.sandbox_choice.on);
-        session.set_sandbox_desktop(status.sandbox_choice.desktop);
-        session.set_sandbox_hardware(status.sandbox_choice.hardware);
-        // Not yet known isn't warned about: every start would flash the warning.
-        session.set_sandboxed(status.sandboxing == Sandboxing::Pending);
-        session.set_sandbox_pending(status.sandboxing == Sandboxing::Pending);
         session.set_agent(status.backend.agent().into());
         session.set_program(status.backend.program().into());
-        let claude = status.backend == crate::claude::Backend::Claude;
-        session.set_sandbox_adjustable(claude);
-        session.set_shell_commands(claude);
+        session.set_shell_commands(status.backend == crate::claude::Backend::Claude);
         let (context, fraction) = match (status.context_tokens, status.context_window) {
             (0, _) => (String::new(), 0.0),
             (used, 0) => (short_count(used), 0.0),
@@ -1472,18 +1439,6 @@ fn always_label(rule: &wire::Suggestion) -> String {
             kept(*destination)
         ),
         wire::Suggestion::Other => String::new(),
-    }
-}
-
-/// The sandbox chip's words, and what its menu says about it.
-fn sandbox_text(sandboxing: Sandboxing) -> (&'static str, &'static str) {
-    match sandboxing {
-        // Short enough for one line under the sidebar's chip at its default width.
-        Sandboxing::Off => ("Not sandboxed", "Claude Code has all your rights."),
-        Sandboxing::Pending => (
-            "Sandbox: starting",
-            "How far this kernel enforces the sandbox is known once Claude Code runs.",
-        ),
     }
 }
 

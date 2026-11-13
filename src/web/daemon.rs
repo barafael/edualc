@@ -79,7 +79,7 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
                 runs: Vec::new(),
             },
         },
-        Act::PickFolder(_) => Event::Picked {
+        Act::PickFolder => Event::Picked {
             request,
             folder: None,
         },

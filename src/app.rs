@@ -22,8 +22,7 @@ use crate::external::wire::{
 use crate::folder::Folder;
 use crate::generated::AppWindow;
 use crate::ipc::{
-    Act, ActFailure, ActId, FolderUse, Generation, Hosted, PasteFailure, Pasted, Runs,
-    SandboxAccess, ToDaemon,
+    Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, Runs, ToDaemon,
 };
 use crate::link::{self, Link};
 use crate::plan;
@@ -358,8 +357,8 @@ enum Acting {
     Bringing(SessionId),
     /// Reading the clipboard's image, for the next message.
     Pasting,
-    /// The folder picker, for a folder to be used so.
-    Picking(FolderUse),
+    /// The folder picker, for a folder to open.
+    Picking,
 }
 
 /// What the user did in the window.
@@ -441,15 +440,6 @@ pub(crate) enum Action {
     SendWith(settings::SendKey),
     /// The language of text in Han characters alone, as chosen in the settings.
     HanLanguage(crate::cjk::CjkLanguage),
-    /// Whether a sandboxed session's messages to other sessions go without asking, flipped.
-    ToggleMessagesUnasked,
-    /// Picks a folder for the sandbox to let Claude into so.
-    AddSandboxFolder(SandboxAccess),
-    /// Takes a folder, as shown, from those the sandbox lets Claude into so.
-    ForgetSandboxFolder {
-        access: SandboxAccess,
-        folder: String,
-    },
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
     /// The sidebar's width as dragged, in logical pixels; none for the default again.
@@ -475,13 +465,6 @@ pub(crate) enum Action {
     TrustFolder,
     /// Starts Claude Code in the folder shown this once, without its configuration.
     StartWithoutFolderSettings,
-    /// Turns the sandbox on or off, starting the process again.
-    ToggleSandbox,
-    /// Lets the sandboxed Claude use the display, or stops it, starting the process again.
-    ToggleSandboxDesktop,
-    /// Lets the sandboxed Claude reach USB devices and serial ports in the folder shown, or
-    /// stops it, starting the process again.
-    ToggleSandboxHardware,
     /// Ends every session the daemon runs, in every window, and then the daemon (asked in the
     /// settings, there confirmed).
     ShutDown,
@@ -526,27 +509,6 @@ pub(crate) struct Status {
     pub(crate) cost_usd: f64,
     pub(crate) limits: Limits,
     pub(crate) worktree: Option<Worktree>,
-    pub(crate) sandboxing: Sandboxing,
-    /// What the settings ask of the sandbox, for its menu.
-    pub(crate) sandbox_choice: SandboxChoice,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct SandboxChoice {
-    pub(crate) on: bool,
-    pub(crate) desktop: bool,
-    /// USB devices and serial ports, for the folder shown.
-    pub(crate) hardware: bool,
-}
-
-/// What keeps Claude Code's process in, as far as this window knows.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Sandboxing {
-    /// Not known yet: no process runs, or one is being started.
-    #[default]
-    Pending,
-    /// A process runs, which edualc doesn't sandbox.
-    Off,
 }
 
 /// What Claude is doing, for the status bar. That it waits for the user is told by what it
@@ -852,9 +814,9 @@ pub(crate) struct App {
     /// which replaces the conversation, the prompt's bubble with it.
     held_prompt: Option<String>,
     daemon: Daemon,
-    /// The process is to start again, as the sandbox changed or the user signed in elsewhere,
-    /// while something was under way that starting it again would interrupt (a
-    /// question waiting for its answers, say): it starts again once nothing is.
+    /// The process is to start again, as the user signed in elsewhere, while something was
+    /// under way that starting it again would interrupt (a question waiting for its answers,
+    /// say): it starts again once nothing is.
     restart_waits: bool,
     /// The last prompt sent, for `SignIn::Refused` to keep if its turn fails for that.
     last_prompt: Option<SentPrompt>,
@@ -901,8 +863,6 @@ impl App {
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
         view.set_han_language(settings.han_language());
-        view.set_sandbox_folders(&settings);
-        view.set_messages_unasked(settings.sandbox_messages_unasked);
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -912,11 +872,6 @@ impl App {
                 backend,
                 backend_choice: backend,
                 model_choice: model,
-                sandbox_choice: SandboxChoice {
-                    on: settings.sandbox,
-                    desktop: settings.sandbox_desktop,
-                    hardware: settings.hardware_in(&cwd),
-                },
                 ..Status::default()
             },
             asks: VecDeque::new(),
@@ -1053,23 +1008,17 @@ impl App {
             Event::LiveListed(live) => self.live_listed(live),
             Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
             Event::Acted { request, result } => self.acted(request, result),
-            Event::Picked { request, folder } => match (self.acting.remove(&request), folder) {
-                (Some(Acting::Picking(FolderUse::Project)), Some(folder)) => {
+            Event::Picked { request, folder } => {
+                // Nothing picked, or for a request since forgotten: nothing opens.
+                if let (Some(Acting::Picking), Some(folder)) =
+                    (self.acting.remove(&request), folder)
+                {
                     match Folder::at(folder) {
                         Ok(folder) => self.open_project(folder),
                         Err(problem) => self.chat.error(problem.to_string()),
                     }
                 }
-                (Some(Acting::Picking(FolderUse::Sandbox(access))), Some(folder)) => {
-                    let folders = self.settings.sandbox_folders(access);
-                    if !folders.contains(&folder) {
-                        folders.push(folder);
-                        self.sandbox_folders_changed();
-                    }
-                }
-                // Nothing picked, or for a request since forgotten.
-                (Some(_) | None, _) => {}
-            },
+            }
             Event::Trusted {
                 request,
                 accepted,
@@ -1133,21 +1082,7 @@ impl App {
             Action::NewSession => self.new_session(),
             Action::OpenSession(id) => self.open_session(id),
             Action::OpenProject(folder) => self.open_project(folder),
-            Action::BrowseProject => self.pick_folder(FolderUse::Project),
-            // The relay is told as the sandboxed process starts (`SandboxWish`).
-            Action::ToggleMessagesUnasked => {
-                self.settings.sandbox_messages_unasked = !self.settings.sandbox_messages_unasked;
-                self.view
-                    .set_messages_unasked(self.settings.sandbox_messages_unasked);
-                self.sandbox_changed();
-            }
-            Action::AddSandboxFolder(access) => self.pick_folder(FolderUse::Sandbox(access)),
-            Action::ForgetSandboxFolder { access, folder } => {
-                self.settings
-                    .sandbox_folders(access)
-                    .retain(|kept| kept.to_string_lossy() != folder);
-                self.sandbox_folders_changed();
-            }
+            Action::BrowseProject => self.ask_desktop(Act::PickFolder, Acting::Picking),
             Action::ListProjects => self.in_background(sessions::projects, Event::ProjectsListed),
             Action::ChooseModel(index) => self.choose_model(index),
             Action::ChooseMode(index) => self.choose_mode(index),
@@ -1206,18 +1141,6 @@ impl App {
             }
             Action::TrustFolder => self.trust_folder(),
             Action::StartWithoutFolderSettings => self.start_without_folder_settings(),
-            Action::ToggleSandbox => {
-                self.settings.sandbox = !self.settings.sandbox;
-                self.sandbox_changed();
-            }
-            Action::ToggleSandboxDesktop => {
-                self.settings.sandbox_desktop = !self.settings.sandbox_desktop;
-                self.sandbox_changed();
-            }
-            Action::ToggleSandboxHardware => {
-                self.settings.toggle_hardware(&self.cwd);
-                self.sandbox_changed();
-            }
             Action::ToggleRun(index) => {
                 if !self.open_runs.remove(&index) {
                     self.open_runs.insert(index);
@@ -1464,7 +1387,6 @@ impl App {
             self.launch(resume, FolderConfiguration::Read);
             return;
         }
-        self.status.sandboxing = Sandboxing::Off;
         self.last_act = self.last_act.next();
         let request = self.last_act;
         let check = ToDaemon::Act {
@@ -1511,8 +1433,6 @@ impl App {
         self.trust_gate = TrustGate::Open;
         self.generation = self.generation.next();
         self.log.clear();
-        // The folder may be another than at the last start.
-        self.status.sandbox_choice.hardware = self.settings.hardware_in(&self.cwd);
         if self.status.worktree.is_none() {
             self.status.worktree = sessions::linked_worktree(&self.cwd);
         }
@@ -1523,7 +1443,6 @@ impl App {
             model: self.status.model_choice.clone(),
             folder_configuration,
         };
-        self.status.sandboxing = Sandboxing::Off;
         match Claude::start(&self.link, self.generation, launch) {
             Ok(process) => self.process = Some(process),
             Err(error) => {
@@ -1563,29 +1482,13 @@ impl App {
             }
             // A paste is answered as `Pasted`, a folder picked as `Picked`.
             (
-                Some(Acting::Desktop | Acting::Notifying | Acting::Pasting | Acting::Picking(_)),
+                Some(Acting::Desktop | Acting::Notifying | Acting::Pasting | Acting::Picking),
                 Ok(()),
             )
             | (None, _) => {}
-            (Some(Acting::Pasting | Acting::Picking(_)), Err(failure)) => {
+            (Some(Acting::Pasting | Acting::Picking), Err(failure)) => {
                 self.chat.error(failure.to_string());
             }
-        }
-    }
-
-    /// The desktop's folder picker, for a folder to be used so; `Event::Picked` answers.
-    fn pick_folder(&mut self, folder_use: FolderUse) {
-        self.ask_desktop(Act::PickFolder(folder_use), Acting::Picking(folder_use));
-    }
-
-    /// Keeps the changed folders the sandbox lets Claude into, shows them, and starts a
-    /// sandboxed process again under them, continuing the session.
-    fn sandbox_folders_changed(&mut self) {
-        self.view.set_sandbox_folders(&self.settings);
-        if self.settings.sandbox {
-            self.sandbox_changed();
-        } else if let Err(error) = settings::save(&self.settings) {
-            tracing::warn!(%error, "couldn't keep the sandbox's folders");
         }
     }
 
@@ -1623,37 +1526,6 @@ impl App {
         );
         self.launch(resume, FolderConfiguration::Skipped);
         self.view.focus_composer();
-    }
-
-    /// Keeps the changed sandbox setting and starts the process again under it, continuing the
-    /// session: a sandbox can't be changed on a running process.
-    fn sandbox_changed(&mut self) {
-        self.status.sandbox_choice = SandboxChoice {
-            on: self.settings.sandbox,
-            desktop: self.settings.sandbox_desktop,
-            hardware: self.settings.hardware_in(&self.cwd),
-        };
-        if let Err(error) = settings::save(&self.settings) {
-            tracing::warn!(%error, "couldn't keep the sandbox setting");
-        }
-        if self.process.is_some() && self.under_way() {
-            if !self.restart_waits {
-                self.chat.info(
-                    "The sandbox changes once Claude is done here: Claude Code starts again then, \
-                     and the conversation goes on.",
-                );
-            }
-            self.restart_waits = true;
-        } else if self.process.is_some() {
-            self.restart();
-        } else {
-            self.status.sandboxing = if self.settings.sandbox {
-                Sandboxing::Pending
-            } else {
-                Sandboxing::Off
-            };
-        }
-        self.redraw.menus = true;
     }
 
     /// Ends the process, if any, and drops a start held back for trust: it was the session's

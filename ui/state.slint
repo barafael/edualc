@@ -1,15 +1,13 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, SandboxAccess, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
     // Who answers in this session ("Claude", "agy"), and the program it runs as.
     in property <string> agent: "Claude";
     in property <string> program: "Claude Code";
-    // The window changes the sandbox; not for agy, whose sandbox edualc's adapter keeps.
-    in property <bool> sandbox-adjustable: true;
     // `!` commands run beside the conversation; agy has no shell for them.
     in property <bool> shell-commands: true;
     // The working directory, its last part, and the session's title.
@@ -71,20 +69,6 @@ export global Session {
     callback trust-folder;
     // Starts it this once with the user's own settings alone (see `FolderConfiguration`).
     callback start-without-folder-settings;
-    // What keeps Claude Code in: a word for the header, and what it means.
-    in property <string> sandbox-label;
-    in property <string> sandbox-detail;
-    in property <bool> sandboxed;
-    // How far the kernel enforces it isn't known yet (no process runs, or one is starting).
-    in property <bool> sandbox-pending;
-    // What the settings ask: the sandbox, and the display let into it.
-    in property <bool> sandbox-on;
-    in property <bool> sandbox-desktop;
-    // USB devices and serial ports, let in for the folder shown.
-    in property <bool> sandbox-hardware;
-    callback toggle-sandbox;
-    callback toggle-sandbox-desktop;
-    callback toggle-sandbox-hardware;
     // A session another process runs is shown here, not driven: what runs it, and what
     // can be done about it.
     in property <bool> watching;
@@ -283,15 +267,6 @@ export global Preferences {
     // the desktop's, or Japanese).
     in property <HanLanguage> han-language;
     callback choose-han-language(HanLanguage);
-    // The folders the sandbox lets Claude read, and change, beyond its own: picked, or taken
-    // off as shown.
-    in property <[string]> sandbox-read;
-    in property <[string]> sandbox-write;
-    callback add-sandbox-folder(SandboxAccess);
-    callback forget-sandbox-folder(SandboxAccess, string);
-    // A sandboxed session's messages to other sessions go without asking the user.
-    in property <bool> messages-unasked;
-    callback toggle-messages-unasked;
     // The sessions edualc's daemon runs, in every window; a shutdown ends them all.
     in property <int> running-sessions;
     callback shut-down;

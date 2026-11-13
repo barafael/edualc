@@ -1,12 +1,11 @@
 //! What the user set in the window and wants kept between runs: the text zoom, the folders
-//! trusted to run Claude Code in, and how it is sandboxed. Kept in `$XDG_CONFIG_HOME/edualc/settings.json`.
+//! trusted to run Claude Code in, the look. Kept in `$XDG_CONFIG_HOME/edualc/settings.json`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::cjk::CjkLanguage;
-use crate::ipc::SandboxAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,25 +16,6 @@ pub(crate) struct Settings {
     /// Trusted here (see `trust`), with what is under them.
     #[serde(default)]
     pub(crate) trusted_folders: Vec<PathBuf>,
-    /// Claude Code runs in a Landlock sandbox (see `sandbox`).
-    #[serde(default = "Settings::on")]
-    pub(crate) sandbox: bool,
-    /// The sandbox lets Claude use the display and the GPU, for testing user interfaces.
-    #[serde(default)]
-    pub(crate) sandbox_desktop: bool,
-    /// Folders, with what is under them, whose sandbox lets Claude reach USB devices and serial
-    /// ports: debug probes, boards, serial monitors.
-    #[serde(default)]
-    pub(crate) sandbox_hardware: Vec<PathBuf>,
-    /// A sandboxed session's messages to other sessions go without the user being asked about
-    /// each (see `relay`).
-    #[serde(default)]
-    pub(crate) sandbox_messages_unasked: bool,
-    /// More the sandbox lets Claude read (a toolchain's home, say), and write.
-    #[serde(default)]
-    pub(crate) sandbox_read: Vec<PathBuf>,
-    #[serde(default)]
-    pub(crate) sandbox_write: Vec<PathBuf>,
     /// The composer's height as dragged, in logical pixels; fitted to its text if none.
     #[serde(default)]
     pub(crate) composer_height_px: Option<u16>,
@@ -89,12 +69,6 @@ impl Default for Settings {
         Self {
             zoom_percent: Self::full_size(),
             trusted_folders: Vec::new(),
-            sandbox: true,
-            sandbox_desktop: false,
-            sandbox_hardware: Vec::new(),
-            sandbox_messages_unasked: false,
-            sandbox_read: Vec::new(),
-            sandbox_write: Vec::new(),
             composer_height_px: None,
             sidebar_width_px: None,
             look: Look::default(),
@@ -120,10 +94,6 @@ impl Settings {
         100
     }
 
-    fn on() -> bool {
-        true
-    }
-
     pub(crate) fn zoom(&mut self, zoom: Zoom) {
         let wanted = match zoom {
             Zoom::In => self.zoom_percent.saturating_add(ZOOM_STEP),
@@ -137,14 +107,6 @@ impl Settings {
         f32::from(self.zoom_percent) / 100.0
     }
 
-    /// The folders, with what is under them, the sandbox lets Claude into so, beyond its own.
-    pub(crate) fn sandbox_folders(&mut self, access: SandboxAccess) -> &mut Vec<PathBuf> {
-        match access {
-            SandboxAccess::Read => &mut self.sandbox_read,
-            SandboxAccess::Write => &mut self.sandbox_write,
-        }
-    }
-
     /// The language text with Han characters alone is taken to be in: the one chosen, else
     /// the desktop's if CJK, else Japanese.
     pub(crate) fn han_language(&self) -> CjkLanguage {
@@ -152,25 +114,30 @@ impl Settings {
             .or_else(CjkLanguage::of_desktop)
             .unwrap_or(CjkLanguage::Japanese)
     }
+}
 
-    /// Whether the sandbox lets Claude reach USB devices and serial ports in `folder`: it, or a
-    /// folder it is in, was let.
-    pub(crate) fn hardware_in(&self, folder: &Path) -> bool {
-        folder
-            .ancestors()
-            .any(|place| self.sandbox_hardware.iter().any(|let_in| let_in == place))
-    }
+/// The keys of edualc's sandbox, which went on 2026-11-13: a file that has them still loads,
+/// without them, and is written without them.
+#[derive(Debug, Clone, Copy, strum::IntoStaticStr, strum::EnumIter)]
+#[strum(serialize_all = "snake_case")]
+enum Retired {
+    Sandbox,
+    SandboxDesktop,
+    SandboxHardware,
+    SandboxMessagesUnasked,
+    SandboxRead,
+    SandboxWrite,
+}
 
-    /// Lets the sandbox reach USB devices and serial ports in `folder`, or stops it: the folder
-    /// and every folder above it it was let in by.
-    pub(crate) fn toggle_hardware(&mut self, folder: &Path) {
-        if self.hardware_in(folder) {
-            self.sandbox_hardware
-                .retain(|let_in| !folder.starts_with(let_in));
-        } else {
-            self.sandbox_hardware.push(folder.to_owned());
+/// The settings in `text`, as a file holds them; retired keys are left out.
+fn parse(text: &str) -> Result<Settings, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(keys) = value.as_object_mut() {
+        for retired in <Retired as strum::IntoEnumIterator>::iter() {
+            keys.remove(<&str>::from(retired));
         }
     }
+    serde_json::from_value(value)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -216,7 +183,7 @@ pub(crate) fn load() -> Result<Settings, Error> {
         }
         Err(source) => return Err(Error::Read { path, source }),
     };
-    serde_json::from_str(&text).map_err(|source| Error::Parse { path, source })
+    parse(&text).map_err(|source| Error::Parse { path, source })
 }
 
 /// Writes the settings, unless the file there doesn't parse: what it holds (a hand edit with a
@@ -228,7 +195,7 @@ pub(crate) fn save(settings: &Settings) -> Result<(), Error> {
 fn save_to(path: PathBuf, settings: &Settings) -> Result<(), Error> {
     match std::fs::read_to_string(&path) {
         Ok(text) => {
-            if let Err(source) = serde_json::from_str::<Settings>(&text) {
+            if let Err(source) = parse(&text) {
                 return Err(Error::Parse { path, source });
             }
         }
@@ -271,20 +238,35 @@ mod tests {
         assert_eq!(settings, Settings::default());
     }
 
-    /// USB and serial ports are let in per folder, with what is under it; turning them off in a
-    /// folder takes back what let them in there, from above too.
+    /// A file written while edualc had its sandbox loads, the sandbox's keys dropped and the
+    /// rest kept; saved, it holds none of them.
     #[test]
-    fn hardware_is_let_in_per_folder() {
-        let mut settings = Settings::default();
-        let project = Path::new("/home/someone/firmware");
-        let board = project.join("board");
-        assert!(!settings.hardware_in(&board));
-        settings.toggle_hardware(project);
-        assert!(settings.hardware_in(project) && settings.hardware_in(&board));
-        assert!(!settings.hardware_in(Path::new("/home/someone/other")));
-        settings.toggle_hardware(&board);
-        assert!(!settings.hardware_in(&board) && !settings.hardware_in(project));
-        assert!(settings.sandbox_hardware.is_empty());
+    fn an_older_file_with_the_sandboxs_keys_loads() {
+        let older = r#"{
+            "zoom_percent": 120,
+            "trusted_folders": ["/work/app"],
+            "sandbox": false,
+            "sandbox_desktop": true,
+            "sandbox_hardware": ["/work/firmware"],
+            "sandbox_messages_unasked": true,
+            "sandbox_read": ["/opt/toolchain"],
+            "sandbox_write": ["/srv/shared"],
+            "look": "plain"
+        }"#;
+        let read = parse(older).expect("an older file loads");
+        assert_eq!(read.zoom_percent, 120);
+        assert_eq!(read.trusted_folders, [PathBuf::from("/work/app")]);
+        assert_eq!(read.look, Look::Plain);
+
+        let dir = std::env::temp_dir().join(format!("edualc-older-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, older).expect("written");
+        save_to(path.clone(), &read).expect("an older file is written over");
+        let saved = std::fs::read_to_string(&path).expect("read back");
+        assert!(!saved.contains("sandbox"), "{saved}");
+        assert_eq!(parse(&saved).expect("parses"), read);
+        std::fs::remove_dir_all(&dir).expect("cleaned up");
     }
 
     /// Enter sends unless the file says Ctrl+Enter, as it is written.
@@ -309,7 +291,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("edualc-settings-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a scratch folder");
         let path = dir.join("settings.json");
-        let typo = r#"{"trusted_folders": ["/kept"], "sandbox_wirte": []}"#;
+        let typo = r#"{"trusted_folders": ["/kept"], "trusted_foldres": []}"#;
         std::fs::write(&path, typo).expect("written");
         assert!(matches!(
             save_to(path.clone(), &Settings::default()),
@@ -326,7 +308,7 @@ mod tests {
     /// left at the default.
     #[test]
     fn a_misspelled_key_is_refused() {
-        assert!(serde_json::from_str::<Settings>(r#"{"sandbox_wirte": ["/tmp"]}"#).is_err());
-        assert!(serde_json::from_str::<Settings>(r#"{"sandbox_write": ["/tmp"]}"#).is_ok());
+        assert!(parse(r#"{"trusted_foldres": ["/tmp"]}"#).is_err());
+        assert!(parse(r#"{"trusted_folders": ["/tmp"]}"#).is_ok());
     }
 }
