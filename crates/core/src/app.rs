@@ -559,6 +559,12 @@ pub struct Status {
 }
 
 impl Status {
+    /// A turn is under way: one this window prompted, or one the session started itself, such
+    /// as for a message from another session, which only its output shows.
+    pub(crate) fn in_turn(&self) -> bool {
+        self.turns > 0 || self.doing != Doing::Nothing
+    }
+
     /// The plan's limits, for a session the plan pays for: agy and the API key don't, so a
     /// Claude Code session's limits aren't theirs.
     pub(crate) fn plan_limits(&self) -> Option<Limits> {
@@ -1570,7 +1576,7 @@ impl<F: Frontend> App<F> {
         }
         let state = if !self.asks.is_empty() {
             LiveStatus::Waiting
-        } else if self.status.turns > 0 {
+        } else if self.status.in_turn() {
             LiveStatus::Busy
         } else {
             LiveStatus::Idle
@@ -1904,7 +1910,7 @@ impl<F: Frontend> App<F> {
     /// the user, or a task running in the background (a subagent, a shell, a monitor), which a
     /// stopped turn leaves running.
     fn under_way(&self) -> bool {
-        self.status.turns > 0
+        self.status.in_turn()
             || self.chat.shell_running()
             || !self.asks.is_empty()
             || self
@@ -3208,6 +3214,23 @@ pub fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A turn counts as under way whoever started it: one this window prompted, or one a
+    /// message from another session started, which the window sees only as the session
+    /// working. Leaving such a session lets it run on rather than ending it.
+    #[test]
+    fn a_turn_a_message_started_counts_as_under_way() {
+        let mut status = Status::default();
+        assert!(!status.in_turn());
+        status.doing = Doing::Thinking;
+        assert!(
+            status.in_turn(),
+            "working on a turn the window didn't prompt"
+        );
+        status.doing = Doing::Nothing;
+        status.turns = 1;
+        assert!(status.in_turn(), "a turn the window prompted");
+    }
 
     /// The plan's limits show for a Claude Code session on the user's own sign-in only: agy
     /// and the API key aren't on the plan, so its limits would mislead there.
