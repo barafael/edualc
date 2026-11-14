@@ -1920,13 +1920,13 @@ impl<F: Frontend> App<F> {
                 .any(|running| !running.task.ambient)
     }
 
-    /// Lets go of the process: one with something under way runs on in the daemon, for this
-    /// window or another to come back to (it is listed as running); an idle one ends, as its
-    /// transcript resumes it as it was.
+    /// Lets go of the process. One the user used, or with something under way, runs on in the
+    /// daemon, for this window or another to come back to (it is listed as running). One only
+    /// opened to read ends, as its transcript resumes it as it was.
     fn let_go(&mut self) {
         let under_way = self.under_way();
         if let Some(process) = self.process.take()
-            && under_way
+            && (under_way || process.used())
         {
             process.detach();
         }

@@ -217,6 +217,17 @@ pub struct Claude {
     next_request: u64,
     pid: Option<u32>,
     leaving: Leaving,
+    use_: Use,
+}
+
+/// Whether the user has used the session through this handle, which decides whether leaving it
+/// ends its process (see [`Claude::used`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// Opened to read: leaving it ends the process, and its transcript continues it later.
+    Opened,
+    /// Prompted, given a `!` command, or attached to after it was kept running.
+    Used,
 }
 
 /// What a handle going away does to its process.
@@ -233,24 +244,31 @@ impl Claude {
     /// that went.
     pub fn start(link: &Link, key: Generation, launch: Launch) -> Result<Self, Error> {
         link::send(link, ToDaemon::Start { key, launch }).map_err(|_lost| Error::Lost)?;
-        Ok(Self::new(link, key))
+        Ok(Self::new(link, key, Use::Opened))
     }
 
     /// Shows a process the daemon runs under `key`; what it asked meanwhile comes again, then
-    /// what it says.
+    /// what it says. It runs because it was kept running, so leaving it again keeps it too.
     pub fn attach(link: &Link, key: Generation, hosted: HostedId) -> Result<Self, Error> {
         link::send(link, ToDaemon::Attach { key, hosted }).map_err(|_lost| Error::Lost)?;
-        Ok(Self::new(link, key))
+        Ok(Self::new(link, key, Use::Used))
     }
 
-    fn new(link: &Link, key: Generation) -> Self {
+    fn new(link: &Link, key: Generation, use_: Use) -> Self {
         Self {
             key,
             link: link.clone(),
             next_request: 0,
             pid: None,
             leaving: Leaving::End,
+            use_,
         }
+    }
+
+    /// Whether the user used the session here (a prompt, a `!` command) or it was kept running
+    /// before: leaving such a session keeps its process running.
+    pub fn used(&self) -> bool {
+        self.use_ == Use::Used
     }
 
     /// The daemon started it (or showed it here).
@@ -281,16 +299,23 @@ impl Claude {
     /// A prompt, after the rows of the `!` commands run since the last (see
     /// [`Input::prompt_with`]), with images as the confined helper encoded them (see
     /// [`crate::decode`]).
-    pub fn prompt(&self, shell: &[String], images: &[Picture], text: &str) -> Result<(), Error> {
+    pub fn prompt(
+        &mut self,
+        shell: &[String],
+        images: &[Picture],
+        text: &str,
+    ) -> Result<(), Error> {
         let blocks = images
             .iter()
             .map(|picture| ImageBlock::base64(picture.media_type, BASE64.encode(&picture.bytes)))
             .collect();
+        self.use_ = Use::Used;
         self.send(&Input::prompt_with(shell, blocks, text))
     }
 
     /// A `!` command, for the CLI to run (see [`Input::BashCommand`]).
-    pub fn run_shell(&self, command: &str) -> Result<(), Error> {
+    pub fn run_shell(&mut self, command: &str) -> Result<(), Error> {
+        self.use_ = Use::Used;
         self.send(&Input::bash_command(command))
     }
 
@@ -346,5 +371,38 @@ impl Drop for Claude {
         if link::send(&self.link, leave).is_err() {
             tracing::debug!("the daemon was gone as a window let go of a session");
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// A session started here counts as used once the user prompts it or gives it a `!`
+    /// command, and leaving it then keeps it running; one only opened to read doesn't. One
+    /// attached to was kept running before, so it counts as used from the start.
+    #[test]
+    fn a_session_is_used_once_prompted_or_given_a_command() {
+        let (link, _daemon) = std::sync::mpsc::sync_channel(link::QUEUE);
+        let launch = || Launch {
+            backend: Backend::Claude,
+            cwd: PathBuf::from("/work"),
+            conversation: Conversation::New(SessionId::new_random()),
+            model: None,
+            folder_configuration: FolderConfiguration::Read,
+            sign_in: SignInWith::Account,
+        };
+
+        let mut prompted = Claude::start(&link, Generation::default(), launch()).expect("sent");
+        assert!(!prompted.used(), "only opened");
+        prompted.prompt(&[], &[], "go on").expect("sent");
+        assert!(prompted.used());
+
+        let mut commanded = Claude::start(&link, Generation::default(), launch()).expect("sent");
+        commanded.run_shell("ls").expect("sent");
+        assert!(commanded.used());
+
+        let attached = Claude::attach(&link, Generation::default(), HostedId::default());
+        assert!(attached.expect("sent").used());
     }
 }

@@ -102,11 +102,12 @@ there you can choose:
 
 ### Sessions outlive their window
 
-If you close the window while a session is working or waiting for you, the session keeps running.
-When you open it again, from the list or with `--resume`, you see where it is: its transcript, then
-anything it asked meanwhile, asked again. An idle session ends when you close its window, since its
+A session you've sent a prompt or a `!` command in keeps running when you switch to another
+session or close the window, and so does one that is working or waiting for you. When you open it
+again, from the list or with `--resume`, you see where it is: its transcript, then anything it
+asked meanwhile, asked again. A session you only opened to read ends when you leave it, since its
 transcript can continue it anyway. A session that isn't open in any window ends after an hour
-without activity.
+without activity, or when you shut down edualc's daemon.
 
 ### A name that stays the same
 

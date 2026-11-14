@@ -26,8 +26,8 @@ WebAssembly, with a demo project. A script plays Claude, so nothing you type lea
 - **Plans you review like a document.** Comment on any heading, paragraph or list item. Then send
   Claude back to planning, or approve the plan with your comments attached.
 - **All your sessions in one list.** The sidebar shows the sessions running in any terminal or
-  folder and what each is doing, and you get a notification when one needs you. A session that is
-  working or waiting for you keeps running when you close its window.
+  folder and what each is doing, and you get a notification when one needs you. A session you've
+  prompted keeps running when you switch away or close the window.
 - **Side questions on the side.** `/btw` answers in a panel next to the conversation, which carries
   on meanwhile.
 - **A native app.** It's built with Rust and Slint, with no browser engine, and it does almost
