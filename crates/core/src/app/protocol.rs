@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::{App, Doing, LimitUse, Mode, ModelChoice, Refusal, Request, SignIn, TaskProgress};
+use super::{App, Doing, LimitUse, ModelChoice, Modes, Refusal, Request, SignIn, TaskProgress};
 use crate::chat::{Origin, UserText};
 use crate::claude::Output;
 use crate::external::wire::{
@@ -191,7 +191,9 @@ impl<F: Frontend> App<F> {
                     self.redraw.sessions = true;
                 }
                 self.status.model = model;
-                self.status.mode = Some(permission_mode);
+                // An agent program's adapter names the program's mode here too; the menu has it
+                // from the adapter's `initialize` answer and its `program_mode` messages.
+                self.status.modes.claude_in(permission_mode);
                 self.redraw.menus = true;
             }
             System::Status { status } => match status {
@@ -266,6 +268,12 @@ impl<F: Frontend> App<F> {
             System::PermissionDenied { tool_use_id } => {
                 self.chat
                     .set_tool_state(&tool_use_id, crate::chat::ToolState::Denied);
+            }
+            System::ProgramMode { mode } => {
+                if let Modes::Program { current, .. } = &mut self.status.modes {
+                    *current = Some(mode);
+                    self.redraw.menus = true;
+                }
             }
             System::Other => {}
         }
@@ -375,7 +383,7 @@ impl<F: Frontend> App<F> {
                 });
             }
             (Request::Mode(mode), Ok(_)) => {
-                self.status.mode = Some(Mode::Known(mode));
+                self.status.modes.chose(&mode);
                 self.status.mode_choice = Some(mode);
             }
             // The task's end comes as its notification.
@@ -392,8 +400,10 @@ impl<F: Frontend> App<F> {
                     .error(format!("Couldn't switch to {value}: {error}"));
             }
             (Request::Mode(mode), Err(error)) => {
-                self.chat
-                    .error(format!("Couldn't switch to {}: {error}", mode.label()));
+                self.chat.error(format!(
+                    "Couldn't switch to {}: {error}",
+                    self.status.modes.label(&mode)
+                ));
             }
             (Request::Interrupt, Err(error)) => {
                 tracing::warn!(%error, "claude refused to interrupt")
@@ -417,6 +427,12 @@ impl<F: Frontend> App<F> {
 
     fn take_initialized(&mut self, initialized: Initialized) {
         self.status.models = initialized.models;
+        if let Some(program) = initialized.program_modes {
+            self.status.modes = Modes::Program {
+                offered: program.offered,
+                current: program.current,
+            };
+        }
         let mut commands = initialized.commands;
         // The terminal's own; this window answers it in the side panel.
         commands.push(CommandInfo {

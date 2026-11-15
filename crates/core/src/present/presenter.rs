@@ -17,8 +17,8 @@ use super::model::{
 use super::{Command, EntriesChange, Frontend, Image, Look, Styled};
 use crate::app::{
     Answer, ApiKeyKept, Ask, AskKind, CommandOutput, Conversation, Doing, Followed, LimitUse,
-    LimitWait, Mode, Peek, PeekView, PermissionMode, Place, Running, SideChat, SideView, SignIn,
-    Status, Tasks, UsagePanel, Watch,
+    LimitWait, Mode, Modes, Peek, PeekView, PermissionMode, Place, Running, SideChat, SideView,
+    SignIn, Status, Tasks, UsagePanel, Watch,
 };
 use crate::chat::{self, Body, Change, Chat, ImageKey};
 use crate::cjk::{CjkLanguage, CjkText, Standing};
@@ -831,19 +831,7 @@ impl<F: Frontend> Presenter<F> {
             }
             None => 0,
         };
-        let mut modes: Vec<(String, String)> = PermissionMode::iter()
-            .map(|mode| (mode.label().to_owned(), mode.description().to_owned()))
-            .collect();
-        let mode_index = match &status.mode {
-            Some(Mode::Known(mode)) => PermissionMode::iter()
-                .position(|known| known == *mode)
-                .unwrap_or_default(),
-            Some(Mode::Unknown(name)) => {
-                modes.push((name.clone(), "As the CLI names it".to_owned()));
-                modes.len() - 1
-            }
-            None => 0,
-        };
+        let (modes, mode_index) = mode_menu(&status.modes, status.backend);
         let session = &mut self.session;
         if self.models != models {
             session.models = menu(&models);
@@ -854,13 +842,22 @@ impl<F: Frontend> Presenter<F> {
             self.modes = modes;
         }
         self.menu_choice = Some((index_for_slint(model_index), index_for_slint(mode_index)));
-        self.session.mode = match &status.mode {
-            Some(Mode::Known(PermissionMode::Default)) | None => PermissionKind::Default,
-            Some(Mode::Known(PermissionMode::AcceptEdits)) => PermissionKind::AcceptEdits,
-            Some(Mode::Known(PermissionMode::Plan)) => PermissionKind::Plan,
-            Some(Mode::Known(PermissionMode::Auto)) => PermissionKind::Auto,
-            Some(Mode::Known(PermissionMode::BypassPermissions)) => PermissionKind::Bypass,
-            Some(Mode::Unknown(_)) => PermissionKind::Unknown,
+        self.session.mode = match &status.modes {
+            Modes::Claude(Some(Mode::Known(PermissionMode::Default)) | None) => {
+                PermissionKind::Default
+            }
+            Modes::Claude(Some(Mode::Known(PermissionMode::AcceptEdits))) => {
+                PermissionKind::AcceptEdits
+            }
+            Modes::Claude(Some(Mode::Known(PermissionMode::Plan))) => PermissionKind::Plan,
+            Modes::Claude(Some(Mode::Known(PermissionMode::Auto))) => PermissionKind::Auto,
+            Modes::Claude(Some(Mode::Known(PermissionMode::BypassPermissions))) => {
+                PermissionKind::Bypass
+            }
+            // What a program's own mode lets through is the program's to say.
+            Modes::Claude(Some(Mode::Unknown(_))) | Modes::Program { .. } => {
+                PermissionKind::Unknown
+            }
         };
     }
 
@@ -1282,6 +1279,47 @@ fn always_label(rule: &wire::Suggestion) -> String {
             kept(*destination)
         ),
         wire::Suggestion::Other => String::new(),
+    }
+}
+
+/// The mode menu's items, with their descriptions, and the one ticked.
+fn mode_menu(modes: &Modes, backend: crate::claude::Backend) -> (Vec<(String, String)>, usize) {
+    match modes {
+        Modes::Claude(current) => {
+            let mut items: Vec<(String, String)> = PermissionMode::iter()
+                .map(|mode| (mode.label().to_owned(), mode.description().to_owned()))
+                .collect();
+            let ticked = match current {
+                Some(Mode::Known(mode)) => PermissionMode::iter()
+                    .position(|known| known == *mode)
+                    .unwrap_or_default(),
+                Some(Mode::Unknown(name)) => {
+                    items.push((name.clone(), "As the CLI names it".to_owned()));
+                    items.len() - 1
+                }
+                None => 0,
+            };
+            (items, ticked)
+        }
+        // Before the program has said which modes there are: a name, not an empty menu.
+        Modes::Program { offered, .. } if offered.is_empty() => (
+            vec![(
+                "Default mode".to_owned(),
+                format!("{} says which modes it has once it runs", backend.program()),
+            )],
+            0,
+        ),
+        Modes::Program { offered, current } => {
+            let items = offered
+                .iter()
+                .map(|mode| (mode.name.clone(), mode.description.clone()))
+                .collect();
+            let ticked = current
+                .as_ref()
+                .and_then(|current| offered.iter().position(|mode| &mode.id == current))
+                .unwrap_or_default();
+            (items, ticked)
+        }
     }
 }
 
@@ -1870,6 +1908,58 @@ pub fn short_count(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mode menu offers the session's program's own modes, by their names, with the one
+    /// the program is in ticked: Claude Code's for a Claude Code session, agy's for an agy
+    /// session, and a placeholder for an agy session whose modes agy hasn't told yet.
+    #[test]
+    fn the_mode_menu_offers_the_programs_own_modes() {
+        use crate::claude::Backend;
+        let titles = |items: &[(String, String)]| {
+            items
+                .iter()
+                .map(|(title, _)| title.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let (items, ticked) = mode_menu(
+            &Modes::Claude(Some(Mode::Known(PermissionMode::Plan))),
+            Backend::Claude,
+        );
+        assert_eq!(
+            titles(&items),
+            PermissionMode::iter()
+                .map(|mode| mode.label().to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            items.get(ticked).map(|(title, _)| title.as_str()),
+            Some("Plan mode")
+        );
+
+        let offered: Vec<wire::ProgramMode> = serde_json::from_value(serde_json::json!([
+            {"id": "default", "name": "Default", "description": "Ask before acting"},
+            {"id": "accept-edits", "name": "Accept edits", "description": ""}
+        ]))
+        .expect("agy's modes");
+        let current = serde_json::from_value(serde_json::json!("accept-edits")).ok();
+        let (items, ticked) = mode_menu(&Modes::Program { offered, current }, Backend::Agy);
+        assert_eq!(titles(&items), ["Default", "Accept edits"]);
+        assert_eq!(
+            items.first().map(|(_, description)| description.as_str()),
+            Some("Ask before acting")
+        );
+        assert_eq!(ticked, 1);
+
+        let (items, ticked) = mode_menu(&Modes::of(Backend::Agy), Backend::Agy);
+        assert_eq!(titles(&items), ["Default mode"]);
+        assert!(
+            items
+                .first()
+                .is_some_and(|(_, description)| description.contains("agy says"))
+        );
+        assert_eq!(ticked, 0);
+    }
 
     /// A question's tab is marked answered once an option is picked or something else is
     /// written; blanks don't count.

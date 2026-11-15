@@ -89,6 +89,10 @@ pub enum Change {
         #[serde(default)]
         title: Option<String>,
     },
+    CurrentModeUpdate {
+        #[serde(rename = "currentModeId")]
+        current_mode_id: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -204,6 +208,8 @@ pub struct Opened {
     pub session_id: Option<String>,
     #[serde(default)]
     pub models: Option<Models>,
+    #[serde(default)]
+    pub modes: Option<SessionModes>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -221,6 +227,25 @@ pub struct Model {
     pub model_id: String,
     #[serde(default)]
     pub name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModes {
+    #[serde(default)]
+    pub available_modes: Vec<SessionMode>,
+    #[serde(default)]
+    pub current_mode_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMode {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// `session/prompt`'s answer: why the turn ended, and what it used.
@@ -303,5 +328,29 @@ mod tests {
         };
         let prompted: Prompted = serde_json::from_value(result).expect("a prompt's answer");
         assert_eq!(prompted.stop_reason, StopReason::EndTurn);
+
+        let opened_json = r#"{"sessionId":"s","modes":{"availableModes":[{"id":"default","name":"Default","description":"Ask"},{"id":"accept-edits","name":"Accept edits"}],"currentModeId":"default"}}"#;
+        let opened: Opened = serde_json::from_str(opened_json).expect("opened session with modes");
+        let modes = opened.modes.expect("modes present");
+        assert_eq!(modes.available_modes.len(), 2);
+        assert_eq!(
+            modes.available_modes.get(1).map(|mode| mode.id.as_str()),
+            Some("accept-edits")
+        );
+        assert_eq!(modes.current_mode_id.as_deref(), Some("default"));
+
+        let mode_update = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"current_mode_update","currentModeId":"accept-edits"}}}"#;
+        let Ok(Incoming::Notification {
+            method: AgentMethod::SessionUpdate,
+            params,
+        }) = serde_json::from_str(mode_update)
+        else {
+            panic!("a session update");
+        };
+        let notified: Notified = serde_json::from_value(params).expect("an update");
+        let Change::CurrentModeUpdate { current_mode_id } = notified.update else {
+            panic!("a current mode update");
+        };
+        assert_eq!(current_mode_id, "accept-edits");
     }
 }

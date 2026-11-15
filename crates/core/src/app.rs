@@ -104,6 +104,86 @@ pub enum Mode {
     Unknown(String),
 }
 
+/// The modes a session's menu offers, and the one the session is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modes {
+    /// Claude Code's, [`PermissionMode`]'s; and the one its process reports.
+    Claude(Option<Mode>),
+    /// An agent program's own, as its adapter reports them: none before it has.
+    Program {
+        offered: Vec<wire::ProgramMode>,
+        current: Option<wire::ModeId>,
+    },
+}
+
+impl Default for Modes {
+    fn default() -> Self {
+        Self::of(claude::Backend::default())
+    }
+}
+
+impl Modes {
+    /// What a session of `backend` offers before its process says more.
+    pub fn of(backend: claude::Backend) -> Self {
+        match backend {
+            claude::Backend::Claude => Self::Claude(None),
+            claude::Backend::Agy => Self::Program {
+                offered: Vec::new(),
+                current: None,
+            },
+        }
+    }
+
+    /// Claude Code's process is in `mode`; a program's session has none of Claude Code's.
+    fn claude_in(&mut self, mode: Mode) {
+        if let Self::Claude(current) = self {
+            *current = Some(mode);
+        }
+    }
+
+    /// The session is in `chosen`, if `chosen` is one of its kind.
+    fn chose(&mut self, chosen: &ChosenMode) {
+        match (self, chosen) {
+            (Self::Claude(current), ChosenMode::Claude(mode)) => {
+                *current = Some(Mode::Known(*mode))
+            }
+            (Self::Program { current, .. }, ChosenMode::Program(id)) => {
+                *current = Some(id.clone());
+            }
+            (Self::Claude(_), ChosenMode::Program(_))
+            | (Self::Program { .. }, ChosenMode::Claude(_)) => {}
+        }
+    }
+
+    /// `chosen`'s name in the menu.
+    fn label(&self, chosen: &ChosenMode) -> String {
+        match (self, chosen) {
+            (_, ChosenMode::Claude(mode)) => mode.label().to_owned(),
+            (Self::Program { offered, .. }, ChosenMode::Program(id)) => offered
+                .iter()
+                .find(|mode| &mode.id == id)
+                .map_or_else(|| id.to_string(), |mode| mode.name.clone()),
+            (Self::Claude(_), ChosenMode::Program(id)) => id.to_string(),
+        }
+    }
+}
+
+/// A mode picked in the menu: one of Claude Code's, or one of an agent program's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChosenMode {
+    Claude(PermissionMode),
+    Program(wire::ModeId),
+}
+
+impl ChosenMode {
+    fn request(&self) -> ControlRequest {
+        match self {
+            Self::Claude(mode) => ControlRequest::SetPermissionMode { mode: *mode },
+            Self::Program(mode) => ControlRequest::SetProgramMode { mode: mode.clone() },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     Action(Action),
@@ -532,9 +612,9 @@ pub struct Status {
     /// Picked in the menu or on the command line: kept for the processes after this one that
     /// run the same program.
     pub model_choice: Option<ModelChoice>,
-    pub mode: Option<Mode>,
+    pub modes: Modes,
     /// Picked in the menu for this session: applied again if its process is restarted.
-    pub mode_choice: Option<PermissionMode>,
+    pub mode_choice: Option<ChosenMode>,
     pub commands: Vec<wire::CommandInfo>,
     pub account: wire::Account,
     pub sign_in: SignIn,
@@ -751,7 +831,7 @@ pub enum AskKind {
 pub enum Request {
     Initialize,
     Model(String),
-    Mode(PermissionMode),
+    Mode(ChosenMode),
     Interrupt,
     StopTask(wire::TaskId),
     /// What the command followed in the side panel printed.
@@ -1177,7 +1257,7 @@ impl<F: Frontend> App<F> {
             ));
         }
         if let Some(mode) = mode {
-            self.set_mode(mode);
+            self.set_mode(ChosenMode::Claude(mode));
         }
         match prompt {
             // Sent once the transcript is shown (see `session_loaded`).
@@ -1743,11 +1823,8 @@ impl<F: Frontend> App<F> {
             }
         }
         self.request(&INITIALIZE, Request::Initialize);
-        if let Some(mode) = self.status.mode_choice {
-            self.request(
-                &ControlRequest::SetPermissionMode { mode },
-                Request::Mode(mode),
-            );
+        if let Some(mode) = self.status.mode_choice.clone() {
+            self.request(&mode.request(), Request::Mode(mode));
         }
     }
 
@@ -1981,8 +2058,7 @@ impl<F: Frontend> App<F> {
         self.leave();
         self.watch = None;
         self.chat.clear();
-        self.reset_session(None, None);
-        self.status.backend = backend;
+        self.reset_session(None, None, backend);
         // agy signs in itself.
         self.status.sign_in_with = match backend {
             claude::Backend::Claude => sign_in,
@@ -1993,9 +2069,17 @@ impl<F: Frontend> App<F> {
         self.view.focus_composer();
     }
 
-    fn reset_session(&mut self, id: Option<SessionId>, title: Option<String>) {
+    fn reset_session(
+        &mut self,
+        id: Option<SessionId>,
+        title: Option<String>,
+        backend: claude::Backend,
+    ) {
         self.status.session_id = id;
         self.status.title = title;
+        self.status.backend = backend;
+        // The menu offers the program's own modes at once, not only once its process says.
+        self.status.modes = Modes::of(backend);
         self.status.mode_choice = None;
         // A wait for the limit belongs to the session whose turn it stopped.
         self.status.limit_wait = LimitWait::Idle;
@@ -2083,9 +2167,8 @@ impl<F: Frontend> App<F> {
         let known = self.sessions.iter().find(|session| session.id == id);
         let title = known.map(|session| session.title.clone());
         let worktree = known.and_then(|session| session.worktree.clone());
-        self.reset_session(Some(id.clone()), title);
+        self.reset_session(Some(id.clone()), title, backend);
         self.status.worktree = worktree;
-        self.status.backend = backend;
         self.status.sign_in_with = sign_in;
         self.load_session(id.clone(), self.cwd.clone());
         self.start(Some(Resume::Continue(id)));
@@ -2109,8 +2192,8 @@ impl<F: Frontend> App<F> {
             .iter()
             .find(|session| session.id == id)
             .map(|session| session.title.clone());
-        self.reset_session(Some(id.clone()), title);
-        self.status.backend = sessions::backend_of(&sessions::locate(&self.cwd, &id));
+        let backend = sessions::backend_of(&sessions::locate(&self.cwd, &id));
+        self.reset_session(Some(id.clone()), title, backend);
         self.status.sign_in_with = hosted.sign_in;
         self.load_session(id, self.cwd.clone());
         self.generation = self.generation.next();
@@ -2226,10 +2309,13 @@ impl<F: Frontend> App<F> {
             .title
             .clone()
             .unwrap_or_else(|| session.name.clone());
-        self.reset_session(Some(session.id.clone()), Some(title));
         // Another Claude Code process, signed in as the user is: the footer names it so at
         // once, not at the next prompt.
-        self.status.backend = claude::Backend::Claude;
+        self.reset_session(
+            Some(session.id.clone()),
+            Some(title),
+            claude::Backend::Claude,
+        );
         self.status.sign_in_with = claude::SignInWith::Account;
         self.load_session(session.id.clone(), session.cwd.clone());
         self.forget_watch();
@@ -2562,28 +2648,31 @@ impl<F: Frontend> App<F> {
 
     fn choose_mode(&mut self, index: usize) {
         use strum::IntoEnumIterator;
-        if let Some(mode) = PermissionMode::iter().nth(index) {
+        let chosen = match &self.status.modes {
+            Modes::Claude(_) => PermissionMode::iter().nth(index).map(ChosenMode::Claude),
+            Modes::Program { offered, .. } => offered
+                .get(index)
+                .map(|mode| ChosenMode::Program(mode.id.clone())),
+        };
+        if let Some(mode) = chosen {
             self.set_mode(mode);
         }
     }
 
-    fn set_mode(&mut self, mode: PermissionMode) {
+    fn set_mode(&mut self, mode: ChosenMode) {
         // Without a process the choice waits for the next, which `start` gives it.
         if self.process.is_none() {
+            self.status.modes.chose(&mode);
             self.status.mode_choice = Some(mode);
-            self.status.mode = Some(Mode::Known(mode));
             self.redraw.menus = true;
             return;
         }
-        self.request(
-            &ControlRequest::SetPermissionMode { mode },
-            Request::Mode(mode),
-        );
+        self.request(&mode.request(), Request::Mode(mode.clone()));
         // agy takes a mode as a turn starts: the turn under way keeps the one it began with.
         if self.status.backend == claude::Backend::Agy && self.status.turns > 0 {
             self.chat.info(format!(
                 "agy switches to “{}” from your next prompt; this turn goes on in the mode it started in.",
-                mode.label()
+                self.status.modes.label(&mode)
             ));
             self.view.scroll_to_end();
         }
@@ -2761,7 +2850,7 @@ impl<F: Frontend> App<F> {
         {
             // A mode it switches to is shown in the menu at once.
             if let wire::Suggestion::SetMode { mode } = rule {
-                self.status.mode = Some(mode.clone());
+                self.status.modes.claude_in(mode.clone());
             }
             updated_permissions.push(PermissionUpdate::Offered(offered.raw.clone()));
         }
@@ -2816,7 +2905,7 @@ impl<F: Frontend> App<F> {
                 ToolInput::AsAsked(ask.input.clone())
             }
         };
-        self.status.mode = Some(Mode::Known(mode));
+        self.status.modes.claude_in(Mode::Known(mode));
         let response = PermissionResult::Allow {
             updated_input,
             updated_permissions: vec![PermissionUpdate::SetMode {
@@ -3278,6 +3367,78 @@ mod tests {
         assert_eq!(status.chosen_model(), None);
         status.backend = claude::Backend::Claude;
         assert_eq!(status.chosen_model(), Some("sonnet"));
+    }
+
+    /// A mode picked in an agy session is asked for by agy's id, one in a Claude Code session
+    /// as Claude Code's mode. A session's modes take only a mode of their own kind, and a
+    /// mode agy reports as it changes is read as agy's.
+    #[test]
+    fn a_mode_is_asked_for_in_its_programs_terms() {
+        let initialized: wire::Initialized = serde_json::from_value(serde_json::json!({
+            "models": [],
+            "programModes": {
+                "offered": [
+                    {"id": "default", "name": "Default", "description": "Ask before acting"},
+                    {"id": "accept-edits", "name": "Accept edits", "description": ""}
+                ],
+                "current": "default"
+            }
+        }))
+        .expect("an agy adapter's answer");
+        let program = initialized.program_modes.expect("agy's modes");
+        let accept_edits = program
+            .offered
+            .get(1)
+            .map(|mode| mode.id.clone())
+            .expect("accept-edits offered");
+        let mut modes = Modes::Program {
+            offered: program.offered,
+            current: program.current,
+        };
+
+        let agys = ChosenMode::Program(accept_edits.clone());
+        assert_eq!(
+            serde_json::to_value(agys.request()).expect("a request"),
+            serde_json::json!({"subtype": "set_program_mode", "mode": "accept-edits"})
+        );
+        assert_eq!(modes.label(&agys), "Accept edits");
+        modes.chose(&agys);
+        modes.chose(&ChosenMode::Claude(PermissionMode::Plan));
+        modes.claude_in(Mode::Known(PermissionMode::Plan));
+        assert!(
+            matches!(&modes, Modes::Program { current: Some(current), .. } if *current == accept_edits),
+            "Claude Code's modes leave agy's as they are"
+        );
+
+        let claudes = ChosenMode::Claude(PermissionMode::AcceptEdits);
+        assert_eq!(
+            serde_json::to_value(claudes.request()).expect("a request"),
+            serde_json::json!({"subtype": "set_permission_mode", "mode": "acceptEdits"})
+        );
+        let mut modes = Modes::of(claude::Backend::Claude);
+        modes.chose(&agys);
+        assert_eq!(
+            modes,
+            Modes::Claude(None),
+            "agy's modes leave Claude Code's as they are"
+        );
+        modes.chose(&claudes);
+        assert_eq!(
+            modes,
+            Modes::Claude(Some(Mode::Known(PermissionMode::AcceptEdits)))
+        );
+
+        let changed: wire::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "program_mode",
+            "mode": "plan",
+            "session_id": "11111111-2222-4333-8444-555555555555"
+        }))
+        .expect("an agy adapter's line");
+        assert!(matches!(
+            changed,
+            wire::Message::System(wire::System::ProgramMode { mode }) if mode.to_string() == "plan"
+        ));
     }
 
     /// Up steps back from the newest prompt to the oldest and stops there; Down steps forward

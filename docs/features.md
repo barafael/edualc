@@ -275,8 +275,9 @@ its program: a new session with the other program starts with that program's def
   message other sessions too; agy itself asks your permission before it sends.
 - **Continuing:** agy sessions are listed in the sidebar and continue like Claude Code's. Their
   transcripts are kept in `~/.local/state/edualc/agy/`.
-- **Permission modes:** agy takes a mode as a turn starts. Switch during a turn, and the window
-  says that agy uses the new mode from your next prompt.
+- **Modes:** the mode menu lists agy's own modes, by agy's names, with the one agy is in ticked.
+  agy takes a mode as a turn starts. Switch during a turn, and the window says that agy uses the
+  new mode from your next prompt. `--permission-mode` takes Claude Code's modes, so agy refuses it.
 - **Usage:** agy reports no usage limits, so the sidebar foot shows none for its sessions.
 - **Not available with agy:** shell commands (`!`) and the trust question.
 

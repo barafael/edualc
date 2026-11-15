@@ -86,6 +86,29 @@ pub struct ToolUseId(String);
 #[serde(transparent)]
 pub struct TaskId(String);
 
+/// One of an agent program's own modes (agy's `accept-edits`), by the program's name for it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, derive_more::Display)]
+#[serde(transparent)]
+pub struct ModeId(String);
+
+/// A mode an agent program offers, as its adapter reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProgramMode {
+    pub id: ModeId,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// The modes an agent program offers and the one it is in, as its adapter reports them in
+/// its `initialize` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProgramModes {
+    pub offered: Vec<ProgramMode>,
+    #[serde(default)]
+    pub current: Option<ModeId>,
+}
+
 /// An API message, whose stream events and complete copy arrive separately.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize)]
 #[serde(transparent)]
@@ -483,6 +506,10 @@ pub enum System {
     PermissionDenied {
         tool_use_id: ToolUseId,
     },
+    /// An agent program is in another of its own modes now.
+    ProgramMode {
+        mode: ModeId,
+    },
     /// What runs in the background now (subagents, shell commands, monitors), all of it,
     /// whenever that changes. Their tool calls are done by then, so nothing else shows them.
     BackgroundTasksChanged {
@@ -784,6 +811,10 @@ pub struct Initialized {
     pub account: Account,
     #[serde(default)]
     pub claude_code_version: String,
+    /// An agent program's own modes; Claude Code's answer has none, its modes are
+    /// [`PermissionMode`]'s.
+    #[serde(default, rename = "programModes")]
+    pub program_modes: Option<ProgramModes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1402,6 +1433,10 @@ pub enum ControlRequest {
     },
     SetPermissionMode {
         mode: PermissionMode,
+    },
+    /// One of an agent program's own modes, which only its adapter takes.
+    SetProgramMode {
+        mode: ModeId,
     },
     /// `/btw`: a question on the side, with the side questions answered so far.
     SideQuestion {

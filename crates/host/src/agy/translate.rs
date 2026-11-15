@@ -103,7 +103,11 @@ enum Asked {
     Open,
     /// The model; for the window's request, if it asked.
     Model(Option<String>),
-    Mode(String),
+    /// One of agy's modes, for the window's request.
+    Mode {
+        request: String,
+        mode: String,
+    },
     Prompt,
 }
 
@@ -159,7 +163,10 @@ pub struct Translator {
     /// The model asked for, then the one in use.
     model: Option<String>,
     models: Vec<acp::Model>,
-    mode: String,
+    /// agy's modes, as it opened the session with them.
+    modes: Vec<acp::SessionMode>,
+    /// The mode agy is in, by its id.
+    mode: Option<String>,
     next_rpc: u64,
     asked: HashMap<u64, Asked>,
     /// What the window said before the session was open.
@@ -195,7 +202,8 @@ impl Translator {
             phase: Phase::Connecting,
             model,
             models: Vec::new(),
-            mode: "default".to_owned(),
+            modes: Vec::new(),
+            mode: None,
             next_rpc: 0,
             asked: HashMap::new(),
             held: Vec::new(),
@@ -355,6 +363,10 @@ impl Translator {
                         self.model = models.current_model_id;
                     }
                 }
+                if let Some(modes) = opened.modes {
+                    self.modes = modes.available_modes;
+                    self.mode = modes.current_mode_id;
+                }
                 self.phase = Phase::Ready(session.clone());
                 if let Some(model) = self.model.clone() {
                     effects.push(self.request(
@@ -374,7 +386,10 @@ impl Translator {
             Asked::Model(window) => window
                 .map(|request| vec![success(&request, &json!({}))])
                 .unwrap_or_default(),
-            Asked::Mode(request) => vec![success(&request, &json!({}))],
+            Asked::Mode { request, mode } => {
+                self.mode = Some(mode);
+                vec![success(&request, &json!({}))]
+            }
             Asked::Prompt => {
                 let prompted = serde_json::from_value::<Prompted>(result).ok();
                 self.turn_ended(prompted.as_ref(), None)
@@ -387,7 +402,9 @@ impl Translator {
         let message = error.message.as_str();
         match asked {
             Asked::Initialize | Asked::Open => self.failed(message),
-            Asked::Model(Some(request)) | Asked::Mode(request) => vec![failure(request, message)],
+            Asked::Model(Some(request)) | Asked::Mode { request, .. } => {
+                vec![failure(request, message)]
+            }
             Asked::Model(None) => {
                 tracing::warn!(message, "agy didn't take the model");
                 Vec::new()
@@ -417,18 +434,24 @@ impl Translator {
         effects
     }
 
-    /// The answer to the window's `initialize`: agy's models, as the window lists Claude
-    /// Code's.
+    /// The answer to the window's `initialize`: agy's models, and agy's own modes with the one
+    /// it is in.
     fn initialized(&self, request: &str) -> Effect {
         let models: Vec<Value> = self
             .models
             .iter()
             .map(|model| json!({"value": model.model_id, "displayName": model.name, "description": ""}))
             .collect();
+        let modes: Vec<Value> = self
+            .modes
+            .iter()
+            .map(|mode| json!({"id": mode.id, "name": mode.name, "description": mode.description.clone().unwrap_or_default()}))
+            .collect();
         success(
             request,
             &json!({
                 "models": models,
+                "programModes": {"offered": modes, "current": self.mode},
                 "commands": [],
                 "account": {"apiProvider": "agy"},
                 "claude_code_version": format!("agy, through edualc {}", env!("CARGO_PKG_VERSION")),
@@ -534,18 +557,23 @@ impl Translator {
                     Asked::Model(Some(request)),
                 )]
             }
-            Some("set_permission_mode") => {
-                let wanted = said.pointer("/request/mode").and_then(Value::as_str);
-                let Some(mode) = wanted.and_then(agy_mode) else {
-                    return vec![failure(&request, "agy has no such mode")];
+            Some("set_program_mode") => {
+                let Some(mode) = said.pointer("/request/mode").and_then(Value::as_str) else {
+                    return vec![failure(&request, "no mode named")];
                 };
-                if let Some(wanted) = wanted {
-                    wanted.clone_into(&mut self.mode);
-                }
                 vec![self.request(
                     "session/set_mode",
                     json!({"sessionId": session, "modeId": mode}),
-                    Asked::Mode(request),
+                    Asked::Mode {
+                        request,
+                        mode: mode.to_owned(),
+                    },
+                )]
+            }
+            Some("set_permission_mode") => {
+                vec![failure(
+                    &request,
+                    "agy has modes of its own, not Claude Code's",
                 )]
             }
             Some(_) | None => vec![failure(&request, "agy doesn't do this")],
@@ -678,7 +706,7 @@ impl Translator {
             "subtype": "init",
             "session_id": self.id.to_string(),
             "model": self.model.clone().unwrap_or_default(),
-            "permissionMode": self.mode,
+            "permissionMode": self.mode.clone().unwrap_or_default(),
             "cwd": self.cwd,
             "tools": [],
         }))];
@@ -740,6 +768,16 @@ impl Translator {
             Change::ToolCallUpdate(call) => self.tool_call_update(&call),
             Change::SessionInfoUpdate { title: Some(title) } => {
                 vec![self.transcript(json!({"type": "ai-title", "aiTitle": title}))]
+            }
+            Change::CurrentModeUpdate { current_mode_id } => {
+                let effect = Effect::ToWindow(json!({
+                    "type": "system",
+                    "subtype": "program_mode",
+                    "mode": current_mode_id,
+                    "session_id": self.id.to_string(),
+                }));
+                self.mode = Some(current_mode_id);
+                vec![effect]
             }
             Change::AgentMessageChunk { .. }
             | Change::AgentThoughtChunk { .. }
@@ -1052,17 +1090,6 @@ fn failure(request: &str, error: &str) -> Effect {
         "type": "control_response",
         "response": {"subtype": "error", "request_id": request, "error": error}
     }))
-}
-
-/// Claude Code's permission mode as agy names it; none for one agy hasn't.
-fn agy_mode(mode: &str) -> Option<&'static str> {
-    match mode {
-        "default" => Some("default"),
-        "acceptEdits" => Some("accept-edits"),
-        "plan" => Some("plan"),
-        "auto" => Some("auto"),
-        _ => None,
-    }
 }
 
 /// A prompt as the window sent it (text, or blocks of text and images), as ACP takes it.
@@ -1644,5 +1671,85 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old"}}}}"#,
         );
         assert!(replayed.is_empty());
+    }
+
+    /// The window is told agy's own modes and the one agy is in, picks one by agy's id, and
+    /// hears when agy changes mode; Claude Code's modes are refused.
+    #[test]
+    fn agys_modes_reach_the_window() {
+        let mut translator = translator(Start::New);
+        translator.start();
+        translator.window_said(
+            r#"{"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}"#,
+        );
+        translator.agy_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
+        let opened = translator.agy_said(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","modes":{"availableModes":[{"id":"default","name":"Default","description":"Ask before acting"},{"id":"accept-edits","name":"Accept edits"}],"currentModeId":"default"}}}"#,
+        );
+        let answer = window_lines(&opened)
+            .into_iter()
+            .find(|line| line.get("type") == Some(&json!("control_response")))
+            .expect("initialize answered");
+        assert_eq!(
+            answer.pointer("/response/response/programModes"),
+            Some(&json!({
+                "offered": [
+                    {"id": "default", "name": "Default", "description": "Ask before acting"},
+                    {"id": "accept-edits", "name": "Accept edits", "description": ""}
+                ],
+                "current": "default"
+            }))
+        );
+
+        let asked = translator.window_said(
+            r#"{"type":"control_request","request_id":"r2","request":{"subtype":"set_program_mode","mode":"accept-edits"}}"#,
+        );
+        let set_mode = agy_lines(&asked)
+            .into_iter()
+            .find(|line| line.get("method") == Some(&json!("session/set_mode")))
+            .expect("agy asked to switch");
+        assert_eq!(
+            set_mode.get("params"),
+            Some(&json!({"sessionId": "s", "modeId": "accept-edits"}))
+        );
+        let rpc = set_mode.get("id").and_then(Value::as_u64).expect("an id");
+        let switched =
+            translator.agy_said(&format!(r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{}}}}"#));
+        assert_eq!(
+            window_lines(&switched)
+                .first()
+                .and_then(|line| line.pointer("/response/subtype")),
+            Some(&json!("success"))
+        );
+        let again = translator.window_said(
+            r#"{"type":"control_request","request_id":"r3","request":{"subtype":"initialize"}}"#,
+        );
+        assert_eq!(
+            window_lines(&again)
+                .first()
+                .and_then(|line| line.pointer("/response/response/programModes/current")),
+            Some(&json!("accept-edits"))
+        );
+
+        let claudes = translator.window_said(
+            r#"{"type":"control_request","request_id":"r4","request":{"subtype":"set_permission_mode","mode":"plan"}}"#,
+        );
+        assert!(agy_lines(&claudes).is_empty());
+        assert_eq!(
+            window_lines(&claudes)
+                .first()
+                .and_then(|line| line.pointer("/response/subtype")),
+            Some(&json!("error"))
+        );
+
+        let changed = translator.agy_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}"#,
+        );
+        let told = window_lines(&changed);
+        assert_eq!(
+            told.first()
+                .map(|line| (line.get("subtype"), line.get("mode"))),
+            Some((Some(&json!("program_mode")), Some(&json!("plan"))))
+        );
     }
 }
