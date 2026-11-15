@@ -19,7 +19,7 @@ mod translate;
 
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -212,7 +212,7 @@ impl Agent {
 
 /// The adapter's command line, as `spawn` writes it.
 #[derive(Debug, clap::Parser)]
-#[command(name = "edualc --agy-adapter", disable_help_flag = true)]
+#[command(name = "edualcd --agy-adapter", disable_help_flag = true)]
 struct Args {
     /// The agent this adapter serves.
     #[arg(long, value_enum, default_value_t = Agent::Agy)]
@@ -700,6 +700,7 @@ impl Out {
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
+                    .mode(0o600)
                     .open(path)
             })
             .and_then(|mut file| writeln!(file, "{line}"));

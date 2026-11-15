@@ -39,8 +39,9 @@ pub struct Tool {
     pub state: ToolState,
 }
 
-/// An image in the conversation, known by its content: the same image twice is one image, and
-/// one's pixels, decoded late, can't come to another.
+/// An image in the conversation, known by its content: the same image twice is one image. The
+/// key is a 64-bit hash of the bytes, so two different images share one only if their hashes
+/// collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ImageKey(u64);
 

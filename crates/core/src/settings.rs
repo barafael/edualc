@@ -239,7 +239,7 @@ fn change_at(path: PathBuf, change: Change) -> Result<Settings, Error> {
     };
     settings.apply(change);
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|source| Error::Write {
+        private_folder(dir).map_err(|source| Error::Write {
             path: dir.to_owned(),
             source,
         })?;
@@ -248,12 +248,30 @@ fn change_at(path: PathBuf, change: Change) -> Result<Settings, Error> {
     // Written beside the file and renamed over it, so a crash leaves the old file or the new
     // one, never half of one that no longer parses.
     let fresh = path.with_extension("json.new");
-    std::fs::write(&fresh, text).map_err(|source| Error::Write {
+    private_file(&fresh, text.as_bytes()).map_err(|source| Error::Write {
         path: fresh.clone(),
         source,
     })?;
     std::fs::rename(&fresh, &path).map_err(|source| Error::Write { path, source })?;
     Ok(settings)
+}
+
+/// `dir` and the folders above it that aren't there yet, made readable by the user alone.
+fn private_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// `path` written anew with `bytes`, readable by the user alone.
+fn private_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(path)?, bytes)
 }
 
 #[cfg(test)]
@@ -362,6 +380,10 @@ mod tests {
         assert_eq!(kept.trusted_folders, [PathBuf::from("/work/app")]);
         assert_eq!(kept.zoom_percent, 120);
         assert!(!dir.join("settings.json.new").exists());
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path).expect("the file").permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600, "readable by the user alone");
         std::fs::remove_dir_all(&dir).expect("cleaned up");
     }
 

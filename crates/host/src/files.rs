@@ -1,6 +1,7 @@
 //! What the daemon reads and watches for the windows: Claude Code's files (its sessions'
-//! records, transcripts, projects) and edualc's settings. A page can't read them, and the native
-//! window, confined, needn't: it asks (`ipc::Read`), and is told when what it watches changes
+//! records, transcripts, projects) and edualc's settings. The browser demo can't read them, and
+//! the native window needn't, so both ask the same way: they ask (`ipc::Read`), and are told
+//! when what they watch changes
 //! (`ipc::Target`), noticed by inotify, never by looking every few seconds (only a watch that
 //! couldn't be placed is tried again so, until it is).
 
@@ -68,8 +69,8 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
         }
         Read::Transcript { place, from } => {
             let path = resolve(&place);
-            // Only a transcript is read, by no link (`sessions::open_transcript`): the window's
-            // own reading is confined, and the daemon's isn't.
+            // Only a transcript is read, by no link (`sessions::open_transcript`): a place a
+            // window names could otherwise lead the daemon to any file of the user's.
             let read = match sessions::read_lines_from(&path, from) {
                 Ok((lines, offset)) => {
                     send_lines(request, &lines, pieces);
@@ -154,9 +155,8 @@ pub enum Order {
 }
 
 /// A window's watch: a folder, watched by inotify; for a transcript, the folder it is in. A
-/// transcript is watched by its folder, not itself: a file watched follows the file, and the
-/// transcript is written anew by a rename over it (`home::copy_back_transcript`), which its
-/// folder sees. Before the folder is there, the nearest one above it is watched (at most
+/// transcript is watched by its folder, not itself: a file watched follows the file, so one
+/// written anew by a rename over it would go unseen, and its folder sees that too. Before the folder is there, the nearest one above it is watched (at most
 /// [`MOST_ABOVE`] up), until the next one down comes.
 #[derive(Debug)]
 struct Watch {

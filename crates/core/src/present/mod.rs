@@ -1,7 +1,7 @@
 //! What the window shows, apart from how it is drawn: the app's state made into the rows,
 //! menus and words a window shows (`Presenter`), as plain data (`model`), handed to a
-//! [`Frontend`] that draws it. The Slint window is one frontend, the Dioxus page another; both
-//! show the same model, so they say the same things.
+//! [`Frontend`] that draws it: the Slint window, native or in the browser demo. Another
+//! frontend would show the same model, and so say the same things.
 
 use std::collections::HashSet;
 

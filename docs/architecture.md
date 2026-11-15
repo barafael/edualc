@@ -35,7 +35,8 @@ in `ipc::MAX_MESSAGE`, which is enough for a thousand sessions.
 
 The daemon's parts are actors, in the manner of "More Actors with Tokio". Each owns its data and
 runs an event loop on the channels it is given. The channels have no cycles, and an actor shuts
-down when its channels close. The logic is sans-io, so it's tested without sockets or processes.
+down when its channels close. The logic is sans-io, so it can be tested without sockets or
+processes; the window's `App` has no such tests yet.
 
 ## No sandbox
 
@@ -96,7 +97,7 @@ In `crates/host/src`:
 |---|---|
 | `daemon.rs`, `spawn.rs` | the daemon's actors, starting `claude` or agy's adapter, and acting on the desktop |
 | `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings |
-| `agy.rs`, `agy/` | an agy session: the adapter (`edualcd --agy-adapter`) that speaks the Agent Client Protocol to `agy acp` and Claude Code's stream-json to the daemon; its inbox; the messages it sends to other sessions |
+| `acp.rs`, `acp/` | a session of an agent spoken to over the Agent Client Protocol (agy, opencode): the adapter (`edualcd --agy-adapter`) that speaks ACP to the agent and Claude Code's stream-json to the daemon; its inbox; the messages it sends to other sessions |
 | `bin/edualcd.rs` | the daemon's program |
 
 In `crates/slint/src`:
@@ -136,7 +137,8 @@ paragraphs, so the Markdown every frontend gets stays plain.
 
 - **No shared mutable state.** `App` owns the state, and everything else reaches it by message.
   `clippy.toml` refuses cells, `Rc`, `Arc` and locks.
-- **Errors are typed,** and nothing is silently discarded.
+- **Errors are typed** (`thiserror` enums). A `Result` can't be dropped unread: clippy and the
+  `no-discarded-result` rule refuse it.
 - **Lints:** the lint set in `Cargo.toml` and the ast-grep rules in `lint/`. Formats edualc owns
   refuse unknown keys; those in `crates/core/src/external/` accept them.
 - **Checks:** `cargo clippy --all-targets -- -D warnings`, `ast-grep scan`, `cargo deny check`

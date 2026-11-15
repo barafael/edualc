@@ -118,7 +118,7 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
                     .extend(diff(edited("old_string"), edited("new_string")));
             }
         }
-        // The cell's new source, as it will be: what is approved is all shown.
+        // The cell's new source, as it will be, shown whole.
         ToolName::NotebookEdit => {
             view.summary = path("notebook_path");
             if full {

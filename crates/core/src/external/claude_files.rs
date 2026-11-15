@@ -12,8 +12,8 @@ use crate::external::wire::SessionId;
 use crate::sessions::{LiveKind, LiveStatus};
 
 /// A running session's record, `sessions/<pid>.json` in Claude Code's home, in the fields
-/// other sessions read to find it and message it: written for an agy session (see
-/// `agy::inbox`). Others are dropped.
+/// other sessions read to find it and message it: written for an ACP agent's session too (see
+/// edualcd's `acp::inbox`). Others are dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {

@@ -2,9 +2,8 @@
 //! effect the moment `claude` starts there, and `claude -p` skips the trust dialog the terminal
 //! shows, so this window asks instead. Trusted are the folders, with what is under them, trusted
 //! here (kept in this window's settings) and those that the terminal's dialog accepted (as
-//! `~/.claude.json` keeps them). The daemon reads the latter for the window, which can't: that
-//! file holds MCP servers' environments, tokens among them, and Claude Code replaces it as it
-//! writes, so a Landlock rule for it would stop at the first rewrite anyway.
+//! `~/.claude.json` keeps them). The daemon reads the latter for the window, which has no need
+//! to read that file itself: it holds MCP servers' environments, tokens among them.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Read;

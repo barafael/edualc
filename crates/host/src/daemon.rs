@@ -1,4 +1,4 @@
-//! The daemon (`edualc --daemon`): runs Claude Code's processes for the windows, and does for
+//! The daemon (`edualcd`): runs Claude Code's processes for the windows, and does for
 //! them what they ask of the desktop (opening editors, notifying, stopping sessions that run
 //! elsewhere). One per user, started by the first window, gone a while after the last window
 //! and session are. Sessions outlive the window that started them: closing it leaves them
