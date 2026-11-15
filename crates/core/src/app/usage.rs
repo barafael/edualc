@@ -31,8 +31,8 @@ impl<F: Frontend> App<F> {
         }
         self.ensure_process();
         let asked = [
-            self.request(&ControlRequest::GetUsage, Request::Usage),
-            self.request(&ControlRequest::GetContextUsage, Request::ContextUsage),
+            self.request(ControlRequest::GetUsage, Request::Usage),
+            self.request(ControlRequest::GetContextUsage, Request::ContextUsage),
         ];
         self.usage.waiting = asked.iter().filter(|sent| **sent).count();
         if self.usage.waiting == 0 {

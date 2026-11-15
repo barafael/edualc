@@ -32,7 +32,7 @@ impl<F: Frontend> App<F> {
             let stop = ControlRequest::StopTask {
                 task_id: task.clone(),
             };
-            self.request(&stop, Request::StopTask(task));
+            self.request(stop, Request::StopTask(task));
         }
     }
 

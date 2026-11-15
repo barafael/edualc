@@ -27,7 +27,7 @@ impl<F: Frontend> App<F> {
     /// Asks Claude Code for the plan's limits, if it runs; `usage_answered` takes the answer.
     fn ask_limits(&mut self) -> bool {
         let asked =
-            self.process.is_some() && self.request(&ControlRequest::GetUsage, Request::Usage);
+            self.process.is_some() && self.request(ControlRequest::GetUsage, Request::Usage);
         if asked {
             self.usage.waiting += 1;
         }

@@ -110,7 +110,7 @@ impl<F: Frontend> App<F> {
             question: question.to_owned(),
             history: self.side.history(),
         };
-        let answer = if self.request(&request, Request::Side(index)) {
+        let answer = if self.request(request, Request::Side(index)) {
             Answer::Pending
         } else {
             Answer::Failed("Claude Code isn't running; send a message to start it.".into())

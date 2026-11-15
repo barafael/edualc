@@ -1328,95 +1328,122 @@ pub struct PeekedResponse {
     pub request_id: Option<String>,
 }
 
-/// A line to the CLI's input.
-#[derive(Debug, Serialize)]
+/// A line to the CLI's input. Also read back, by edualcd's adapter, which stands in for the CLI
+/// to an agent program.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Input<'a> {
+pub enum Input {
     /// A prompt, as the user wrote it.
     User {
-        message: Prompt<'a>,
+        message: Prompt,
         /// Only a subagent's prompts have one.
-        parent_tool_use_id: Option<&'a str>,
-        session_id: &'a str,
+        parent_tool_use_id: Option<String>,
+        session_id: String,
     },
     ControlRequest {
-        request_id: &'a RequestId,
-        request: &'a ControlRequest,
+        request_id: RequestId,
+        request: ControlRequest,
     },
     /// The answer to one of the CLI's control requests.
-    ControlResponse { response: Reply<'a> },
+    ControlResponse { response: Reply },
     /// A `!` command, which the CLI runs in a shell beside the conversation without the model
     /// seeing it, answering with replayed user rows: its echo (`<bash-input>`), then its output.
     /// One runs at a time; an interrupt stops it. Undocumented: the SDK's schema marks it
     /// internal (Claude Code 2.1.316).
     BashCommand {
-        command: &'a str,
+        command: String,
         /// A repeat of an id is skipped.
         uuid: uuid::Uuid,
     },
 }
 
-impl<'a> Input<'a> {
+impl Input {
     /// A prompt as the user sent it. First what they ran with `!` since the last: those rows,
     /// as the terminal gives them to the model, ahead of the prompt. Then the images, as the
     /// Messages API takes them, then the text. A prompt of text alone stays a plain string.
-    pub fn prompt_with(shell: &'a [String], images: Vec<ImageBlock>, text: &'a str) -> Self {
+    pub fn prompt_with(shell: &[String], images: Vec<ImageBlock>, text: &str) -> Self {
         if shell.is_empty() && images.is_empty() {
-            return Self::user(Content::Text(text));
+            return Self::user(Content::Text(text.to_owned()));
         }
-        let mut blocks: Vec<Block<'a>> = shell
+        let mut blocks: Vec<Block> = shell
             .iter()
-            .map(|row| Block::Text { text: row.as_str() })
+            .map(|row| Block::Text { text: row.clone() })
             .collect();
         blocks.extend(images.into_iter().map(Block::Image));
         if !text.is_empty() {
-            blocks.push(Block::Text { text });
+            blocks.push(Block::Text {
+                text: text.to_owned(),
+            });
         }
         Self::user(Content::Blocks(blocks))
     }
 
-    pub fn bash_command(command: &'a str) -> Self {
+    pub fn bash_command(command: &str) -> Self {
         Self::BashCommand {
-            command,
+            command: command.to_owned(),
             uuid: uuid::Uuid::new_v4(),
         }
     }
 
-    fn user(content: Content<'a>) -> Self {
+    fn user(content: Content) -> Self {
         Self::User {
             message: Prompt {
                 role: Role::User,
                 content,
             },
             parent_tool_use_id: None,
-            session_id: "default",
+            session_id: "default".to_owned(),
         }
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct Prompt<'a> {
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Prompt {
     role: Role,
-    content: Content<'a>,
+    pub content: Content,
 }
 
-/// A prompt's content: its text alone, or blocks of images and text.
-#[derive(Debug, Serialize)]
+/// A prompt's content: its text alone, or blocks of images and text. Read untagged, which can't
+/// mistake one for the other: one is a string, the other an array.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
-enum Content<'a> {
-    Text(&'a str),
-    Blocks(Vec<Block<'a>>),
+pub enum Content {
+    Text(String),
+    Blocks(Vec<Block>),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Block<'a> {
+pub enum Block {
     Image(ImageBlock),
-    Text { text: &'a str },
+    Text { text: String },
+}
+
+/// The prompt as a transcript keeps it: an image without its media type (see
+/// [`ReceivedImage`]).
+impl From<Content> for UserContent {
+    fn from(content: Content) -> Self {
+        match content {
+            Content::Text(text) => Self::Text(text),
+            Content::Blocks(blocks) => Self::Blocks(
+                blocks
+                    .into_iter()
+                    .map(|block| match block {
+                        Block::Image(image) => ContentBlock::Image {
+                            source: Some(ReceivedImage::Base64 {
+                                data: image.source.data,
+                            }),
+                        },
+                        Block::Text { text } => ContentBlock::Text { text },
+                    })
+                    .collect(),
+            ),
+        }
+    }
 }
 
 /// An image in a prompt, its bytes base64-encoded.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ImageBlock {
     source: ImageSource,
 }
@@ -1431,9 +1458,18 @@ impl ImageBlock {
             },
         }
     }
+
+    pub fn media_type(&self) -> MediaType {
+        self.source.media_type
+    }
+
+    /// The image's bytes, base64-encoded.
+    pub fn data(&self) -> &str {
+        &self.source.data
+    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ImageSource {
     #[serde(rename = "type")]
     kind: SourceKind,
@@ -1441,7 +1477,7 @@ struct ImageSource {
     data: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum SourceKind {
     Base64,
@@ -1471,14 +1507,14 @@ pub enum MediaType {
     Jpeg,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Role {
     User,
 }
 
 /// What the window asks of the CLI.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub enum ControlRequest {
     Initialize {
@@ -1519,56 +1555,64 @@ pub enum ControlRequest {
     GetContextUsage,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SideTurn {
     pub question: String,
     pub response: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-pub enum Reply<'a> {
+pub enum Reply {
     Success {
-        request_id: &'a RequestId,
-        response: &'a PermissionResult,
+        request_id: RequestId,
+        response: PermissionResult,
     },
     /// Turns down a request the window doesn't handle.
     Error {
-        request_id: &'a RequestId,
-        error: &'a str,
+        request_id: RequestId,
+        error: String,
     },
 }
 
 /// The answer to a permission request (`can_use_tool`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "behavior", rename_all = "snake_case")]
 pub enum PermissionResult {
     #[serde(rename_all = "camelCase")]
     Allow {
         updated_input: ToolInput,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         updated_permissions: Vec<PermissionUpdate>,
     },
     Deny {
         message: String,
         /// Ends the turn, as denying with nothing said does in the terminal.
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         interrupt: bool,
     },
 }
 
-/// What an allowed tool runs with: as Claude asked, or with the user's part in it.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
+/// What an allowed tool runs with: as Claude asked, or with the user's part in it. Read back as
+/// it was written, [`ToolInput::AsAsked`]: what the user's part was isn't told by the JSON.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged, from = "Value")]
 pub enum ToolInput {
     AsAsked(Value),
     Plan(PlanInput),
     Answered(Questions),
 }
 
-/// A rule to remember along with an answer.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+impl From<Value> for ToolInput {
+    fn from(input: Value) -> Self {
+        Self::AsAsked(input)
+    }
+}
+
+/// A rule to remember along with an answer. Read back as it was written,
+/// [`PermissionUpdate::Offered`].
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", from = "Value")]
 pub enum PermissionUpdate {
     SetMode {
         mode: PermissionMode,
@@ -1577,6 +1621,12 @@ pub enum PermissionUpdate {
     /// One the CLI offered, as it wants it back.
     #[serde(untagged)]
     Offered(Value),
+}
+
+impl From<Value> for PermissionUpdate {
+    fn from(update: Value) -> Self {
+        Self::Offered(update)
+    }
 }
 
 /// For how long a remembered rule holds.
@@ -2073,7 +2123,7 @@ mod tests {
     /// What the window writes, against the shape the CLI reads.
     #[test]
     fn input_is_written_as_the_cli_reads_it() {
-        let encoded = |input: &Input<'_>| serde_json::to_value(input).expect("encodable");
+        let encoded = |input: &Input| serde_json::to_value(input).expect("encodable");
         assert_eq!(
             encoded(&Input::prompt_with(&[], Vec::new(), "Hi")),
             json!({
@@ -2084,13 +2134,15 @@ mod tests {
             })
         );
         let id = RequestId::from("gui_1".to_owned());
-        let request = ControlRequest::SetPermissionMode {
-            mode: PermissionMode::AcceptEdits,
+        let asked = |request: ControlRequest| {
+            encoded(&Input::ControlRequest {
+                request_id: id.clone(),
+                request,
+            })
         };
         assert_eq!(
-            encoded(&Input::ControlRequest {
-                request_id: &id,
-                request: &request,
+            asked(ControlRequest::SetPermissionMode {
+                mode: PermissionMode::AcceptEdits,
             }),
             json!({
                 "type": "control_request",
@@ -2098,12 +2150,8 @@ mod tests {
                 "request": { "subtype": "set_permission_mode", "mode": "acceptEdits" },
             })
         );
-        let request = ControlRequest::GetContextUsage;
         assert_eq!(
-            encoded(&Input::ControlRequest {
-                request_id: &id,
-                request: &request,
-            }),
+            asked(ControlRequest::GetContextUsage),
             json!({
                 "type": "control_request",
                 "request_id": "gui_1",
@@ -2111,35 +2159,23 @@ mod tests {
             })
         );
         // As the SDK's types for 2.1.316 name them.
-        let request = ControlRequest::Initialize {
-            per_task_stop_affordance: true,
-        };
         assert_eq!(
-            encoded(&Input::ControlRequest {
-                request_id: &id,
-                request: &request,
+            asked(ControlRequest::Initialize {
+                per_task_stop_affordance: true,
             })
             .get("request"),
             Some(&json!({ "subtype": "initialize", "perTaskStopAffordance": true }))
         );
-        let request = ControlRequest::StopTask {
-            task_id: TaskId::from("a1b2".to_owned()),
-        };
         assert_eq!(
-            encoded(&Input::ControlRequest {
-                request_id: &id,
-                request: &request,
+            asked(ControlRequest::StopTask {
+                task_id: TaskId::from("a1b2".to_owned()),
             })
             .get("request"),
             Some(&json!({ "subtype": "stop_task", "task_id": "a1b2" }))
         );
-        let request = ControlRequest::GetTaskOutput {
-            task_id: TaskId::from("b3p6".to_owned()),
-        };
         assert_eq!(
-            encoded(&Input::ControlRequest {
-                request_id: &id,
-                request: &request,
+            asked(ControlRequest::GetTaskOutput {
+                task_id: TaskId::from("b3p6".to_owned()),
             })
             .get("request"),
             Some(&json!({ "subtype": "get_task_output", "task_id": "b3p6" }))
@@ -2158,8 +2194,8 @@ mod tests {
         assert_eq!(
             encoded(&Input::ControlResponse {
                 response: Reply::Success {
-                    request_id: &id,
-                    response: &allow,
+                    request_id: id.clone(),
+                    response: allow,
                 },
             }),
             json!({
@@ -2186,6 +2222,90 @@ mod tests {
             serde_json::to_value(&deny).expect("encodable"),
             json!({ "behavior": "deny", "message": "No" })
         );
+    }
+
+    /// edualcd's adapter reads what the window writes with the window's own types: every kind
+    /// of line reads back as the line it was, the keys left out for their default included.
+    #[test]
+    fn every_line_the_window_writes_reads_back() {
+        let id = || RequestId::from("gui_7".to_owned());
+        let asked = |request| Input::ControlRequest {
+            request_id: id(),
+            request,
+        };
+        let answered = |response| Input::ControlResponse {
+            response: Reply::Success {
+                request_id: id(),
+                response,
+            },
+        };
+        let task = || TaskId::from("a1b2".to_owned());
+        let written = [
+            Input::prompt_with(&[], Vec::new(), "Hi"),
+            Input::prompt_with(
+                &["<bash-input>ls</bash-input>".to_owned()],
+                vec![ImageBlock::base64(MediaType::Png, "QUJD".to_owned())],
+                "Describe this image.",
+            ),
+            Input::bash_command("ls -a"),
+            asked(ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            }),
+            asked(ControlRequest::Interrupt),
+            asked(ControlRequest::StopTask { task_id: task() }),
+            asked(ControlRequest::GetTaskOutput { task_id: task() }),
+            asked(ControlRequest::SetModel {
+                model: "opus".to_owned(),
+            }),
+            asked(ControlRequest::SetPermissionMode {
+                mode: PermissionMode::Plan,
+            }),
+            asked(ControlRequest::SetProgramMode {
+                mode: ModeId::from("accept-edits".to_owned()),
+            }),
+            asked(ControlRequest::SideQuestion {
+                question: "Why?".to_owned(),
+                history: vec![SideTurn {
+                    question: "What?".to_owned(),
+                    response: "This.".to_owned(),
+                }],
+            }),
+            asked(ControlRequest::GetUsage),
+            asked(ControlRequest::GetContextUsage),
+            answered(PermissionResult::Allow {
+                updated_input: ToolInput::AsAsked(json!({ "command": "ls" })),
+                updated_permissions: Vec::new(),
+            }),
+            answered(PermissionResult::Allow {
+                updated_input: ToolInput::AsAsked(json!({ "plan": "Look first." })),
+                updated_permissions: vec![
+                    PermissionUpdate::SetMode {
+                        mode: PermissionMode::AcceptEdits,
+                        destination: Destination::Session,
+                    },
+                    PermissionUpdate::Offered(json!({ "type": "addRules", "rules": [] })),
+                ],
+            }),
+            answered(PermissionResult::Deny {
+                message: "Not that one.".to_owned(),
+                interrupt: false,
+            }),
+            answered(PermissionResult::Deny {
+                message: "Stop.".to_owned(),
+                interrupt: true,
+            }),
+            Input::ControlResponse {
+                response: Reply::Error {
+                    request_id: id(),
+                    error: "not supported by this client".to_owned(),
+                },
+            },
+        ];
+        for line in written {
+            let json = serde_json::to_value(&line).expect("encodable");
+            let read: Input = serde_json::from_value(json.clone()).expect("read back");
+            assert_eq!(serde_json::to_value(&read).expect("encodable"), json);
+        }
     }
 
     #[test]

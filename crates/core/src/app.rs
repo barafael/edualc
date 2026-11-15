@@ -1835,9 +1835,9 @@ impl<F: Frontend> App<F> {
                 return;
             }
         }
-        self.request(&INITIALIZE, Request::Initialize);
+        self.request(INITIALIZE, Request::Initialize);
         if let Some(mode) = self.status.mode_choice.clone() {
-            self.request(&mode.request(), Request::Mode(mode));
+            self.request(mode.request(), Request::Mode(mode));
         }
     }
 
@@ -2050,7 +2050,7 @@ impl<F: Frontend> App<F> {
     }
 
     /// Sends a control request, remembering what it was for. Whether it went out.
-    fn request(&mut self, request: &ControlRequest, purpose: Request) -> bool {
+    fn request(&mut self, request: ControlRequest, purpose: Request) -> bool {
         let Some(process) = self.process.as_mut() else {
             return false;
         };
@@ -2218,7 +2218,7 @@ impl<F: Frontend> App<F> {
             }
         }
         // What the process offers, again: the window that started it asked before.
-        self.request(&INITIALIZE, Request::Initialize);
+        self.request(INITIALIZE, Request::Initialize);
         self.redraw = Redraw::everything();
         self.view.focus_composer();
     }
@@ -2629,7 +2629,7 @@ impl<F: Frontend> App<F> {
         }
         if self.status.turns > 0 || self.chat.shell_running() {
             self.status.stop_asked = self.status.turns > 0;
-            self.request(&ControlRequest::Interrupt, Request::Interrupt);
+            self.request(ControlRequest::Interrupt, Request::Interrupt);
         }
     }
 
@@ -2652,7 +2652,7 @@ impl<F: Frontend> App<F> {
             return;
         }
         self.request(
-            &ControlRequest::SetModel {
+            ControlRequest::SetModel {
                 model: value.clone(),
             },
             Request::Model(value),
@@ -2680,7 +2680,7 @@ impl<F: Frontend> App<F> {
             self.redraw.menus = true;
             return;
         }
-        self.request(&mode.request(), Request::Mode(mode.clone()));
+        self.request(mode.request(), Request::Mode(mode.clone()));
         // An ACP agent takes a mode as a turn starts: the turn under way keeps the one it began
         // with.
         if self.status.backend.is_acp() && self.status.turns > 0 {
@@ -2873,7 +2873,7 @@ impl<F: Frontend> App<F> {
             updated_input: ToolInput::AsAsked(ask.input.clone()),
             updated_permissions,
         };
-        self.answer(&ask, &response, ToolState::Running);
+        self.answer(&ask, response, ToolState::Running);
     }
 
     /// Denies the waiting request. A tool call denied with nothing said stops the turn, as in
@@ -2903,7 +2903,7 @@ impl<F: Frontend> App<F> {
             self.status.stop_asked = self.status.turns > 0;
         }
         let response = PermissionResult::Deny { message, interrupt };
-        self.answer(&ask, &response, ToolState::Denied);
+        self.answer(&ask, response, ToolState::Denied);
     }
 
     /// Approves the plan, with the comments on it as notes in the plan Claude works from.
@@ -2928,7 +2928,7 @@ impl<F: Frontend> App<F> {
                 destination: Destination::Session,
             }],
         };
-        self.answer(&ask, &response, ToolState::Running);
+        self.answer(&ask, response, ToolState::Running);
     }
 
     fn toggle_option(&mut self, question: usize, option: usize) {
@@ -3001,7 +3001,7 @@ impl<F: Frontend> App<F> {
             updated_input,
             updated_permissions: Vec::new(),
         };
-        self.answer(&ask, &response, ToolState::Running);
+        self.answer(&ask, response, ToolState::Running);
     }
 
     fn edit_comment(&mut self, section: Option<usize>) {
@@ -3029,7 +3029,7 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    fn answer(&mut self, ask: &Ask, response: &PermissionResult, state: ToolState) {
+    fn answer(&mut self, ask: &Ask, response: PermissionResult, state: ToolState) {
         tracing::info!(tool = %ask.tool, ?state, "answered a permission request");
         self.write(|process| process.answer(&ask.request, response));
         if let Some(id) = &ask.tool_use {

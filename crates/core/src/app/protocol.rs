@@ -479,7 +479,7 @@ impl<F: Frontend> App<F> {
         // The plan's limits at once, not only after the first turn reports them; it asks the
         // plan, not the model.
         if self.status.limits.five_hour.is_none()
-            && self.request(&ControlRequest::GetUsage, Request::Usage)
+            && self.request(ControlRequest::GetUsage, Request::Usage)
         {
             self.usage.waiting += 1;
         }

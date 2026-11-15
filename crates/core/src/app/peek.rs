@@ -123,7 +123,7 @@ impl<F: Frontend> App<F> {
             let request = ControlRequest::GetTaskOutput {
                 task_id: task.clone(),
             };
-            if !self.request(&request, Request::TaskOutput(task))
+            if !self.request(request, Request::TaskOutput(task))
                 && let Some(output) = self.output()
             {
                 output.give_up();

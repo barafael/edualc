@@ -345,7 +345,7 @@ impl Claude {
     }
 
     /// Writes one line of JSON.
-    fn send(&self, message: &Input<'_>) -> Result<(), Error> {
+    fn send(&self, message: &Input) -> Result<(), Error> {
         let line = serde_json::to_string(message).map_err(Error::Encode)?;
         link::send_input(&self.link, self.key, &line).map_err(|_lost| Error::Lost)
     }
@@ -374,21 +374,21 @@ impl Claude {
     }
 
     /// Sends a control request; its answer comes back with the returned id.
-    pub fn request(&mut self, request: &ControlRequest) -> Result<RequestId, Error> {
+    pub fn request(&mut self, request: ControlRequest) -> Result<RequestId, Error> {
         self.next_request += 1;
         let id = RequestId::from(format!("gui_{}", self.next_request));
         self.send(&Input::ControlRequest {
-            request_id: &id,
+            request_id: id.clone(),
             request,
         })?;
         Ok(id)
     }
 
     /// Answers one of the process's control requests (a permission request).
-    pub fn answer(&self, request: &RequestId, response: &PermissionResult) -> Result<(), Error> {
+    pub fn answer(&self, request: &RequestId, response: PermissionResult) -> Result<(), Error> {
         self.send(&Input::ControlResponse {
             response: Reply::Success {
-                request_id: request,
+                request_id: request.clone(),
                 response,
             },
         })
@@ -399,8 +399,8 @@ impl Claude {
     pub fn refuse(&self, request: &RequestId, error: &str) -> Result<(), Error> {
         self.send(&Input::ControlResponse {
             response: Reply::Error {
-                request_id: request,
-                error,
+                request_id: request.clone(),
+                error: error.to_owned(),
             },
         })
     }
@@ -415,7 +415,7 @@ impl Drop for Claude {
     fn drop(&mut self) {
         let leave = match self.leaving {
             Leaving::End => {
-                if let Err(error) = self.request(&ControlRequest::Interrupt) {
+                if let Err(error) = self.request(ControlRequest::Interrupt) {
                     tracing::debug!(%error, "couldn't interrupt claude before ending it");
                 }
                 ToDaemon::End { key: self.key }
