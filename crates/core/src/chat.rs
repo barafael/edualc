@@ -195,7 +195,18 @@ pub enum UserText<'a> {
     Empty,
 }
 
+/// How Claude Code's own texts for the model start, as its transcripts of 2026-11 have them
+/// without `isMeta`, or with it. Any other text is the user's, `<` or not.
+const FOR_MODEL: [&str; 4] = [
+    "<task-notification>",
+    "<system-reminder>",
+    "<local-command-caveat>",
+    "<fork-boilerplate>",
+];
+
 impl<'a> UserText<'a> {
+    /// Claude Code's wrappers count only at the start of the text, where it puts them; a prompt
+    /// that quotes one stays a prompt.
     pub fn of(text: &'a str) -> Self {
         let text = text.trim();
         if text.is_empty() {
@@ -208,20 +219,24 @@ impl<'a> UserText<'a> {
                 stderr: between(text, "<bash-stderr>", "</bash-stderr>").unwrap_or(""),
                 exit_code: between(text, "<bash-exit-code>", "</bash-exit-code>"),
             }
-        } else if let Some(output) =
-            between(text, "<local-command-stdout>", "</local-command-stdout>")
+        } else if text.starts_with("<local-command-stdout>")
+            && let Some(output) = between(text, "<local-command-stdout>", "</local-command-stdout>")
         {
             Self::Stdout(output.trim())
-        } else if let Some(output) =
-            between(text, "<local-command-stderr>", "</local-command-stderr>")
+        } else if text.starts_with("<local-command-stderr>")
+            && let Some(output) = between(text, "<local-command-stderr>", "</local-command-stderr>")
         {
             Self::Stderr(output.trim())
-        } else if let Some(name) = between(text, "<command-name>", "</command-name>") {
+        } else if (text.starts_with("<command-message>") || text.starts_with("<command-name>"))
+            && let Some(name) = between(text, "<command-name>", "</command-name>")
+        {
             let args = between(text, "<command-args>", "</command-args>").unwrap_or("");
             Self::Command { name, args }
-        } else if let Some(input) = between(text, "<bash-input>", "</bash-input>") {
+        } else if text.starts_with("<bash-input>")
+            && let Some(input) = between(text, "<bash-input>", "</bash-input>")
+        {
             Self::Shell(input)
-        } else if text.starts_with('<') {
+        } else if FOR_MODEL.iter().any(|tag| text.starts_with(tag)) {
             Self::ForModel
         } else {
             Self::Prompt(text)
@@ -894,6 +909,45 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A prompt of the user's that starts with `<`, or quotes one of Claude Code's wrappers, is a
+    /// prompt; Claude Code's own texts for the model and its wrappers, at the start, are not.
+    #[test]
+    fn a_prompt_that_starts_with_a_tag_is_a_prompt() {
+        for prompt in [
+            "<Esc> doesn't close the menu",
+            "<pasted_content>a log</pasted_content> what does this say?",
+            "Why does <command-name>/clear</command-name> show up in my transcript?",
+            "Print <bash-input>ls</bash-input> literally",
+        ] {
+            assert_eq!(UserText::of(prompt), UserText::Prompt(prompt), "{prompt}");
+        }
+        for for_model in [
+            "<task-notification><task-id>t1</task-id></task-notification>",
+            "<system-reminder>Remember</system-reminder>",
+            "<local-command-caveat>Caveat</local-command-caveat>",
+            "<fork-boilerplate>You are a worker fork.</fork-boilerplate>",
+        ] {
+            assert_eq!(UserText::of(for_model), UserText::ForModel, "{for_model}");
+        }
+        assert_eq!(
+            UserText::of(
+                "<command-message>clear</command-message>\n<command-name>/clear</command-name>\n<command-args></command-args>"
+            ),
+            UserText::Command {
+                name: "/clear",
+                args: ""
+            }
+        );
+        assert_eq!(
+            UserText::of("<bash-input>ls</bash-input>"),
+            UserText::Shell("ls")
+        );
+        assert_eq!(
+            UserText::of("<local-command-stdout>Done</local-command-stdout>"),
+            UserText::Stdout("Done")
+        );
+    }
 
     fn stream(chat: &mut Chat, event: Value) {
         let event: StreamEvent = serde_json::from_value(event).expect("a stream event");
