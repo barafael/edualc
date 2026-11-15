@@ -164,6 +164,9 @@ pub enum ToolName {
     /// edualc's messaging tool, as an agy session calls it.
     #[strum(serialize = "mcp__edualc__send_message")]
     EdualcSendMessage,
+    /// edualc's tool listing the sessions, as an agy session calls it.
+    #[strum(serialize = "mcp__edualc__list_sessions")]
+    EdualcListSessions,
     #[strum(default)]
     Other(String),
 }
@@ -209,6 +212,7 @@ impl ToolName {
             | Self::ExitPlanMode
             | Self::SendMessage
             | Self::EdualcSendMessage
+            | Self::EdualcListSessions
             | Self::Other(_) => ToolKind::Other,
         }
     }
@@ -239,6 +243,7 @@ impl ToolName {
             | Self::AskUserQuestion
             | Self::SendMessage
             | Self::EdualcSendMessage
+            | Self::EdualcListSessions
             | Self::Other(_) => false,
         }
     }

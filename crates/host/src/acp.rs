@@ -23,7 +23,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixListener;
 use tokio::net::unix::OwnedWriteHalf;
@@ -32,6 +32,9 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
 use crate::external::acp::{RpcError, ToolCall};
+use crate::external::tool_input::{
+    BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput, WriteInput,
+};
 use crate::external::wire::SessionId;
 use crate::sessions::{self, MessagingName};
 use outbox::{Job, Outcome, Places, SendArguments};
@@ -121,91 +124,74 @@ impl Agent {
     /// A tool call this agent named `name`, as the window knows Claude Code's: its file and
     /// command tools as Read, Write, Edit and Bash, with their arguments by Claude Code's names.
     /// None for a name it doesn't know.
-    fn tool(self, name: &str, call: &ToolCall) -> Option<(String, Value)> {
+    fn tool(self, name: &str, call: &ToolCall) -> Option<KnownCall> {
         let input = call.raw_input.clone().unwrap_or(Value::Null);
-        let field = |name: &str| input.get(name).cloned().unwrap_or(Value::Null);
-        let location = || {
-            call.locations
-                .as_ref()
-                .and_then(|locations| locations.first())
-                .map(|location| json!(location.path))
-        };
-        let title = || json!(call.title.clone().unwrap_or_default());
+        let text = |key: &str| string_argument(&input, key).unwrap_or_default();
+        let title = || call.title.clone().unwrap_or_default();
         match self {
             Self::Agy => {
-                let path = || input.get("Path").cloned().or_else(location);
+                let path = || {
+                    string_argument(&input, "Path")
+                        .map(PathBuf::from)
+                        .or_else(|| first_location(call))
+                        .unwrap_or_else(|| PathBuf::from(title()))
+                };
                 match name {
-                    AGY_SEND => Some((
-                        CLAUDE_SEND.to_owned(),
-                        json!({"to": field("to"), "message": field("message")}),
-                    )),
-                    AGY_LIST => Some((CLAUDE_LIST.to_owned(), json!({}))),
-                    "run_command" => Some((
-                        "Bash".to_owned(),
-                        json!({
-                            "command": input.get("CommandLine").cloned().unwrap_or_else(title),
-                            "description": field("toolSummary"),
-                        }),
-                    )),
-                    "read_file" | "view_file" => Some((
-                        "Read".to_owned(),
-                        json!({"file_path": path().unwrap_or_else(title)}),
-                    )),
+                    AGY_SEND => Some(KnownCall::SendMessage(SendMessageInput {
+                        to: text("to"),
+                        message: text("message"),
+                    })),
+                    AGY_LIST => Some(KnownCall::ListSessions(ListSessionsInput {})),
+                    "run_command" => Some(KnownCall::Bash(BashInput {
+                        command: string_argument(&input, "CommandLine").unwrap_or_else(title),
+                        description: string_argument(&input, "toolSummary"),
+                    })),
+                    "read_file" | "view_file" => {
+                        Some(KnownCall::Read(ReadInput { file_path: path() }))
+                    }
                     // Appending (agy's `Append`) adds to the file: as an edit that adds the lines,
                     // not a Write, which would read as the whole file.
-                    "write_file" if input.get("Append") == Some(&Value::Bool(true)) => Some((
-                        "Edit".to_owned(),
-                        json!({
-                            "file_path": path().unwrap_or_else(title),
-                            "old_string": "",
-                            "new_string": field("Content"),
-                        }),
-                    )),
-                    "write_file" => Some((
-                        "Write".to_owned(),
-                        json!({
-                            "file_path": path().unwrap_or_else(title),
-                            "content": field("Content"),
-                        }),
-                    )),
-                    "edit_file" => Some((
-                        "Edit".to_owned(),
-                        json!({
-                            "file_path": path().unwrap_or_else(title),
-                            "old_string": field("Target"),
-                            "new_string": field("Replacement"),
-                        }),
-                    )),
+                    "write_file" if input.get("Append") == Some(&Value::Bool(true)) => {
+                        Some(KnownCall::Edit(EditInput {
+                            file_path: path(),
+                            old_string: String::new(),
+                            new_string: text("Content"),
+                        }))
+                    }
+                    "write_file" => Some(KnownCall::Write(WriteInput {
+                        file_path: path(),
+                        content: text("Content"),
+                    })),
+                    "edit_file" => Some(KnownCall::Edit(EditInput {
+                        file_path: path(),
+                        old_string: text("Target"),
+                        new_string: text("Replacement"),
+                    })),
                     _ => None,
                 }
             }
             Self::Opencode => {
                 // Its paths are relative in the arguments and absolute in the locations.
-                let path = || location().or_else(|| input.get("path").cloned());
+                let path = || {
+                    first_location(call)
+                        .or_else(|| string_argument(&input, "path").map(PathBuf::from))
+                        .unwrap_or_default()
+                };
                 match name {
-                    "shell" => Some((
-                        "Bash".to_owned(),
-                        json!({"command": field("command"), "description": Value::Null}),
-                    )),
-                    "read" => Some((
-                        "Read".to_owned(),
-                        json!({"file_path": path().unwrap_or(Value::Null)}),
-                    )),
-                    "write" => Some((
-                        "Write".to_owned(),
-                        json!({
-                            "file_path": path().unwrap_or(Value::Null),
-                            "content": field("content"),
-                        }),
-                    )),
-                    "edit" => Some((
-                        "Edit".to_owned(),
-                        json!({
-                            "file_path": path().unwrap_or(Value::Null),
-                            "old_string": field("oldString"),
-                            "new_string": field("newString"),
-                        }),
-                    )),
+                    "shell" => Some(KnownCall::Bash(BashInput {
+                        command: text("command"),
+                        description: None,
+                    })),
+                    "read" => Some(KnownCall::Read(ReadInput { file_path: path() })),
+                    "write" => Some(KnownCall::Write(WriteInput {
+                        file_path: path(),
+                        content: text("content"),
+                    })),
+                    "edit" => Some(KnownCall::Edit(EditInput {
+                        file_path: path(),
+                        old_string: text("oldString"),
+                        new_string: text("newString"),
+                    })),
                     _ => None,
                 }
             }
@@ -367,6 +353,19 @@ fn on_path(program: &str) -> Option<PathBuf> {
             .map(|folder| folder.join(program))
             .find(|candidate| candidate.is_file())
     })
+}
+
+/// The string argument `key` of a tool call's input, if the agent gave one.
+fn string_argument(input: &Value, key: &str) -> Option<String> {
+    input.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// The path of a tool call's first location, for a call whose input doesn't name one.
+fn first_location(call: &ToolCall) -> Option<PathBuf> {
+    call.locations
+        .as_ref()
+        .and_then(|locations| locations.first())
+        .map(|location| location.path.clone())
 }
 
 /// What the loop is told.

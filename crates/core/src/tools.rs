@@ -226,6 +226,14 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
                 view.detail = pretty(input);
             }
         }
+        // Shown as the MCP tool it is, as any other server's.
+        ToolName::EdualcListSessions => {
+            view.title = "list_sessions".to_owned();
+            view.summary = format!("edualc  {}", compact(input, 120));
+            if full {
+                view.detail = pretty(input);
+            }
+        }
         ToolName::BashOutput
         | ToolName::KillShell
         | ToolName::NotebookRead
@@ -267,6 +275,7 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
         | ToolName::Ls
         | ToolName::WebFetch
         | ToolName::Skill
+        | ToolName::EdualcListSessions
         | ToolName::Other(_) => Writing::Code,
     };
     view

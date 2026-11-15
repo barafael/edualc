@@ -18,9 +18,10 @@ use crate::external::acp::{
     self, AgentMethod, Change, Chunk, Incoming, Notified, OptionKind, PermissionAsked, Prompted,
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
+use crate::external::tool_input::{BashInput, KnownCall, ReadInput};
 use crate::external::wire::SessionId;
 
-use super::{Agent, CLAUDE_LIST, CLAUDE_SEND};
+use super::{Agent, CLAUDE_LIST, CLAUDE_SEND, first_location};
 
 /// What a denied tool call's result says, as Claude Code words it: the window shows such a
 /// call as denied.
@@ -1218,33 +1219,38 @@ fn is_done(call: &ToolCall) -> bool {
 /// A tool call as the window knows Claude Code's: by the agent's own names where it gives one
 /// (see [`Agent::tool`]), else by ACP's kind; a tool neither tells about keeps the agent's name.
 fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
-    if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
-        return known;
-    }
     let input = call.raw_input.clone().unwrap_or(Value::Null);
-    let title = || json!(call.title.clone().unwrap_or_default());
-    match (call.name.as_deref(), call.kind) {
-        (Some(name), _) => (name.to_owned(), input),
-        (None, Some(ToolKind::Execute)) => (
-            "Bash".to_owned(),
-            json!({"command": title(), "description": Value::Null}),
-        ),
-        (None, Some(ToolKind::Read)) => {
-            let location = call
-                .locations
-                .as_ref()
-                .and_then(|locations| locations.first())
-                .map(|location| json!(location.path));
-            (
-                "Read".to_owned(),
-                json!({"file_path": location.unwrap_or_else(title)}),
-            )
-        }
-        (None, _) => (
-            call.title.clone().unwrap_or_else(|| "tool".to_owned()),
-            input,
-        ),
+    if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
+        return as_known(&known, input);
     }
+    let title = || call.title.clone().unwrap_or_default();
+    let known = match (call.name.as_deref(), call.kind) {
+        (Some(name), _) => return (name.to_owned(), input),
+        (None, Some(ToolKind::Execute)) => KnownCall::Bash(BashInput {
+            command: title(),
+            description: None,
+        }),
+        (None, Some(ToolKind::Read)) => KnownCall::Read(ReadInput {
+            file_path: first_location(call).unwrap_or_else(|| PathBuf::from(title())),
+        }),
+        (None, _) => {
+            return (
+                call.title.clone().unwrap_or_else(|| "tool".to_owned()),
+                input,
+            );
+        }
+    };
+    as_known(&known, input)
+}
+
+/// A known call by Claude Code's name and input; one whose input can't be written (a path
+/// that isn't UTF-8) shows the agent's own input instead.
+fn as_known(known: &KnownCall, raw: Value) -> (String, Value) {
+    let input = known.input().unwrap_or_else(|error| {
+        tracing::warn!(%error, tool = %known.name(), "a tool's input that can't be written");
+        raw
+    });
+    (known.name().to_string(), input)
 }
 
 /// What a finished tool call gave, as text.

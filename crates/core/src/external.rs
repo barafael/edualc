@@ -9,4 +9,5 @@
 pub mod acp;
 pub mod claude_files;
 pub mod niri;
+pub mod tool_input;
 pub mod wire;
