@@ -38,9 +38,9 @@ present-check: present
 fmt-check:
     cargo fmt --check
 
-# ast-grep's rules and their tests, clippy, and the docs' links.
+# The formatting, ast-grep's rules and their tests, clippy, and the docs' links.
 [group('check')]
-lint: && doc
+lint: fmt-check && doc
     ast-grep test
     ast-grep scan
     cargo clippy --locked --all-targets -- -D warnings
