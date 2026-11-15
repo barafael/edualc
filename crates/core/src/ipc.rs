@@ -148,7 +148,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 22;
+pub const PROTOCOL: u32 = 23;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -240,8 +240,9 @@ pub enum ToDaemon {
         request: ActId,
         read: Read,
     },
-    /// Keeps the settings (`~/.config/edualc/settings.json`).
-    SaveSettings(Settings),
+    /// Makes one change to the kept settings (`~/.config/edualc/settings.json`), as they are
+    /// now; answered by `SettingsNotKept` only if it couldn't be kept.
+    ChangeSettings(crate::settings::Change),
     /// Tells the window, as `Changed`, when what `target` names changes, until `Unwatch`.
     Watch {
         watched: Watched,
@@ -407,6 +408,8 @@ pub enum FromDaemon {
     Lines { request: ActId, text: String },
     /// What a watch names changed.
     Changed(Watched),
+    /// A `ChangeSettings` couldn't be kept, and why, for the user to put right.
+    SettingsNotKept(String),
     /// Whether the keyring holds an Anthropic API key, or why that couldn't be told.
     ApiKeyStored {
         request: ActId,

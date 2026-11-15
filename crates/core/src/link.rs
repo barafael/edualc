@@ -168,6 +168,7 @@ impl Inbox {
                 })
             }
             FromDaemon::Changed(watched) => Some(Event::Changed(watched)),
+            FromDaemon::SettingsNotKept(why) => Some(Event::SettingsNotKept(why)),
             FromDaemon::Hello { .. } => None,
         }
     }

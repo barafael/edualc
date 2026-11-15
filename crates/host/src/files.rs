@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use crate::folder::Folder;
 use crate::ipc::{self, ActId, Answer, FromDaemon, Place, Read, Target, Watched};
 use crate::sessions;
-use crate::settings::{self, Settings};
+use crate::settings;
 
 /// Where what is told to a window goes.
 type Outbox = mpsc::Sender<FromDaemon>;
@@ -117,13 +117,32 @@ fn send_lines(request: ActId, lines: &[String], pieces: &mpsc::Sender<FromDaemon
     }
 }
 
-/// Keeps the settings, off the runtime's thread.
-pub async fn save(settings: Settings) {
-    let saved = tokio::task::spawn_blocking(move || settings::save(&settings)).await;
-    match saved {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!(%error, "couldn't keep the settings"),
-        Err(error) => tracing::error!(%error, "keeping the settings failed"),
+/// A window's change to the settings, and where to say if it wasn't kept.
+#[derive(Debug)]
+pub struct SettingsChange {
+    pub change: settings::Change,
+    pub outbox: Outbox,
+}
+
+/// The settings file's one owner: applies each window's change in turn to what the file holds,
+/// off the runtime's thread, and tells the window that made a change that couldn't be kept.
+pub async fn keep_settings(mut changes: mpsc::Receiver<SettingsChange>) {
+    while let Some(SettingsChange { change, outbox }) = changes.recv().await {
+        let changed = tokio::task::spawn_blocking(move || settings::change(change)).await;
+        let why = match changed {
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "couldn't keep the settings");
+                error.to_string()
+            }
+            Err(error) => {
+                tracing::error!(%error, "keeping the settings failed");
+                error.to_string()
+            }
+        };
+        if outbox.send(FromDaemon::SettingsNotKept(why)).await.is_err() {
+            tracing::debug!("the window that changed the settings is gone");
+        }
     }
 }
 

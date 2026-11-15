@@ -186,30 +186,74 @@ pub fn load() -> Result<Settings, Error> {
     parse(&text).map_err(|source| Error::Parse { path, source })
 }
 
-/// Writes the settings, unless the file there doesn't parse: what it holds (a hand edit with a
-/// typo, a later version's keys) would be lost, and it stays until it is put right.
-pub fn save(settings: &Settings) -> Result<(), Error> {
-    save_to(path()?, settings)
+/// One thing the user changed. A window sends the change, not its whole copy of the settings,
+/// so what another window changed meanwhile is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Change {
+    ZoomPercent(u16),
+    Look(Look),
+    SendWith(SendKey),
+    HanText(CjkLanguage),
+    ComposerHeight(Option<u16>),
+    SidebarWidth(Option<u16>),
+    /// A folder trusted here, with what is under it.
+    Trust(PathBuf),
 }
 
-fn save_to(path: PathBuf, settings: &Settings) -> Result<(), Error> {
-    match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            if let Err(source) = parse(&text) {
-                return Err(Error::Parse { path, source });
+impl Settings {
+    pub fn apply(&mut self, change: Change) {
+        match change {
+            Change::ZoomPercent(percent) => {
+                self.zoom_percent = percent.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+            }
+            Change::Look(look) => self.look = look,
+            Change::SendWith(key) => self.send_with = key,
+            Change::HanText(language) => self.han_text = Some(language),
+            Change::ComposerHeight(height) => self.composer_height_px = height,
+            Change::SidebarWidth(width) => self.sidebar_width_px = width,
+            Change::Trust(folder) => {
+                if !self.trusted_folders.contains(&folder) {
+                    self.trusted_folders.push(folder);
+                }
             }
         }
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-        Err(source) => return Err(Error::Read { path, source }),
     }
+}
+
+/// Applies `change` to the settings as the file holds them now and writes them back, unless
+/// the file doesn't parse: what it holds (a hand edit with a typo, a later version's keys)
+/// would be lost, and it stays until it is put right. Changes are to be applied one at a time,
+/// by one owner (edualcd).
+pub fn change(change: Change) -> Result<Settings, Error> {
+    change_at(path()?, change)
+}
+
+fn change_at(path: PathBuf, change: Change) -> Result<Settings, Error> {
+    let mut settings = match std::fs::read_to_string(&path) {
+        Ok(text) => parse(&text).map_err(|source| Error::Parse {
+            path: path.clone(),
+            source,
+        })?,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        Err(source) => return Err(Error::Read { path, source }),
+    };
+    settings.apply(change);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|source| Error::Write {
             path: dir.to_owned(),
             source,
         })?;
     }
-    let text = serde_json::to_string_pretty(settings).map_err(Error::Encode)?;
-    std::fs::write(&path, text).map_err(|source| Error::Write { path, source })
+    let text = serde_json::to_string_pretty(&settings).map_err(Error::Encode)?;
+    // Written beside the file and renamed over it, so a crash leaves the old file or the new
+    // one, never half of one that no longer parses.
+    let fresh = path.with_extension("json.new");
+    std::fs::write(&fresh, text).map_err(|source| Error::Write {
+        path: fresh.clone(),
+        source,
+    })?;
+    std::fs::rename(&fresh, &path).map_err(|source| Error::Write { path, source })?;
+    Ok(settings)
 }
 
 #[cfg(test)]
@@ -262,7 +306,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch folder");
         let path = dir.join("settings.json");
         std::fs::write(&path, older).expect("written");
-        save_to(path.clone(), &read).expect("an older file is written over");
+        change_at(path.clone(), Change::Look(Look::Plain)).expect("an older file is written over");
         let saved = std::fs::read_to_string(&path).expect("read back");
         assert!(!saved.contains("sandbox"), "{saved}");
         assert_eq!(parse(&saved).expect("parses"), read);
@@ -294,13 +338,30 @@ mod tests {
         let typo = r#"{"trusted_folders": ["/kept"], "trusted_foldres": []}"#;
         std::fs::write(&path, typo).expect("written");
         assert!(matches!(
-            save_to(path.clone(), &Settings::default()),
+            change_at(path.clone(), Change::Look(Look::Plain)),
             Err(Error::Parse { .. })
         ));
         assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some(typo));
         std::fs::remove_file(&path).expect("removed");
-        save_to(path.clone(), &Settings::default()).expect("a missing file is written");
-        save_to(path, &Settings::default()).expect("a file that parses is written over");
+        change_at(path.clone(), Change::Look(Look::Plain)).expect("a missing file is written");
+        change_at(path, Change::Look(Look::Gruvbox)).expect("a file that parses is written over");
+        std::fs::remove_dir_all(&dir).expect("cleaned up");
+    }
+
+    /// A change is made to the file as it is now: one window's trusted folder stays when
+    /// another changes the zoom, and a folder trusted twice is listed once.
+    #[test]
+    fn changes_from_two_windows_are_both_kept() {
+        let dir = std::env::temp_dir().join(format!("edualc-change-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let path = dir.join("settings.json");
+        change_at(path.clone(), Change::Trust(PathBuf::from("/work/app"))).expect("trusted");
+        change_at(path.clone(), Change::ZoomPercent(120)).expect("zoomed");
+        change_at(path.clone(), Change::Trust(PathBuf::from("/work/app"))).expect("again");
+        let kept = parse(&std::fs::read_to_string(&path).expect("read back")).expect("parses");
+        assert_eq!(kept.trusted_folders, [PathBuf::from("/work/app")]);
+        assert_eq!(kept.zoom_percent, 120);
+        assert!(!dir.join("settings.json.new").exists());
         std::fs::remove_dir_all(&dir).expect("cleaned up");
     }
 

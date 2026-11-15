@@ -53,7 +53,7 @@ pub(crate) async fn run(requests: Receiver<ToDaemon>, events: Sender<Event>) {
             | ToDaemon::Detach { .. }
             | ToDaemon::Identify { .. }
             | ToDaemon::ShutDown
-            | ToDaemon::SaveSettings(_)
+            | ToDaemon::ChangeSettings(_)
             | ToDaemon::Watch { .. }
             | ToDaemon::Unwatch(_) => {}
         }

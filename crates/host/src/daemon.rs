@@ -112,6 +112,8 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
         running,
         tokio::runtime::Handle::current(),
     ));
+    let (keeper, settings_changes) = mpsc::channel(QUEUE);
+    tokio::spawn(files::keep_settings(settings_changes));
     let mut windows = JoinSet::new();
     let mut last_window = WindowId::default();
     let mut quiet_since = Some(Instant::now());
@@ -126,7 +128,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
             accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
                 Ok(channel) => {
                     last_window = last_window.next();
-                    windows.spawn(window(channel, last_window, hub.clone()));
+                    windows.spawn(window(channel, last_window, hub.clone(), keeper.clone()));
                     quiet_since = None;
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
@@ -165,7 +167,12 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
 
 /// A window's connection: hello, then its requests to its [`Connection`], and what the hub,
 /// sessions and the desktop say back, until it hangs up.
-async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHub>) {
+async fn window(
+    channel: ipc::AsyncChannel,
+    id: WindowId,
+    hub: mpsc::Sender<ToHub>,
+    keeper: mpsc::Sender<files::SettingsChange>,
+) {
     let (mut reading, mut writing) = channel.split();
     let mut deframer = Deframer::default();
     let hello = tokio::time::timeout(HELLO, ipc::recv::<ToDaemon>(&mut reading, &mut deframer));
@@ -220,7 +227,9 @@ async fn window(channel: ipc::AsyncChannel, id: WindowId, hub: mpsc::Sender<ToHu
         }
     });
     let writer = tokio::spawn(write(writing, answers));
-    let connection = Connection::new(id).event_loop(received, outbox, hub).await;
+    let connection = Connection::new(id)
+        .event_loop(received, outbox, hub, keeper)
+        .await;
     tracing::info!(window = ?connection.id, "a window's connection ended");
     reader.abort();
     if let Err(error) = writer.await {
@@ -258,7 +267,8 @@ enum Effect {
         request: ActId,
         read: ipc::Read,
     },
-    Save(crate::settings::Settings),
+    /// For the settings' keeper.
+    ChangeSettings(crate::settings::Change),
     /// For the window's watches.
     Watch(files::Order),
 }
@@ -322,6 +332,7 @@ impl Connection {
         mut requests: mpsc::Receiver<ToDaemon>,
         outbox: mpsc::Sender<FromDaemon>,
         hub: mpsc::Sender<ToHub>,
+        keeper: mpsc::Sender<files::SettingsChange>,
     ) -> Self {
         let window = self.id;
         if hub
@@ -342,8 +353,20 @@ impl Connection {
                     Effect::Read { request, read } => {
                         tokio::spawn(files::answer(request, read, outbox.clone()));
                     }
-                    Effect::Save(settings) => {
-                        tokio::spawn(files::save(settings));
+                    Effect::ChangeSettings(change) => {
+                        let change = files::SettingsChange {
+                            change,
+                            outbox: outbox.clone(),
+                        };
+                        if keeper.send(change).await.is_err() {
+                            tell(
+                                &outbox,
+                                FromDaemon::SettingsNotKept(
+                                    "the daemon's keeper of the settings has stopped".to_owned(),
+                                ),
+                            )
+                            .await;
+                        }
                     }
                     Effect::Watch(order) => {
                         if watching.send(order).await.is_err() {
@@ -435,7 +458,7 @@ impl Connection {
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
             ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
             ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
-            ToDaemon::SaveSettings(settings) => vec![Effect::Save(settings)],
+            ToDaemon::ChangeSettings(change) => vec![Effect::ChangeSettings(change)],
             ToDaemon::Watch { watched, target } => {
                 vec![Effect::Watch(files::Order::Watch(watched, target))]
             }

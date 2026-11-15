@@ -287,6 +287,8 @@ pub enum Event {
     LimitReset,
     /// Whether the keyring keeps an Anthropic API key, or why that couldn't be told.
     ApiKeyStored(Result<bool, ActFailure>),
+    /// A change to the settings wasn't kept, and why.
+    SettingsNotKept(String),
 }
 
 /// A prompt as sent, to send again once the sign-in works.
@@ -1395,6 +1397,10 @@ impl<F: Frontend> App<F> {
             Event::PollOutput => self.poll_output(),
             Event::LimitReset => self.limit_reset(),
             Event::ApiKeyStored(stored) => self.api_key_stored(stored),
+            Event::SettingsNotKept(why) => {
+                self.chat
+                    .error(format!("A change to your settings wasn't kept: {why}"));
+            }
         }
         ControlFlow::Continue(())
     }
@@ -1494,12 +1500,12 @@ impl<F: Frontend> App<F> {
                 self.settings.zoom(zoom);
                 self.view
                     .set_text_size(self.desktop_text_size * self.settings.scale());
-                self.save_settings();
+                self.change_settings(settings::Change::ZoomPercent(self.settings.zoom_percent));
             }
             Action::SwitchLook => {
-                self.settings.look = self.settings.look.other();
-                self.view.set_look(self.settings.look);
-                self.save_settings();
+                let look = self.settings.look.other();
+                self.view.set_look(look);
+                self.change_settings(settings::Change::Look(look));
             }
             Action::RecolourCode => {
                 self.view.command(Command::RecolourCode);
@@ -1508,24 +1514,20 @@ impl<F: Frontend> App<F> {
                 self.redraw.side = true;
             }
             Action::SendWith(key) => {
-                self.settings.send_with = key;
                 self.view.set_send_key(key);
-                self.save_settings();
+                self.change_settings(settings::Change::SendWith(key));
             }
             Action::HanLanguage(language) => {
-                self.settings.han_text = Some(language);
                 self.view.set_han_language(language);
+                self.change_settings(settings::Change::HanText(language));
                 // Messages already drawn are drawn again in it.
                 self.chat.touch_all();
-                self.save_settings();
             }
             Action::ComposerHeight(height_px) => {
-                self.settings.composer_height_px = height_px;
-                self.save_settings();
+                self.change_settings(settings::Change::ComposerHeight(height_px));
             }
             Action::SidebarWidth(width_px) => {
-                self.settings.sidebar_width_px = width_px;
-                self.save_settings();
+                self.change_settings(settings::Change::SidebarWidth(width_px));
             }
             Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
             Action::RemoveImage(index) => {
@@ -1739,10 +1741,13 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    /// Has the daemon keep the settings.
-    fn save_settings(&self) {
-        if link::send(&self.link, ToDaemon::SaveSettings(self.settings.clone())).is_err() {
-            tracing::warn!("the daemon is gone: the settings aren't kept");
+    /// Makes `change` to this window's settings and has the daemon keep it: the change alone,
+    /// so what another window changed meanwhile is kept too.
+    fn change_settings(&mut self, change: settings::Change) {
+        self.settings.apply(change.clone());
+        if link::send(&self.link, ToDaemon::ChangeSettings(change)).is_err() {
+            self.chat
+                .error("A change to your settings wasn't kept: the edualc daemon is gone.");
         }
     }
 
@@ -1870,8 +1875,7 @@ impl<F: Frontend> App<F> {
                 return;
             }
         };
-        self.settings.trusted_folders.push(self.cwd.clone());
-        self.save_settings();
+        self.change_settings(settings::Change::Trust(self.cwd.clone()));
         self.launch(resume, FolderConfiguration::Read);
         self.view.focus_composer();
     }
