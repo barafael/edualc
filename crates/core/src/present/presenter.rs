@@ -1674,18 +1674,33 @@ fn run_line(runs: &Runs) -> String {
         Runs::Hook {
             event,
             matcher,
-            command,
-        } if matcher.is_empty() => format!("Hook on {event}: {command}"),
-        Runs::Hook {
-            event,
-            matcher,
-            command,
-        } => format!("Hook on {event} ({matcher}): {command}"),
+            action,
+        } => {
+            let does = match action {
+                crate::ipc::HookAction::Command(command) => command.clone(),
+                crate::ipc::HookAction::Url(url) => format!("sends it to {url}"),
+                crate::ipc::HookAction::McpTool { server, tool } => {
+                    format!("calls the MCP tool {tool} of {server}")
+                }
+                crate::ipc::HookAction::Prompt => "asks a model".to_owned(),
+            };
+            if matcher.is_empty() {
+                format!("Hook on {event}: {does}")
+            } else {
+                format!("Hook on {event} ({matcher}): {does}")
+            }
+        }
         Runs::McpServer { name, runs } => format!("MCP server {name}: {runs}"),
         Runs::ApiKeyHelper(command) => format!("API key helper: {command}"),
         Runs::StatusLine(command) => format!("Status line: {command}"),
         Runs::Plugin(name) => format!("Plugin {name}"),
         Runs::Environment(names) => format!("Environment variables: {}", names.join(", ")),
+        Runs::Allows(rules) => format!("Allowed without asking: {}", rules.join(", ")),
+        Runs::Directories(folders) => format!("Also works in: {}", folders.join(", ")),
+        Runs::DefaultMode(mode) => format!("Starts in the permission mode {mode}"),
+        Runs::Marketplaces(names) => format!("Plugin marketplaces: {}", names.join(", ")),
+        Runs::AlsoSets(keys) => format!("Also sets: {}", keys.join(", ")),
+        Runs::More(count) => format!("… and {count} more"),
         Runs::Unreadable { file, reason } => format!("Couldn't read {file}: {reason}"),
     }
 }

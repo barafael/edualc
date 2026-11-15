@@ -148,7 +148,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 21;
+pub const PROTOCOL: u32 = 22;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -425,12 +425,12 @@ pub type Pasted = Result<Picture, PasteFailure>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Runs {
-    /// A command run on one of Claude Code's events, for the tools `matcher` names (all, if
+    /// What a hook does on one of Claude Code's events, for the tools `matcher` names (all, if
     /// empty).
     Hook {
         event: String,
         matcher: String,
-        command: String,
+        action: HookAction,
     },
     /// An MCP server: the command line started, or the URL reached.
     McpServer { name: String, runs: String },
@@ -442,8 +442,35 @@ pub enum Runs {
     Plugin(String),
     /// Environment variables set, by name; their values aren't shown.
     Environment(Vec<String>),
+    /// Permission rules that let tools run without asking.
+    Allows(Vec<String>),
+    /// Folders beyond this one that the session may read and write.
+    Directories(Vec<String>),
+    /// The permission mode sessions start in.
+    DefaultMode(String),
+    /// Plugin marketplaces added, by name.
+    Marketplaces(Vec<String>),
+    /// Settings this window doesn't read, by key: what they do isn't shown, only that they're
+    /// set.
+    AlsoSets(Vec<String>),
+    /// How many more entries there were than are listed.
+    More(usize),
     /// A file that couldn't be read, and why: what it would run is unknown.
     Unreadable { file: String, reason: String },
+}
+
+/// What a hook does when its event comes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum HookAction {
+    /// Runs a command line.
+    Command(String),
+    /// Sends the event to a URL.
+    Url(String),
+    /// Calls an MCP server's tool.
+    McpTool { server: String, tool: String },
+    /// Asks a model, or an agent, with a prompt; it runs no command of its own.
+    Prompt,
 }
 
 /// Why the clipboard gave no image, as the window is told.

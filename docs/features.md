@@ -22,13 +22,17 @@ nor this window has trusted.
 It lists what the folder's `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json`
 would run or set:
 
-- hooks, with their commands;
+- hooks, with what they do: the command they run, the URL they send to, the MCP tool they call,
+  or that they ask a model;
 - MCP servers, with their command lines;
-- helpers and plugins;
-- environment variables, by name.
+- helpers and plugins, and plugin marketplaces;
+- environment variables, by name;
+- permission rules that let tools run without asking, other folders the session may work in,
+  and the permission mode it starts in;
+- every other setting, by name, since Claude Code has more settings than edualc reads.
 
-The files are read without following links. If a file can't be read, the window says so rather
-than leaving it out.
+A long list says how many entries it leaves out. The files are read without following links.
+If a file can't be read, the window says so rather than leaving it out.
 
 ## The conversation
 

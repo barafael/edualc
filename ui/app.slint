@@ -2077,7 +2077,7 @@ component TrustBar inherits Rectangle {
         // there); a long list scrolls.
         Small {
             text: Session.trust-runs.length == 0
-                ? "Its .claude/settings.json, settings.local.json and .mcp.json run nothing and set no environment."
+                ? "Its .claude/settings.json, settings.local.json and .mcp.json set nothing that runs or allows more."
                 : "Its .claude/settings.json, settings.local.json and .mcp.json would have Claude Code run or set:";
             wrap: word-wrap;
         }

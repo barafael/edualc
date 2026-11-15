@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use rustix::fs::{Mode, OFlags};
 
-use crate::external::claude_files::{ClaudeJson, McpJson, ProjectSettings};
-use crate::ipc::Runs;
+use crate::external::claude_files::{ClaudeJson, Hook, McpJson, ProjectSettings};
+use crate::ipc::{HookAction, Runs};
 use crate::sessions;
 use crate::settings::Settings;
 
@@ -125,18 +125,19 @@ pub fn what_runs(folder: &Path) -> Vec<Runs> {
     runs
 }
 
-/// What a settings file runs or sets, in a steady order.
+/// What a settings file runs or sets, in a steady order: every hook, by what it does, and
+/// every key this window doesn't read, by name.
 fn settings_runs(settings: ProjectSettings) -> Vec<Runs> {
     let mut runs = Vec::new();
     let mut events: Vec<_> = settings.hooks.into_iter().collect();
     events.sort_by(|left, right| left.0.cmp(&right.0));
     for (event, matchers) in events {
         for matcher in matchers {
-            for command in matcher.hooks.into_iter().filter_map(|hook| hook.command) {
+            for hook in matcher.hooks {
                 runs.push(Runs::Hook {
                     event: shown(&event),
                     matcher: shown(&matcher.matcher),
-                    command: shown(&command),
+                    action: hook_action(hook),
                 });
             }
         }
@@ -155,13 +156,79 @@ fn settings_runs(settings: ProjectSettings) -> Vec<Runs> {
         .collect();
     plugins.sort();
     runs.extend(plugins.into_iter().map(Runs::Plugin));
-    let mut names: Vec<String> = settings.env.into_keys().map(|name| shown(&name)).collect();
-    if !names.is_empty() {
-        names.sort();
-        names.truncate(MOST_RUNS);
-        runs.push(Runs::Environment(names));
+    listed(&mut runs, settings.env.into_keys(), Runs::Environment);
+    listed(&mut runs, settings.permissions.allow, Runs::Allows);
+    listed(
+        &mut runs,
+        settings.permissions.additional_directories,
+        Runs::Directories,
+    );
+    if let Some(mode) = settings.permissions.default_mode {
+        runs.push(Runs::DefaultMode(shown(&mode)));
     }
-    runs.truncate(MOST_RUNS);
+    listed(
+        &mut runs,
+        settings.marketplaces.into_keys(),
+        Runs::Marketplaces,
+    );
+    // The schema's address names the file's format and sets nothing.
+    let other = settings.other.into_keys().filter(|key| key != "$schema");
+    listed(&mut runs, other, Runs::AlsoSets);
+    capped(runs)
+}
+
+/// What a hook does, by its type's fields; one with none of them asks a model or an agent.
+fn hook_action(hook: Hook) -> HookAction {
+    match hook {
+        Hook {
+            command: Some(command),
+            ..
+        } => HookAction::Command(shown(&command)),
+        Hook { url: Some(url), .. } => HookAction::Url(shown(&url)),
+        Hook {
+            server: Some(server),
+            tool,
+            ..
+        } => HookAction::McpTool {
+            server: shown(&server),
+            tool: shown(&tool.unwrap_or_default()),
+        },
+        Hook {
+            tool: Some(tool), ..
+        } => HookAction::McpTool {
+            server: String::new(),
+            tool: shown(&tool),
+        },
+        Hook { .. } => HookAction::Prompt,
+    }
+}
+
+/// Names, sorted and shown, as one entry made by `entry`; past [`MOST_RUNS`], how many more.
+fn listed(
+    runs: &mut Vec<Runs>,
+    names: impl IntoIterator<Item = String>,
+    entry: fn(Vec<String>) -> Runs,
+) {
+    let mut names: Vec<String> = names.into_iter().map(|name| shown(&name)).collect();
+    if names.is_empty() {
+        return;
+    }
+    names.sort();
+    let more = names.len().saturating_sub(MOST_RUNS);
+    names.truncate(MOST_RUNS);
+    runs.push(entry(names));
+    if more > 0 {
+        runs.push(Runs::More(more));
+    }
+}
+
+/// At most [`MOST_RUNS`] entries, and how many more there were.
+fn capped(mut runs: Vec<Runs>) -> Vec<Runs> {
+    let more = runs.len().saturating_sub(MOST_RUNS);
+    if more > 0 {
+        runs.truncate(MOST_RUNS);
+        runs.push(Runs::More(more));
+    }
     runs
 }
 
@@ -169,9 +236,8 @@ fn settings_runs(settings: ProjectSettings) -> Vec<Runs> {
 fn mcp_runs(mcp: McpJson) -> Vec<Runs> {
     let mut servers: Vec<_> = mcp.servers.into_iter().collect();
     servers.sort_by(|left, right| left.0.cmp(&right.0));
-    servers
+    let runs = servers
         .into_iter()
-        .take(MOST_RUNS)
         .map(|(name, server)| {
             let runs = match (server.command, server.url) {
                 (Some(command), _) => std::iter::once(command)
@@ -186,7 +252,8 @@ fn mcp_runs(mcp: McpJson) -> Vec<Runs> {
                 runs: shown(&runs),
             }
         })
-        .collect()
+        .collect();
+    capped(runs)
 }
 
 fn unreadable(file: &str, reason: &str) -> Runs {
@@ -282,22 +349,38 @@ mod tests {
         folder
     }
 
-    /// Hooks, helpers, plugins turned on, environment variables by name and MCP servers with
-    /// their command lines are listed, in a steady order; values of variables are not.
+    /// Hooks of every type by what they do, helpers, plugins turned on, environment variables
+    /// by name, permissions that let more run, marketplaces, every key not read by name, and MCP
+    /// servers with their command lines are listed, in a steady order; values of variables are
+    /// not.
     #[test]
     fn a_folder_lists_what_it_would_run() {
         let folder = scratch("runs");
         let settings = serde_json::json!({
+            "$schema": "https://json.schemastore.org/claude-code-settings.json",
             "hooks": {
                 "SessionStart": [{ "hooks": [{ "type": "command", "command": "./setup.sh" }] }],
                 "PreToolUse": [{
                     "matcher": "Bash",
                     "hooks": [{ "type": "command", "command": "check\u{1b}[2J --strict" }],
                 }],
+                "Stop": [{ "hooks": [
+                    { "type": "http", "url": "https://hooks.example/stop" },
+                    { "type": "mcp_tool", "server": "notes", "tool": "append" },
+                    { "type": "prompt", "prompt": "Is the work done?" },
+                ] }],
             },
             "env": { "TOKEN": "secret-value", "API": "x" },
             "apiKeyHelper": "./key.sh",
             "enabledPlugins": { "on@market": true, "off@market": false },
+            "permissions": {
+                "allow": ["Bash(rm *)"],
+                "deny": ["Read(./.env)"],
+                "additionalDirectories": ["../shared"],
+                "defaultMode": "acceptEdits",
+            },
+            "extraKnownMarketplaces": { "tools": { "source": { "source": "github" } } },
+            "otelHeadersHelper": "./headers.sh",
         });
         std::fs::write(folder.join(".claude/settings.json"), settings.to_string())
             .expect("settings");
@@ -314,16 +397,39 @@ mod tests {
                 Runs::Hook {
                     event: "PreToolUse".to_owned(),
                     matcher: "Bash".to_owned(),
-                    command: "check [2J --strict".to_owned(),
+                    action: HookAction::Command("check [2J --strict".to_owned()),
                 },
                 Runs::Hook {
                     event: "SessionStart".to_owned(),
                     matcher: String::new(),
-                    command: "./setup.sh".to_owned(),
+                    action: HookAction::Command("./setup.sh".to_owned()),
+                },
+                Runs::Hook {
+                    event: "Stop".to_owned(),
+                    matcher: String::new(),
+                    action: HookAction::Url("https://hooks.example/stop".to_owned()),
+                },
+                Runs::Hook {
+                    event: "Stop".to_owned(),
+                    matcher: String::new(),
+                    action: HookAction::McpTool {
+                        server: "notes".to_owned(),
+                        tool: "append".to_owned(),
+                    },
+                },
+                Runs::Hook {
+                    event: "Stop".to_owned(),
+                    matcher: String::new(),
+                    action: HookAction::Prompt,
                 },
                 Runs::ApiKeyHelper("./key.sh".to_owned()),
                 Runs::Plugin("on@market".to_owned()),
                 Runs::Environment(vec!["API".to_owned(), "TOKEN".to_owned()]),
+                Runs::Allows(vec!["Bash(rm *)".to_owned()]),
+                Runs::Directories(vec!["../shared".to_owned()]),
+                Runs::DefaultMode("acceptEdits".to_owned()),
+                Runs::Marketplaces(vec!["tools".to_owned()]),
+                Runs::AlsoSets(vec!["otelHeadersHelper".to_owned()]),
                 Runs::McpServer {
                     name: "docs".to_owned(),
                     runs: "https://example.org/mcp".to_owned(),
@@ -333,6 +439,27 @@ mod tests {
                     runs: "npx -y server-files /".to_owned(),
                 },
             ]
+        );
+        std::fs::remove_dir_all(&folder).expect("the scratch folder goes");
+    }
+
+    /// A list longer than is shown says how many more there were, instead of seeming complete.
+    #[test]
+    fn a_long_list_says_how_many_more() {
+        let folder = scratch("more");
+        let names: serde_json::Map<String, serde_json::Value> = (0..45)
+            .map(|index| (format!("VAR_{index:02}"), serde_json::Value::from("x")))
+            .collect();
+        let settings = serde_json::json!({ "env": names });
+        std::fs::write(folder.join(".claude/settings.json"), settings.to_string())
+            .expect("settings");
+        let runs = what_runs(&folder);
+        assert!(
+            matches!(
+                runs.as_slice(),
+                [Runs::Environment(shown), Runs::More(5)] if shown.len() == MOST_RUNS
+            ),
+            "{runs:?}"
         );
         std::fs::remove_dir_all(&folder).expect("the scratch folder goes");
     }

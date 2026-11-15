@@ -504,9 +504,16 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
             (accepted, runs)
         })
         .await;
+        // A failed read is said as such: an empty list would read as a folder that runs nothing.
         let (accepted, runs) = read.unwrap_or_else(|error| {
             tracing::error!(%error, "reading the folder's trust failed");
-            (false, Vec::new())
+            (
+                false,
+                vec![crate::ipc::Runs::Unreadable {
+                    file: "its settings".to_owned(),
+                    reason: format!("the edualc daemon failed reading them: {error}"),
+                }],
+            )
         });
         tell(
             &outbox,

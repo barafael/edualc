@@ -93,6 +93,27 @@ pub struct ProjectSettings {
     /// Plugins, which bring hooks and MCP servers of their own, by name and whether on.
     #[serde(default, rename = "enabledPlugins")]
     pub enabled_plugins: HashMap<String, bool>,
+    #[serde(default)]
+    pub permissions: Permissions,
+    /// Plugin marketplaces added, by name.
+    #[serde(default, rename = "extraKnownMarketplaces")]
+    pub marketplaces: HashMap<String, serde::de::IgnoredAny>,
+    /// Every other key, by name only: Claude Code has more settings than this window reads,
+    /// and new ones come with its releases.
+    #[serde(flatten)]
+    pub other: HashMap<String, serde::de::IgnoredAny>,
+}
+
+/// The permission settings that let more run without asking; `deny` and `ask` rules only take
+/// away, and aren't read.
+#[derive(Debug, Default, Deserialize)]
+pub struct Permissions {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default, rename = "additionalDirectories")]
+    pub additional_directories: Vec<String>,
+    #[serde(default, rename = "defaultMode")]
+    pub default_mode: Option<String>,
 }
 
 /// Hooks for an event, for the tools `matcher` names (all, if empty).
@@ -104,11 +125,19 @@ pub struct HookMatcher {
     pub hooks: Vec<Hook>,
 }
 
-/// A hook: a command, or a prompt or an agent (which run no command of their own).
+/// A hook, by the fields of each of Claude Code's hook types: a command (`command`), a URL
+/// (`http`), an MCP server's tool (`mcp_tool`), or a prompt to a model or an agent (`prompt`,
+/// `agent`), which run no command of their own.
 #[derive(Debug, Deserialize)]
 pub struct Hook {
     #[serde(default)]
     pub command: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub server: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
