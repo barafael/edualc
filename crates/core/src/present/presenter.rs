@@ -244,11 +244,8 @@ impl<F: Frontend> Presenter<F> {
         self.preferences.running_sessions = i32::try_from(count).unwrap_or(i32::MAX);
     }
 
-    pub fn set_look(&mut self, look: settings::Look) {
-        self.command(Command::Look(match look {
-            settings::Look::Gruvbox => Look::Gruvbox,
-            settings::Look::Plain => Look::Plain,
-        }));
+    pub fn set_look(&mut self, look: Look) {
+        self.command(Command::Look(look));
     }
 
     /// The images going with the next message, as chips in the composer: their thumbnails are

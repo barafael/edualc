@@ -27,16 +27,12 @@ use crate::external::wire::{
     ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent, UserLine, UserMessage,
 };
 
+use super::outbox::unwrapped;
 use super::{Agent, first_location};
+use crate::external::wire::DENIED;
 
-/// What a denied tool call's result says, as Claude Code words it: the window shows such a
-/// call as denied.
-const DENIED: &str = "The user doesn't want to proceed with this tool use.";
 /// JSON-RPC's code for a method the receiver doesn't have.
 const METHOD_NOT_FOUND: i64 = -32601;
-/// The envelope a message from another session comes in (see [`super::outbox`]).
-const ENVELOPE_OPEN: &str = "<cross-session-message";
-const ENVELOPE_CLOSE: &str = "</cross-session-message>";
 
 /// A call of edualc's messaging tool, by the connection it came on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1412,27 +1408,6 @@ fn result_text(call: &ToolCall, failed: bool) -> String {
         return if failed { "Failed." } else { "Done." }.to_owned();
     }
     parts.join("\n")
-}
-
-/// The sender's name and the text of a message in another session's envelope (see
-/// [`super::outbox`]);
-/// no name, and all of it, for one without.
-fn unwrapped(content: &str) -> (Option<String>, String) {
-    let Some(rest) = content.strip_prefix(ENVELOPE_OPEN) else {
-        return (None, content.to_owned());
-    };
-    let Some((attributes, body)) = rest.split_once(">\n") else {
-        return (None, content.to_owned());
-    };
-    let name = attributes
-        .split_once("from-name=\"")
-        .and_then(|(_, after)| after.split_once('"'))
-        .map(|(name, _)| name.to_owned());
-    let body = body
-        .strip_suffix(ENVELOPE_CLOSE)
-        .map_or(body, |body| body.strip_suffix('\n').unwrap_or(body))
-        .replace("<\\/cross-session-message", "</cross-session-message");
-    (name, body)
 }
 
 #[cfg(test)]

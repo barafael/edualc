@@ -45,13 +45,8 @@ pub enum Image {
     Pixels(Pixels),
 }
 
-/// The window's look: Gruvbox, or plain.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Look {
-    #[default]
-    Gruvbox,
-    Plain,
-}
+/// The window's look, as the settings keep it.
+pub use crate::settings::Look;
 
 /// A change to the transcript's rows: they change one by one as the conversation goes, so they
 /// aren't part of a global's state.

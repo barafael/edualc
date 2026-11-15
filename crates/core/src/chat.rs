@@ -7,15 +7,12 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{Map, Value};
 
 use crate::decode::Picture;
+use crate::external::wire::DENIED;
 use crate::external::wire::{
     ApiMessage, ContentBlock, Delta, MessageId, MessageOrigin, ReceivedImage, StreamEvent, System,
     ToolName, ToolUseId, TranscriptLine, UserContent, UserMessage,
 };
 use crate::tools;
-
-/// How Claude Code 2.1.316 begins the result of a tool call the user denied, with or without
-/// saying what to do instead (as read in saved transcripts).
-const REJECTED: &str = "The user doesn't want to proceed with this tool use.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolState {
@@ -764,7 +761,7 @@ impl Chat {
         tool.output = tools::result_text(content);
         // A saved session has no answer of the window's to tell a denied call by, only the
         // text Claude Code gave Claude for it.
-        let rejected = tool.output.starts_with(REJECTED);
+        let rejected = tool.output.starts_with(DENIED);
         tool.state = match (failed, tool.state) {
             (true, ToolState::Denied) => ToolState::Denied,
             (true, _) if rejected => ToolState::Denied,

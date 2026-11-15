@@ -359,7 +359,7 @@ fn declined(answer: &Value) -> String {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    format!("The user doesn't want to proceed with this tool use. {said}")
+    format!("{} {said}", crate::external::wire::DENIED)
 }
 
 /// The answer to `initialize`: the models, commands and account the window lists.

@@ -190,6 +190,45 @@ fn escaped(text: &str) -> String {
     escaped
 }
 
+/// The sender's name and the text of a message in an envelope as [`envelope`] writes one; no
+/// name, and all of it, for a message without one.
+pub(super) fn unwrapped(content: &str) -> (Option<String>, String) {
+    let Some(rest) = content.strip_prefix(&format!("<{ENVELOPE}")) else {
+        return (None, content.to_owned());
+    };
+    let Some((attributes, body)) = rest.split_once(">\n") else {
+        return (None, content.to_owned());
+    };
+    let name = attributes
+        .split_once("from-name=\"")
+        .and_then(|(_, after)| after.split_once('"'))
+        .map(|(name, _)| name.to_owned());
+    let body = body
+        .strip_suffix(&format!("\n</{ENVELOPE}>"))
+        .unwrap_or(body);
+    (name, unescaped(body))
+}
+
+/// The text [`escaped`] wrote, without the `\` it put after a `<`. A text that already held
+/// `<\` before a closing tag reads back without it: Claude Code's escaping doesn't tell the two
+/// apart.
+fn unescaped(text: &str) -> String {
+    let mut unescaped = String::with_capacity(text.len());
+    let mut characters = text.char_indices();
+    while let Some((index, character)) = characters.next() {
+        unescaped.push(character);
+        let escape = character == '<'
+            && text
+                .get(index + 1..)
+                .and_then(|after| after.strip_prefix('\\'))
+                .is_some_and(closes_envelope);
+        if escape {
+            characters.next();
+        }
+    }
+    unescaped
+}
+
 /// Whether what follows a `<` closes an envelope, as Claude Code tells: no `\` right after it;
 /// then anything but word characters, brackets and slashes; a slash; anything but word
 /// characters and brackets; the tag, in any case; and no word character after it.
@@ -650,6 +689,28 @@ mod tests {
         ] {
             assert_eq!(escaped(kept), kept);
         }
+    }
+
+    /// A message read back from its envelope is the sender's name and the text as it was sent,
+    /// what was escaped in it unescaped; content without an envelope is all text.
+    #[test]
+    fn a_message_reads_back_from_its_envelope() {
+        let name = name(SENDER_ID);
+        for text in [
+            "hello",
+            "a </cross-session-message> b",
+            "< /CROSS_Session-message>",
+            "<!/ cross-session-message",
+            "two\nlines",
+        ] {
+            let wrapped = envelope(Some("uds:/run/inbox.sock"), &name, text);
+            assert_eq!(
+                unwrapped(&wrapped),
+                (Some(name.to_string()), text.to_owned()),
+                "{wrapped}"
+            );
+        }
+        assert_eq!(unwrapped("plain"), (None, "plain".to_owned()));
     }
 
     /// An inbox is addressed as Claude Code addresses one, and the address read back to the

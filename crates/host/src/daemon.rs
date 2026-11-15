@@ -253,20 +253,14 @@ enum Effect {
     /// For the hub.
     Hub(Ask),
     /// For the desktop, answered to the window.
-    Act {
-        request: ActId,
-        act: Act,
-    },
+    Act { request: ActId, act: Act },
     /// What was asked can't be done; the window is told.
     Refuse {
         key: Generation,
         failure: StartFailure,
     },
     /// For the files, answered to the window.
-    Read {
-        request: ActId,
-        read: ipc::Read,
-    },
+    Read { request: ActId, read: ipc::Read },
     /// For the settings' keeper.
     ChangeSettings(crate::settings::Change),
     /// For the window's watches.

@@ -131,6 +131,11 @@ pub struct MessageId(String);
 #[serde(transparent)]
 pub struct RequestId(String);
 
+/// How Claude Code 2.1.316 begins the result of a tool call the user denied, with or without
+/// saying what to do instead (as read in saved transcripts); the window shows such a call as
+/// denied, and edualcd's ACP adapter writes it for an agent's call that was denied.
+pub const DENIED: &str = "The user doesn't want to proceed with this tool use.";
+
 /// A tool Claude calls, as the CLI names it; an MCP tool (`mcp__<server>__<tool>`) or one this
 /// window doesn't know keeps its name.
 #[derive(
