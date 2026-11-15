@@ -21,10 +21,11 @@ use crate::external::acp::{
 };
 use crate::external::tool_input::{BashInput, KnownCall, ReadInput};
 use crate::external::wire::{
-    Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta, IncomingRequest,
-    Initialized, MediaType, Message, MessageId, MessageOrigin, MessageStart, ModeId, ModelInfo,
-    ModelUsage, ProgramMode, ProgramModes, RequestId, ResultKind, SessionId, StreamEvent, System,
-    ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent, UserLine, UserMessage,
+    self, Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta,
+    IncomingRequest, Initialized, Message, MessageId, MessageOrigin, MessageStart, ModeId,
+    ModelInfo, ModelUsage, ProgramMode, ProgramModes, RequestId, ResultKind, SessionId,
+    StreamEvent, System, ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent,
+    UserLine, UserMessage,
 };
 
 use super::outbox::unwrapped;
@@ -114,11 +115,10 @@ enum Asked {
 /// Something to be prompted with once the agent is free.
 #[derive(Debug, Clone)]
 enum Queued {
-    /// The user's prompt, as ACP takes it, and as the transcript keeps it: nothing is kept of
-    /// one the transcript's reader couldn't read back.
+    /// The user's prompt, as ACP takes it, and as the transcript keeps it.
     User {
         prompt: Vec<acp::PromptBlock>,
-        kept: Option<UserContent>,
+        kept: UserContent,
     },
     /// Another session's message, in its envelope.
     Peer(String),
@@ -184,7 +184,7 @@ pub struct Translator {
     next_rpc: u64,
     asked: HashMap<u64, Asked>,
     /// What the window said before the session was open.
-    held: Vec<String>,
+    held: Vec<wire::Input>,
     /// The window's `initialize`, answered once the session is open.
     initialize: Option<RequestId>,
     /// A prompt is under way.
@@ -447,8 +447,8 @@ impl Translator {
                 if let Some(request) = self.initialize.take() {
                     effects.push(self.initialized(request));
                 }
-                for line in std::mem::take(&mut self.held) {
-                    effects.extend(self.window_said(&line));
+                for input in std::mem::take(&mut self.held) {
+                    effects.extend(self.window_input(input));
                 }
                 effects
             }
@@ -550,56 +550,57 @@ impl Translator {
 
     /// A line from the window.
     pub fn window_said(&mut self, line: &str) -> Vec<Effect> {
-        let Ok(said) = serde_json::from_str::<Value>(line) else {
-            return Vec::new();
+        let input = match serde_json::from_str::<wire::Input>(line) {
+            Ok(input) => input,
+            Err(error) => return unreadable_from_window(line, &error),
         };
-        if self.acp_session().is_none() {
-            match &self.phase {
-                Phase::Failed => {
-                    return control_request_id(&said)
-                        .map(|request| {
-                            vec![failure(request, &format!("{} isn't running", self.agent))]
-                        })
-                        .unwrap_or_default();
+        match &self.phase {
+            Phase::Ready(_) => self.window_input(input),
+            Phase::Failed => match input {
+                wire::Input::ControlRequest { request_id, .. } => vec![failure(
+                    request_id,
+                    &format!("{} isn't running", self.agent),
+                )],
+                wire::Input::User { .. }
+                | wire::Input::ControlResponse { .. }
+                | wire::Input::BashCommand { .. } => Vec::new(),
+            },
+            Phase::Connecting | Phase::Opening { .. } => {
+                match input {
+                    wire::Input::ControlRequest {
+                        request_id,
+                        request: wire::ControlRequest::Initialize { .. },
+                    } => self.initialize = Some(request_id),
+                    held @ (wire::Input::ControlRequest { .. }
+                    | wire::Input::User { .. }
+                    | wire::Input::ControlResponse { .. }
+                    | wire::Input::BashCommand { .. }) => self.held.push(held),
                 }
-                Phase::Connecting | Phase::Opening { .. } => {
-                    if is_initialize(&said) {
-                        self.initialize = control_request_id(&said);
-                    } else {
-                        self.held.push(line.to_owned());
-                    }
-                    return Vec::new();
-                }
-                Phase::Ready(_) => {}
+                Vec::new()
             }
         }
-        match said.get("type").and_then(Value::as_str) {
-            Some("control_request") => self.window_request(&said),
-            Some("control_response") => self.window_answered(&said),
-            Some("user") => {
-                let content = said
-                    .pointer("/message/content")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let prompt = prompt_blocks(&content);
+    }
+
+    /// A line the window has been read as: a prompt, a `!` command, a request or an answer.
+    fn window_input(&mut self, input: wire::Input) -> Vec<Effect> {
+        match input {
+            wire::Input::ControlRequest {
+                request_id,
+                request,
+            } => self.window_request(request_id, request),
+            wire::Input::ControlResponse { response } => self.window_answered(response),
+            wire::Input::User { message, .. } => {
+                let prompt = prompt_blocks(&message.content);
                 if prompt.is_empty() {
                     return Vec::new();
                 }
-                let kept = match serde_json::from_value::<UserContent>(content) {
-                    Ok(kept) => Some(kept),
-                    Err(error) => {
-                        tracing::warn!(%error, "a prompt the transcript can't keep: sent, not kept");
-                        None
-                    }
-                };
-                self.queue.push_back(Queued::User { prompt, kept });
+                self.queue.push_back(Queued::User {
+                    prompt,
+                    kept: UserContent::from(message.content),
+                });
                 self.next_turn()
             }
-            Some("bash_command") => {
-                let command = said.get("command").and_then(Value::as_str).unwrap_or("");
-                self.shell_refused(command)
-            }
-            Some(_) | None => Vec::new(),
+            wire::Input::BashCommand { command, .. } => self.shell_refused(&command),
         }
     }
 
@@ -620,97 +621,107 @@ impl Translator {
         ]
     }
 
-    fn window_request(&mut self, said: &Value) -> Vec<Effect> {
-        let Some(request) = control_request_id(said) else {
-            return Vec::new();
-        };
+    fn window_request(
+        &mut self,
+        request_id: RequestId,
+        request: wire::ControlRequest,
+    ) -> Vec<Effect> {
         let Some(session) = self.acp_session().map(str::to_owned) else {
-            return vec![failure(request, &format!("{} isn't running", self.agent))];
+            return vec![failure(
+                request_id,
+                &format!("{} isn't running", self.agent),
+            )];
         };
-        match said.pointer("/request/subtype").and_then(Value::as_str) {
-            Some("initialize") => vec![self.initialized(request)],
-            Some("interrupt") => {
-                let mut effects = vec![success(request, Value::Object(Map::new()))];
+        match request {
+            wire::ControlRequest::Initialize { .. } => vec![self.initialized(request_id)],
+            wire::ControlRequest::Interrupt => {
+                let mut effects = vec![success(request_id, Value::Object(Map::new()))];
                 if self.busy {
                     effects.push(Self::cancel(session));
                 }
                 effects
             }
-            Some("set_model") => {
-                let Some(model) = said.pointer("/request/model").and_then(Value::as_str) else {
-                    return vec![failure(request, "no model named")];
-                };
-                self.model = Some(model.to_owned());
+            wire::ControlRequest::SetModel { model } => {
+                self.model = Some(model.clone());
                 vec![self.request(
                     acp::ClientCall::SetModel(acp::SetModelParams {
                         session_id: session,
-                        model_id: model.to_owned(),
+                        model_id: model,
                     }),
-                    Asked::Model(Some(request)),
+                    Asked::Model(Some(request_id)),
                 )]
             }
-            Some("set_program_mode") => {
-                let Some(mode) = said.pointer("/request/mode").and_then(Value::as_str) else {
-                    return vec![failure(request, "no mode named")];
-                };
+            wire::ControlRequest::SetProgramMode { mode } => {
+                let mode = mode.to_string();
                 vec![self.request(
                     acp::ClientCall::SetMode(acp::SetModeParams {
                         session_id: session,
-                        mode_id: mode.to_owned(),
+                        mode_id: mode.clone(),
                     }),
                     Asked::Mode {
-                        request,
-                        mode: mode.to_owned(),
+                        request: request_id,
+                        mode,
                     },
                 )]
             }
-            Some("set_permission_mode") => {
+            wire::ControlRequest::SetPermissionMode { .. } => {
                 vec![failure(
-                    request,
+                    request_id,
                     &format!("{} has modes of its own, not Claude Code's", self.agent),
                 )]
             }
-            Some(_) | None => vec![failure(request, &format!("{} doesn't do this", self.agent))],
+            wire::ControlRequest::StopTask { .. }
+            | wire::ControlRequest::GetTaskOutput { .. }
+            | wire::ControlRequest::SideQuestion { .. }
+            | wire::ControlRequest::GetUsage
+            | wire::ControlRequest::GetContextUsage => {
+                vec![failure(
+                    request_id,
+                    &format!("{} doesn't do this", self.agent),
+                )]
+            }
         }
     }
 
     /// The window's answer to a permission request: the agent's, or the messaging tool's.
-    fn window_answered(&mut self, said: &Value) -> Vec<Effect> {
-        let Some(request) = said
-            .pointer("/response/request_id")
-            .and_then(Value::as_str)
-            .map(|request| RequestId::from(request.to_owned()))
-        else {
+    fn window_answered(&mut self, reply: wire::Reply) -> Vec<Effect> {
+        let (request_id, verdict) = match reply {
+            wire::Reply::Success {
+                request_id,
+                response: wire::PermissionResult::Allow { .. },
+            } => (request_id, Verdict::Allow),
+            wire::Reply::Success {
+                request_id,
+                response: wire::PermissionResult::Deny { interrupt, .. },
+            } => (request_id, Verdict::Deny { interrupt }),
+            wire::Reply::Error { request_id, error } => {
+                tracing::warn!(%error, "the window couldn't answer a permission request: cancelled");
+                (request_id, Verdict::Unanswered)
+            }
+        };
+        let Some(permission) = self.permissions.remove(&request_id) else {
             return Vec::new();
         };
-        let behavior = said
-            .pointer("/response/response/behavior")
-            .and_then(Value::as_str);
-        let allowed = behavior == Some("allow");
-        let interrupt = said
-            .pointer("/response/response/interrupt")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if let Some(permission) = self.permissions.remove(&request) {
-            let wanted = if allowed {
-                OptionKind::AllowOnce
-            } else {
-                OptionKind::RejectOnce
-            };
-            if !allowed && let Some(Entry::Shown(shown)) = self.entries.get_mut(&permission.tool) {
-                shown.denied = true;
-            }
-            let outcome = outcome_of(&permission.options, wanted);
-            let mut effects = vec![Self::answer(
-                permission.id,
-                acp::Reply::Result(acp::PermissionAnswer { outcome }),
-            )];
-            if interrupt && let Some(session) = self.acp_session() {
-                effects.push(Self::cancel(session.to_owned()));
-            }
-            return effects;
+        let outcome = match verdict {
+            Verdict::Allow => outcome_of(&permission.options, OptionKind::AllowOnce),
+            Verdict::Deny { .. } => outcome_of(&permission.options, OptionKind::RejectOnce),
+            Verdict::Unanswered => acp::Outcome::Cancelled,
+        };
+        if let Verdict::Deny { .. } = verdict
+            && let Some(Entry::Shown(shown)) = self.entries.get_mut(&permission.tool)
+        {
+            shown.denied = true;
         }
-        Vec::new()
+        let mut effects = vec![Self::answer(
+            permission.id,
+            acp::Reply::Result(acp::PermissionAnswer { outcome }),
+        )];
+        if let Verdict::Deny { interrupt: true } = verdict
+            && let Some(session) = self.acp_session()
+        {
+            effects.push(Self::cancel(session.to_owned()));
+        }
+        effects
     }
 
     /// The agent's messaging tool was called: the message goes without asking, as a Claude Code
@@ -798,13 +809,11 @@ impl Translator {
         }))];
         let prompt = match queued {
             Queued::User { prompt, kept } => {
-                effects.extend(kept.map(|content| {
-                    Effect::Transcript(TranscriptLine::User {
-                        message: UserMessage { content },
-                        is_meta: false,
-                        is_sidechain: false,
-                        origin: None,
-                    })
+                effects.push(Effect::Transcript(TranscriptLine::User {
+                    message: UserMessage { content: kept },
+                    is_meta: false,
+                    is_sidechain: false,
+                    origin: None,
                 }));
                 prompt
             }
@@ -1216,19 +1225,40 @@ fn open_index(blocks: &[Block]) -> Option<u64> {
     (0_u64..).zip(blocks).last().map(|(index, _)| index)
 }
 
-fn is_initialize(said: &Value) -> bool {
-    said.get("type").and_then(Value::as_str) == Some("control_request")
-        && said.pointer("/request/subtype").and_then(Value::as_str) == Some("initialize")
+/// A line from the window that isn't one of its lines as edualc reads them. A control request
+/// is answered with the reason, so the window doesn't wait on it; anything else is dropped.
+fn unreadable_from_window(line: &str, error: &serde_json::Error) -> Vec<Effect> {
+    match serde_json::from_str::<wire::ControlPeek>(line) {
+        Ok(wire::ControlPeek {
+            kind: wire::PeekedKind::ControlRequest,
+            request_id: Some(request_id),
+            ..
+        }) => vec![failure(
+            RequestId::from(request_id),
+            &format!("edualc can't read this request: {error}"),
+        )],
+        Ok(wire::ControlPeek {
+            kind: wire::PeekedKind::User,
+            ..
+        }) => {
+            tracing::warn!(%error, "a prompt from the window that can't be read: dropped");
+            Vec::new()
+        }
+        Ok(wire::ControlPeek { .. }) | Err(_) => {
+            tracing::warn!(%error, "a line from the window that can't be read: dropped");
+            Vec::new()
+        }
+    }
 }
 
-fn control_request_id(said: &Value) -> Option<RequestId> {
-    (said.get("type").and_then(Value::as_str) == Some("control_request"))
-        .then(|| {
-            said.get("request_id")
-                .and_then(Value::as_str)
-                .map(|request| RequestId::from(request.to_owned()))
-        })
-        .flatten()
+/// What the window answered a permission request with, as edualc acts on it.
+enum Verdict {
+    Allow,
+    Deny {
+        interrupt: bool,
+    },
+    /// The window couldn't answer: the request is cancelled.
+    Unanswered,
 }
 
 fn success(request: RequestId, response: Value) -> Effect {
@@ -1250,36 +1280,21 @@ fn failure(request: RequestId, error: &str) -> Effect {
 }
 
 /// A prompt as the window sent it (text, or blocks of text and images), as ACP takes it.
-fn prompt_blocks(content: &Value) -> Vec<acp::PromptBlock> {
+fn prompt_blocks(content: &wire::Content) -> Vec<acp::PromptBlock> {
     match content {
-        Value::String(text) => vec![acp::PromptBlock::Text { text: text.clone() }],
-        Value::Array(blocks) => blocks.iter().filter_map(prompt_block).collect(),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => Vec::new(),
+        wire::Content::Text(text) => vec![acp::PromptBlock::Text { text: text.clone() }],
+        wire::Content::Blocks(blocks) => blocks.iter().map(prompt_block).collect(),
     }
 }
 
-/// One block of the window's prompt, if it is text or an image edualc can send.
-fn prompt_block(block: &Value) -> Option<acp::PromptBlock> {
-    match block.get("type").and_then(Value::as_str) {
-        Some("text") => Some(acp::PromptBlock::Text {
-            text: block.get("text")?.as_str()?.to_owned(),
-        }),
-        Some("image") => {
-            let source = block.get("source")?;
-            let media_type = source.get("media_type")?.as_str()?;
-            let Ok(mime_type) = media_type.parse::<MediaType>() else {
-                tracing::debug!(
-                    media_type,
-                    "an image of a type edualc doesn't send: left out"
-                );
-                return None;
-            };
-            Some(acp::PromptBlock::Image {
-                mime_type,
-                data: source.get("data")?.as_str()?.to_owned(),
-            })
-        }
-        Some(_) | None => None,
+/// One block of the window's prompt, as ACP takes it.
+fn prompt_block(block: &wire::Block) -> acp::PromptBlock {
+    match block {
+        wire::Block::Text { text } => acp::PromptBlock::Text { text: text.clone() },
+        wire::Block::Image(image) => acp::PromptBlock::Image {
+            mime_type: image.media_type(),
+            data: image.data().to_owned(),
+        },
     }
 }
 
@@ -1415,9 +1430,31 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::app::PermissionMode;
     use crate::external::acp::Location;
+    use crate::external::wire::{
+        ControlRequest, Input, MediaType, ModeId, PermissionResult, Reply, ToolInput,
+    };
 
     const ID: &str = "11111111-2222-4333-8444-555555555555";
+
+    /// A line the window writes, as it writes it.
+    fn said(input: &Input) -> String {
+        serde_json::to_string(input).expect("a line the window writes")
+    }
+
+    /// A prompt of the window's, of text alone.
+    fn prompt(text: &str) -> String {
+        said(&Input::prompt_with(&[], Vec::new(), text))
+    }
+
+    /// A control request of the window's.
+    fn asks(request_id: &str, request: ControlRequest) -> String {
+        said(&Input::ControlRequest {
+            request_id: RequestId::from(request_id.to_owned()),
+            request,
+        })
+    }
 
     fn translator(start: Start) -> Translator {
         translator_for(Agent::Agy, start)
@@ -1570,18 +1607,19 @@ mod tests {
     fn the_window_and_the_transcript_read_every_line() {
         let mut translator = translator_for(Agent::Agy, Start::New);
         let mut effects = translator.start();
-        effects.extend(translator.window_said(
-            r#"{"type":"control_request","request_id":"w1","request":{"subtype":"initialize"}}"#,
-        ));
+        effects.extend(translator.window_said(&asks(
+            "w1",
+            ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            },
+        )));
         effects.extend(
             translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#),
         );
         effects.extend(translator.agent_said(
             r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","models":{"availableModels":[{"modelId":"m1","name":"Model one"}],"currentModelId":"m1"},"modes":{"availableModes":[{"id":"fast","name":"Fast"}],"currentModeId":"fast"}}}"#,
         ));
-        effects.extend(
-            translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#),
-        );
+        effects.extend(translator.window_said(&prompt("go")));
         let first = prompt_id(&effects);
         for update in [
             r#"{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Hmm"}}"#,
@@ -1603,9 +1641,7 @@ mod tests {
         effects.extend(translator.peer(
             "<cross-session-message from=\"calm-heron\">hello</cross-session-message>".to_owned(),
         ));
-        effects.extend(translator.window_said(
-            r#"{"type":"bash_command","command":"ls","uuid":"00000000-0000-4000-8000-000000000000"}"#,
-        ));
+        effects.extend(translator.window_said(&said(&Input::bash_command("ls"))));
         effects.extend(translator.agent_said(&format!(
             r#"{{"jsonrpc":"2.0","id":{first},"error":{{"code":-32603,"message":"overloaded"}}}}"#
         )));
@@ -1675,9 +1711,12 @@ mod tests {
     fn initialize_waits_for_the_session() {
         let mut translator = translator(Start::New);
         translator.start();
-        let early = translator.window_said(
-            r#"{"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}"#,
-        );
+        let early = translator.window_said(&asks(
+            "r1",
+            ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            },
+        ));
         assert!(early.is_empty());
         let initialized =
             translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
@@ -1723,9 +1762,7 @@ mod tests {
     #[test]
     fn a_turn_reads_as_claude_codes() {
         let mut translator = opened();
-        let prompted = translator.window_said(
-            r#"{"type":"user","message":{"role":"user","content":"Count the lines"},"parent_tool_use_id":null,"session_id":"x"}"#,
-        );
+        let prompted = translator.window_said(&prompt("Count the lines"));
         assert_eq!(kinds(&window_lines(&prompted)), ["system"]);
         let prompt = agent_lines(&prompted)
             .into_iter()
@@ -1885,7 +1922,7 @@ mod tests {
     #[test]
     fn edualcs_own_tools_go_without_asking() {
         let mut translator = opened();
-        translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+        translator.window_said(&prompt("go"));
         let asked = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c3","name":"mcp_edualc_list_sessions","kind":"other","status":"pending","title":"list_sessions","rawInput":{}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"8"}"#,
         );
@@ -1908,7 +1945,7 @@ mod tests {
     #[test]
     fn permissions_go_through_the_window() {
         let mut translator = opened();
-        translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+        translator.window_said(&prompt("go"));
         let asked = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c2","name":"run_command","kind":"execute","status":"pending","title":"touch /tmp/x","rawInput":{"CommandLine":"touch /tmp/x"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"7"}"#,
         );
@@ -1921,9 +1958,15 @@ mod tests {
             .get("request_id")
             .and_then(Value::as_str)
             .expect("an id");
-        let denied = translator.window_said(&format!(
-            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"deny","message":"no"}}}}}}"#
-        ));
+        let denied = translator.window_said(&said(&Input::ControlResponse {
+            response: Reply::Success {
+                request_id: RequestId::from(request_id.to_owned()),
+                response: PermissionResult::Deny {
+                    message: "no".to_owned(),
+                    interrupt: false,
+                },
+            },
+        }));
         assert_eq!(
             agent_lines(&denied)
                 .first()
@@ -1946,9 +1989,8 @@ mod tests {
     #[test]
     fn a_prompt_is_sent_as_acp_names_it() {
         let mut translator = opened();
-        let sent = translator.window_said(
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}}"#,
-        );
+        let image = wire::ImageBlock::base64(MediaType::Png, "QUJD".to_owned());
+        let sent = translator.window_said(&said(&Input::prompt_with(&[], vec![image], "look")));
         let id = prompt_id(&sent);
         assert_eq!(
             agent_lines(&sent),
@@ -1959,8 +2001,8 @@ mod tests {
                 "params": {
                     "sessionId": "s",
                     "prompt": [
-                        {"type": "text", "text": "look"},
-                        {"type": "image", "mimeType": "image/png", "data": "QUJD"}
+                        {"type": "image", "mimeType": "image/png", "data": "QUJD"},
+                        {"type": "text", "text": "look"}
                     ]
                 }
             })]
@@ -1972,7 +2014,7 @@ mod tests {
     #[test]
     fn a_permission_answer_is_acps() {
         let mut translator = opened();
-        translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+        translator.window_said(&prompt("go"));
         let asked = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c2","name":"run_command","kind":"execute","status":"pending","title":"touch /tmp/x","rawInput":{"CommandLine":"touch /tmp/x"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"7"}"#,
         );
@@ -1985,9 +2027,15 @@ mod tests {
                     .map(str::to_owned)
             })
             .expect("the window asked");
-        let answered = translator.window_said(&format!(
-            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"allow"}}}}}}"#
-        ));
+        let answered = translator.window_said(&said(&Input::ControlResponse {
+            response: Reply::Success {
+                request_id: RequestId::from(request_id),
+                response: PermissionResult::Allow {
+                    updated_input: ToolInput::from(json!({"command": "touch /tmp/x"})),
+                    updated_permissions: Vec::new(),
+                },
+            },
+        }));
         assert_eq!(
             agent_lines(&answered),
             vec![json!({
@@ -2004,8 +2052,7 @@ mod tests {
     fn a_turn_cut_short_ends_as_failed_saying_why() {
         let ended_with = |answer: &str| {
             let mut translator = opened();
-            let prompted = translator
-                .window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+            let prompted = translator.window_said(&prompt("go"));
             let rpc = prompt_id(&prompted);
             let ended = translator.agent_said(&format!(
                 r#"{{"jsonrpc":"2.0","id":{rpc},"result":{answer}}}"#
@@ -2045,8 +2092,7 @@ mod tests {
     fn a_refused_sign_in_ends_the_turn_as_a_401() {
         let failed_with = |error: &str| {
             let mut translator = opened();
-            let prompted = translator
-                .window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+            let prompted = translator.window_said(&prompt("go"));
             let prompt_id = agent_lines(&prompted)
                 .into_iter()
                 .find(|line| line.get("method") == Some(&json!("session/prompt")))
@@ -2094,8 +2140,7 @@ mod tests {
     #[test]
     fn a_peer_message_waits_for_its_turn() {
         let mut translator = opened();
-        let first = translator
-            .window_said(r#"{"type":"user","message":{"role":"user","content":"hello"}}"#);
+        let first = translator.window_said(&prompt("hello"));
         let prompt_id = agent_lines(&first)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/prompt")))
@@ -2145,7 +2190,7 @@ mod tests {
     #[test]
     fn the_tools_answer_is_the_calls_result() {
         let mut translator = opened();
-        translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+        translator.window_said(&prompt("go"));
         translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c3","name":"mcp_edualc_send_message","kind":"other","status":"in_progress","rawInput":{"to":"calm-heron","message":"hi"}}}}"#,
         );
@@ -2244,9 +2289,7 @@ mod tests {
     #[test]
     fn shell_commands_are_refused() {
         let mut translator = opened();
-        let refused = translator.window_said(
-            r#"{"type":"bash_command","command":"ls <dir>","uuid":"00000000-0000-4000-8000-000000000000"}"#,
-        );
+        let refused = translator.window_said(&said(&Input::bash_command("ls <dir>")));
         assert!(agent_lines(&refused).is_empty());
         let window = window_lines(&refused);
         let rows: Vec<&str> = window
@@ -2258,6 +2301,47 @@ mod tests {
             Some(&"<bash-input>ls &lt;dir&gt;</bash-input>")
         );
         assert!(rows.get(1).is_some_and(|row| row.contains("Not run")));
+    }
+
+    /// A request the window writes that the adapter doesn't do is answered with a failure, so
+    /// the window isn't left waiting on it.
+    #[test]
+    fn a_request_the_adapter_doesnt_do_is_failed() {
+        let mut translator = opened();
+        let answered = translator.window_said(&asks("u1", ControlRequest::GetUsage));
+        assert!(agent_lines(&answered).is_empty());
+        let answers = window_lines(&answered);
+        assert_eq!(answers.len(), 1, "one answer: {answers:?}");
+        let answer = answers.first().expect("the answer");
+        assert_eq!(answer.pointer("/response/subtype"), Some(&json!("error")));
+        assert_eq!(answer.pointer("/response/request_id"), Some(&json!("u1")));
+        assert_eq!(
+            answer.pointer("/response/error"),
+            Some(&json!("agy doesn't do this"))
+        );
+    }
+
+    /// A line the window wrote that edualc can't read, but that is a control request, is
+    /// answered with a failure under its request id, saying edualc can't read it.
+    #[test]
+    fn a_control_request_edualc_cant_read_is_failed_under_its_id() {
+        let mut translator = opened();
+        let unreadable = translator.window_said(
+            r#"{"type":"control_request","request_id":"x1","request":{"subtype":"from_a_newer_edualc"}}"#,
+        );
+        assert!(agent_lines(&unreadable).is_empty());
+        let answers = window_lines(&unreadable);
+        assert_eq!(answers.len(), 1, "one answer: {answers:?}");
+        let answer = answers.first().expect("the answer");
+        assert_eq!(answer.pointer("/response/subtype"), Some(&json!("error")));
+        assert_eq!(answer.pointer("/response/request_id"), Some(&json!("x1")));
+        assert!(
+            answer
+                .pointer("/response/error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| error.starts_with("edualc can't read this request:")),
+            "the reason is said: {answer}"
+        );
     }
 
     /// A loaded session's replayed history isn't shown again: the transcript has it.
@@ -2285,9 +2369,12 @@ mod tests {
     fn agys_modes_reach_the_window() {
         let mut translator = translator(Start::New);
         translator.start();
-        translator.window_said(
-            r#"{"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}"#,
-        );
+        translator.window_said(&asks(
+            "r1",
+            ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            },
+        ));
         translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
         let opened = translator.agent_said(
             r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","modes":{"availableModes":[{"id":"default","name":"Default","description":"Ask before acting"},{"id":"accept-edits","name":"Accept edits"}],"currentModeId":"default"}}}"#,
@@ -2307,9 +2394,12 @@ mod tests {
             }))
         );
 
-        let asked = translator.window_said(
-            r#"{"type":"control_request","request_id":"r2","request":{"subtype":"set_program_mode","mode":"accept-edits"}}"#,
-        );
+        let asked = translator.window_said(&asks(
+            "r2",
+            ControlRequest::SetProgramMode {
+                mode: ModeId::from("accept-edits".to_owned()),
+            },
+        ));
         let set_mode = agent_lines(&asked)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/set_mode")))
@@ -2327,9 +2417,12 @@ mod tests {
                 .and_then(|line| line.pointer("/response/subtype")),
             Some(&json!("success"))
         );
-        let again = translator.window_said(
-            r#"{"type":"control_request","request_id":"r3","request":{"subtype":"initialize"}}"#,
-        );
+        let again = translator.window_said(&asks(
+            "r3",
+            ControlRequest::Initialize {
+                per_task_stop_affordance: true,
+            },
+        ));
         assert_eq!(
             window_lines(&again)
                 .first()
@@ -2337,9 +2430,12 @@ mod tests {
             Some(&json!("accept-edits"))
         );
 
-        let claudes = translator.window_said(
-            r#"{"type":"control_request","request_id":"r4","request":{"subtype":"set_permission_mode","mode":"plan"}}"#,
-        );
+        let claudes = translator.window_said(&asks(
+            "r4",
+            ControlRequest::SetPermissionMode {
+                mode: PermissionMode::Plan,
+            },
+        ));
         assert!(agent_lines(&claudes).is_empty());
         assert_eq!(
             window_lines(&claudes)

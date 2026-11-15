@@ -6,10 +6,9 @@ note: "Tests may read what they check by key. Data that is open by nature, such 
 files:
   - "**/src/**"
 # Known debt, each file to be typed and taken off this list (2026-11-15): the ACP adapter's
-# reading of the window's lines and of agents' tool arguments, its inbox and MCP tool, the
+# reading of agents' tool arguments and transcripts (acp.rs), its inbox and MCP tool, the
 # window's reading of tool inputs, and the browser demo.
 ignores:
-  - "crates/host/src/acp/translate.rs"
   - "crates/host/src/acp.rs"
   - "crates/host/src/acp/inbox.rs"
   - "crates/host/src/acp/tool.rs"
