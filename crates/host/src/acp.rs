@@ -35,7 +35,7 @@ use crate::external::acp::{RpcError, ToolCall};
 use crate::external::tool_input::{
     BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput, WriteInput,
 };
-use crate::external::wire::SessionId;
+use crate::external::wire::{SessionId, TranscriptEntry, TranscriptLine};
 use crate::sessions::{self, MessagingName};
 use outbox::{Job, Outcome, Places, SendArguments};
 use translate::{CallId, Effect, Start, ToolServer, Translator};
@@ -53,9 +53,6 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const AGY_SEND: &str = "mcp_edualc_send_message";
 /// edualc's tool listing the sessions, as agy names it.
 const AGY_LIST: &str = "mcp_edualc_list_sessions";
-/// The same tools by the names Claude Code gives them, which the window knows.
-const CLAUDE_SEND: &str = "mcp__edualc__send_message";
-const CLAUDE_LIST: &str = "mcp__edualc__list_sessions";
 
 /// The agents edualc runs through the Agent Client Protocol, and what each does its own way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, strum::Display)]
@@ -507,6 +504,8 @@ async fn adapt(args: Args) -> Result<(), Error> {
         window: tokio::io::stdout(),
         agent: agent_in.take(),
         transcript,
+        id,
+        cwd,
         calls: HashMap::new(),
         name,
     };
@@ -594,6 +593,9 @@ struct Out {
     window: tokio::io::Stdout,
     agent: Option<ChildStdin>,
     transcript: Option<PathBuf>,
+    /// The session and the folder it works in, which each transcript line is kept with.
+    id: SessionId,
+    cwd: PathBuf,
     /// The tool's calls waiting for their answer.
     calls: HashMap<CallId, OwnedWriteHalf>,
     name: MessagingName,
@@ -617,11 +619,16 @@ impl Out {
                         tracing::warn!(%error, "a line for the agent that can't be written: not sent");
                     }
                 },
-                Effect::ToWindow(line) => {
-                    if write_line(&mut self.window, &line).await.is_err() {
-                        tracing::debug!("the window's side closed");
+                Effect::ToWindow(message) => match serde_json::to_string(&message) {
+                    Ok(line) => {
+                        if write_line(&mut self.window, &line).await.is_err() {
+                            tracing::debug!("the window's side closed");
+                        }
                     }
-                }
+                    Err(error) => {
+                        tracing::warn!(%error, "a line for the window that can't be written: not sent");
+                    }
+                },
                 Effect::Transcript(line) => self.keep(&line),
                 Effect::Send { call, to, message } => {
                     let told = self.carried(Job::Send(SendArguments { to, message })).await;
@@ -661,9 +668,22 @@ impl Out {
     }
 
     /// A line for the transcript, appended.
-    fn keep(&self, line: &Value) {
+    fn keep(&self, line: &TranscriptLine) {
         let Some(path) = &self.transcript else {
             return;
+        };
+        let entry = TranscriptEntry {
+            line,
+            session_id: &self.id,
+            cwd: &self.cwd,
+            timestamp: jiff::Timestamp::now(),
+        };
+        let line = match serde_json::to_string(&entry) {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!(%error, "a transcript line that can't be written: not kept");
+                return;
+            }
         };
         let written = path
             .parent()

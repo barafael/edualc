@@ -9,7 +9,6 @@ files:
 # and edualcd's ACP adapter (being typed on branch acp-adapter, 2026-11-15).
 ignores:
   - "crates/slint/src/web/**"
-  - "crates/host/src/acp/translate.rs"
   - "crates/host/src/acp/outbox.rs"
   - "crates/core/src/present/presenter.rs"
 rule:

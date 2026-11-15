@@ -12,16 +12,22 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
+use crate::app::Mode;
 use crate::external::acp::{
     self, AgentMethod, Change, Chunk, Incoming, Notified, OptionKind, PermissionAsked, Prompted,
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
 use crate::external::tool_input::{BashInput, KnownCall, ReadInput};
-use crate::external::wire::{MediaType, SessionId};
+use crate::external::wire::{
+    Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta, IncomingRequest,
+    Initialized, MediaType, Message, MessageId, MessageOrigin, MessageStart, ModeId, ModelInfo,
+    ModelUsage, ProgramMode, ProgramModes, RequestId, ResultKind, SessionId, StreamEvent, System,
+    ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent, UserLine, UserMessage,
+};
 
-use super::{Agent, CLAUDE_LIST, CLAUDE_SEND, first_location};
+use super::{Agent, first_location};
 
 /// What a denied tool call's result says, as Claude Code words it: the window shows such a
 /// call as denied.
@@ -53,14 +59,14 @@ pub struct ToolServer {
 }
 
 /// What is to be done.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Effect {
     /// A line to the agent.
     ToAgent(acp::ToAgent),
     /// A line to the window, through the daemon.
-    ToWindow(Value),
-    /// A line for the transcript.
-    Transcript(Value),
+    ToWindow(Message),
+    /// A line for the transcript; the session, folder and time are added as it is written.
+    Transcript(TranscriptLine),
     /// A message: carry it out (see [`super::outbox`]) and answer the call.
     Send {
         call: CallId,
@@ -100,22 +106,23 @@ enum Asked {
     Initialize,
     Open,
     /// The model; for the window's request, if it asked.
-    Model(Option<String>),
+    Model(Option<RequestId>),
     /// One of the agent's modes, for the window's request.
     Mode {
-        request: String,
+        request: RequestId,
         mode: String,
     },
     Prompt,
 }
 
 /// Something to be prompted with once the agent is free.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 enum Queued {
-    /// The user's prompt, as ACP takes it, and as the transcript keeps it.
+    /// The user's prompt, as ACP takes it, and as the transcript keeps it: nothing is kept of
+    /// one the transcript's reader couldn't read back.
     User {
         prompt: Vec<acp::PromptBlock>,
-        content: Value,
+        kept: Option<UserContent>,
     },
     /// Another session's message, in its envelope.
     Peer(String),
@@ -124,7 +131,7 @@ enum Queued {
 /// A message being streamed: the id it goes under and its blocks so far, the last one open.
 #[derive(Debug, Default)]
 struct Streaming {
-    id: String,
+    id: MessageId,
     blocks: Vec<Block>,
 }
 
@@ -146,7 +153,7 @@ enum Entry {
 /// A tool call as the window was shown it.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
-    name: String,
+    name: ToolName,
     input: Value,
     done: bool,
     denied: bool,
@@ -183,7 +190,7 @@ pub struct Translator {
     /// What the window said before the session was open.
     held: Vec<String>,
     /// The window's `initialize`, answered once the session is open.
-    initialize: Option<String>,
+    initialize: Option<RequestId>,
     /// A prompt is under way.
     busy: bool,
     queue: VecDeque<Queued>,
@@ -192,7 +199,7 @@ pub struct Translator {
     said: String,
     next_local: u64,
     entries: HashMap<String, Entry>,
-    permissions: HashMap<String, Permission>,
+    permissions: HashMap<RequestId, Permission>,
     /// The tool call each of edualc's tool's calls is, by the agent's id.
     calls: HashMap<CallId, String>,
 }
@@ -403,13 +410,9 @@ impl Translator {
                 };
                 let mut effects = Vec::new();
                 if self.start == Start::New {
-                    effects.push(Effect::Transcript(json!({
-                        "type": "agy-session",
-                        "sessionId": self.id.to_string(),
-                        "agySessionId": session,
-                        "cwd": self.cwd,
-                        "timestamp": now(),
-                    })));
+                    effects.push(Effect::Transcript(TranscriptLine::AgySession {
+                        agent_session_id: session.clone(),
+                    }));
                 }
                 if let Some(models) = opened.models {
                     self.models = models.available_models;
@@ -432,7 +435,7 @@ impl Translator {
                     ));
                 }
                 if let Some(request) = self.initialize.take() {
-                    effects.push(self.initialized(&request));
+                    effects.push(self.initialized(request));
                 }
                 for line in std::mem::take(&mut self.held) {
                     effects.extend(self.window_said(&line));
@@ -440,11 +443,11 @@ impl Translator {
                 effects
             }
             Asked::Model(window) => window
-                .map(|request| vec![success(&request, &json!({}))])
+                .map(|request| vec![success(request, Value::Object(Map::new()))])
                 .unwrap_or_default(),
             Asked::Mode { request, mode } => {
                 self.mode = Some(mode);
-                vec![success(&request, &json!({}))]
+                vec![success(request, Value::Object(Map::new()))]
             }
             Asked::Prompt => {
                 let prompted = serde_json::from_value::<Prompted>(result).ok();
@@ -459,7 +462,7 @@ impl Translator {
         match asked {
             Asked::Initialize | Asked::Open => self.failed(message),
             Asked::Model(Some(request)) | Asked::Mode { request, .. } => {
-                vec![failure(request, message)]
+                vec![failure(request.clone(), message)]
             }
             Asked::Model(None) => {
                 tracing::warn!(message, agent = %self.agent, "the agent didn't take the model");
@@ -475,46 +478,61 @@ impl Translator {
     fn failed(&mut self, message: &str) -> Vec<Effect> {
         self.phase = Phase::Failed;
         let agent = self.agent;
-        let mut effects = vec![Effect::ToWindow(json!({
-            "type": "assistant",
-            "message": {
-                "id": format!("{agent}-failed"),
-                "role": "assistant",
-                "content": [{"type": "text", "text": format!("{agent} couldn't open the session: {message}")}]
+        let mut effects = vec![Effect::ToWindow(Message::Assistant {
+            message: ApiMessage {
+                id: MessageId::from(format!("{agent}-failed")),
+                content: vec![ContentBlock::Text {
+                    text: format!("{agent} couldn't open the session: {message}"),
+                }],
+                usage: Usage::default(),
             },
-            "parent_tool_use_id": null,
-            "session_id": self.id.to_string(),
-        }))];
+            parent_tool_use_id: None,
+            error: None,
+        })];
         if let Some(request) = self.initialize.take() {
-            effects.push(failure(&request, message));
+            effects.push(failure(request, message));
         }
         effects
     }
 
     /// The answer to the window's `initialize`: the agent's models, and its own modes with the
     /// one it is in.
-    fn initialized(&self, request: &str) -> Effect {
-        let models: Vec<Value> = self
-            .models
-            .iter()
-            .map(|model| json!({"value": model.model_id, "displayName": model.name, "description": ""}))
-            .collect();
-        let modes: Vec<Value> = self
-            .modes
-            .iter()
-            .map(|mode| json!({"id": mode.id, "name": mode.name, "description": mode.description.clone().unwrap_or_default()}))
-            .collect();
+    fn initialized(&self, request: RequestId) -> Effect {
         let agent = self.agent;
-        success(
-            request,
-            &json!({
-                "models": models,
-                "programModes": {"offered": modes, "current": self.mode},
-                "commands": [],
-                "account": {"apiProvider": agent.to_string()},
-                "claude_code_version": format!("{agent}, through edualc {}", env!("CARGO_PKG_VERSION")),
+        let initialized = Initialized {
+            models: self
+                .models
+                .iter()
+                .map(|model| ModelInfo {
+                    value: model.model_id.clone(),
+                    display_name: model.name.clone(),
+                    resolved_model: String::new(),
+                    description: String::new(),
+                })
+                .collect(),
+            commands: Vec::new(),
+            account: Account {
+                api_provider: agent.to_string(),
+                ..Account::default()
+            },
+            claude_code_version: format!("{agent}, through edualc {}", env!("CARGO_PKG_VERSION")),
+            program_modes: Some(ProgramModes {
+                offered: self
+                    .modes
+                    .iter()
+                    .map(|mode| ProgramMode {
+                        id: ModeId::from(mode.id.clone()),
+                        name: mode.name.clone(),
+                        description: mode.description.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+                current: self.mode.clone().map(ModeId::from),
             }),
-        )
+        };
+        match serde_json::to_value(initialized) {
+            Ok(response) => success(request, response),
+            Err(error) => failure(request, &error.to_string()),
+        }
     }
 
     /// A line from the window.
@@ -527,7 +545,7 @@ impl Translator {
                 Phase::Failed => {
                     return control_request_id(&said)
                         .map(|request| {
-                            vec![failure(&request, &format!("{} isn't running", self.agent))]
+                            vec![failure(request, &format!("{} isn't running", self.agent))]
                         })
                         .unwrap_or_default();
                 }
@@ -554,7 +572,14 @@ impl Translator {
                 if prompt.is_empty() {
                     return Vec::new();
                 }
-                self.queue.push_back(Queued::User { prompt, content });
+                let kept = match serde_json::from_value::<UserContent>(content) {
+                    Ok(kept) => Some(kept),
+                    Err(error) => {
+                        tracing::warn!(%error, "a prompt the transcript can't keep: sent, not kept");
+                        None
+                    }
+                };
+                self.queue.push_back(Queued::User { prompt, kept });
                 self.next_turn()
             }
             Some("bash_command") => {
@@ -570,13 +595,7 @@ impl Translator {
     fn shell_refused(&self, command: &str) -> Vec<Effect> {
         let agent = self.agent;
         let row = |text: String| {
-            Effect::ToWindow(json!({
-                "type": "user",
-                "isReplay": true,
-                "message": {"role": "user", "content": text},
-                "parent_tool_use_id": null,
-                "session_id": self.id.to_string(),
-            }))
+            Effect::ToWindow(Message::User(UserLine::replayed(UserContent::Text(text))))
         };
         vec![
             row(format!("<bash-input>{}</bash-input>", escaped(command))),
@@ -593,12 +612,12 @@ impl Translator {
             return Vec::new();
         };
         let Some(session) = self.acp_session().map(str::to_owned) else {
-            return vec![failure(&request, &format!("{} isn't running", self.agent))];
+            return vec![failure(request, &format!("{} isn't running", self.agent))];
         };
         match said.pointer("/request/subtype").and_then(Value::as_str) {
-            Some("initialize") => vec![self.initialized(&request)],
+            Some("initialize") => vec![self.initialized(request)],
             Some("interrupt") => {
-                let mut effects = vec![success(&request, &json!({}))];
+                let mut effects = vec![success(request, Value::Object(Map::new()))];
                 if self.busy {
                     effects.push(Self::cancel(session));
                 }
@@ -606,7 +625,7 @@ impl Translator {
             }
             Some("set_model") => {
                 let Some(model) = said.pointer("/request/model").and_then(Value::as_str) else {
-                    return vec![failure(&request, "no model named")];
+                    return vec![failure(request, "no model named")];
                 };
                 self.model = Some(model.to_owned());
                 vec![self.request(
@@ -619,7 +638,7 @@ impl Translator {
             }
             Some("set_program_mode") => {
                 let Some(mode) = said.pointer("/request/mode").and_then(Value::as_str) else {
-                    return vec![failure(&request, "no mode named")];
+                    return vec![failure(request, "no mode named")];
                 };
                 vec![self.request(
                     acp::ClientCall::SetMode(acp::SetModeParams {
@@ -634,14 +653,11 @@ impl Translator {
             }
             Some("set_permission_mode") => {
                 vec![failure(
-                    &request,
+                    request,
                     &format!("{} has modes of its own, not Claude Code's", self.agent),
                 )]
             }
-            Some(_) | None => vec![failure(
-                &request,
-                &format!("{} doesn't do this", self.agent),
-            )],
+            Some(_) | None => vec![failure(request, &format!("{} doesn't do this", self.agent))],
         }
     }
 
@@ -650,7 +666,7 @@ impl Translator {
         let Some(request) = said
             .pointer("/response/request_id")
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .map(|request| RequestId::from(request.to_owned()))
         else {
             return Vec::new();
         };
@@ -687,7 +703,7 @@ impl Translator {
     /// The agent's messaging tool was called: the message goes without asking, as a Claude Code
     /// session's own do.
     pub fn tool_called(&mut self, call: CallId, to: String, message: String) -> Vec<Effect> {
-        if let Some(id) = self.open_call(CLAUDE_SEND) {
+        if let Some(id) = self.open_call(&ToolName::EdualcSendMessage) {
             self.calls.insert(call, id);
         }
         vec![Effect::Send { call, to, message }]
@@ -695,17 +711,17 @@ impl Translator {
 
     /// The agent's messaging tool asked for the running sessions: no question for that.
     pub fn listing_asked(&mut self, call: CallId) -> Vec<Effect> {
-        if let Some(id) = self.open_call(CLAUDE_LIST) {
+        if let Some(id) = self.open_call(&ToolName::EdualcListSessions) {
             self.calls.insert(call, id);
         }
         vec![Effect::List(call)]
     }
 
     /// The call of `tool` under way, by the agent's id, that no answer was told for yet.
-    fn open_call(&self, tool: &str) -> Option<String> {
+    fn open_call(&self, tool: &ToolName) -> Option<String> {
         let told: Vec<&String> = self.calls.values().collect();
         self.entries.iter().find_map(|(id, entry)| match entry {
-            Entry::Shown(shown) if shown.name == tool && !shown.done && !told.contains(&id) => {
+            Entry::Shown(shown) if shown.name == *tool && !shown.done && !told.contains(&id) => {
                 Some(id.clone())
             }
             Entry::Kept(_) | Entry::Shown(_) => None,
@@ -727,22 +743,23 @@ impl Translator {
     /// a prompt once it is free.
     pub fn peer(&mut self, content: String) -> Vec<Effect> {
         let (name, body) = unwrapped(&content);
-        let origin = json!({"kind": "peer", "name": name, "body": body});
         let mut effects = vec![
-            Effect::ToWindow(json!({
-                "type": "user",
-                "isReplay": true,
-                "origin": origin,
-                "message": {"role": "user", "content": content},
-                "parent_tool_use_id": null,
-                "session_id": self.id.to_string(),
-            })),
-            self.transcript(json!({
-                "type": "user",
-                "isMeta": true,
-                "origin": origin,
-                "message": {"role": "user", "content": content},
-            })),
+            Effect::ToWindow(Message::User(UserLine::from_peer(
+                content.clone(),
+                name.clone(),
+                Some(body.clone()),
+            ))),
+            Effect::Transcript(TranscriptLine::User {
+                message: UserMessage {
+                    content: UserContent::Text(content.clone()),
+                },
+                is_meta: true,
+                is_sidechain: false,
+                origin: Some(MessageOrigin::Peer {
+                    name,
+                    body: Some(body),
+                }),
+            }),
         ];
         self.queue.push_back(Queued::Peer(content));
         effects.extend(self.next_turn());
@@ -760,21 +777,22 @@ impl Translator {
         let Some(queued) = self.queue.pop_front() else {
             return Vec::new();
         };
-        let mut effects = vec![Effect::ToWindow(json!({
-            "type": "system",
-            "subtype": "init",
-            "session_id": self.id.to_string(),
-            "model": self.model.clone().unwrap_or_default(),
-            "permissionMode": self.mode.clone().unwrap_or_default(),
-            "cwd": self.cwd,
-            "tools": [],
+        let mut effects = vec![Effect::ToWindow(Message::System(System::Init {
+            session_id: self.id.clone(),
+            model: self.model.clone().unwrap_or_default(),
+            permission_mode: Mode::Unknown(self.mode.clone().unwrap_or_default()),
+            cwd: self.cwd.clone(),
         }))];
         let prompt = match queued {
-            Queued::User { prompt, content } => {
-                effects.push(self.transcript(json!({
-                    "type": "user",
-                    "message": {"role": "user", "content": content},
-                })));
+            Queued::User { prompt, kept } => {
+                effects.extend(kept.map(|content| {
+                    Effect::Transcript(TranscriptLine::User {
+                        message: UserMessage { content },
+                        is_meta: false,
+                        is_sidechain: false,
+                        origin: None,
+                    })
+                }));
                 prompt
             }
             Queued::Peer(text) => vec![acp::PromptBlock::Text { text }],
@@ -791,22 +809,11 @@ impl Translator {
         effects
     }
 
-    fn transcript(&self, mut line: Value) -> Effect {
-        if let Some(fields) = line.as_object_mut() {
-            fields.insert("sessionId".to_owned(), json!(self.id.to_string()));
-            fields.insert("cwd".to_owned(), json!(self.cwd));
-            fields.insert("timestamp".to_owned(), json!(now()));
-        }
-        Effect::Transcript(line)
-    }
-
-    fn stream_event(&self, event: &Value) -> Effect {
-        Effect::ToWindow(json!({
-            "type": "stream_event",
-            "event": event,
-            "parent_tool_use_id": null,
-            "session_id": self.id.to_string(),
-        }))
+    fn stream_event(event: StreamEvent) -> Effect {
+        Effect::ToWindow(Message::StreamEvent {
+            event,
+            parent_tool_use_id: None,
+        })
     }
 
     /// What changed in the session.
@@ -828,14 +835,13 @@ impl Translator {
             Change::ToolCall(call) => self.tool_call(&call),
             Change::ToolCallUpdate(call) => self.tool_call_update(&call),
             Change::SessionInfoUpdate { title: Some(title) } => {
-                vec![self.transcript(json!({"type": "ai-title", "aiTitle": title}))]
+                vec![Effect::Transcript(TranscriptLine::AiTitle {
+                    ai_title: title,
+                })]
             }
             Change::CurrentModeUpdate { current_mode_id } => {
-                let effect = Effect::ToWindow(json!({
-                    "type": "system",
-                    "subtype": "program_mode",
-                    "mode": current_mode_id,
-                    "session_id": self.id.to_string(),
+                let effect = Effect::ToWindow(Message::System(System::ProgramMode {
+                    mode: ModeId::from(current_mode_id.clone()),
                 }));
                 self.mode = Some(current_mode_id);
                 vec![effect]
@@ -852,9 +858,10 @@ impl Translator {
     fn streamed(&mut self, piece: &Block) -> Vec<Effect> {
         let mut effects = Vec::new();
         if self.streaming.is_none() {
-            let id = self.local_id("message");
-            effects
-                .push(self.stream_event(&json!({"type": "message_start", "message": {"id": id}})));
+            let id = MessageId::from(self.local_id("message"));
+            effects.push(Self::stream_event(StreamEvent::MessageStart {
+                message: MessageStart { id: id.clone() },
+            }));
             self.streaming = Some(Streaming {
                 id,
                 blocks: Vec::new(),
@@ -869,71 +876,91 @@ impl Translator {
         );
         let mut events = Vec::new();
         if !same_kind {
-            if let Some(open) = streaming.blocks.len().checked_sub(1) {
-                events.push(json!({"type": "content_block_stop", "index": open}));
+            if let Some(open) = open_index(&streaming.blocks) {
+                events.push(StreamEvent::ContentBlockStop { index: open });
             }
-            let start = match piece {
-                Block::Text(_) => json!({"type": "text", "text": ""}),
-                Block::Thinking(_) => json!({"type": "thinking", "thinking": ""}),
+            let (block, content_block) = match piece {
+                Block::Text(_) => (
+                    Block::Text(String::new()),
+                    ContentBlock::Text {
+                        text: String::new(),
+                    },
+                ),
+                Block::Thinking(_) => (
+                    Block::Thinking(String::new()),
+                    ContentBlock::Thinking {
+                        thinking: String::new(),
+                    },
+                ),
             };
-            events.push(json!({"type": "content_block_start", "index": streaming.blocks.len(), "content_block": start}));
-            streaming.blocks.push(match piece {
-                Block::Text(_) => Block::Text(String::new()),
-                Block::Thinking(_) => Block::Thinking(String::new()),
-            });
+            streaming.blocks.push(block);
+            if let Some(index) = open_index(&streaming.blocks) {
+                events.push(StreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                });
+            }
         }
-        let index = streaming.blocks.len().saturating_sub(1);
+        let Some(index) = open_index(&streaming.blocks) else {
+            return effects;
+        };
         let delta = match (piece, streaming.blocks.last_mut()) {
             (Block::Text(text), Some(Block::Text(grown))) => {
                 grown.push_str(text);
-                json!({"type": "text_delta", "text": text})
+                Delta::Text { text: text.clone() }
             }
             (Block::Thinking(text), Some(Block::Thinking(grown))) => {
                 grown.push_str(text);
-                json!({"type": "thinking_delta", "thinking": text})
+                Delta::Thinking {
+                    thinking: text.clone(),
+                }
             }
             (Block::Text(_) | Block::Thinking(_), _) => return effects,
         };
-        events.push(json!({"type": "content_block_delta", "index": index, "delta": delta}));
-        effects.extend(events.iter().map(|event| self.stream_event(event)));
+        events.push(StreamEvent::ContentBlockDelta { index, delta });
+        effects.extend(events.into_iter().map(Self::stream_event));
         effects
     }
 
     /// Ends the message being streamed: its blocks, then `tool_use` if a tool call ends it, as
     /// one assistant message.
-    fn message_done(&mut self, tool_use: Option<Value>) -> Vec<Effect> {
+    fn message_done(&mut self, tool_use: Option<ContentBlock>) -> Vec<Effect> {
         let streaming = self.streaming.take();
         let mut effects = Vec::new();
         let (id, mut content) = match streaming {
             Some(Streaming { id, blocks }) => {
-                if let Some(open) = blocks.len().checked_sub(1) {
-                    effects.push(
-                        self.stream_event(&json!({"type": "content_block_stop", "index": open})),
-                    );
+                if let Some(open) = open_index(&blocks) {
+                    effects.push(Self::stream_event(StreamEvent::ContentBlockStop {
+                        index: open,
+                    }));
                 }
-                let content: Vec<Value> = blocks
+                let content: Vec<ContentBlock> = blocks
                     .into_iter()
                     .map(|block| match block {
-                        Block::Text(text) => json!({"type": "text", "text": text}),
-                        Block::Thinking(thinking) => {
-                            json!({"type": "thinking", "thinking": thinking})
-                        }
+                        Block::Text(text) => ContentBlock::Text { text },
+                        Block::Thinking(thinking) => ContentBlock::Thinking { thinking },
                     })
                     .collect();
                 (id, content)
             }
-            None if tool_use.is_some() => (self.local_id("message"), Vec::new()),
+            None if tool_use.is_some() => (MessageId::from(self.local_id("message")), Vec::new()),
             None => return effects,
         };
         content.extend(tool_use);
-        let message = json!({"id": id, "role": "assistant", "content": content});
-        effects.push(Effect::ToWindow(json!({
-            "type": "assistant",
-            "message": message,
-            "parent_tool_use_id": null,
-            "session_id": self.id.to_string(),
-        })));
-        effects.push(self.transcript(json!({"type": "assistant", "message": message})));
+        let message = ApiMessage {
+            id,
+            content,
+            usage: Usage::default(),
+        };
+        effects.push(Effect::ToWindow(Message::Assistant {
+            message: message.clone(),
+            parent_tool_use_id: None,
+            error: None,
+        }));
+        effects.push(Effect::Transcript(TranscriptLine::Assistant {
+            message,
+            is_sidechain: false,
+        }));
         effects
     }
 
@@ -972,8 +999,11 @@ impl Translator {
                 told: None,
             }),
         );
-        let tool_use =
-            json!({"type": "tool_use", "id": call.tool_call_id, "name": name, "input": input});
+        let tool_use = ContentBlock::ToolUse {
+            id: ToolUseId::from(call.tool_call_id.clone()),
+            name,
+            input,
+        };
         let mut effects = self.message_done(Some(tool_use));
         if is_done(call) {
             effects.extend(self.tool_call_update(call));
@@ -1003,18 +1033,19 @@ impl Translator {
             (Some(told), false) => told.clone(),
             (None, false) => result_text(call, failed),
         };
-        let message = json!({
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": call.tool_call_id, "content": text, "is_error": failed || shown.denied}]
-        });
+        let content = UserContent::Blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: ToolUseId::from(call.tool_call_id.clone()),
+            content: Some(UserContent::Text(text)),
+            is_error: failed || shown.denied,
+        }]);
         vec![
-            Effect::ToWindow(json!({
-                "type": "user",
-                "message": message,
-                "parent_tool_use_id": null,
-                "session_id": self.id.to_string(),
-            })),
-            self.transcript(json!({"type": "user", "message": message})),
+            Effect::ToWindow(Message::User(UserLine::of_session(content.clone()))),
+            Effect::Transcript(TranscriptLine::User {
+                message: UserMessage { content },
+                is_meta: false,
+                is_sidechain: false,
+                origin: None,
+            }),
         ]
     }
 
@@ -1036,7 +1067,10 @@ impl Translator {
         };
         // The agent asks before every MCP tool, in every mode. edualc's own go without asking,
         // as a Claude Code session's messages do.
-        if name == CLAUDE_SEND || name == CLAUDE_LIST {
+        if matches!(
+            name,
+            ToolName::EdualcSendMessage | ToolName::EdualcListSessions
+        ) {
             let outcome = outcome_of(&asked.options, OptionKind::AllowOnce);
             effects.push(Self::answer(
                 id,
@@ -1044,7 +1078,7 @@ impl Translator {
             ));
             return effects;
         }
-        let request = self.local_id("permission");
+        let request = RequestId::from(self.local_id("permission"));
         self.permissions.insert(
             request.clone(),
             Permission {
@@ -1053,18 +1087,16 @@ impl Translator {
                 tool: tool.clone(),
             },
         );
-        effects.push(Effect::ToWindow(json!({
-            "type": "control_request",
-            "request_id": request,
-            "request": {
-                "subtype": "can_use_tool",
-                "tool_name": name,
-                "input": input,
-                "tool_use_id": tool,
-                "description": asked.tool_call.title.unwrap_or_default(),
-                "permission_suggestions": [],
+        effects.push(Effect::ToWindow(Message::ControlRequest {
+            request_id: request,
+            request: IncomingRequest::CanUseTool {
+                tool_name: name,
+                input,
+                permission_suggestions: Vec::new(),
+                description: asked.tool_call.title.unwrap_or_default(),
+                tool_use_id: Some(ToolUseId::from(tool)),
             },
-        })));
+        }));
         effects
     }
 
@@ -1078,12 +1110,18 @@ impl Translator {
         });
         let agent = self.agent;
         if let Some(Failure::Said(error)) = failure {
-            let id = self.local_id("message");
-            let message = json!({"id": id, "role": "assistant", "content": [{"type": "text", "text": format!("{agent}: {error}")}]});
-            effects.push(Effect::ToWindow(json!({
-                "type": "assistant", "message": message, "parent_tool_use_id": null,
-                "session_id": self.id.to_string(), "error": "unknown",
-            })));
+            let id = MessageId::from(self.local_id("message"));
+            effects.push(Effect::ToWindow(Message::Assistant {
+                message: ApiMessage {
+                    id,
+                    content: vec![ContentBlock::Text {
+                        text: format!("{agent}: {error}"),
+                    }],
+                    usage: Usage::default(),
+                },
+                parent_tool_use_id: None,
+                error: Some(AssistantError::Other),
+            }));
         }
         // Calls the agent never answered for, or never gave arguments for, are done now.
         let cancelled =
@@ -1105,33 +1143,29 @@ impl Translator {
             }));
         }
         let failed = error.is_some() || cancelled;
-        let usage = prompted
-            .and_then(|prompted| prompted.usage)
-            .unwrap_or_default();
         let model = self.model.clone().unwrap_or_else(|| agent.to_string());
-        let mut model_usage = Map::new();
-        model_usage.insert(
-            model,
-            json!({"inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens, "contextWindow": null}),
-        );
-        effects.push(Effect::ToWindow(json!({
-            "type": "result",
-            "subtype": if failed { "error_during_execution" } else { "success" },
-            "is_error": failed,
-            "result": self.said,
-            "errors": error.map(|error| vec![error.to_owned()]).unwrap_or_default(),
-            "api_error_status": matches!(failure, Some(Failure::SignIn(_))).then_some(401),
-            "total_cost_usd": null,
-            "modelUsage": model_usage,
-            "usage": {
-                "input_tokens": usage.input_tokens,
-                "cache_read_input_tokens": usage.cached_read_tokens,
-                "output_tokens": usage.output_tokens,
+        effects.push(Effect::ToWindow(Message::Result(TurnResult {
+            subtype: if failed {
+                ResultKind::ErrorDuringExecution
+            } else {
+                ResultKind::Success
             },
-            "session_id": self.id.to_string(),
+            is_error: failed,
+            result: Some(std::mem::take(&mut self.said)),
+            errors: error
+                .map(|error| Value::String(error.to_owned()))
+                .into_iter()
+                .collect(),
+            total_cost_usd: None,
+            model_usage: HashMap::from([(
+                model,
+                ModelUsage {
+                    context_window: None,
+                },
+            )]),
+            api_error_status: matches!(failure, Some(Failure::SignIn(_))).then_some(401),
         })));
         self.busy = false;
-        self.said.clear();
         effects.extend(self.next_turn());
         effects
     }
@@ -1144,8 +1178,9 @@ fn escaped(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn now() -> String {
-    jiff::Timestamp::now().to_string()
+/// The index of the last of `blocks`, the open one, as the stream counts them.
+fn open_index(blocks: &[Block]) -> Option<u64> {
+    (0_u64..).zip(blocks).last().map(|(index, _)| index)
 }
 
 fn is_initialize(said: &Value) -> bool {
@@ -1153,28 +1188,32 @@ fn is_initialize(said: &Value) -> bool {
         && said.pointer("/request/subtype").and_then(Value::as_str) == Some("initialize")
 }
 
-fn control_request_id(said: &Value) -> Option<String> {
+fn control_request_id(said: &Value) -> Option<RequestId> {
     (said.get("type").and_then(Value::as_str) == Some("control_request"))
         .then(|| {
             said.get("request_id")
                 .and_then(Value::as_str)
-                .map(str::to_owned)
+                .map(|request| RequestId::from(request.to_owned()))
         })
         .flatten()
 }
 
-fn success(request: &str, response: &Value) -> Effect {
-    Effect::ToWindow(json!({
-        "type": "control_response",
-        "response": {"subtype": "success", "request_id": request, "response": response}
-    }))
+fn success(request: RequestId, response: Value) -> Effect {
+    Effect::ToWindow(Message::ControlResponse {
+        response: ControlResponse::Success {
+            request_id: request,
+            response,
+        },
+    })
 }
 
-fn failure(request: &str, error: &str) -> Effect {
-    Effect::ToWindow(json!({
-        "type": "control_response",
-        "response": {"subtype": "error", "request_id": request, "error": error}
-    }))
+fn failure(request: RequestId, error: &str) -> Effect {
+    Effect::ToWindow(Message::ControlResponse {
+        response: ControlResponse::Error {
+            request_id: request,
+            error: error.to_owned(),
+        },
+    })
 }
 
 /// A prompt as the window sent it (text, or blocks of text and images), as ACP takes it.
@@ -1273,14 +1312,14 @@ fn is_done(call: &ToolCall) -> bool {
 
 /// A tool call as the window knows Claude Code's: by the agent's own names where it gives one
 /// (see [`Agent::tool`]), else by ACP's kind; a tool neither tells about keeps the agent's name.
-fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
+fn as_claude_tool(agent: Agent, call: &ToolCall) -> (ToolName, Value) {
     let input = call.raw_input.clone().unwrap_or(Value::Null);
     if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
         return as_known(&known, input);
     }
     let title = || call.title.clone().unwrap_or_default();
     let known = match (call.name.as_deref(), call.kind) {
-        (Some(name), _) => return (name.to_owned(), input),
+        (Some(name), _) => return (ToolName::from(name.to_owned()), input),
         (None, Some(ToolKind::Execute)) => KnownCall::Bash(BashInput {
             command: title(),
             description: None,
@@ -1290,7 +1329,7 @@ fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
         }),
         (None, _) => {
             return (
-                call.title.clone().unwrap_or_else(|| "tool".to_owned()),
+                ToolName::from(call.title.clone().unwrap_or_else(|| "tool".to_owned())),
                 input,
             );
         }
@@ -1300,12 +1339,12 @@ fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
 
 /// A known call by Claude Code's name and input; one whose input can't be written (a path
 /// that isn't UTF-8) shows the agent's own input instead.
-fn as_known(known: &KnownCall, raw: Value) -> (String, Value) {
+fn as_known(known: &KnownCall, raw: Value) -> (ToolName, Value) {
     let input = known.input().unwrap_or_else(|error| {
         tracing::warn!(%error, tool = %known.name(), "a tool's input that can't be written");
         raw
     });
-    (known.name().to_string(), input)
+    (known.name(), input)
 }
 
 /// What a finished tool call gave, as text.
@@ -1361,6 +1400,8 @@ fn unwrapped(content: &str) -> (Option<String>, String) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::external::acp::Location;
 
@@ -1384,11 +1425,14 @@ mod tests {
         )
     }
 
-    fn window_lines(effects: &[Effect]) -> Vec<&Value> {
+    /// The lines the window is sent, as the JSON it reads.
+    fn window_lines(effects: &[Effect]) -> Vec<Value> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                Effect::ToWindow(line) => Some(line),
+                Effect::ToWindow(line) => {
+                    Some(serde_json::to_value(line).expect("a line for the window"))
+                }
                 Effect::ToAgent(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
@@ -1412,7 +1456,7 @@ mod tests {
             .collect()
     }
 
-    fn kinds(lines: &[&Value]) -> Vec<String> {
+    fn kinds(lines: &[Value]) -> Vec<String> {
         lines
             .iter()
             .map(|line| {
@@ -1562,11 +1606,13 @@ mod tests {
         for effect in &effects {
             match effect {
                 Effect::ToWindow(line) => {
-                    read_by_the_window(line);
+                    let line = serde_json::to_value(line).expect("a line for the window");
+                    read_by_the_window(&line);
                     window.extend(kinds(&[line]));
                 }
                 Effect::Transcript(line) => {
-                    read_from_the_transcript(line);
+                    let line = serde_json::to_value(line).expect("a line for the transcript");
+                    read_from_the_transcript(&line);
                     transcript.extend(kinds(&[line]));
                 }
                 Effect::ToAgent(_) | Effect::Send { .. } | Effect::List(_) => {}
@@ -1648,7 +1694,9 @@ mod tests {
         let first = opened
             .iter()
             .find_map(|effect| match effect {
-                Effect::Transcript(line) => Some(line),
+                Effect::Transcript(line) => {
+                    Some(serde_json::to_value(line).expect("a line for the transcript"))
+                }
                 Effect::ToAgent(_)
                 | Effect::ToWindow(_)
                 | Effect::Send { .. }
@@ -1656,7 +1704,6 @@ mod tests {
             })
             .expect("a transcript line");
         assert_eq!(first.get("agySessionId"), Some(&json!("s")));
-        assert_eq!(first.get("cwd"), Some(&json!("/work")));
     }
 
     /// A turn reads as Claude Code's: init, streamed text, the assistant message ending in the
@@ -1815,7 +1862,7 @@ mod tests {
             ..ToolCall::default()
         };
         let (name, input) = as_claude_tool(Agent::Opencode, &call);
-        assert_eq!(name, "Edit");
+        assert_eq!(name, ToolName::Edit);
         assert_eq!(input.get("file_path"), Some(&json!("/w/notes.txt")));
         assert_eq!(input.get("old_string"), Some(&json!("two")));
         assert_eq!(input.get("new_string"), Some(&json!("TWO")));
@@ -1920,9 +1967,12 @@ mod tests {
         let request_id = window_lines(&asked)
             .into_iter()
             .find(|line| line.get("type") == Some(&json!("control_request")))
-            .and_then(|line| line.get("request_id").and_then(Value::as_str))
-            .expect("the window asked")
-            .to_owned();
+            .and_then(|line| {
+                line.get("request_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .expect("the window asked");
         let answered = translator.window_said(&format!(
             r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"allow"}}}}}}"#
         ));
@@ -1953,8 +2003,7 @@ mod tests {
             let ended = translator.agent_said(&format!(
                 r#"{{"jsonrpc":"2.0","id":{prompt_id},"error":{error}}}"#
             ));
-            let lines: Vec<Value> = window_lines(&ended).into_iter().cloned().collect();
-            lines
+            window_lines(&ended)
         };
         let result = |lines: &[Value]| {
             lines
@@ -2030,13 +2079,12 @@ mod tests {
     fn messages_go_without_asking() {
         let mut translator = opened();
         let sent = translator.tool_called(CallId(4), "calm-heron".to_owned(), "hi".to_owned());
-        assert_eq!(
-            sent,
-            [Effect::Send {
-                call: CallId(4),
-                to: "calm-heron".to_owned(),
-                message: "hi".to_owned()
-            }]
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Effect::Send { call: CallId(4), to, message }] if to == "calm-heron" && message == "hi"
+            ),
+            "one message sent, and nothing else: {sent:?}"
         );
     }
 
@@ -2085,7 +2133,7 @@ mod tests {
                 json!({"Append": true, "Content": "three\n", "Path": "/w/f.txt"}),
             ),
         );
-        assert_eq!(name, "Edit");
+        assert_eq!(name, ToolName::Edit);
         assert_eq!(input.get("old_string"), Some(&json!("")));
         assert_eq!(input.get("new_string"), Some(&json!("three\n")));
         let (name, input) = as_claude_tool(
@@ -2095,7 +2143,7 @@ mod tests {
                 json!({"Content": "hi\n", "Overwrite": true, "Path": "/w/hello.txt"}),
             ),
         );
-        assert_eq!(name, "Write");
+        assert_eq!(name, ToolName::Write);
         assert_eq!(input.get("content"), Some(&json!("hi\n")));
         let (name, input) = as_claude_tool(
             Agent::Agy,
@@ -2104,7 +2152,7 @@ mod tests {
                 json!({"Path": "/w/f.txt", "Replacement": "two\nthree", "Target": "two"}),
             ),
         );
-        assert_eq!(name, "Edit");
+        assert_eq!(name, ToolName::Edit);
         assert_eq!(input.get("old_string"), Some(&json!("two")));
     }
 
@@ -2121,7 +2169,7 @@ mod tests {
                 ..ToolCall::default()
             },
         );
-        assert_eq!(name, "Bash");
+        assert_eq!(name, ToolName::Bash);
         assert_eq!(input.get("command"), Some(&json!("ls -la")));
         let (name, input) = as_claude_tool(
             Agent::Agy,
@@ -2135,7 +2183,7 @@ mod tests {
                 ..ToolCall::default()
             },
         );
-        assert_eq!(name, "Read");
+        assert_eq!(name, ToolName::Read);
         assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
     }
 
@@ -2148,7 +2196,8 @@ mod tests {
             r#"{"type":"bash_command","command":"ls <dir>","uuid":"00000000-0000-4000-8000-000000000000"}"#,
         );
         assert!(agent_lines(&refused).is_empty());
-        let rows: Vec<&str> = window_lines(&refused)
+        let window = window_lines(&refused);
+        let rows: Vec<&str> = window
             .iter()
             .filter_map(|line| line.pointer("/message/content").and_then(Value::as_str))
             .collect();
