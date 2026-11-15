@@ -246,9 +246,7 @@ pub enum Event {
     /// Whether the terminal's trust dialog was accepted for the folder asked about.
     Trusted {
         request: ActId,
-        accepted: bool,
-        /// What the folder would run, if it isn't trusted.
-        runs: Vec<Runs>,
+        trust: crate::ipc::FolderTrust,
     },
     /// The clipboard's image, decoded in the confined helper, or why there is none.
     Pasted {
@@ -430,20 +428,19 @@ impl TrustGate {
     }
 
     /// The daemon's answer to `request`: the gate opens, asks the user, or stays as it is.
-    fn answered(&mut self, request: ActId, accepted: bool, runs: Vec<Runs>) -> TrustAnswer {
+    fn answered(&mut self, request: ActId, trust: crate::ipc::FolderTrust) -> TrustAnswer {
         match std::mem::take(self) {
             Self::Checking {
                 request: asked,
                 resume,
                 held,
-            } if asked == request => {
-                if accepted {
-                    TrustAnswer::Trusted { resume, held }
-                } else {
+            } if asked == request => match trust {
+                crate::ipc::FolderTrust::Accepted => TrustAnswer::Trusted { resume, held },
+                crate::ipc::FolderTrust::Untrusted(runs) => {
                     *self = Self::Asking { resume, runs };
                     TrustAnswer::Asked
                 }
-            }
+            },
             kept @ (Self::Open | Self::Checking { .. } | Self::Asking { .. }) => {
                 *self = kept;
                 TrustAnswer::Stale
@@ -1359,11 +1356,7 @@ impl<F: Frontend> App<F> {
                     self.read_folder(Read::Folder(folder), false);
                 }
             }
-            Event::Trusted {
-                request,
-                accepted,
-                runs,
-            } => self.trust_read(request, accepted, runs),
+            Event::Trusted { request, trust } => self.trust_read(request, trust),
             Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
@@ -1806,8 +1799,8 @@ impl<F: Frontend> App<F> {
     /// The daemon's answer on the folder's trust: the start held back goes ahead, with a prompt
     /// sent meanwhile, or the user is asked, shown what the folder would run. An answer for a
     /// start since dropped or replaced is no longer waited for.
-    fn trust_read(&mut self, request: ActId, accepted: bool, runs: Vec<Runs>) {
-        match self.trust_gate.answered(request, accepted, runs) {
+    fn trust_read(&mut self, request: ActId, trust: crate::ipc::FolderTrust) {
+        match self.trust_gate.answered(request, trust) {
             TrustAnswer::Trusted { resume, held } => {
                 self.accepted_in_terminal.insert(self.cwd.clone());
                 self.launch(resume, FolderConfiguration::Read);
@@ -3464,12 +3457,11 @@ mod tests {
         );
         driven.take(Event::Trusted {
             request: check,
-            accepted: false,
-            runs: vec![Runs::Hook {
+            trust: crate::ipc::FolderTrust::Untrusted(vec![Runs::Hook {
                 event: "SessionStart".to_owned(),
                 matcher: String::new(),
                 action: crate::ipc::HookAction::Command("./setup.sh".to_owned()),
-            }],
+            }]),
         });
         let asking = driven.session();
         assert!(asking.needs_trust);
@@ -3752,7 +3744,7 @@ mod tests {
         let mut gate = checking();
         gate.hold("edit the notes");
         assert_eq!(
-            gate.answered(first, true, Vec::new()),
+            gate.answered(first, crate::ipc::FolderTrust::Accepted),
             TrustAnswer::Trusted {
                 resume: None,
                 held: Some("edit the notes".to_owned())
@@ -3762,7 +3754,7 @@ mod tests {
 
         let mut gate = checking();
         assert_eq!(
-            gate.answered(first, true, Vec::new()),
+            gate.answered(first, crate::ipc::FolderTrust::Accepted),
             TrustAnswer::Trusted {
                 resume: None,
                 held: None
@@ -3771,14 +3763,17 @@ mod tests {
 
         let mut gate = checking();
         gate.hold("edit the notes");
-        assert_eq!(gate.answered(first, false, Vec::new()), TrustAnswer::Asked);
+        assert_eq!(
+            gate.answered(first, crate::ipc::FolderTrust::Untrusted(Vec::new())),
+            TrustAnswer::Asked
+        );
         gate.hold("sent again before deciding");
         assert!(matches!(gate, TrustGate::Asking { .. }));
 
         let mut gate = checking();
         gate.hold("edit the notes");
         assert_eq!(
-            gate.answered(first.next(), true, Vec::new()),
+            gate.answered(first.next(), crate::ipc::FolderTrust::Accepted),
             TrustAnswer::Stale
         );
         assert!(

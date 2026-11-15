@@ -148,7 +148,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 23;
+pub const PROTOCOL: u32 = 24;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -382,13 +382,8 @@ pub enum FromDaemon {
         request: ActId,
         folder: Option<PathBuf>,
     },
-    /// Whether the terminal's trust dialog was accepted for the folder asked about; if not, what
-    /// the folder's own configuration would have Claude Code run there.
-    Trusted {
-        request: ActId,
-        accepted: bool,
-        runs: Vec<Runs>,
-    },
+    /// Whether the terminal's trust dialog was accepted for the folder asked about.
+    Trusted { request: ActId, trust: FolderTrust },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
     /// A window asked the daemon to shut down: its sessions end, and then it.
@@ -420,6 +415,17 @@ pub enum FromDaemon {
 /// The clipboard's image, decoded in the confined helper (see [`crate::decode`]), or why there
 /// is none.
 pub type Pasted = Result<Picture, PasteFailure>;
+
+/// Whether a folder may run Claude Code with its own configuration, as the daemon tells.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum FolderTrust {
+    /// The terminal's trust dialog was accepted for it.
+    Accepted,
+    /// It isn't trusted yet: what its configuration would have Claude Code run there, for the
+    /// user to decide on.
+    Untrusted(Vec<Runs>),
+}
 
 /// Something a folder's own configuration (`.claude/settings.json`, `settings.local.json`,
 /// `.mcp.json`) would have Claude Code run or set there, read before the folder is trusted, for

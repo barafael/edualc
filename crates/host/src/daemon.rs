@@ -512,35 +512,22 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
     if let Act::CheckTrust { folder } = act {
         // What the folder would run is read only for one that isn't trusted: it is asked about.
         let read = tokio::task::spawn_blocking(move || {
-            let accepted = trust::accepted_in_terminal(&folder);
-            let runs = if accepted {
-                Vec::new()
+            if trust::accepted_in_terminal(&folder) {
+                ipc::FolderTrust::Accepted
             } else {
-                trust::what_runs(&folder)
-            };
-            (accepted, runs)
+                ipc::FolderTrust::Untrusted(trust::what_runs(&folder))
+            }
         })
         .await;
         // A failed read is said as such: an empty list would read as a folder that runs nothing.
-        let (accepted, runs) = read.unwrap_or_else(|error| {
+        let trust = read.unwrap_or_else(|error| {
             tracing::error!(%error, "reading the folder's trust failed");
-            (
-                false,
-                vec![crate::ipc::Runs::Unreadable {
-                    file: "its settings".to_owned(),
-                    reason: format!("the edualc daemon failed reading them: {error}"),
-                }],
-            )
+            ipc::FolderTrust::Untrusted(vec![ipc::Runs::Unreadable {
+                file: "its settings".to_owned(),
+                reason: format!("the edualc daemon failed reading them: {error}"),
+            }])
         });
-        tell(
-            &outbox,
-            FromDaemon::Trusted {
-                request,
-                accepted,
-                runs,
-            },
-        )
-        .await;
+        tell(&outbox, FromDaemon::Trusted { request, trust }).await;
         return;
     }
     let done = tokio::task::spawn_blocking(move || perform(act)).await;

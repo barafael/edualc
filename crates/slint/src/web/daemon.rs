@@ -129,16 +129,11 @@ fn tell(events: &Sender<Event>, generation: Generation, output: Output) {
 /// What the desktop is asked, answered as a browser can.
 fn acted(events: &Sender<Event>, request: ActId, act: Act) {
     let event = match act {
-        Act::CheckTrust { folder } => match demo::untrusted(&folder) {
-            Some(runs) => Event::Trusted {
-                request,
-                accepted: false,
-                runs,
-            },
-            None => Event::Trusted {
-                request,
-                accepted: true,
-                runs: Vec::new(),
+        Act::CheckTrust { folder } => Event::Trusted {
+            request,
+            trust: match demo::untrusted(&folder) {
+                Some(runs) => crate::ipc::FolderTrust::Untrusted(runs),
+                None => crate::ipc::FolderTrust::Accepted,
             },
         },
         Act::PickFolder => Event::Picked {

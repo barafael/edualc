@@ -136,15 +136,7 @@ impl Inbox {
             }
             FromDaemon::Done { request, result } => Some(Event::Acted { request, result }),
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
-            FromDaemon::Trusted {
-                request,
-                accepted,
-                runs,
-            } => Some(Event::Trusted {
-                request,
-                accepted,
-                runs,
-            }),
+            FromDaemon::Trusted { request, trust } => Some(Event::Trusted { request, trust }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
             FromDaemon::Pasted {
                 request,
