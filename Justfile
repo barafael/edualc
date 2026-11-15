@@ -38,7 +38,7 @@ lint-wasm:
 [doc('The tests.')]
 [group('check')]
 test:
-    python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX")); os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked
+    python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX")); os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked --quiet
 
 # Licences, bans and sources of the dependencies.
 [group('check')]
