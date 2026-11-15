@@ -619,6 +619,21 @@ impl<F: Frontend> Presenter<F> {
             SignIn::Unknown | SignIn::Asked => SignInState::Unknown,
         };
         session.shows_sign_in = status.sign_in.waits_for_user();
+        let (help, command) = match status.backend {
+            crate::claude::Backend::Claude => (
+                "Run this in a terminal and follow its steps, then try again. Claude Code starts \
+                 again with your sign-in, and the message that failed is sent again.",
+                "claude auth login",
+            ),
+            crate::claude::Backend::Agy => (
+                "agy renews its sign-in by itself, so trying again often works. If it keeps \
+                 failing, run agy in a terminal and sign in when it asks, then try again. The \
+                 message that failed is sent again.",
+                "agy",
+            ),
+        };
+        help.clone_into(&mut session.sign_in_help);
+        command.clone_into(&mut session.sign_in_command);
         session.needs_trust = asking.is_some();
         session.trust_runs = asking.unwrap_or_default().iter().map(run_line).collect();
         status.backend.agent().clone_into(&mut session.agent);

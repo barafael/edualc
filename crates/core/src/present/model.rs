@@ -426,6 +426,8 @@ pub struct Session {
     pub mode: PermissionKind,
     pub sign_in: SignInState,
     pub shows_sign_in: bool,
+    pub sign_in_help: String,
+    pub sign_in_command: String,
     pub needs_trust: bool,
     pub trust_runs: Vec<String>,
     pub watching: bool,

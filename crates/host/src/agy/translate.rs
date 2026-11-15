@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::external::acp::{
     self, AgentMethod, Change, Chunk, Incoming, Notified, OptionKind, PermissionAsked, Prompted,
-    StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
+    RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
 use crate::external::wire::SessionId;
 
@@ -85,6 +85,15 @@ enum Phase {
     Ready(String),
     /// It couldn't be opened; nothing more goes to agy.
     Failed,
+}
+
+/// Why a prompt's turn failed, as the window is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure<'a> {
+    /// agy said why: the window shows its words.
+    Said(&'a str),
+    /// agy's sign-in was refused: the window offers to sign in and try again.
+    SignIn(&'a str),
 }
 
 /// What a request to agy was for, by its id.
@@ -257,7 +266,7 @@ impl Translator {
                     return Vec::new();
                 };
                 match error {
-                    Some(error) => self.refused(&asked, &error.message),
+                    Some(error) => self.refused(&asked, &error),
                     None => self.answered(asked, result.unwrap_or(Value::Null)),
                 }
             }
@@ -374,7 +383,8 @@ impl Translator {
     }
 
     /// agy refused a request.
-    fn refused(&mut self, asked: &Asked, message: &str) -> Vec<Effect> {
+    fn refused(&mut self, asked: &Asked, error: &RpcError) -> Vec<Effect> {
+        let message = error.message.as_str();
         match asked {
             Asked::Initialize | Asked::Open => self.failed(message),
             Asked::Model(Some(request)) | Asked::Mode(request) => vec![failure(request, message)],
@@ -382,7 +392,10 @@ impl Translator {
                 tracing::warn!(message, "agy didn't take the model");
                 Vec::new()
             }
-            Asked::Prompt => self.turn_ended(None, Some(message)),
+            Asked::Prompt if error.sign_in_refused() => {
+                self.turn_ended(None, Some(Failure::SignIn(message)))
+            }
+            Asked::Prompt => self.turn_ended(None, Some(Failure::Said(message))),
         }
     }
 
@@ -936,10 +949,15 @@ impl Translator {
         effects
     }
 
-    /// The prompt's answer: the turn ends, as Claude Code ends one, and what waits goes next.
-    fn turn_ended(&mut self, prompted: Option<&Prompted>, error: Option<&str>) -> Vec<Effect> {
+    /// The prompt's answer: the turn ends, and what waits goes next. A refused sign-in is told
+    /// as an HTTP 401 in the turn's result, which is what it was, and the window offers to sign
+    /// in and try again instead of showing agy's words.
+    fn turn_ended(&mut self, prompted: Option<&Prompted>, failure: Option<Failure>) -> Vec<Effect> {
         let mut effects = self.message_done(None);
-        if let Some(error) = error {
+        let error = failure.map(|failure| match failure {
+            Failure::Said(message) | Failure::SignIn(message) => message,
+        });
+        if let Some(Failure::Said(error)) = failure {
             let id = self.local_id("message");
             let message = json!({"id": id, "role": "assistant", "content": [{"type": "text", "text": format!("agy: {error}")}]});
             effects.push(Effect::ToWindow(json!({
@@ -979,6 +997,7 @@ impl Translator {
             "is_error": failed,
             "result": self.said,
             "errors": error.map(|error| vec![error.to_owned()]).unwrap_or_default(),
+            "api_error_status": matches!(failure, Some(Failure::SignIn(_))).then_some(401),
             "total_cost_usd": null,
             "modelUsage": model_usage,
             "usage": {
@@ -1423,6 +1442,59 @@ mod tests {
                 .and_then(|line| line.pointer("/message/content/0/content")),
             Some(&json!(DENIED))
         );
+    }
+
+    /// A turn that fails because Google's API refused agy's sign-in ends with a 401 in its
+    /// result, for the window to offer signing in and trying again, and agy's words aren't shown
+    /// as a message. Any other failure is shown in agy's words.
+    #[test]
+    fn a_refused_sign_in_ends_the_turn_as_a_401() {
+        let failed_with = |error: &str| {
+            let mut translator = opened();
+            let prompted = translator
+                .window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+            let prompt_id = agy_lines(&prompted)
+                .into_iter()
+                .find(|line| line.get("method") == Some(&json!("session/prompt")))
+                .and_then(|line| line.get("id").cloned())
+                .expect("prompted");
+            let ended = translator.agy_said(&format!(
+                r#"{{"jsonrpc":"2.0","id":{prompt_id},"error":{error}}}"#
+            ));
+            let lines: Vec<Value> = window_lines(&ended).into_iter().cloned().collect();
+            lines
+        };
+        let result = |lines: &[Value]| {
+            lines
+                .iter()
+                .find(|line| line.get("type") == Some(&json!("result")))
+                .cloned()
+                .expect("a result")
+        };
+        let said = |lines: &[Value]| {
+            lines
+                .iter()
+                .any(|line| line.get("type") == Some(&json!("assistant")))
+        };
+
+        let unauthenticated = failed_with(
+            r#"{"code":-32603,"message":"UNAUTHENTICATED (code 401): Request had invalid authentication credentials."}"#,
+        );
+        assert_eq!(
+            result(&unauthenticated).get("api_error_status"),
+            Some(&json!(401))
+        );
+        assert!(!said(&unauthenticated), "agy's words aren't shown");
+
+        let auth_required = failed_with(r#"{"code":-32000,"message":"Authentication required"}"#);
+        assert_eq!(
+            result(&auth_required).get("api_error_status"),
+            Some(&json!(401))
+        );
+
+        let other = failed_with(r#"{"code":-32603,"message":"quota exhausted"}"#);
+        assert_eq!(result(&other).get("api_error_status"), Some(&Value::Null));
+        assert!(said(&other), "agy's words are shown");
     }
 
     /// A message from another session is shown as one, and prompts agy once its turn ends.

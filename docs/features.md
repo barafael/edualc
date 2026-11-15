@@ -223,6 +223,10 @@ it. When a turn fails because you aren't signed in, or when you type `/login`, t
 `claude auth login` to run in a terminal. "Try again" restarts Claude Code and sends the failed
 message again.
 
+When Google's API refuses an agy session's sign-in, the window offers the same. agy renews its
+sign-in by itself, so "Try again" often works straight away. If it keeps failing, run `agy` in a
+terminal and sign in when it asks.
+
 **An Anthropic API key.** Paste a key from the Anthropic Console in Settings, and edualc keeps it
 in your desktop's keyring (the Secret Service), not in a file. The New session menu then offers
 "Claude Code with the API key…", which opens a dialog that says what it costs and lets you pick

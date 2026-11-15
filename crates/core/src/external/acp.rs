@@ -46,7 +46,23 @@ pub enum AgentMethod {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcError {
     #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
     pub message: String,
+}
+
+impl RpcError {
+    /// ACP's error for a request the agent can't serve before the client authenticates.
+    const AUTH_REQUIRED: i64 = -32000;
+
+    /// Whether agy refused for want of a valid sign-in: ACP's `auth_required`, or agy's own
+    /// words for a token Google's API refused (`UNAUTHENTICATED`, HTTP 401) or for no sign-in
+    /// at all.
+    pub fn sign_in_refused(&self) -> bool {
+        self.code == Self::AUTH_REQUIRED
+            || self.message.contains("UNAUTHENTICATED")
+            || self.message.contains("not logged into Antigravity")
+    }
 }
 
 /// `session/update`'s parameters.

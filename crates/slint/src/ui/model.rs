@@ -703,6 +703,12 @@ pub(super) fn apply_session(
     if old.is_none_or(|old| old.shows_sign_in != new.shows_sign_in) {
         global.set_shows_sign_in(new.shows_sign_in.to_slint(images));
     }
+    if old.is_none_or(|old| old.sign_in_help != new.sign_in_help) {
+        global.set_sign_in_help(new.sign_in_help.to_slint(images));
+    }
+    if old.is_none_or(|old| old.sign_in_command != new.sign_in_command) {
+        global.set_sign_in_command(new.sign_in_command.to_slint(images));
+    }
     if old.is_none_or(|old| old.needs_trust != new.needs_trust) {
         global.set_needs_trust(new.needs_trust.to_slint(images));
     }

@@ -2271,7 +2271,7 @@ component SignInChoiceBar inherits Rectangle {
 }
 
 component SignInBar inherits Rectangle {
-    property <string> command: "claude auth login";
+    property <string> command: Session.sign-in-command;
     border-radius: Theme.radius-l;
     border-width: 1px;
     border-color: Theme.warning;
@@ -2287,7 +2287,7 @@ component SignInBar inherits Rectangle {
                 y: (parent.height - self.height) / 2;
             }
             Text {
-                text: "Sign in to Claude Code";
+                text: "Sign in to " + Session.program;
                 color: Theme.text;
                 font-weight: 600;
                 wrap: word-wrap;
@@ -2296,7 +2296,7 @@ component SignInBar inherits Rectangle {
             }
         }
         Small {
-            text: "Run this in a terminal and follow its steps, then try again. Claude Code starts again with your sign-in, and a message that failed is sent again.";
+            text: Session.sign-in-help;
             wrap: word-wrap;
         }
         Rectangle {

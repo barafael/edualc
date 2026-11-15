@@ -61,7 +61,12 @@ export global Session {
     in property <SignInState> sign-in;
     // How to sign in is shown: the CLI behind a pipe has no `/login`.
     in property <bool> shows-sign-in;
-    // Signed in elsewhere: starts Claude Code again, and sends what failed for want of it.
+    // How you sign in to the session's program: what to know, and the command to run in a
+    // terminal.
+    in property <string> sign-in-help;
+    in property <string> sign-in-command;
+    // Signed in elsewhere: starts the session's program again, and sends what failed for want
+    // of it.
     callback try-sign-in-again;
     callback dismiss-sign-in;
     // The folder isn't trusted yet: Claude Code waits to start in it.
