@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use super::{App, Doing, LimitUse, ModelChoice, Modes, Refusal, Request, SignIn, TaskProgress};
 use crate::chat::{Origin, UserText};
-use crate::claude::Output;
+use crate::claude::{Lost, Output};
 use crate::external::wire::{
     self, Activity, AssistantError, CommandInfo, ContentBlock, ControlRequest, ControlResponse,
     IncomingRequest, Initialized, Message, Progress, RateLimits, ResultKind, Sender, StreamEvent,
@@ -27,6 +27,29 @@ impl<F: Frontend> App<F> {
                     self.status.doing = Doing::Working;
                 }
                 self.message(message);
+            }
+            Output::Unreadable {
+                lost: Lost::Result,
+                error,
+            } => self.result(&TurnResult {
+                subtype: ResultKind::ErrorDuringExecution,
+                is_error: true,
+                result: None,
+                errors: vec![serde_json::Value::String(format!(
+                    "Claude Code ended the turn with a line edualc can't read: {error}"
+                ))],
+                total_cost_usd: None,
+                model_usage: std::collections::HashMap::new(),
+                api_error_status: None,
+            }),
+            Output::Unreadable {
+                lost: Lost::Request(request),
+                error,
+            } => {
+                self.write(|process| process.refuse(&request, "edualc can't read this request"));
+                self.chat.error(format!(
+                    "Claude Code asked something edualc can't read, and was told so: {error}"
+                ));
             }
             Output::Log(line) => {
                 tracing::debug!(target: "claude", "{line}");

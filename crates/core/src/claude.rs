@@ -10,7 +10,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::decode::Picture;
 use crate::external::wire::{
-    ControlRequest, ImageBlock, Input, Message, PermissionResult, Reply, RequestId, SessionId,
+    ControlPeek, ControlRequest, ImageBlock, Input, Message, PeekedKind, PermissionResult, Reply,
+    RequestId, SessionId,
 };
 use crate::ipc::{Generation, HostedId, StartFailure, ToDaemon};
 use crate::link::{self, Link};
@@ -32,6 +33,12 @@ pub enum Output {
     /// The daemon couldn't start it, or refused its input.
     Failed(StartFailure),
     Message(Message),
+    /// A line on stdout that should have been a turn's result or a request, which the window
+    /// can't read: a turn would wait for it forever otherwise.
+    Unreadable {
+        lost: Lost,
+        error: serde_json::Error,
+    },
     /// A line of stderr, or of stdout that isn't a message.
     Log(String),
     /// It ended, with its exit code if it exited on its own.
@@ -41,14 +48,47 @@ pub enum Output {
 impl Output {
     /// A line the process wrote on stdout.
     pub fn of_line(line: String) -> Self {
-        match serde_json::from_str(&line) {
-            Ok(message) => Self::Message(message),
-            Err(error) => {
+        let error = match serde_json::from_str(&line) {
+            Ok(message) => return Self::Message(message),
+            Err(error) => error,
+        };
+        let lost = serde_json::from_str::<ControlPeek>(&line)
+            .ok()
+            .and_then(|peek| match (peek.kind, peek.request_id) {
+                (PeekedKind::Result, _) => Some(Lost::Result),
+                (PeekedKind::ControlRequest, Some(request)) => {
+                    Some(Lost::Request(RequestId::from(request)))
+                }
+                (PeekedKind::ControlRequest, None)
+                | (
+                    PeekedKind::System
+                    | PeekedKind::ControlCancelRequest
+                    | PeekedKind::ControlResponse
+                    | PeekedKind::User
+                    | PeekedKind::Other,
+                    _,
+                ) => None,
+            });
+        match lost {
+            Some(lost) => {
+                tracing::warn!(%error, ?lost, "a line from claude the window can't read");
+                Self::Unreadable { lost, error }
+            }
+            None => {
                 tracing::debug!(%error, "a line from claude that isn't a message");
                 Self::Log(line)
             }
         }
     }
+}
+
+/// What a line the window can't read was, as far as it can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lost {
+    /// A turn's end.
+    Result,
+    /// A request, which Claude Code waits for an answer to.
+    Request(RequestId),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -391,6 +431,39 @@ impl Drop for Claude {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// A turn's result or a request the window can't read is told as lost, with the request's
+    /// id to answer it by; any other line it can't read is the process's log.
+    #[test]
+    fn a_result_or_request_the_window_cant_read_is_told_as_lost() {
+        let lost = |line: &str| match Output::of_line(line.to_owned()) {
+            Output::Unreadable { lost, .. } => Some(lost),
+            Output::Log(_) => None,
+            other @ (Output::Started { .. }
+            | Output::Failed(_)
+            | Output::Message(_)
+            | Output::Ended(_)) => panic!("{line} read as {other:?}"),
+        };
+        assert_eq!(
+            lost(r#"{"type":"result","subtype":"success","is_error":"no"}"#),
+            Some(Lost::Result)
+        );
+        assert_eq!(
+            lost(
+                r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":7}}"#
+            ),
+            Some(Lost::Request(RequestId::from("r1".to_owned())))
+        );
+        assert_eq!(lost(r#"{"type":"assistant","message":5}"#), None);
+        assert_eq!(lost("not JSON at all"), None);
+        assert!(matches!(
+            Output::of_line(
+                r#"{"type":"result","subtype":"success","result":"ok","total_cost_usd":null}"#
+                    .to_owned()
+            ),
+            Output::Message(Message::Result(_))
+        ));
+    }
 
     /// A session started here counts as used once the user prompts it or gives it a `!`
     /// command, and leaving it then keeps it running; one only opened to read doesn't. One
