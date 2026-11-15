@@ -1,5 +1,5 @@
-//! edualc's messaging tool as agy gets it: an MCP server on stdio (`edualc --agy-tool SOCKET`),
-//! which agy starts, with `send_message` and `list_sessions`. It decides
+//! edualc's messaging tool as the agent gets it: an MCP server on stdio (`edualc --agy-tool
+//! SOCKET`), which the agent starts, with `send_message` and `list_sessions`. It decides
 //! nothing: each call goes to the adapter over the socket, which carries it out (see
 //! [`super::outbox`]).
 
@@ -51,7 +51,7 @@ fn listing() -> Value {
     ])
 }
 
-/// Runs the tool until agy closes its input.
+/// Runs the tool until the agent closes its input.
 pub fn run() -> std::process::ExitCode {
     let Some(socket) = std::env::args_os().nth(2).map(PathBuf::from) else {
         eprintln!("edualc: the messaging tool needs the adapter's socket");

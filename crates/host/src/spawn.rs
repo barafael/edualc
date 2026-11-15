@@ -141,7 +141,7 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
     })
 }
 
-/// An agy session: edualc's own adapter (see [`crate::agy`]), which runs `agy acp` and speaks
+/// An agy session: edualc's own adapter (see [`crate::acp`]), which runs `agy acp` and speaks
 /// stream-json to the daemon as `claude` does, serves the session's inbox, publishes its record
 /// and carries its messages.
 fn spawn_agy(
@@ -151,7 +151,7 @@ fn spawn_agy(
 ) -> Result<Spawned, Error> {
     let program = std::env::current_exe().map_err(Error::Adapter)?;
     let mut command = Command::new(program);
-    command.arg(crate::agy::ADAPTER_FLAG);
+    command.arg(crate::acp::ADAPTER_FLAG);
     command.arg(format!("--cwd={}", cwd.display()));
     match &launch.conversation {
         Conversation::New(id) => command.arg(format!("--session-id={id}")),

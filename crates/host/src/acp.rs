@@ -1,14 +1,14 @@
-//! An agy session: Google's Antigravity CLI (`agy`), spoken to over the Agent Client Protocol,
-//! and shown in the window as a Claude Code session. The daemon starts this adapter
+//! An Agent Client Protocol session: an agent (`agy`, Google's Antigravity CLI) spoken to over
+//! ACP and shown in the window as a Claude Code session. The daemon starts this adapter
 //! (`edualcd --agy-adapter`) in place of `claude`; it speaks stream-json on its stdio as `claude`
 //! does, so the daemon and the window need nothing of their own for it (see [`translate`]).
 //!
-//! agy runs as it would in a terminal, with its data in the user's `~/.gemini`. The adapter, the
-//! daemon's child, serves the session's inbox and publishes its record (see [`inbox`]), so other
-//! sessions message it as they message each other, and carries the messages agy sends with
-//! edualc's tool (see [`tool`] and [`outbox`]). It keeps the session's transcript, in Claude
-//! Code's format, under edualc's state folder (see [`crate::sessions::agy_projects`]), for the
-//! session to be listed and continued: agy's own history is a database of its own.
+//! The agent runs as it would in a terminal. The adapter, the daemon's child, serves the
+//! session's inbox and publishes its record (see [`inbox`]), so other sessions message it as
+//! they message each other, and carries the messages the agent sends with edualc's tool (see
+//! [`tool`] and [`outbox`]). It keeps the session's transcript, in Claude Code's format, under
+//! edualc's state folder (see [`crate::sessions::agy_projects`]), for the session to be listed
+//! and continued: the agent's own history is a database of its own.
 
 mod inbox;
 mod outbox;
@@ -21,7 +21,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixListener;
 use tokio::net::unix::OwnedWriteHalf;
@@ -29,19 +29,145 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
+use crate::external::acp::{RpcError, ToolCall};
 use crate::external::wire::SessionId;
 use crate::sessions::{self, MessagingName};
 use outbox::{Job, Outcome, Places, SendArguments};
 use translate::{CallId, Effect, Start, ToolServer, Translator};
 
-/// The first argument that makes this program an agy session's adapter.
+/// The first argument that makes this program an ACP session's adapter.
 pub const ADAPTER_FLAG: &str = "--agy-adapter";
-/// The first argument that makes it the messaging tool agy starts.
+/// The first argument that makes it the messaging tool an agent starts.
 pub const TOOL_FLAG: &str = "--agy-tool";
 /// What a message line from a peer or the tool may hold, at most.
 const QUEUE: usize = 256;
-/// How long agy gets to end once its input closed, before it is killed.
+/// How long the agent gets to end once its input closed, before it is killed.
 const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The tool agy sees edualc's messaging tool as, by the MCP server's name and the tool's.
+const AGY_SEND: &str = "mcp_edualc_send_message";
+/// edualc's tool listing the sessions, as agy names it.
+const AGY_LIST: &str = "mcp_edualc_list_sessions";
+/// The same tools by the names Claude Code gives them, which the window knows.
+const CLAUDE_SEND: &str = "mcp__edualc__send_message";
+const CLAUDE_LIST: &str = "mcp__edualc__list_sessions";
+
+/// The agents edualc runs through the Agent Client Protocol, and what each does its own way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[strum(serialize_all = "snake_case")]
+enum Agent {
+    Agy,
+}
+
+impl Agent {
+    /// The program that speaks ACP.
+    fn program(self) -> &'static str {
+        match self {
+            Self::Agy => "agy",
+        }
+    }
+
+    /// Its arguments, to speak ACP on stdio.
+    fn arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Agy => &["acp", "--disable-telemetry"],
+        }
+    }
+
+    /// How to get it, told when it isn't on PATH.
+    fn install_hint(self) -> &'static str {
+        match self {
+            Self::Agy => "install it from antigravity.google",
+        }
+    }
+
+    /// The agent, started in `cwd` with ACP on its stdio.
+    fn start(self, cwd: &Path) -> Result<Child, Error> {
+        let program = on_path(self.program()).ok_or(Error::NotOnPath(self))?;
+        Command::new(&program)
+            .args(self.arguments())
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|source| Error::Start(self, source))
+    }
+
+    /// A tool call this agent named `name`, as the window knows Claude Code's: its file and
+    /// command tools as Read, Write, Edit and Bash, with their arguments by Claude Code's names.
+    /// None for a name it doesn't know.
+    fn tool(self, name: &str, call: &ToolCall) -> Option<(String, Value)> {
+        let input = call.raw_input.clone().unwrap_or(Value::Null);
+        let field = |name: &str| input.get(name).cloned().unwrap_or(Value::Null);
+        let path = || {
+            input.get("Path").cloned().or_else(|| {
+                call.locations
+                    .as_ref()
+                    .and_then(|locations| locations.first())
+                    .map(|location| json!(location.path))
+            })
+        };
+        let title = || json!(call.title.clone().unwrap_or_default());
+        match self {
+            Self::Agy => match name {
+                AGY_SEND => Some((
+                    CLAUDE_SEND.to_owned(),
+                    json!({"to": field("to"), "message": field("message")}),
+                )),
+                AGY_LIST => Some((CLAUDE_LIST.to_owned(), json!({}))),
+                "run_command" => Some((
+                    "Bash".to_owned(),
+                    json!({
+                        "command": input.get("CommandLine").cloned().unwrap_or_else(title),
+                        "description": field("toolSummary"),
+                    }),
+                )),
+                "read_file" | "view_file" => Some((
+                    "Read".to_owned(),
+                    json!({"file_path": path().unwrap_or_else(title)}),
+                )),
+                // Appending (agy's `Append`) adds to the file: as an edit that adds the lines,
+                // not a Write, which would read as the whole file.
+                "write_file" if input.get("Append") == Some(&Value::Bool(true)) => Some((
+                    "Edit".to_owned(),
+                    json!({
+                        "file_path": path().unwrap_or_else(title),
+                        "old_string": "",
+                        "new_string": field("Content"),
+                    }),
+                )),
+                "write_file" => Some((
+                    "Write".to_owned(),
+                    json!({"file_path": path().unwrap_or_else(title), "content": field("Content")}),
+                )),
+                "edit_file" => Some((
+                    "Edit".to_owned(),
+                    json!({
+                        "file_path": path().unwrap_or_else(title),
+                        "old_string": field("Target"),
+                        "new_string": field("Replacement"),
+                    }),
+                )),
+                _ => None,
+            },
+        }
+    }
+
+    /// Whether the agent refused a prompt for want of a valid sign-in: ACP's code, or its own
+    /// words for a token Google's API refused (`UNAUTHENTICATED`, HTTP 401) or for no sign-in at
+    /// all.
+    fn sign_in_refused(self, error: &RpcError) -> bool {
+        error.sign_in_refused()
+            || match self {
+                Self::Agy => {
+                    error.message.contains("UNAUTHENTICATED")
+                        || error.message.contains("not logged into Antigravity")
+                }
+            }
+    }
+}
 
 /// The adapter's command line, as `spawn` writes it.
 #[derive(Debug, clap::Parser)]
@@ -69,23 +195,25 @@ enum Error {
     Arguments(#[from] clap::Error),
     #[error("the adapter needs --session-id or --resume")]
     NoSession,
-    #[error("no transcript of session {0} says which conversation of agy's it is")]
-    NotAgys(SessionId),
+    #[error("no transcript of session {1} says which conversation of {0}'s it is")]
+    NoConversation(Agent, SessionId),
     #[error("no runtime folder (XDG_RUNTIME_DIR)")]
     NoRuntime,
     #[error("couldn't make the session's folder: {0}")]
     Folder(#[source] std::io::Error),
-    #[error("agy isn't on PATH; install it from antigravity.google")]
-    NoAgy,
-    #[error("couldn't start agy: {0}")]
-    Start(#[source] std::io::Error),
+    #[error("{} isn't on PATH; {}", .0, .0.install_hint())]
+    NotOnPath(Agent),
+    #[error("couldn't start {0}: {1}")]
+    Start(Agent, #[source] std::io::Error),
+    #[error("couldn't find this program: {0}")]
+    Program(#[source] std::io::Error),
     #[error(transparent)]
     Inbox(#[from] inbox::Error),
     #[error("couldn't run: {0}")]
     Runtime(#[source] std::io::Error),
 }
 
-/// Runs the adapter until the window's side closes or agy ends.
+/// Runs the adapter until the window's side closes or the agent ends.
 pub fn run_adapter() -> std::process::ExitCode {
     match adapter() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -97,7 +225,7 @@ pub fn run_adapter() -> std::process::ExitCode {
     }
 }
 
-/// Runs the messaging tool agy starts (see [`tool`]).
+/// Runs the messaging tool the agent starts (see [`tool`]).
 pub fn run_tool() -> std::process::ExitCode {
     tool::run()
 }
@@ -119,11 +247,11 @@ struct Own {
 }
 
 impl Own {
-    fn make() -> Result<Self, Error> {
+    fn make(agent: Agent) -> Result<Self, Error> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .ok_or(Error::NoRuntime)?;
-        let folder = runtime.join(format!("edualc-agy-{}", std::process::id()));
+        let folder = runtime.join(format!("edualc-{agent}-{}", std::process::id()));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&folder)
@@ -153,8 +281,9 @@ fn transcript_path(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
     })
 }
 
-/// agy's id for the conversation session `id` continues, as its transcript's first line says.
-fn agys_id(transcript: &Path) -> Option<String> {
+/// The agent's id for the conversation session `id` continues, as its transcript's first line
+/// keeps it.
+fn acp_session_id(transcript: &Path) -> Option<String> {
     let text = std::fs::read_to_string(transcript).ok()?;
     text.lines().find_map(|line| {
         let line: Value = serde_json::from_str(line).ok()?;
@@ -177,26 +306,12 @@ fn on_path(program: &str) -> Option<PathBuf> {
     })
 }
 
-/// agy, started with `acp` on its stdio.
-fn start_agy(cwd: &Path) -> Result<Child, Error> {
-    let agy = on_path("agy").ok_or(Error::NoAgy)?;
-    Command::new(&agy)
-        .args(["acp", "--disable-telemetry"])
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(Error::Start)
-}
-
 /// What the loop is told.
 #[derive(Debug)]
 enum Heard {
     Window(Option<String>),
-    Agy(Option<String>),
-    AgyLog(String),
+    Agent(Option<String>),
+    AgentLog(String),
     Peer(String),
     Tool(CallId, tool::Request, OwnedWriteHalf),
 }
@@ -208,26 +323,28 @@ async fn adapt(args: Args) -> Result<(), Error> {
         resume,
         model,
     } = args;
+    let agent = Agent::Agy;
     let (id, start) = match (session_id, resume) {
         (Some(id), None) => (id, Start::New),
         (None, Some(id)) => {
-            let agys = transcript_path(&cwd, &id)
+            let conversation = transcript_path(&cwd, &id)
                 .as_deref()
-                .and_then(agys_id)
-                .ok_or_else(|| Error::NotAgys(id.clone()))?;
-            (id, Start::Resume(agys))
+                .and_then(acp_session_id)
+                .ok_or_else(|| Error::NoConversation(agent, id.clone()))?;
+            (id, Start::Resume(conversation))
         }
         (Some(_), Some(_)) | (None, None) => return Err(Error::NoSession),
     };
     // The name the daemon knows the session by, as it names Claude Code's (see `spawn`).
     let name = MessagingName::of(&id, &cwd);
-    let own = Own::make()?;
+    let own = Own::make(agent)?;
     let tools = UnixListener::bind(own.tool()).map_err(Error::Folder)?;
     let inbox = inbox::Inbox::open(&id, &cwd, &name)?;
     tracing::info!(inbox = %inbox.socket().display(), %name, "the session's inbox is open");
-    let mut agy = start_agy(&cwd)?;
-    let program = std::env::current_exe().map_err(Error::Start)?;
+    let mut process = agent.start(&cwd)?;
+    let program = std::env::current_exe().map_err(Error::Program)?;
     let mut translator = Translator::new(
+        agent,
         id.clone(),
         cwd.clone(),
         start,
@@ -239,26 +356,26 @@ async fn adapt(args: Args) -> Result<(), Error> {
     );
 
     let (heard, mut hearing) = mpsc::channel::<Heard>(QUEUE);
-    let mut agy_in = agy.stdin.take();
-    if let Some(out) = agy.stdout.take() {
+    let mut agent_in = process.stdin.take();
+    if let Some(out) = process.stdout.take() {
         let heard = heard.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if heard.send(Heard::Agy(Some(line))).await.is_err() {
+                if heard.send(Heard::Agent(Some(line))).await.is_err() {
                     return;
                 }
             }
-            let ended = heard.send(Heard::Agy(None)).await;
+            let ended = heard.send(Heard::Agent(None)).await;
             drop(ended);
         });
     }
-    if let Some(err) = agy.stderr.take() {
+    if let Some(err) = process.stderr.take() {
         let heard = heard.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(err).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if heard.send(Heard::AgyLog(line)).await.is_err() {
+                if heard.send(Heard::AgentLog(line)).await.is_err() {
                     return;
                 }
             }
@@ -318,7 +435,7 @@ async fn adapt(args: Args) -> Result<(), Error> {
 
     let mut out = Out {
         window: tokio::io::stdout(),
-        agy: agy_in.take(),
+        agent: agent_in.take(),
         transcript: transcript_path(&cwd, &id),
         calls: HashMap::new(),
         name,
@@ -334,14 +451,14 @@ async fn adapt(args: Args) -> Result<(), Error> {
             said = hearing.recv() => match said {
                 Some(Heard::Window(Some(line))) => translator.window_said(&line),
                 Some(Heard::Window(None)) => {
-                    // The daemon closed the session's input: agy's goes too, and it ends.
-                    out.agy = None;
+                    // The daemon closed the session's input: the agent's goes too, and it ends.
+                    out.agent = None;
                     continue;
                 }
-                Some(Heard::Agy(Some(line))) => translator.agy_said(&line),
-                Some(Heard::Agy(None)) | None => break,
-                Some(Heard::AgyLog(line)) => {
-                    eprintln!("agy: {line}");
+                Some(Heard::Agent(Some(line))) => translator.agent_said(&line),
+                Some(Heard::Agent(None)) | None => break,
+                Some(Heard::AgentLog(line)) => {
+                    eprintln!("{agent}: {line}");
                     continue;
                 }
                 Some(Heard::Peer(post)) => translator.peer(post),
@@ -358,18 +475,18 @@ async fn adapt(args: Args) -> Result<(), Error> {
         };
         out.carry_out(&mut translator, effects).await;
     }
-    // Its input closed, agy ends; one that doesn't within a while is killed.
+    // Its input closed, the agent ends; one that doesn't within a while is killed.
     drop(out);
-    let ended = match tokio::time::timeout(GRACE, agy.wait()).await {
+    let ended = match tokio::time::timeout(GRACE, process.wait()).await {
         Ok(ended) => ended,
         Err(_late) => {
-            if let Err(error) = agy.start_kill() {
-                tracing::warn!(%error, "couldn't kill agy");
+            if let Err(error) = process.start_kill() {
+                tracing::warn!(%error, %agent, "couldn't kill the agent");
             }
-            agy.wait().await
+            process.wait().await
         }
     };
-    tracing::info!(?ended, "agy ended");
+    tracing::info!(?ended, %agent, "the agent ended");
     drop(inbox);
     drop(own);
     Ok(())
@@ -405,7 +522,7 @@ impl Ending {
 #[derive(Debug)]
 struct Out {
     window: tokio::io::Stdout,
-    agy: Option<ChildStdin>,
+    agent: Option<ChildStdin>,
     transcript: Option<PathBuf>,
     /// The tool's calls waiting for their answer.
     calls: HashMap<CallId, OwnedWriteHalf>,
@@ -413,16 +530,16 @@ struct Out {
 }
 
 impl Out {
-    /// Does what the translator said; what the tool is answered goes back to it, as agy tells
-    /// nothing of an MCP tool's result.
+    /// Does what the translator said; what the tool is answered goes back to it, as the agent
+    /// tells nothing of an MCP tool's result.
     async fn carry_out(&mut self, translator: &mut Translator, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
-                Effect::ToAgy(line) => {
-                    if let Some(agy) = self.agy.as_mut()
-                        && write_line(agy, &line).await.is_err()
+                Effect::ToAgent(line) => {
+                    if let Some(agent) = self.agent.as_mut()
+                        && write_line(agent, &line).await.is_err()
                     {
-                        tracing::debug!("agy's input closed");
+                        tracing::debug!("the agent's input closed");
                     }
                 }
                 Effect::ToWindow(line) => {

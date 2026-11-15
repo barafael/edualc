@@ -1,13 +1,13 @@
-//! The adapter's core (sans-io): agy's Agent Client Protocol on one side, Claude Code's
+//! The adapter's core (sans-io): the agent's Agent Client Protocol on one side, Claude Code's
 //! stream-json on the other, as the window and the daemon read it. Each line read in says what
-//! to write where; the adapter's loop (see [`crate::agy`]) does it.
+//! to write where; the adapter's loop (see [`crate::acp`]) does it.
 //!
-//! A turn of agy's becomes what a turn of Claude Code's looks like: an `init`, streamed text
-//! and thinking (`stream_event`s), an assistant message for each stretch of it with the tool
-//! calls that end it, a tool result for each call, and a `result`. Permission requests become
-//! `can_use_tool` requests, and the window's answers agy's options. Each line also goes to the
-//! session's transcript, in Claude Code's transcript format, for the session to be listed and
-//! shown again.
+//! A turn of the agent's becomes what a turn of Claude Code's looks like: an `init`, streamed
+//! text and thinking (`stream_event`s), an assistant message for each stretch of it with the
+//! tool calls that end it, a tool result for each call, and a `result`. Permission requests
+//! become `can_use_tool` requests, and the window's answers the agent's options. Each line also
+//! goes to the session's transcript, in Claude Code's transcript format, for the session to be
+//! listed and shown again.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -20,16 +20,11 @@ use crate::external::acp::{
 };
 use crate::external::wire::SessionId;
 
+use super::{Agent, CLAUDE_LIST, CLAUDE_SEND};
+
 /// What a denied tool call's result says, as Claude Code words it: the window shows such a
 /// call as denied.
 const DENIED: &str = "The user doesn't want to proceed with this tool use.";
-/// The tool agy sees edualc's messaging tool as, by the MCP server's name and the tool's.
-const AGY_SEND: &str = "mcp_edualc_send_message";
-/// The same tool by the name Claude Code gives it, which the window knows.
-const CLAUDE_SEND: &str = "mcp__edualc__send_message";
-/// edualc's tool listing the sessions, as agy and as Claude Code name it.
-const AGY_LIST: &str = "mcp_edualc_list_sessions";
-const CLAUDE_LIST: &str = "mcp__edualc__list_sessions";
 /// The envelope a message from another session comes in (see [`super::outbox`]).
 const ENVELOPE_OPEN: &str = "<cross-session-message";
 const ENVELOPE_CLOSE: &str = "</cross-session-message>";
@@ -38,16 +33,16 @@ const ENVELOPE_CLOSE: &str = "</cross-session-message>";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CallId(pub u64);
 
-/// How the session starts: afresh, or going on with a conversation of agy's.
+/// How the session starts: afresh, or going on with a conversation of the agent's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
     New,
-    /// agy's id for the conversation, as the transcript keeps it.
+    /// The agent's id for the conversation, as the transcript keeps it.
     Resume(String),
 }
 
-/// What agy is given to start edualc's messaging tool: this program, and the socket the tool
-/// reaches the adapter at.
+/// What the agent is given to start edualc's messaging tool: this program, and the socket the
+/// tool reaches the adapter at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolServer {
     pub program: PathBuf,
@@ -57,8 +52,8 @@ pub struct ToolServer {
 /// What is to be done.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// A line to agy.
-    ToAgy(Value),
+    /// A line to the agent.
+    ToAgent(Value),
     /// A line to the window, through the daemon.
     ToWindow(Value),
     /// A line for the transcript.
@@ -73,7 +68,7 @@ pub enum Effect {
     List(CallId),
 }
 
-/// Where the connection to agy is.
+/// Where the connection to the agent is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     /// `initialize` is asked.
@@ -81,29 +76,29 @@ enum Phase {
     /// The session is asked for; a session loaded first replays its history, which the
     /// transcript already holds.
     Opening { loading: bool },
-    /// agy's id for the session.
+    /// The agent's id for the session.
     Ready(String),
-    /// It couldn't be opened; nothing more goes to agy.
+    /// It couldn't be opened; nothing more goes to the agent.
     Failed,
 }
 
 /// Why a prompt's turn failed, as the window is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Failure<'a> {
-    /// agy said why: the window shows its words.
+    /// The agent said why: the window shows its words.
     Said(&'a str),
-    /// agy's sign-in was refused: the window offers to sign in and try again.
+    /// The agent's sign-in was refused: the window offers to sign in and try again.
     SignIn(&'a str),
 }
 
-/// What a request to agy was for, by its id.
+/// What a request to the agent was for, by its id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asked {
     Initialize,
     Open,
     /// The model; for the window's request, if it asked.
     Model(Option<String>),
-    /// One of agy's modes, for the window's request.
+    /// One of the agent's modes, for the window's request.
     Mode {
         request: String,
         mode: String,
@@ -111,7 +106,7 @@ enum Asked {
     Prompt,
 }
 
-/// Something to be prompted with once agy is free.
+/// Something to be prompted with once the agent is free.
 #[derive(Debug, Clone, PartialEq)]
 enum Queued {
     /// The user's prompt, as ACP takes it, and as the transcript keeps it.
@@ -140,12 +135,12 @@ struct Shown {
     input: Value,
     done: bool,
     denied: bool,
-    /// What edualc's tool answered, for a call of it: agy tells nothing of an MCP tool's
+    /// What edualc's tool answered, for a call of it: the agent tells nothing of an MCP tool's
     /// result.
     told: Option<String>,
 }
 
-/// A permission request of agy's that the window was asked.
+/// A permission request of the agent's that the window was asked.
 #[derive(Debug, Clone, PartialEq)]
 struct Permission {
     id: Value,
@@ -155,6 +150,7 @@ struct Permission {
 
 #[derive(Debug)]
 pub struct Translator {
+    agent: Agent,
     id: SessionId,
     cwd: PathBuf,
     start: Start,
@@ -163,9 +159,9 @@ pub struct Translator {
     /// The model asked for, then the one in use.
     model: Option<String>,
     models: Vec<acp::Model>,
-    /// agy's modes, as it opened the session with them.
+    /// The agent's modes, as it opened the session with them.
     modes: Vec<acp::SessionMode>,
-    /// The mode agy is in, by its id.
+    /// The mode the agent is in, by its id.
     mode: Option<String>,
     next_rpc: u64,
     asked: HashMap<u64, Asked>,
@@ -182,12 +178,13 @@ pub struct Translator {
     next_local: u64,
     shown: HashMap<String, Shown>,
     permissions: HashMap<String, Permission>,
-    /// The tool call each of edualc's tool's calls is, by agy's id.
+    /// The tool call each of edualc's tool's calls is, by the agent's id.
     calls: HashMap<CallId, String>,
 }
 
 impl Translator {
     pub fn new(
+        agent: Agent,
         id: SessionId,
         cwd: PathBuf,
         start: Start,
@@ -195,6 +192,7 @@ impl Translator {
         tool: ToolServer,
     ) -> Self {
         Self {
+            agent,
             id,
             cwd,
             start,
@@ -219,7 +217,7 @@ impl Translator {
         }
     }
 
-    /// What starts it: agy is asked to initialize.
+    /// What starts it: the agent is asked to initialize.
     pub fn start(&mut self) -> Vec<Effect> {
         let initialize = self.request(
             "initialize",
@@ -244,12 +242,12 @@ impl Translator {
         request.insert("id".to_owned(), json!(self.next_rpc));
         request.insert("method".to_owned(), json!(method));
         request.insert("params".to_owned(), params);
-        Effect::ToAgy(Value::Object(request))
+        Effect::ToAgent(Value::Object(request))
     }
 
     fn local_id(&mut self, kind: &str) -> String {
         self.next_local += 1;
-        format!("agy-{kind}-{}", self.next_local)
+        format!("{}-{kind}-{}", self.agent, self.next_local)
     }
 
     fn acp_session(&self) -> Option<&str> {
@@ -259,12 +257,12 @@ impl Translator {
         }
     }
 
-    /// A line from agy.
-    pub fn agy_said(&mut self, line: &str) -> Vec<Effect> {
+    /// A line from the agent.
+    pub fn agent_said(&mut self, line: &str) -> Vec<Effect> {
         let incoming = match serde_json::from_str::<Incoming>(line) {
             Ok(incoming) => incoming,
             Err(error) => {
-                tracing::debug!(%error, "a line from agy that isn't JSON-RPC");
+                tracing::debug!(%error, "a line from the agent that isn't JSON-RPC");
                 return Vec::new();
             }
         };
@@ -296,14 +294,14 @@ impl Translator {
                 Ok(asked) => self.asked_permission(id, asked),
                 Err(error) => {
                     tracing::warn!(%error, "a permission request edualc can't read: denied");
-                    vec![Effect::ToAgy(
+                    vec![Effect::ToAgent(
                         json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}),
                     )]
                 }
             },
             Incoming::Request { id, method, .. } => {
-                tracing::debug!(?method, "a request of agy's edualc doesn't serve");
-                vec![Effect::ToAgy(
+                tracing::debug!(?method, "a request of the agent's edualc doesn't serve");
+                vec![Effect::ToAgent(
                     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "edualc doesn't serve this"}}),
                 )]
             }
@@ -314,7 +312,7 @@ impl Translator {
         }
     }
 
-    /// agy's answer to a request.
+    /// The agent's answer to a request.
     fn answered(&mut self, asked: Asked, result: Value) -> Vec<Effect> {
         match asked {
             Asked::Initialize => {
@@ -345,7 +343,9 @@ impl Translator {
                 let session = match (&self.start, opened.session_id) {
                     (Start::Resume(session), _) => session.clone(),
                     (Start::New, Some(session)) => session,
-                    (Start::New, None) => return self.failed("agy opened no session"),
+                    (Start::New, None) => {
+                        return self.failed(&format!("{} opened no session", self.agent));
+                    }
                 };
                 let mut effects = Vec::new();
                 if self.start == Start::New {
@@ -397,7 +397,7 @@ impl Translator {
         }
     }
 
-    /// agy refused a request.
+    /// The agent refused a request.
     fn refused(&mut self, asked: &Asked, error: &RpcError) -> Vec<Effect> {
         let message = error.message.as_str();
         match asked {
@@ -406,10 +406,10 @@ impl Translator {
                 vec![failure(request, message)]
             }
             Asked::Model(None) => {
-                tracing::warn!(message, "agy didn't take the model");
+                tracing::warn!(message, agent = %self.agent, "the agent didn't take the model");
                 Vec::new()
             }
-            Asked::Prompt if error.sign_in_refused() => {
+            Asked::Prompt if self.agent.sign_in_refused(error) => {
                 self.turn_ended(None, Some(Failure::SignIn(message)))
             }
             Asked::Prompt => self.turn_ended(None, Some(Failure::Said(message))),
@@ -418,12 +418,13 @@ impl Translator {
 
     fn failed(&mut self, message: &str) -> Vec<Effect> {
         self.phase = Phase::Failed;
+        let agent = self.agent;
         let mut effects = vec![Effect::ToWindow(json!({
             "type": "assistant",
             "message": {
-                "id": "agy-failed",
+                "id": format!("{agent}-failed"),
                 "role": "assistant",
-                "content": [{"type": "text", "text": format!("agy couldn't open the session: {message}")}]
+                "content": [{"type": "text", "text": format!("{agent} couldn't open the session: {message}")}]
             },
             "parent_tool_use_id": null,
             "session_id": self.id.to_string(),
@@ -434,8 +435,8 @@ impl Translator {
         effects
     }
 
-    /// The answer to the window's `initialize`: agy's models, and agy's own modes with the one
-    /// it is in.
+    /// The answer to the window's `initialize`: the agent's models, and its own modes with the
+    /// one it is in.
     fn initialized(&self, request: &str) -> Effect {
         let models: Vec<Value> = self
             .models
@@ -447,14 +448,15 @@ impl Translator {
             .iter()
             .map(|mode| json!({"id": mode.id, "name": mode.name, "description": mode.description.clone().unwrap_or_default()}))
             .collect();
+        let agent = self.agent;
         success(
             request,
             &json!({
                 "models": models,
                 "programModes": {"offered": modes, "current": self.mode},
                 "commands": [],
-                "account": {"apiProvider": "agy"},
-                "claude_code_version": format!("agy, through edualc {}", env!("CARGO_PKG_VERSION")),
+                "account": {"apiProvider": agent.to_string()},
+                "claude_code_version": format!("{agent}, through edualc {}", env!("CARGO_PKG_VERSION")),
             }),
         )
     }
@@ -468,7 +470,9 @@ impl Translator {
             match &self.phase {
                 Phase::Failed => {
                     return control_request_id(&said)
-                        .map(|request| vec![failure(&request, "agy isn't running")])
+                        .map(|request| {
+                            vec![failure(&request, &format!("{} isn't running", self.agent))]
+                        })
                         .unwrap_or_default();
                 }
                 Phase::Connecting | Phase::Opening { .. } => {
@@ -505,9 +509,10 @@ impl Translator {
         }
     }
 
-    /// A `!` command: agy has no shell beside the conversation, so it is told as not run, in
-    /// the rows Claude Code replays for one (its echo, then what it printed).
+    /// A `!` command: the agent has no shell beside the conversation, so it is told as not run,
+    /// in the rows Claude Code replays for one (its echo, then what it printed).
     fn shell_refused(&self, command: &str) -> Vec<Effect> {
+        let agent = self.agent;
         let row = |text: String| {
             Effect::ToWindow(json!({
                 "type": "user",
@@ -519,12 +524,11 @@ impl Translator {
         };
         vec![
             row(format!("<bash-input>{}</bash-input>", escaped(command))),
-            row(
-                "<bash-stdout></bash-stdout><bash-stderr>Not run: agy sessions don't run ! \
-                 commands. Ask agy to run it, or run it in a terminal.</bash-stderr>\
+            row(format!(
+                "<bash-stdout></bash-stdout><bash-stderr>Not run: {agent} sessions don't run ! \
+                 commands. Ask {agent} to run it, or run it in a terminal.</bash-stderr>\
                  <bash-exit-code>1</bash-exit-code>"
-                    .to_owned(),
-            ),
+            )),
         ]
     }
 
@@ -533,14 +537,14 @@ impl Translator {
             return Vec::new();
         };
         let Some(session) = self.acp_session().map(str::to_owned) else {
-            return vec![failure(&request, "agy isn't running")];
+            return vec![failure(&request, &format!("{} isn't running", self.agent))];
         };
         match said.pointer("/request/subtype").and_then(Value::as_str) {
             Some("initialize") => vec![self.initialized(&request)],
             Some("interrupt") => {
                 let mut effects = vec![success(&request, &json!({}))];
                 if self.busy {
-                    effects.push(Effect::ToAgy(json!({
+                    effects.push(Effect::ToAgent(json!({
                         "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}
                     })));
                 }
@@ -573,14 +577,17 @@ impl Translator {
             Some("set_permission_mode") => {
                 vec![failure(
                     &request,
-                    "agy has modes of its own, not Claude Code's",
+                    &format!("{} has modes of its own, not Claude Code's", self.agent),
                 )]
             }
-            Some(_) | None => vec![failure(&request, "agy doesn't do this")],
+            Some(_) | None => vec![failure(
+                &request,
+                &format!("{} doesn't do this", self.agent),
+            )],
         }
     }
 
-    /// The window's answer to a permission request: agy's, or the messaging tool's.
+    /// The window's answer to a permission request: the agent's, or the messaging tool's.
     fn window_answered(&mut self, said: &Value) -> Vec<Effect> {
         let Some(request) = said
             .pointer("/response/request_id")
@@ -614,11 +621,11 @@ impl Translator {
                     || json!({"outcome": "cancelled"}),
                     |option| json!({"outcome": "selected", "optionId": option.option_id}),
                 );
-            let mut effects = vec![Effect::ToAgy(
+            let mut effects = vec![Effect::ToAgent(
                 json!({"jsonrpc": "2.0", "id": permission.id, "result": {"outcome": outcome}}),
             )];
             if interrupt && let Some(session) = self.acp_session() {
-                effects.push(Effect::ToAgy(json!({
+                effects.push(Effect::ToAgent(json!({
                     "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}
                 })));
             }
@@ -627,7 +634,7 @@ impl Translator {
         Vec::new()
     }
 
-    /// agy's messaging tool was called: the message goes without asking, as a Claude Code
+    /// The agent's messaging tool was called: the message goes without asking, as a Claude Code
     /// session's own do.
     pub fn tool_called(&mut self, call: CallId, to: String, message: String) -> Vec<Effect> {
         if let Some(id) = self.open_call(CLAUDE_SEND) {
@@ -636,7 +643,7 @@ impl Translator {
         vec![Effect::Send { call, to, message }]
     }
 
-    /// agy's messaging tool asked for the running sessions: no question for that.
+    /// The agent's messaging tool asked for the running sessions: no question for that.
     pub fn listing_asked(&mut self, call: CallId) -> Vec<Effect> {
         if let Some(id) = self.open_call(CLAUDE_LIST) {
             self.calls.insert(call, id);
@@ -644,7 +651,7 @@ impl Translator {
         vec![Effect::List(call)]
     }
 
-    /// The call of `tool` under way, by agy's id, that no answer was told for yet.
+    /// The call of `tool` under way, by the agent's id, that no answer was told for yet.
     fn open_call(&self, tool: &str) -> Option<String> {
         let told: Vec<&String> = self.calls.values().collect();
         self.shown
@@ -653,7 +660,7 @@ impl Translator {
             .map(|(id, _)| id.clone())
     }
 
-    /// What edualc's tool answered `call`: the call's result, when agy says it ended.
+    /// What edualc's tool answered `call`: the call's result, when the agent says it ended.
     pub fn tool_told(&mut self, call: CallId, answer: &super::tool::Answer) {
         if let Some(shown) = self
             .calls
@@ -664,8 +671,8 @@ impl Translator {
         }
     }
 
-    /// Another session's message came into the inbox: shown as such, and given to agy as a
-    /// prompt once it is free.
+    /// Another session's message came into the inbox: shown as such, and given to the agent as
+    /// a prompt once it is free.
     pub fn peer(&mut self, content: String) -> Vec<Effect> {
         let (name, body) = unwrapped(&content);
         let origin = json!({"kind": "peer", "name": name, "body": body});
@@ -690,7 +697,7 @@ impl Translator {
         effects
     }
 
-    /// Prompts agy with what waits, if it is free.
+    /// Prompts the agent with what waits, if it is free.
     fn next_turn(&mut self) -> Vec<Effect> {
         if self.busy {
             return Vec::new();
@@ -880,7 +887,7 @@ impl Translator {
         if self.shown.contains_key(&call.tool_call_id) {
             return self.tool_call_update(call);
         }
-        let (name, input) = as_claude_tool(call);
+        let (name, input) = as_claude_tool(self.agent, call);
         self.shown.insert(
             call.tool_call_id.clone(),
             Shown {
@@ -936,7 +943,7 @@ impl Translator {
         ]
     }
 
-    /// agy asks whether a tool call may go ahead: the window asks the user.
+    /// The agent asks whether a tool call may go ahead: the window asks the user.
     fn asked_permission(&mut self, id: Value, asked: PermissionAsked) -> Vec<Effect> {
         let tool = asked.tool_call.tool_call_id.clone();
         let mut effects = Vec::new();
@@ -944,11 +951,11 @@ impl Translator {
             effects.extend(self.tool_call(&asked.tool_call));
         }
         let (name, input) = self.shown.get(&tool).map_or_else(
-            || as_claude_tool(&asked.tool_call),
+            || as_claude_tool(self.agent, &asked.tool_call),
             |shown| (shown.name.clone(), shown.input.clone()),
         );
-        // agy asks before every MCP tool, in every mode. edualc's own go without asking, as a
-        // Claude Code session's messages do.
+        // The agent asks before every MCP tool, in every mode. edualc's own go without asking,
+        // as a Claude Code session's messages do.
         if name == CLAUDE_SEND || name == CLAUDE_LIST {
             let outcome = asked
                 .options
@@ -958,7 +965,7 @@ impl Translator {
                     || json!({"outcome": "cancelled"}),
                     |option| json!({"outcome": "selected", "optionId": option.option_id}),
                 );
-            effects.push(Effect::ToAgy(
+            effects.push(Effect::ToAgent(
                 json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}}),
             ));
             return effects;
@@ -989,21 +996,22 @@ impl Translator {
 
     /// The prompt's answer: the turn ends, and what waits goes next. A refused sign-in is told
     /// as an HTTP 401 in the turn's result, which is what it was, and the window offers to sign
-    /// in and try again instead of showing agy's words.
+    /// in and try again instead of showing the agent's words.
     fn turn_ended(&mut self, prompted: Option<&Prompted>, failure: Option<Failure>) -> Vec<Effect> {
         let mut effects = self.message_done(None);
         let error = failure.map(|failure| match failure {
             Failure::Said(message) | Failure::SignIn(message) => message,
         });
+        let agent = self.agent;
         if let Some(Failure::Said(error)) = failure {
             let id = self.local_id("message");
-            let message = json!({"id": id, "role": "assistant", "content": [{"type": "text", "text": format!("agy: {error}")}]});
+            let message = json!({"id": id, "role": "assistant", "content": [{"type": "text", "text": format!("{agent}: {error}")}]});
             effects.push(Effect::ToWindow(json!({
                 "type": "assistant", "message": message, "parent_tool_use_id": null,
                 "session_id": self.id.to_string(), "error": "unknown",
             })));
         }
-        // Denied calls agy never answered for are done now.
+        // Denied calls the agent never answered for are done now.
         let cancelled =
             prompted.is_some_and(|prompted| prompted.stop_reason == StopReason::Cancelled);
         let open: Vec<String> = self
@@ -1023,7 +1031,7 @@ impl Translator {
         let usage = prompted
             .and_then(|prompted| prompted.usage)
             .unwrap_or_default();
-        let model = self.model.clone().unwrap_or_else(|| "agy".to_owned());
+        let model = self.model.clone().unwrap_or_else(|| agent.to_string());
         let mut model_usage = Map::new();
         model_usage.insert(
             model,
@@ -1117,60 +1125,31 @@ fn prompt_blocks(content: &Value) -> Vec<Value> {
     }
 }
 
-/// A tool call as the window knows Claude Code's: agy's file and command tools as Read, Write,
-/// Edit and Bash, with their arguments by Claude Code's names; others by agy's name.
-fn as_claude_tool(call: &ToolCall) -> (String, Value) {
+/// A tool call as the window knows Claude Code's: by the agent's own names where it gives one
+/// (see [`Agent::tool`]), else by ACP's kind; a tool neither tells about keeps the agent's name.
+fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
+    if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
+        return known;
+    }
     let input = call.raw_input.clone().unwrap_or(Value::Null);
-    let field = |name: &str| input.get(name).cloned().unwrap_or(Value::Null);
-    let path = || {
-        input.get("Path").cloned().or_else(|| {
-            call.locations
-                .as_ref()
-                .and_then(|locations| locations.first())
-                .map(|location| json!(location.path))
-        })
-    };
     let title = || json!(call.title.clone().unwrap_or_default());
     match (call.name.as_deref(), call.kind) {
-        (Some(AGY_SEND), _) => (
-            CLAUDE_SEND.to_owned(),
-            json!({"to": field("to"), "message": field("message")}),
-        ),
-        (Some(AGY_LIST), _) => (CLAUDE_LIST.to_owned(), json!({})),
-        (Some("run_command"), _) | (None, Some(ToolKind::Execute)) => (
-            "Bash".to_owned(),
-            json!({
-                "command": input.get("CommandLine").cloned().unwrap_or_else(title),
-                "description": field("toolSummary"),
-            }),
-        ),
-        (Some("read_file" | "view_file"), _) | (None, Some(ToolKind::Read)) => (
-            "Read".to_owned(),
-            json!({"file_path": path().unwrap_or_else(title)}),
-        ),
-        // Appending (agy's `Append`) adds to the file: as an edit that adds the lines, not a
-        // Write, which would read as the whole file.
-        (Some("write_file"), _) if input.get("Append") == Some(&Value::Bool(true)) => (
-            "Edit".to_owned(),
-            json!({
-                "file_path": path().unwrap_or_else(title),
-                "old_string": "",
-                "new_string": field("Content"),
-            }),
-        ),
-        (Some("write_file"), _) => (
-            "Write".to_owned(),
-            json!({"file_path": path().unwrap_or_else(title), "content": field("Content")}),
-        ),
-        (Some("edit_file"), _) => (
-            "Edit".to_owned(),
-            json!({
-                "file_path": path().unwrap_or_else(title),
-                "old_string": field("Target"),
-                "new_string": field("Replacement"),
-            }),
-        ),
         (Some(name), _) => (name.to_owned(), input),
+        (None, Some(ToolKind::Execute)) => (
+            "Bash".to_owned(),
+            json!({"command": title(), "description": Value::Null}),
+        ),
+        (None, Some(ToolKind::Read)) => {
+            let location = call
+                .locations
+                .as_ref()
+                .and_then(|locations| locations.first())
+                .map(|location| json!(location.path));
+            (
+                "Read".to_owned(),
+                json!({"file_path": location.unwrap_or_else(title)}),
+            )
+        }
         (None, _) => (
             call.title.clone().unwrap_or_else(|| "tool".to_owned()),
             input,
@@ -1232,11 +1211,13 @@ fn unwrapped(content: &str) -> (Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external::acp::Location;
 
     const ID: &str = "11111111-2222-4333-8444-555555555555";
 
     fn translator(start: Start) -> Translator {
         Translator::new(
+            Agent::Agy,
             SessionId::try_from(ID.to_owned()).expect("an id"),
             PathBuf::from("/work"),
             start,
@@ -1253,7 +1234,7 @@ mod tests {
             .iter()
             .filter_map(|effect| match effect {
                 Effect::ToWindow(line) => Some(line),
-                Effect::ToAgy(_)
+                Effect::ToAgent(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
                 | Effect::List(_) => None,
@@ -1261,11 +1242,11 @@ mod tests {
             .collect()
     }
 
-    fn agy_lines(effects: &[Effect]) -> Vec<&Value> {
+    fn agent_lines(effects: &[Effect]) -> Vec<&Value> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                Effect::ToAgy(line) => Some(line),
+                Effect::ToAgent(line) => Some(line),
                 Effect::ToWindow(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
@@ -1291,8 +1272,8 @@ mod tests {
     fn opened() -> Translator {
         let mut translator = translator(Start::New);
         translator.start();
-        translator.agy_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
-        translator.agy_said(
+        translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
+        translator.agent_said(
             r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","models":{"availableModels":[{"modelId":"gemini-3.8-flash-high","name":"Gemini 3.8 Flash (High)"}],"currentModelId":"gemini-3.8-flash-high"}}}"#,
         );
         translator
@@ -1309,8 +1290,8 @@ mod tests {
         );
         assert!(early.is_empty());
         let initialized =
-            translator.agy_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
-        let asked = agy_lines(&initialized);
+            translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
+        let asked = agent_lines(&initialized);
         assert_eq!(
             asked.first().and_then(|line| line.get("method")),
             Some(&json!("session/new"))
@@ -1321,7 +1302,7 @@ mod tests {
                 .and_then(|line| line.pointer("/params/mcpServers/0/args/0")),
             Some(&json!(super::super::TOOL_FLAG))
         );
-        let opened = translator.agy_said(
+        let opened = translator.agent_said(
             r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","models":{"availableModels":[{"modelId":"m1","name":"Model one"}],"currentModelId":"m1"}}}"#,
         );
         let answer = window_lines(&opened)
@@ -1336,9 +1317,10 @@ mod tests {
             .iter()
             .find_map(|effect| match effect {
                 Effect::Transcript(line) => Some(line),
-                Effect::ToAgy(_) | Effect::ToWindow(_) | Effect::Send { .. } | Effect::List(_) => {
-                    None
-                }
+                Effect::ToAgent(_)
+                | Effect::ToWindow(_)
+                | Effect::Send { .. }
+                | Effect::List(_) => None,
             })
             .expect("a transcript line");
         assert_eq!(first.get("agySessionId"), Some(&json!("s")));
@@ -1354,7 +1336,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"Count the lines"},"parent_tool_use_id":null,"session_id":"x"}"#,
         );
         assert_eq!(kinds(&window_lines(&prompted)), ["system"]);
-        let prompt = agy_lines(&prompted)
+        let prompt = agent_lines(&prompted)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/prompt")))
             .expect("agy prompted");
@@ -1370,9 +1352,9 @@ mod tests {
             let line = format!(
                 r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s","update":{update}}}}}"#
             );
-            lines.extend(translator.agy_said(&line));
+            lines.extend(translator.agent_said(&line));
         }
-        lines.extend(translator.agy_said(&format!(
+        lines.extend(translator.agent_said(&format!(
             r#"{{"jsonrpc":"2.0","id":{prompt_id},"result":{{"stopReason":"end_turn","usage":{{"inputTokens":10,"outputTokens":2}}}}}}"#
         )));
         let window = window_lines(&lines);
@@ -1416,7 +1398,7 @@ mod tests {
     fn edualcs_own_tools_go_without_asking() {
         let mut translator = opened();
         translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
-        let asked = translator.agy_said(
+        let asked = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c3","name":"mcp_edualc_list_sessions","kind":"other","status":"pending","title":"list_sessions","rawInput":{}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"8"}"#,
         );
         assert!(
@@ -1426,7 +1408,7 @@ mod tests {
             "the window wasn't asked"
         );
         assert_eq!(
-            agy_lines(&asked)
+            agent_lines(&asked)
                 .first()
                 .and_then(|line| line.pointer("/result/outcome/optionId")),
             Some(&json!("allow"))
@@ -1439,7 +1421,7 @@ mod tests {
     fn permissions_go_through_the_window() {
         let mut translator = opened();
         translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
-        let asked = translator.agy_said(
+        let asked = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c2","name":"run_command","kind":"execute","status":"pending","title":"touch /tmp/x","rawInput":{"CommandLine":"touch /tmp/x"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"7"}"#,
         );
         let request = window_lines(&asked)
@@ -1455,12 +1437,12 @@ mod tests {
             r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"deny","message":"no"}}}}}}"#
         ));
         assert_eq!(
-            agy_lines(&denied)
+            agent_lines(&denied)
                 .first()
                 .and_then(|line| line.pointer("/result/outcome/optionId")),
             Some(&json!("deny"))
         );
-        let failed = translator.agy_said(
+        let failed = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c2","status":"failed","content":[]}}}"#,
         );
         assert_eq!(
@@ -1480,12 +1462,12 @@ mod tests {
             let mut translator = opened();
             let prompted = translator
                 .window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
-            let prompt_id = agy_lines(&prompted)
+            let prompt_id = agent_lines(&prompted)
                 .into_iter()
                 .find(|line| line.get("method") == Some(&json!("session/prompt")))
                 .and_then(|line| line.get("id").cloned())
                 .expect("prompted");
-            let ended = translator.agy_said(&format!(
+            let ended = translator.agent_said(&format!(
                 r#"{{"jsonrpc":"2.0","id":{prompt_id},"error":{error}}}"#
             ));
             let lines: Vec<Value> = window_lines(&ended).into_iter().cloned().collect();
@@ -1530,7 +1512,7 @@ mod tests {
         let mut translator = opened();
         let first = translator
             .window_said(r#"{"type":"user","message":{"role":"user","content":"hello"}}"#);
-        let prompt_id = agy_lines(&first)
+        let prompt_id = agent_lines(&first)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/prompt")))
             .and_then(|line| line.get("id").cloned())
@@ -1546,11 +1528,11 @@ mod tests {
             shown.first().and_then(|line| line.pointer("/origin/body")),
             Some(&json!("Hi there"))
         );
-        assert!(agy_lines(&peer).is_empty(), "agy is busy");
-        let ended = translator.agy_said(&format!(
+        assert!(agent_lines(&peer).is_empty(), "agy is busy");
+        let ended = translator.agent_said(&format!(
             r#"{{"jsonrpc":"2.0","id":{prompt_id},"result":{{"stopReason":"end_turn"}}}}"#
         ));
-        let next = agy_lines(&ended)
+        let next = agent_lines(&ended)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/prompt")))
             .expect("the peer's message prompted");
@@ -1581,7 +1563,7 @@ mod tests {
     fn the_tools_answer_is_the_calls_result() {
         let mut translator = opened();
         translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
-        translator.agy_said(
+        translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c3","name":"mcp_edualc_send_message","kind":"other","status":"in_progress","rawInput":{"to":"calm-heron","message":"hi"}}}}"#,
         );
         translator.tool_called(CallId(9), "calm-heron".to_owned(), "hi".to_owned());
@@ -1592,7 +1574,7 @@ mod tests {
                 error: false,
             },
         );
-        let ended = translator.agy_said(
+        let ended = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c3","status":"completed"}}}"#,
         );
         assert_eq!(
@@ -1613,25 +1595,65 @@ mod tests {
             raw_input: Some(input),
             ..ToolCall::default()
         };
-        let (name, input) = as_claude_tool(&call(
-            "write_file",
-            json!({"Append": true, "Content": "three\n", "Path": "/w/f.txt"}),
-        ));
+        let (name, input) = as_claude_tool(
+            Agent::Agy,
+            &call(
+                "write_file",
+                json!({"Append": true, "Content": "three\n", "Path": "/w/f.txt"}),
+            ),
+        );
         assert_eq!(name, "Edit");
         assert_eq!(input.get("old_string"), Some(&json!("")));
         assert_eq!(input.get("new_string"), Some(&json!("three\n")));
-        let (name, input) = as_claude_tool(&call(
-            "write_file",
-            json!({"Content": "hi\n", "Overwrite": true, "Path": "/w/hello.txt"}),
-        ));
+        let (name, input) = as_claude_tool(
+            Agent::Agy,
+            &call(
+                "write_file",
+                json!({"Content": "hi\n", "Overwrite": true, "Path": "/w/hello.txt"}),
+            ),
+        );
         assert_eq!(name, "Write");
         assert_eq!(input.get("content"), Some(&json!("hi\n")));
-        let (name, input) = as_claude_tool(&call(
-            "edit_file",
-            json!({"Path": "/w/f.txt", "Replacement": "two\nthree", "Target": "two"}),
-        ));
+        let (name, input) = as_claude_tool(
+            Agent::Agy,
+            &call(
+                "edit_file",
+                json!({"Path": "/w/f.txt", "Replacement": "two\nthree", "Target": "two"}),
+            ),
+        );
         assert_eq!(name, "Edit");
         assert_eq!(input.get("old_string"), Some(&json!("two")));
+    }
+
+    /// A tool call without the agent's own name reads by ACP's kind: a command as Bash with its
+    /// title, a read as Read of its first location.
+    #[test]
+    fn unnamed_tools_read_by_their_kind() {
+        let (name, input) = as_claude_tool(
+            Agent::Agy,
+            &ToolCall {
+                tool_call_id: "c".to_owned(),
+                title: Some("ls -la".to_owned()),
+                kind: Some(ToolKind::Execute),
+                ..ToolCall::default()
+            },
+        );
+        assert_eq!(name, "Bash");
+        assert_eq!(input.get("command"), Some(&json!("ls -la")));
+        let (name, input) = as_claude_tool(
+            Agent::Agy,
+            &ToolCall {
+                tool_call_id: "c".to_owned(),
+                title: Some("Read f.txt".to_owned()),
+                kind: Some(ToolKind::Read),
+                locations: Some(vec![Location {
+                    path: PathBuf::from("/w/f.txt"),
+                }]),
+                ..ToolCall::default()
+            },
+        );
+        assert_eq!(name, "Read");
+        assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
     }
 
     /// A `!` command is told as not run, in the rows the window reads a command's run from,
@@ -1642,7 +1664,7 @@ mod tests {
         let refused = translator.window_said(
             r#"{"type":"bash_command","command":"ls <dir>","uuid":"00000000-0000-4000-8000-000000000000"}"#,
         );
-        assert!(agy_lines(&refused).is_empty());
+        assert!(agent_lines(&refused).is_empty());
         let rows: Vec<&str> = window_lines(&refused)
             .iter()
             .filter_map(|line| line.pointer("/message/content").and_then(Value::as_str))
@@ -1660,14 +1682,14 @@ mod tests {
         let mut translator = translator(Start::Resume("s".to_owned()));
         translator.start();
         let loading =
-            translator.agy_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
+            translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
         assert_eq!(
-            agy_lines(&loading)
+            agent_lines(&loading)
                 .first()
                 .and_then(|line| line.get("method")),
             Some(&json!("session/load"))
         );
-        let replayed = translator.agy_said(
+        let replayed = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old"}}}}"#,
         );
         assert!(replayed.is_empty());
@@ -1682,8 +1704,8 @@ mod tests {
         translator.window_said(
             r#"{"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}"#,
         );
-        translator.agy_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
-        let opened = translator.agy_said(
+        translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
+        let opened = translator.agent_said(
             r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","modes":{"availableModes":[{"id":"default","name":"Default","description":"Ask before acting"},{"id":"accept-edits","name":"Accept edits"}],"currentModeId":"default"}}}"#,
         );
         let answer = window_lines(&opened)
@@ -1704,7 +1726,7 @@ mod tests {
         let asked = translator.window_said(
             r#"{"type":"control_request","request_id":"r2","request":{"subtype":"set_program_mode","mode":"accept-edits"}}"#,
         );
-        let set_mode = agy_lines(&asked)
+        let set_mode = agent_lines(&asked)
             .into_iter()
             .find(|line| line.get("method") == Some(&json!("session/set_mode")))
             .expect("agy asked to switch");
@@ -1714,7 +1736,7 @@ mod tests {
         );
         let rpc = set_mode.get("id").and_then(Value::as_u64).expect("an id");
         let switched =
-            translator.agy_said(&format!(r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{}}}}"#));
+            translator.agent_said(&format!(r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{}}}}"#));
         assert_eq!(
             window_lines(&switched)
                 .first()
@@ -1734,7 +1756,7 @@ mod tests {
         let claudes = translator.window_said(
             r#"{"type":"control_request","request_id":"r4","request":{"subtype":"set_permission_mode","mode":"plan"}}"#,
         );
-        assert!(agy_lines(&claudes).is_empty());
+        assert!(agent_lines(&claudes).is_empty());
         assert_eq!(
             window_lines(&claudes)
                 .first()
@@ -1742,7 +1764,7 @@ mod tests {
             Some(&json!("error"))
         );
 
-        let changed = translator.agy_said(
+        let changed = translator.agent_said(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}"#,
         );
         let told = window_lines(&changed);

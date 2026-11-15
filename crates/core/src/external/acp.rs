@@ -1,7 +1,7 @@
-//! The Agent Client Protocol (agentclientprotocol.com) as `agy acp` speaks it (agy 1.5.6):
-//! JSON-RPC 2.0, one message per line on stdio. Only what edualcd's agy adapter reads;
-//! what it sends it writes itself. agy adds keys of its own (a tool call's `name` and its
-//! arguments by agy's names), read where they say more than the protocol's.
+//! The Agent Client Protocol (agentclientprotocol.com) as edualc's ACP adapter reads it:
+//! JSON-RPC 2.0, one message per line on stdio. Only what the adapter reads; what it sends it
+//! writes itself. Agents add keys of their own (a tool call's `name` and its arguments by the
+//! agent's names), read where they say more than the protocol's.
 
 use std::path::PathBuf;
 
@@ -55,13 +55,9 @@ impl RpcError {
     /// ACP's error for a request the agent can't serve before the client authenticates.
     const AUTH_REQUIRED: i64 = -32000;
 
-    /// Whether agy refused for want of a valid sign-in: ACP's `auth_required`, or agy's own
-    /// words for a token Google's API refused (`UNAUTHENTICATED`, HTTP 401) or for no sign-in
-    /// at all.
+    /// Whether the agent refused for want of a valid sign-in, as ACP's code says.
     pub fn sign_in_refused(&self) -> bool {
         self.code == Self::AUTH_REQUIRED
-            || self.message.contains("UNAUTHENTICATED")
-            || self.message.contains("not logged into Antigravity")
     }
 }
 

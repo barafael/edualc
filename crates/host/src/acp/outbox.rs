@@ -1,4 +1,4 @@
-//! What an agy session sends to other sessions with edualc's messaging tool (see
+//! What an ACP session sends to other sessions with edualc's messaging tool (see
 //! [`super::tool`]): a message posted into the recipient's inbox as Claude Code's own sessions post
 //! one, in its envelope, which names the session and the inbox to answer at; and the list of the
 //! sessions running. Read off the records Claude Code keeps in `~/.claude/sessions` (see
@@ -26,7 +26,7 @@ const KEY_BYTES: u64 = 4 * 1024;
 /// How long posting into an inbox may take.
 const POSTING: Duration = Duration::from_secs(2);
 
-/// What agy gives `send_message`.
+/// What the agent gives `send_message`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct SendArguments {
     pub(super) to: String,
@@ -69,7 +69,7 @@ impl Outcome {
     }
 }
 
-/// Why a message isn't delivered: told to agy as the call's error.
+/// Why a message isn't delivered: told to the agent as the call's error.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Refusal {
     #[error("send_message takes `to` and `message`, both text.")]
@@ -159,7 +159,7 @@ const ENVELOPE: &str = "cross-session-message";
 /// sent it and answer it: the envelope, with the sender's inbox (`from`), name and permission
 /// class (`from-mode`), then the text. Claude Code tells sessions apart by that class when one
 /// messages another: a receiver holds a message from another class, and, running with
-/// permissions bypassed, one that names none. An agy session asks before its commands, so its
+/// permissions bypassed, one that names none. An ACP session asks before its commands, so its
 /// class is `prompting`. Claude Code reads an envelope back only in exactly the form it writes
 /// one, attributes in this order and the text escaped as [`escaped`] does; anything else
 /// reaches the session as plain text.

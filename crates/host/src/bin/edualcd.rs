@@ -1,6 +1,6 @@
 //! The daemon, `edualcd`, which the first window starts beside itself (or as the image
-//! decoder, confined: see `decode`; or as an agy session's adapter or its messaging tool: see
-//! `agy`).
+//! decoder, confined: see `decode`; or as an ACP session's adapter or its messaging tool: see
+//! `acp`).
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -10,11 +10,11 @@ fn main() -> std::process::ExitCode {
         )
         .with_writer(std::io::stderr)
         .init();
-    // An agy session's adapter, which the daemon starts in place of claude, and the messaging
-    // tool it gives agy (see `agy`).
+    // An ACP session's adapter, which the daemon starts in place of claude, and the messaging
+    // tool it gives the agent (see `acp`).
     match std::env::args().nth(1).as_deref() {
-        Some(edualc_host::agy::ADAPTER_FLAG) => return edualc_host::agy::run_adapter(),
-        Some(edualc_host::agy::TOOL_FLAG) => return edualc_host::agy::run_tool(),
+        Some(edualc_host::acp::ADAPTER_FLAG) => return edualc_host::acp::run_adapter(),
+        Some(edualc_host::acp::TOOL_FLAG) => return edualc_host::acp::run_tool(),
         Some(_) | None => {}
     }
     if let Some(job) = std::env::args()

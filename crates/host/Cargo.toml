@@ -1,6 +1,6 @@
 [package]
 name = "edualc-host"
-description = "edualc's daemon: runs Claude Code (and agy) for the windows, reads its files for them, does what the desktop is asked"
+description = "edualc's daemon: runs Claude Code (and ACP agents) for the windows, reads its files for them, does what the desktop is asked"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -26,8 +26,10 @@ zeroize = "1.9"
 sha2 = "0.11"
 getrandom = { version = "0.4", features = ["std"] }
 subtle = "2.6"
-# An agy session's adapter's command line.
+# An ACP session's adapter's command line.
 clap.workspace = true
+# The agents edualc runs through ACP, named by their variants.
+strum = { version = "0.28", features = ["derive"] }
 # Opens links in the browser.
 open = "5"
 # The desktop's own folder picker, through its portal on Linux.

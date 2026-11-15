@@ -1,6 +1,6 @@
-//! An agy session's inbox, as a Claude Code session's (2.1.322): a socket in the messaging
+//! An ACP session's inbox, as a Claude Code session's (2.1.322): a socket in the messaging
 //! folder, a record in `~/.claude/sessions` naming it, and a key beside the record with the
-//! token a peer authenticates with. Other sessions, Claude Code's own and agy's, find the
+//! token a peer authenticates with. Other sessions, Claude Code's own and ACP agents', find the
 //! session by its name there and post into it as they post into each other's: an `auth`
 //! line, then `user` lines. The adapter serves it, and removes the files as it ends.
 
