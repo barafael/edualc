@@ -1,0 +1,32 @@
+id: no-json-macro
+snapshots:
+  "fn line() -> Value { json!({\"type\": \"result\"}) }\n":
+    labels:
+    - source: "json!({\"type\": \"result\"})"
+      style: primary
+      start: 21
+      end: 46
+    - source: json
+      style: secondary
+      start: 21
+      end: 25
+  "fn line() -> Value { serde_json::json!({\"type\": \"result\"}) }\n":
+    labels:
+    - source: "serde_json::json!({\"type\": \"result\"})"
+      style: primary
+      start: 21
+      end: 58
+    - source: serde_json::json
+      style: secondary
+      start: 21
+      end: 37
+  "mod helpers {\n    fn line() -> Value { json!({\"type\": \"result\"}) }\n}\n":
+    labels:
+    - source: "json!({\"type\": \"result\"})"
+      style: primary
+      start: 39
+      end: 64
+    - source: json
+      style: secondary
+      start: 39
+      end: 43

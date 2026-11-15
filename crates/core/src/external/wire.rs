@@ -64,7 +64,7 @@ impl SessionId {
 }
 
 /// A tool call, which permission requests and results refer back to.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize, Serialize, derive_more::From)]
 #[serde(transparent)]
 pub struct ToolUseId(String);
 
@@ -92,7 +92,7 @@ pub struct TaskId(String);
 pub struct ModeId(String);
 
 /// A mode an agent program offers, as its adapter reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProgramMode {
     pub id: ModeId,
     pub name: String,
@@ -102,7 +102,7 @@ pub struct ProgramMode {
 
 /// The modes an agent program offers and the one it is in, as its adapter reports them in
 /// its `initialize` answer.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProgramModes {
     pub offered: Vec<ProgramMode>,
     #[serde(default)]
@@ -110,7 +110,7 @@ pub struct ProgramModes {
 }
 
 /// An API message, whose stream events and complete copy arrive separately.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize, Serialize, derive_more::From)]
 #[serde(transparent)]
 pub struct MessageId(String);
 
@@ -131,8 +131,10 @@ pub struct RequestId(String);
 
 /// A tool Claude calls, as the CLI names it; an MCP tool (`mcp__<server>__<tool>`) or one this
 /// window doesn't know keeps its name.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, strum::EnumString, strum::Display)]
-#[serde(from = "String")]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Deserialize, Serialize, strum::EnumString, strum::Display,
+)]
+#[serde(from = "String", into = "String")]
 pub enum ToolName {
     Bash,
     BashOutput,
@@ -169,6 +171,12 @@ pub enum ToolName {
 impl From<String> for ToolName {
     fn from(name: String) -> Self {
         name.parse().unwrap_or(Self::Other(name))
+    }
+}
+
+impl From<ToolName> for String {
+    fn from(name: ToolName) -> Self {
+        name.to_string()
     }
 }
 
@@ -236,7 +244,7 @@ impl ToolName {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
     StreamEvent {
@@ -271,7 +279,7 @@ pub enum Message {
 }
 
 /// A raw API stream event.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     MessageStart {
@@ -292,12 +300,12 @@ pub enum StreamEvent {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MessageStart {
     pub id: MessageId,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
     #[serde(rename = "text_delta")]
@@ -310,7 +318,7 @@ pub enum Delta {
     Other,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
@@ -349,7 +357,7 @@ pub enum ContentBlock {
 
 /// Where an image in a message has its bytes. Its media type isn't taken: the decoder tells
 /// from the bytes.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReceivedImage {
     Base64 {
@@ -359,7 +367,7 @@ pub enum ReceivedImage {
     Other,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiMessage {
     #[serde(default)]
     pub id: MessageId,
@@ -369,7 +377,7 @@ pub struct ApiMessage {
     pub usage: Usage,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 pub struct Usage {
     #[serde(default)]
     pub input_tokens: u64,
@@ -391,13 +399,13 @@ impl Usage {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserMessage {
     pub content: UserContent,
 }
 
 /// Why Claude Code wrote an assistant message itself, as far as the window tells them apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantError {
     /// Not signed in, or the API refused the sign-in.
@@ -410,7 +418,7 @@ pub enum AssistantError {
 
 /// A user-role message on the stream: a tool's result, a command's output, or (asked for with
 /// `--replay-user-messages`) Claude Code's echo of a message it took in.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct UserLine {
     pub message: UserMessage,
     #[serde(default, rename = "isReplay")]
@@ -419,9 +427,41 @@ pub struct UserLine {
     origin: Option<MessageOrigin>,
 }
 
+impl UserLine {
+    /// A line of the session's own: a tool's result.
+    pub fn of_session(content: UserContent) -> Self {
+        Self {
+            message: UserMessage { content },
+            is_replay: false,
+            origin: None,
+        }
+    }
+
+    /// A line echoed as Claude Code echoes what it took in, as a `!` command's rows are.
+    pub fn replayed(content: UserContent) -> Self {
+        Self {
+            message: UserMessage { content },
+            is_replay: true,
+            origin: None,
+        }
+    }
+
+    /// Another session's message, in its envelope (`content`), with the sender's name and the
+    /// message without the envelope.
+    pub fn from_peer(content: String, name: Option<String>, body: Option<String>) -> Self {
+        Self {
+            message: UserMessage {
+                content: UserContent::Text(content),
+            },
+            is_replay: true,
+            origin: Some(MessageOrigin::Peer { name, body }),
+        }
+    }
+}
+
 /// Where a user-role message came from (`SDKMessageOrigin`), as far as the window tells them
 /// apart.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MessageOrigin {
     /// Another session, through this one's inbox. `name` is what the sender calls itself, and
@@ -471,14 +511,14 @@ impl UserLine {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum UserContent {
     Text(String),
     Blocks(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub enum System {
     /// Sent at the start of every turn.
@@ -563,7 +603,7 @@ pub enum System {
 }
 
 /// Why Claude Code tries a request to the API again, as it sorts the failure.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryCause {
     Overloaded,
@@ -578,7 +618,7 @@ pub enum RetryCause {
 }
 
 /// What a task used so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TaskUsage {
     #[serde(default)]
     pub total_tokens: u64,
@@ -589,7 +629,7 @@ pub struct TaskUsage {
 }
 
 /// What `GetTaskOutput` answers: the end of what the command printed, escape sequences and all.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TaskOutput {
     pub output: String,
     /// The size of all it printed.
@@ -600,7 +640,7 @@ pub struct TaskOutput {
 }
 
 /// What changed about a task.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TaskPatch {
     #[serde(default)]
     pub status: Option<TaskStatus>,
@@ -609,7 +649,7 @@ pub struct TaskPatch {
     pub is_backgrounded: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
@@ -630,7 +670,7 @@ impl TaskStatus {
 }
 
 /// A task Claude Code runs in the background, as its list names it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BackgroundTask {
     pub task_id: TaskId,
     pub task_type: TaskKind,
@@ -644,7 +684,7 @@ pub struct BackgroundTask {
     pub ambient: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     LocalAgent,
@@ -669,7 +709,7 @@ impl TaskKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Progress {
     Started,
@@ -679,7 +719,7 @@ pub enum Progress {
 }
 
 /// The answer to a `side_question` (the CLI's `/btw`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SideAnswer {
     pub response: String,
     /// Made up by the CLI rather than the model, e.g. "No answer available".
@@ -687,7 +727,7 @@ pub struct SideAnswer {
     pub synthetic: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Activity {
     Requesting,
@@ -696,7 +736,7 @@ pub enum Activity {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TurnResult {
     pub subtype: ResultKind,
     #[serde(default)]
@@ -707,9 +747,10 @@ pub struct TurnResult {
     pub total_cost_usd: Option<f64>,
     #[serde(default, rename = "modelUsage")]
     pub model_usage: HashMap<String, ModelUsage>,
-    /// The HTTP status of the API's answer a failed turn ended on.
+    /// The HTTP status of the API's answer a failed turn ended on; read through
+    /// [`TurnResult::sign_in_refused`].
     #[serde(default)]
-    api_error_status: Option<u16>,
+    pub api_error_status: Option<u16>,
 }
 
 impl TurnResult {
@@ -726,7 +767,7 @@ impl TurnResult {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultKind {
     Success,
@@ -736,25 +777,25 @@ pub enum ResultKind {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ModelUsage {
     #[serde(rename = "contextWindow")]
     pub context_window: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct RateLimits {
     #[serde(default, rename = "unifiedWindows")]
     pub windows: LimitWindows,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct LimitWindows {
     pub five_hour: Option<LimitWindow>,
     pub seven_day: Option<LimitWindow>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LimitWindow {
     /// Used, from 0 to 1 (as Slint takes it, for a bar).
     pub utilization: Option<f32>,
@@ -767,7 +808,7 @@ pub struct LimitWindow {
     pub resets_at: Option<jiff::Timestamp>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub enum IncomingRequest {
     CanUseTool {
@@ -785,7 +826,7 @@ pub enum IncomingRequest {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub enum ControlResponse {
     Success {
@@ -801,7 +842,7 @@ pub enum ControlResponse {
 }
 
 /// The answer to `initialize`: what the CLI offers.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Initialized {
     #[serde(default)]
     pub models: Vec<ModelInfo>,
@@ -817,7 +858,7 @@ pub struct Initialized {
     pub program_modes: Option<ProgramModes>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ModelInfo {
     pub value: String,
     #[serde(rename = "displayName")]
@@ -828,7 +869,7 @@ pub struct ModelInfo {
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CommandInfo {
     pub name: String,
     #[serde(default)]
@@ -837,7 +878,7 @@ pub struct CommandInfo {
     pub argument_hint: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Account {
     #[serde(default)]
     pub email: String,
@@ -850,7 +891,7 @@ pub struct Account {
 }
 
 /// The answer to `get_usage` (the CLI's `/usage`), as far as the window shows it.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct UsageReport {
     #[serde(default, deserialize_with = "null_as_default")]
     pub session: SessionUsage,
@@ -863,13 +904,13 @@ pub struct UsageReport {
     pub behaviors: Behaviors,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct RateLimitReport {
     #[serde(default)]
     pub limits: Vec<PlanLimit>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct SessionUsage {
     #[serde(default)]
     pub total_cost_usd: f64,
@@ -886,7 +927,7 @@ pub struct SessionUsage {
 }
 
 /// A model's share of the session, as `modelUsage` names it (camelCase) or snake_case.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ModelTokens {
     #[serde(default, alias = "inputTokens")]
     pub input_tokens: u64,
@@ -901,7 +942,7 @@ pub struct ModelTokens {
 }
 
 /// A limit of the plan: the session's five hours, the week's, the week's for one model.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PlanLimit {
     pub kind: LimitKind,
     #[serde(default)]
@@ -910,7 +951,7 @@ pub struct PlanLimit {
     pub scope: Option<LimitScope>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LimitKind {
     /// The five hours a session window lasts.
@@ -922,24 +963,24 @@ pub enum LimitKind {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LimitScope {
     pub model: Option<ScopeModel>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ScopeModel {
     pub display_name: Option<String>,
 }
 
 /// How the account was used over the last day and week, with what the CLI recommends.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Behaviors {
     pub day: Option<Period>,
     pub week: Option<Period>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Period {
     #[serde(default)]
     pub request_count: u64,
@@ -953,7 +994,7 @@ pub struct Period {
     pub skills: Vec<Share>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Recommendation {
     pub title: String,
     #[serde(default)]
@@ -963,7 +1004,7 @@ pub struct Recommendation {
     pub pct: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Share {
     pub name: String,
     #[serde(default)]
@@ -971,7 +1012,7 @@ pub struct Share {
 }
 
 /// The answer to `get_context_usage` (the CLI's `/context`).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextReport {
     #[serde(default)]
@@ -982,7 +1023,7 @@ pub struct ContextReport {
     pub max_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ContextCategory {
     pub name: String,
     #[serde(default)]
@@ -991,7 +1032,7 @@ pub struct ContextCategory {
     pub kind: ContextKind,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextKind {
     #[default]
@@ -1006,7 +1047,7 @@ pub enum ContextKind {
 }
 
 /// A rule the CLI suggests remembering, as far as the window names it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Suggestion {
     AddRules {
@@ -1027,7 +1068,7 @@ pub enum Suggestion {
 }
 
 /// Where a remembered rule is kept, and so for how long it holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleDestination {
     #[default]
@@ -1064,7 +1105,7 @@ impl Offered {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Rule {
     #[serde(rename = "toolName")]
     pub tool_name: String,
@@ -1153,7 +1194,7 @@ pub struct PlanInput {
 }
 
 /// A line of a saved transcript (`~/.claude/projects/<project>/<id>.jsonl`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum TranscriptLine {
     User {
@@ -1188,11 +1229,28 @@ pub enum TranscriptLine {
         #[serde(rename = "worktreeSession")]
         worktree: Option<WorktreeSession>,
     },
+    /// edualcd's ACP adapter's own first line: the agent's id for the conversation, to load it
+    /// again. Named for agy, the adapter's first agent.
+    AgySession {
+        #[serde(rename = "agySessionId")]
+        agent_session_id: String,
+    },
     #[serde(other)]
     Other,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A transcript line as it is written: the line, and the session, folder and time it is of.
+#[derive(Debug, Serialize)]
+pub struct TranscriptEntry<'a> {
+    #[serde(flatten)]
+    pub line: &'a TranscriptLine,
+    #[serde(rename = "sessionId")]
+    pub session_id: &'a SessionId,
+    pub cwd: &'a std::path::Path,
+    pub timestamp: jiff::Timestamp,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorktreeSession {
     #[serde(rename = "worktreePath")]
     pub path: PathBuf,
@@ -1203,14 +1261,14 @@ pub struct WorktreeSession {
 }
 
 /// The folder a transcript line says the session worked in, read from its first lines.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TranscriptCwd {
     pub cwd: PathBuf,
 }
 
 /// Just enough of a line the process writes, or is sent, to tell its `init` and its permission
 /// requests and their answers apart; the daemon passes the line itself on as it is.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ControlPeek {
     #[serde(rename = "type")]
     pub kind: PeekedKind,
@@ -1224,7 +1282,7 @@ pub struct ControlPeek {
     pub task_id: Option<TaskId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeekedKind {
     System,
@@ -1239,7 +1297,7 @@ pub enum PeekedKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeekedSubtype {
     Init,
@@ -1252,7 +1310,7 @@ pub enum PeekedSubtype {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PeekedResponse {
     #[serde(default)]
     pub request_id: Option<String>,

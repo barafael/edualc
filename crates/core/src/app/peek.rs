@@ -451,6 +451,7 @@ fn steps(line: &TranscriptLine, cwd: &Path) -> Vec<Step> {
         | TranscriptLine::AiTitle { .. }
         | TranscriptLine::Summary { .. }
         | TranscriptLine::WorktreeState { .. }
+        | TranscriptLine::AgySession { .. }
         | TranscriptLine::Other => Vec::new(),
     }
 }

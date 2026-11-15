@@ -1,0 +1,20 @@
+id: no-json-macro
+valid:
+  - |
+    let line = serde_json::to_value(&message)?;
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn fixture() -> Value { json!({"type": "result"}) }
+    }
+  - |
+    let input: Value = call.raw_input.clone().unwrap_or(Value::Null);
+invalid:
+  - |
+    fn line() -> Value { json!({"type": "result"}) }
+  - |
+    fn line() -> Value { serde_json::json!({"type": "result"}) }
+  - |
+    mod helpers {
+        fn line() -> Value { json!({"type": "result"}) }
+    }

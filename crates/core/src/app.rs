@@ -97,7 +97,7 @@ impl PermissionMode {
 }
 
 /// The mode the CLI reports: one the menu knows, or one named as the CLI names it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum Mode {
     Known(PermissionMode),

@@ -824,6 +824,7 @@ impl Chat {
                 | TranscriptLine::AiTitle { .. }
                 | TranscriptLine::Summary { .. }
                 | TranscriptLine::WorktreeState { .. }
+                | TranscriptLine::AgySession { .. }
                 | TranscriptLine::Other => {}
             }
         }

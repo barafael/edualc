@@ -1362,6 +1362,183 @@ mod tests {
             .collect()
     }
 
+    /// The id of the last `session/prompt` among `effects`.
+    fn prompt_id(effects: &[Effect]) -> u64 {
+        agent_lines(effects)
+            .into_iter()
+            .rev()
+            .find(|line| line.get("method") == Some(&json!("session/prompt")))
+            .and_then(|line| line.get("id"))
+            .and_then(Value::as_u64)
+            .expect("a prompt")
+    }
+
+    /// Panics unless the window reads `line` as a line it knows, down to its blocks and events:
+    /// a line it doesn't know would parse as an `Other` and be dropped without a word.
+    fn read_by_the_window(line: &Value) {
+        use crate::external::wire::{
+            ContentBlock, Delta, IncomingRequest, Message, StreamEvent, System, UserContent,
+        };
+        let message: Message = serde_json::from_value(line.clone())
+            .unwrap_or_else(|error| panic!("the window can't read {line}: {error}"));
+        let blocks_known = |blocks: &[ContentBlock]| {
+            assert!(
+                !blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Other)),
+                "a block the window doesn't know in {line}"
+            );
+        };
+        match &message {
+            Message::Assistant { message, .. } => blocks_known(&message.content),
+            Message::User(user) => {
+                if let UserContent::Blocks(blocks) = &user.message.content {
+                    blocks_known(blocks);
+                }
+            }
+            Message::StreamEvent { event, .. } => {
+                assert!(
+                    !matches!(
+                        event,
+                        StreamEvent::Other
+                            | StreamEvent::ContentBlockDelta {
+                                delta: Delta::Other,
+                                ..
+                            }
+                    ),
+                    "an event the window doesn't know: {line}"
+                );
+                if let StreamEvent::ContentBlockStart { content_block, .. } = event {
+                    blocks_known(std::slice::from_ref(content_block));
+                }
+            }
+            Message::System(system) => {
+                assert!(
+                    !matches!(system, System::Other),
+                    "a system line the window doesn't know: {line}"
+                );
+            }
+            Message::ControlRequest { request, .. } => {
+                assert!(
+                    !matches!(request, IncomingRequest::Other),
+                    "a request the window doesn't know: {line}"
+                );
+            }
+            Message::Result(_)
+            | Message::ControlResponse { .. }
+            | Message::RateLimitEvent { .. }
+            | Message::ControlCancelRequest { .. } => {}
+            Message::Other => panic!("a line the window doesn't know: {line}"),
+        }
+    }
+
+    /// Panics unless the transcript's reader knows `line`.
+    fn read_from_the_transcript(line: &Value) {
+        use crate::external::wire::TranscriptLine;
+        let read: TranscriptLine = serde_json::from_value(line.clone())
+            .unwrap_or_else(|error| panic!("the transcript can't be read: {line}: {error}"));
+        assert!(
+            !matches!(read, TranscriptLine::Other),
+            "a transcript line its reader doesn't know: {line}"
+        );
+        assert!(
+            line.get("sessionId").is_some()
+                && line.get("cwd").is_some()
+                && line.get("timestamp").is_some(),
+            "a transcript line without its session, folder and time: {line}"
+        );
+    }
+
+    /// Every line the adapter writes for the window reads as a line of Claude Code's, and every
+    /// line it keeps as a transcript line: through a turn with streamed thinking and text, a
+    /// tool call asked about and answered, a mode and a title, another session's message, a `!`
+    /// command, a failed turn and one that went well.
+    #[test]
+    fn the_window_and_the_transcript_read_every_line() {
+        let mut translator = translator_for(Agent::Agy, Start::New);
+        let mut effects = translator.start();
+        effects.extend(translator.window_said(
+            r#"{"type":"control_request","request_id":"w1","request":{"subtype":"initialize"}}"#,
+        ));
+        effects.extend(
+            translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#),
+        );
+        effects.extend(translator.agent_said(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","models":{"availableModels":[{"modelId":"m1","name":"Model one"}],"currentModelId":"m1"},"modes":{"availableModes":[{"id":"fast","name":"Fast"}],"currentModeId":"fast"}}}"#,
+        ));
+        effects.extend(
+            translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#),
+        );
+        let first = prompt_id(&effects);
+        for update in [
+            r#"{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Hmm"}}"#,
+            r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Listing."}}"#,
+            r#"{"sessionUpdate":"tool_call","toolCallId":"c1","name":"run_command","kind":"execute","status":"pending","title":"ls","rawInput":{"CommandLine":"ls"}}"#,
+            r#"{"sessionUpdate":"current_mode_update","currentModeId":"fast"}"#,
+            r#"{"sessionUpdate":"session_info_update","title":"Listing files"}"#,
+        ] {
+            effects.extend(translator.agent_said(&format!(
+                r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s","update":{update}}}}}"#
+            )));
+        }
+        effects.extend(translator.agent_said(
+            r#"{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c1","title":"ls"},"options":[{"optionId":"a","name":"Allow","kind":"allow_once"},{"optionId":"r","name":"Reject","kind":"reject_once"}]}}"#,
+        ));
+        effects.extend(translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"a.txt"}}]}}}"#,
+        ));
+        effects.extend(translator.peer(
+            "<cross-session-message from=\"calm-heron\">hello</cross-session-message>".to_owned(),
+        ));
+        effects.extend(translator.window_said(
+            r#"{"type":"bash_command","command":"ls","uuid":"00000000-0000-4000-8000-000000000000"}"#,
+        ));
+        effects.extend(translator.agent_said(&format!(
+            r#"{{"jsonrpc":"2.0","id":{first},"error":{{"code":-32603,"message":"overloaded"}}}}"#
+        )));
+        let second = prompt_id(&effects);
+        effects.extend(translator.agent_said(&format!(
+            r#"{{"jsonrpc":"2.0","id":{second},"result":{{"stopReason":"end_turn"}}}}"#
+        )));
+        let mut window = std::collections::BTreeSet::new();
+        let mut transcript = std::collections::BTreeSet::new();
+        for effect in &effects {
+            match effect {
+                Effect::ToWindow(line) => {
+                    read_by_the_window(line);
+                    window.extend(kinds(&[line]));
+                }
+                Effect::Transcript(line) => {
+                    read_from_the_transcript(line);
+                    transcript.extend(kinds(&[line]));
+                }
+                Effect::ToAgent(_) | Effect::Send { .. } | Effect::List(_) => {}
+            }
+        }
+        let expected = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert_eq!(
+            window,
+            expected(&[
+                "assistant",
+                "control_request",
+                "control_response",
+                "result",
+                "stream_event:content_block_delta",
+                "stream_event:content_block_start",
+                "stream_event:content_block_stop",
+                "stream_event:message_start",
+                "system",
+                "user",
+            ])
+        );
+        assert_eq!(
+            transcript,
+            expected(&["agy-session", "ai-title", "assistant", "user"])
+        );
+    }
+
     /// A translator past `initialize` and `session/new`, its session `s`.
     fn opened() -> Translator {
         opened_with(Agent::Agy)

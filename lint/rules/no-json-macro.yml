@@ -1,0 +1,28 @@
+id: no-json-macro
+language: Rust
+severity: error
+message: "json! writes JSON by hand, which the compiler doesn't check: build a typed value that derives Serialize (the wire's types are in crates/core/src/external)"
+note: "Tests may use it for what an agent or the CLI sends. Data that is open by nature, such as a tool's raw input, stays a serde_json::Value that is passed on, not built."
+files:
+  - "**/src/**"
+# Known debt, each file to be typed and taken off this list: the browser demo's stand-in Claude,
+# and edualcd's ACP adapter (being typed on branch acp-adapter, 2026-11-15).
+ignores:
+  - "crates/slint/src/web/**"
+  - "crates/host/src/acp.rs"
+  - "crates/host/src/acp/translate.rs"
+  - "crates/host/src/acp/tool.rs"
+  - "crates/host/src/acp/outbox.rs"
+  - "crates/core/src/present/presenter.rs"
+rule:
+  kind: macro_invocation
+  has:
+    field: macro
+    regex: '^(serde_json::)?json$'
+  not:
+    inside:
+      stopBy: end
+      kind: mod_item
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(test\)'
