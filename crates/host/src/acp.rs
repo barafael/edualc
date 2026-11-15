@@ -605,13 +605,18 @@ impl Out {
     async fn carry_out(&mut self, translator: &mut Translator, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
-                Effect::ToAgent(line) => {
-                    if let Some(agent) = self.agent.as_mut()
-                        && write_line(agent, &line).await.is_err()
-                    {
-                        tracing::debug!("the agent's input closed");
+                Effect::ToAgent(message) => match message.to_line() {
+                    Ok(line) => {
+                        if let Some(agent) = self.agent.as_mut()
+                            && write_line(agent, &line).await.is_err()
+                        {
+                            tracing::debug!("the agent's input closed");
+                        }
                     }
-                }
+                    Err(error) => {
+                        tracing::warn!(%error, "a line for the agent that can't be written: not sent");
+                    }
+                },
                 Effect::ToWindow(line) => {
                     if write_line(&mut self.window, &line).await.is_err() {
                         tracing::debug!("the window's side closed");
@@ -683,7 +688,7 @@ impl Out {
 
 async fn write_line(
     to: &mut (impl tokio::io::AsyncWrite + Unpin),
-    line: &Value,
+    line: &impl std::fmt::Display,
 ) -> std::io::Result<()> {
     to.write_all(format!("{line}\n").as_bytes()).await?;
     to.flush().await

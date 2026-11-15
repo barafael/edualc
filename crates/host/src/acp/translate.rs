@@ -19,13 +19,15 @@ use crate::external::acp::{
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
 use crate::external::tool_input::{BashInput, KnownCall, ReadInput};
-use crate::external::wire::SessionId;
+use crate::external::wire::{MediaType, SessionId};
 
 use super::{Agent, CLAUDE_LIST, CLAUDE_SEND, first_location};
 
 /// What a denied tool call's result says, as Claude Code words it: the window shows such a
 /// call as denied.
 const DENIED: &str = "The user doesn't want to proceed with this tool use.";
+/// JSON-RPC's code for a method the receiver doesn't have.
+const METHOD_NOT_FOUND: i64 = -32601;
 /// The envelope a message from another session comes in (see [`super::outbox`]).
 const ENVELOPE_OPEN: &str = "<cross-session-message";
 const ENVELOPE_CLOSE: &str = "</cross-session-message>";
@@ -54,7 +56,7 @@ pub struct ToolServer {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
     /// A line to the agent.
-    ToAgent(Value),
+    ToAgent(acp::ToAgent),
     /// A line to the window, through the daemon.
     ToWindow(Value),
     /// A line for the transcript.
@@ -111,7 +113,10 @@ enum Asked {
 #[derive(Debug, Clone, PartialEq)]
 enum Queued {
     /// The user's prompt, as ACP takes it, and as the transcript keeps it.
-    User { prompt: Vec<Value>, content: Value },
+    User {
+        prompt: Vec<acp::PromptBlock>,
+        content: Value,
+    },
     /// Another session's message, in its envelope.
     Peer(String),
 }
@@ -230,29 +235,62 @@ impl Translator {
     /// What starts it: the agent is asked to initialize.
     pub fn start(&mut self) -> Vec<Effect> {
         let initialize = self.request(
-            "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": false, "writeTextFile": false},
-                    "terminal": false
+            acp::ClientCall::Initialize(acp::InitializeParams {
+                protocol_version: 1,
+                client_capabilities: acp::ClientCapabilities {
+                    fs: acp::FileCapabilities {
+                        read_text_file: false,
+                        write_text_file: false,
+                    },
+                    terminal: false,
                 },
-                "clientInfo": {"name": "edualc", "version": env!("CARGO_PKG_VERSION")}
+                client_info: acp::ClientInfo {
+                    name: "edualc".to_owned(),
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
             }),
             Asked::Initialize,
         );
         vec![initialize]
     }
 
-    fn request(&mut self, method: &str, params: Value, asked: Asked) -> Effect {
+    fn request(&mut self, call: acp::ClientCall, asked: Asked) -> Effect {
         self.next_rpc += 1;
         self.asked.insert(self.next_rpc, asked);
-        let mut request = Map::new();
-        request.insert("jsonrpc".to_owned(), json!("2.0"));
-        request.insert("id".to_owned(), json!(self.next_rpc));
-        request.insert("method".to_owned(), json!(method));
-        request.insert("params".to_owned(), params);
-        Effect::ToAgent(Value::Object(request))
+        Effect::ToAgent(acp::ToAgent::Request(acp::Request {
+            jsonrpc: acp::JsonRpc::TwoPointZero,
+            id: self.next_rpc,
+            call,
+        }))
+    }
+
+    /// The MCP servers the agent starts for the session: edualc's messaging tool.
+    fn mcp_servers(&self) -> Vec<acp::McpServer> {
+        vec![acp::McpServer {
+            name: "edualc".to_owned(),
+            command: self.tool.program.clone(),
+            args: vec![PathBuf::from(super::TOOL_FLAG), self.tool.socket.clone()],
+            env: Vec::new(),
+        }]
+    }
+
+    /// An answer to a request of the agent's, under the id it came with.
+    fn answer(id: Value, reply: acp::Reply<acp::PermissionAnswer>) -> Effect {
+        Effect::ToAgent(acp::ToAgent::Answer(acp::Answer {
+            jsonrpc: acp::JsonRpc::TwoPointZero,
+            id,
+            reply,
+        }))
+    }
+
+    /// Tells the agent to stop the turn under way.
+    fn cancel(session: String) -> Effect {
+        Effect::ToAgent(acp::ToAgent::Notice(acp::Notice {
+            jsonrpc: acp::JsonRpc::TwoPointZero,
+            notice: acp::ClientNotice::Cancel(acp::CancelParams {
+                session_id: session,
+            }),
+        }))
     }
 
     fn local_id(&mut self, kind: &str) -> String {
@@ -304,15 +342,22 @@ impl Translator {
                 Ok(asked) => self.asked_permission(id, asked),
                 Err(error) => {
                     tracing::warn!(%error, "a permission request edualc can't read: denied");
-                    vec![Effect::ToAgent(
-                        json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}),
+                    vec![Self::answer(
+                        id,
+                        acp::Reply::Result(acp::PermissionAnswer {
+                            outcome: acp::Outcome::Cancelled,
+                        }),
                     )]
                 }
             },
             Incoming::Request { id, method, .. } => {
                 tracing::debug!(?method, "a request of the agent's edualc doesn't serve");
-                vec![Effect::ToAgent(
-                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "edualc doesn't serve this"}}),
+                vec![Self::answer(
+                    id,
+                    acp::Reply::Error(acp::RpcErrorBody {
+                        code: METHOD_NOT_FOUND,
+                        message: "edualc doesn't serve this".to_owned(),
+                    }),
                 )]
             }
             Incoming::Notification { method, .. } => {
@@ -326,26 +371,25 @@ impl Translator {
     fn answered(&mut self, asked: Asked, result: Value) -> Vec<Effect> {
         match asked {
             Asked::Initialize => {
-                let servers = json!([{
-                    "name": "edualc",
-                    "command": self.tool.program,
-                    "args": [super::TOOL_FLAG, self.tool.socket],
-                    "env": []
-                }]);
-                let (method, params, loading) = match &self.start {
+                let (call, loading) = match &self.start {
                     Start::New => (
-                        "session/new",
-                        json!({"cwd": self.cwd, "mcpServers": servers}),
+                        acp::ClientCall::NewSession(acp::NewSessionParams {
+                            cwd: self.cwd.clone(),
+                            mcp_servers: self.mcp_servers(),
+                        }),
                         false,
                     ),
                     Start::Resume(session) => (
-                        "session/load",
-                        json!({"sessionId": session, "cwd": self.cwd, "mcpServers": servers}),
+                        acp::ClientCall::LoadSession(acp::LoadSessionParams {
+                            session_id: session.clone(),
+                            cwd: self.cwd.clone(),
+                            mcp_servers: self.mcp_servers(),
+                        }),
                         true,
                     ),
                 };
                 self.phase = Phase::Opening { loading };
-                vec![self.request(method, params, Asked::Open)]
+                vec![self.request(call, Asked::Open)]
             }
             Asked::Open => {
                 let opened: acp::Opened = serde_json::from_value(result).unwrap_or_default();
@@ -380,8 +424,10 @@ impl Translator {
                 self.phase = Phase::Ready(session.clone());
                 if let Some(model) = self.model.clone() {
                     effects.push(self.request(
-                        "session/set_model",
-                        json!({"sessionId": session, "modelId": model}),
+                        acp::ClientCall::SetModel(acp::SetModelParams {
+                            session_id: session,
+                            model_id: model,
+                        }),
                         Asked::Model(None),
                     ));
                 }
@@ -554,9 +600,7 @@ impl Translator {
             Some("interrupt") => {
                 let mut effects = vec![success(&request, &json!({}))];
                 if self.busy {
-                    effects.push(Effect::ToAgent(json!({
-                        "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}
-                    })));
+                    effects.push(Self::cancel(session));
                 }
                 effects
             }
@@ -566,8 +610,10 @@ impl Translator {
                 };
                 self.model = Some(model.to_owned());
                 vec![self.request(
-                    "session/set_model",
-                    json!({"sessionId": session, "modelId": model}),
+                    acp::ClientCall::SetModel(acp::SetModelParams {
+                        session_id: session,
+                        model_id: model.to_owned(),
+                    }),
                     Asked::Model(Some(request)),
                 )]
             }
@@ -576,8 +622,10 @@ impl Translator {
                     return vec![failure(&request, "no mode named")];
                 };
                 vec![self.request(
-                    "session/set_mode",
-                    json!({"sessionId": session, "modeId": mode}),
+                    acp::ClientCall::SetMode(acp::SetModeParams {
+                        session_id: session,
+                        mode_id: mode.to_owned(),
+                    }),
                     Asked::Mode {
                         request,
                         mode: mode.to_owned(),
@@ -623,21 +671,13 @@ impl Translator {
             if !allowed && let Some(Entry::Shown(shown)) = self.entries.get_mut(&permission.tool) {
                 shown.denied = true;
             }
-            let outcome = permission
-                .options
-                .iter()
-                .find(|option| option.kind == wanted)
-                .map_or_else(
-                    || json!({"outcome": "cancelled"}),
-                    |option| json!({"outcome": "selected", "optionId": option.option_id}),
-                );
-            let mut effects = vec![Effect::ToAgent(
-                json!({"jsonrpc": "2.0", "id": permission.id, "result": {"outcome": outcome}}),
+            let outcome = outcome_of(&permission.options, wanted);
+            let mut effects = vec![Self::answer(
+                permission.id,
+                acp::Reply::Result(acp::PermissionAnswer { outcome }),
             )];
             if interrupt && let Some(session) = self.acp_session() {
-                effects.push(Effect::ToAgent(json!({
-                    "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}
-                })));
+                effects.push(Self::cancel(session.to_owned()));
             }
             return effects;
         }
@@ -737,13 +777,15 @@ impl Translator {
                 })));
                 prompt
             }
-            Queued::Peer(text) => vec![json!({"type": "text", "text": text})],
+            Queued::Peer(text) => vec![acp::PromptBlock::Text { text }],
         };
         self.busy = true;
         self.said.clear();
         effects.push(self.request(
-            "session/prompt",
-            json!({"sessionId": session, "prompt": prompt}),
+            acp::ClientCall::Prompt(acp::PromptParams {
+                session_id: session,
+                prompt,
+            }),
             Asked::Prompt,
         ));
         effects
@@ -995,16 +1037,10 @@ impl Translator {
         // The agent asks before every MCP tool, in every mode. edualc's own go without asking,
         // as a Claude Code session's messages do.
         if name == CLAUDE_SEND || name == CLAUDE_LIST {
-            let outcome = asked
-                .options
-                .iter()
-                .find(|option| option.kind == OptionKind::AllowOnce)
-                .map_or_else(
-                    || json!({"outcome": "cancelled"}),
-                    |option| json!({"outcome": "selected", "optionId": option.option_id}),
-                );
-            effects.push(Effect::ToAgent(
-                json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}}),
+            let outcome = outcome_of(&asked.options, OptionKind::AllowOnce);
+            effects.push(Self::answer(
+                id,
+                acp::Reply::Result(acp::PermissionAnswer { outcome }),
             ));
             return effects;
         }
@@ -1142,28 +1178,47 @@ fn failure(request: &str, error: &str) -> Effect {
 }
 
 /// A prompt as the window sent it (text, or blocks of text and images), as ACP takes it.
-fn prompt_blocks(content: &Value) -> Vec<Value> {
+fn prompt_blocks(content: &Value) -> Vec<acp::PromptBlock> {
     match content {
-        Value::String(text) => vec![json!({"type": "text", "text": text})],
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block.get("type").and_then(Value::as_str) {
-                Some("text") => block
-                    .get("text")
-                    .map(|text| json!({"type": "text", "text": text})),
-                Some("image") => {
-                    let source = block.get("source")?;
-                    Some(json!({
-                        "type": "image",
-                        "mimeType": source.get("media_type")?,
-                        "data": source.get("data")?,
-                    }))
-                }
-                Some(_) | None => None,
-            })
-            .collect(),
+        Value::String(text) => vec![acp::PromptBlock::Text { text: text.clone() }],
+        Value::Array(blocks) => blocks.iter().filter_map(prompt_block).collect(),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => Vec::new(),
     }
+}
+
+/// One block of the window's prompt, if it is text or an image edualc can send.
+fn prompt_block(block: &Value) -> Option<acp::PromptBlock> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => Some(acp::PromptBlock::Text {
+            text: block.get("text")?.as_str()?.to_owned(),
+        }),
+        Some("image") => {
+            let source = block.get("source")?;
+            let media_type = source.get("media_type")?.as_str()?;
+            let Ok(mime_type) = media_type.parse::<MediaType>() else {
+                tracing::debug!(
+                    media_type,
+                    "an image of a type edualc doesn't send: left out"
+                );
+                return None;
+            };
+            Some(acp::PromptBlock::Image {
+                mime_type,
+                data: source.get("data")?.as_str()?.to_owned(),
+            })
+        }
+        Some(_) | None => None,
+    }
+}
+
+/// The outcome of a permission request: the first option of `wanted`'s kind, or none.
+fn outcome_of(options: &[acp::PermissionOption], wanted: OptionKind) -> acp::Outcome {
+    options
+        .iter()
+        .find(|option| option.kind == wanted)
+        .map_or(acp::Outcome::Cancelled, |option| acp::Outcome::Selected {
+            option_id: option.option_id.clone(),
+        })
 }
 
 /// The tool call `kept`, with each field `update` has replacing it.
@@ -1342,16 +1397,18 @@ mod tests {
             .collect()
     }
 
-    fn agent_lines(effects: &[Effect]) -> Vec<&Value> {
+    /// The lines the agent is sent, as the JSON it reads.
+    fn agent_lines(effects: &[Effect]) -> Vec<Value> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                Effect::ToAgent(line) => Some(line),
+                Effect::ToAgent(line) => Some(line.to_line().expect("a line for the agent")),
                 Effect::ToWindow(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
                 | Effect::List(_) => None,
             })
+            .map(|line| serde_json::from_str(&line).expect("a line of JSON"))
             .collect()
     }
 
@@ -1374,8 +1431,7 @@ mod tests {
             .into_iter()
             .rev()
             .find(|line| line.get("method") == Some(&json!("session/prompt")))
-            .and_then(|line| line.get("id"))
-            .and_then(Value::as_u64)
+            .and_then(|line| line.get("id").and_then(Value::as_u64))
             .expect("a prompt")
     }
 
@@ -1828,6 +1884,60 @@ mod tests {
                 .first()
                 .and_then(|line| line.pointer("/message/content/0/content")),
             Some(&json!(DENIED))
+        );
+    }
+
+    /// The prompt goes to the agent as ACP names its parts: text as `text`, an image with its
+    /// `mimeType` and its base64 `data`, under the request's `method` and `params`.
+    #[test]
+    fn a_prompt_is_sent_as_acp_names_it() {
+        let mut translator = opened();
+        let sent = translator.window_said(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}}"#,
+        );
+        let id = prompt_id(&sent);
+        assert_eq!(
+            agent_lines(&sent),
+            vec![json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": "s",
+                    "prompt": [
+                        {"type": "text", "text": "look"},
+                        {"type": "image", "mimeType": "image/png", "data": "QUJD"}
+                    ]
+                }
+            })]
+        );
+    }
+
+    /// A permission answer goes back under the id the request came with, its outcome the
+    /// option the user chose, as `selected` with that option's `optionId`.
+    #[test]
+    fn a_permission_answer_is_acps() {
+        let mut translator = opened();
+        translator.window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+        let asked = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c2","name":"run_command","kind":"execute","status":"pending","title":"touch /tmp/x","rawInput":{"CommandLine":"touch /tmp/x"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"7"}"#,
+        );
+        let request_id = window_lines(&asked)
+            .into_iter()
+            .find(|line| line.get("type") == Some(&json!("control_request")))
+            .and_then(|line| line.get("request_id").and_then(Value::as_str))
+            .expect("the window asked")
+            .to_owned();
+        let answered = translator.window_said(&format!(
+            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{request_id}","response":{{"behavior":"allow"}}}}}}"#
+        ));
+        assert_eq!(
+            agent_lines(&answered),
+            vec![json!({
+                "jsonrpc": "2.0",
+                "id": "7",
+                "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}
+            })]
         );
     }
 

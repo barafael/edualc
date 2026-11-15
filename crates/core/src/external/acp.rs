@@ -1,12 +1,15 @@
 //! The Agent Client Protocol (agentclientprotocol.com) as edualc's ACP adapter reads it:
-//! JSON-RPC 2.0, one message per line on stdio. Only what the adapter reads; what it sends it
-//! writes itself. Agents add keys of their own (a tool call's `name` and its arguments by the
-//! agent's names), read where they say more than the protocol's.
+//! JSON-RPC 2.0, one message per line on stdio. Only what the adapter reads and writes: the
+//! messages it reads are [`Incoming`], the ones it writes are [`ToAgent`]. Agents add keys of
+//! their own (a tool call's `name` and its arguments by the agent's names), read where they say
+//! more than the protocol's.
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::external::wire::MediaType;
 
 /// A line from the agent: its answer to a request of ours, a request of its own, or news.
 #[derive(Debug, Deserialize)]
@@ -274,6 +277,216 @@ pub struct PromptUsage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cached_read_tokens: u64,
+}
+
+/// The `jsonrpc` field of every message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum JsonRpc {
+    #[serde(rename = "2.0")]
+    TwoPointZero,
+}
+
+/// A request edualc makes of the agent, by its method and parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "method", content = "params")]
+pub enum ClientCall {
+    #[serde(rename = "initialize")]
+    Initialize(InitializeParams),
+    #[serde(rename = "session/new")]
+    NewSession(NewSessionParams),
+    #[serde(rename = "session/load")]
+    LoadSession(LoadSessionParams),
+    #[serde(rename = "session/set_model")]
+    SetModel(SetModelParams),
+    #[serde(rename = "session/set_mode")]
+    SetMode(SetModeParams),
+    #[serde(rename = "session/prompt")]
+    Prompt(PromptParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeParams {
+    pub protocol_version: u32,
+    pub client_capabilities: ClientCapabilities,
+    pub client_info: ClientInfo,
+}
+
+/// What edualc lets the agent ask of it: none of the file and terminal requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCapabilities {
+    pub fs: FileCapabilities,
+    pub terminal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCapabilities {
+    pub read_text_file: bool,
+    pub write_text_file: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSessionParams {
+    pub cwd: PathBuf,
+    pub mcp_servers: Vec<McpServer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadSessionParams {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub mcp_servers: Vec<McpServer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModelParams {
+    pub session_id: String,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModeParams {
+    pub session_id: String,
+    pub mode_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptParams {
+    pub session_id: String,
+    pub prompt: Vec<PromptBlock>,
+}
+
+/// An MCP server the agent starts for the session: a program with its arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpServer {
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<PathBuf>,
+    pub env: Vec<EnvVariable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnvVariable {
+    pub name: String,
+    pub value: String,
+}
+
+/// A part of a prompt the agent is given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum PromptBlock {
+    Text { text: String },
+    Image { mime_type: MediaType, data: String },
+}
+
+/// A message to the agent that asks for no answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "method", content = "params")]
+pub enum ClientNotice {
+    #[serde(rename = "session/cancel")]
+    Cancel(CancelParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelParams {
+    pub session_id: String,
+}
+
+/// The answer to a permission request: the option the user chose, or none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Outcome {
+    Selected { option_id: String },
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAnswer {
+    pub outcome: Outcome,
+}
+
+/// The `result` or the `error` of an answer to a request of the agent's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reply<T> {
+    Result(T),
+    Error(RpcErrorBody),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RpcErrorBody {
+    pub code: i64,
+    pub message: String,
+}
+
+/// A request edualc makes; the agent answers with the same `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Request {
+    pub jsonrpc: JsonRpc,
+    pub id: u64,
+    #[serde(flatten)]
+    pub call: ClientCall,
+}
+
+/// A message edualc sends that asks for no answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Notice {
+    pub jsonrpc: JsonRpc,
+    #[serde(flatten)]
+    pub notice: ClientNotice,
+}
+
+/// An answer to a request of the agent's, under the `id` it came with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Answer {
+    pub jsonrpc: JsonRpc,
+    pub id: Value,
+    #[serde(flatten)]
+    pub reply: Reply<PermissionAnswer>,
+}
+
+/// What edualc writes to the agent, one line each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToAgent {
+    Request(Request),
+    Notice(Notice),
+    Answer(Answer),
+}
+
+impl ToAgent {
+    /// The message as one line of JSON, without its line break. Fails only when a path in it
+    /// isn't UTF-8.
+    pub fn to_line(&self) -> Result<String, serde_json::Error> {
+        match self {
+            Self::Request(request) => serde_json::to_string(request),
+            Self::Notice(notice) => serde_json::to_string(notice),
+            Self::Answer(answer) => serde_json::to_string(answer),
+        }
+    }
 }
 
 #[cfg(test)]

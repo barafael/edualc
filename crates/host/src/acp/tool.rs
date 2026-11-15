@@ -3,11 +3,20 @@
 //! nothing: each call goes to the adapter over the socket, which carries it out (see
 //! [`super::outbox`]).
 
+use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::external::acp::{JsonRpc, Reply, RpcErrorBody};
+
+/// The protocol version the tool answers with when the agent names none.
+const PROTOCOL_VERSION: &str = "2025-06-18";
+/// JSON-RPC's code for a method the receiver doesn't have.
+const METHOD_NOT_FOUND: i64 = -32601;
 
 /// What the tool asks the adapter, a line on the socket.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,30 +34,154 @@ pub struct Answer {
     pub error: bool,
 }
 
+/// The tools this server offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolName {
+    SendMessage,
+    ListSessions,
+}
+
+/// The arguments the tools take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Argument {
+    To,
+    Message,
+}
+
+/// The JSON Schema of a tool's arguments, or of one argument.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Schema {
+    Object {
+        properties: BTreeMap<Argument, Schema>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        required: Vec<Argument>,
+    },
+    /// A string; `type: string` in the schema.
+    #[serde(rename = "string")]
+    Text {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolListing {
+    name: ToolName,
+    description: String,
+    input_schema: Schema,
+}
+
+/// `tools/list`'s answer.
+#[derive(Debug, Serialize)]
+struct Listing {
+    tools: Vec<ToolListing>,
+}
+
+/// `initialize`'s answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Initialized {
+    protocol_version: String,
+    capabilities: Capabilities,
+    server_info: ServerInfo,
+}
+
+#[derive(Debug, Serialize)]
+struct Capabilities {
+    tools: ToolsCapability,
+}
+
+/// The server offers tools, and nothing more is set for them.
+#[derive(Debug, Serialize)]
+struct ToolsCapability {}
+
+#[derive(Debug, Serialize)]
+struct ServerInfo {
+    name: String,
+    version: String,
+}
+
+/// `tools/call`'s answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CallResult {
+    content: Vec<Content>,
+    is_error: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Content {
+    Text { text: String },
+}
+
+/// A line the tool writes back: the answer to a request, under the id it came with.
+#[derive(Debug, Serialize)]
+struct Response<T> {
+    jsonrpc: JsonRpc,
+    id: Value,
+    #[serde(flatten)]
+    reply: Reply<T>,
+}
+
+fn response_line<T: Serialize>(id: Value, reply: Reply<T>) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&Response {
+        jsonrpc: JsonRpc::TwoPointZero,
+        id,
+        reply,
+    })
+}
+
+/// The answer to a method the tool doesn't have.
+fn unserved(id: Value) -> Result<String, serde_json::Error> {
+    response_line::<()>(
+        id,
+        Reply::Error(RpcErrorBody {
+            code: METHOD_NOT_FOUND,
+            message: "edualc's tool doesn't serve this".to_owned(),
+        }),
+    )
+}
+
 /// The tools, as `tools/list` lists them.
-fn listing() -> Value {
-    json!([
-        {
-            "name": "send_message",
-            "description": "Send a message to another agent session on this computer (a Claude \
-                Code session, say), by the name list_sessions gives it or the name a message came \
-                from. The answer, if any, arrives later as a new message in this conversation.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "to": {"type": "string", "description": "The session's name."},
-                    "message": {"type": "string"}
+fn listing() -> Listing {
+    Listing {
+        tools: vec![
+            ToolListing {
+                name: ToolName::SendMessage,
+                description: "Send a message to another agent session on this computer (a Claude \
+                    Code session, say), by the name list_sessions gives it or the name a message came \
+                    from. The answer, if any, arrives later as a new message in this conversation."
+                    .to_owned(),
+                input_schema: Schema::Object {
+                    properties: BTreeMap::from([
+                        (
+                            Argument::To,
+                            Schema::Text {
+                                description: Some("The session's name.".to_owned()),
+                            },
+                        ),
+                        (Argument::Message, Schema::Text { description: None }),
+                    ]),
+                    required: vec![Argument::To, Argument::Message],
                 },
-                "required": ["to", "message"]
-            }
-        },
-        {
-            "name": "list_sessions",
-            "description": "List the other agent sessions running on this computer, by the names \
-                send_message takes.",
-            "inputSchema": {"type": "object", "properties": {}}
-        }
-    ])
+            },
+            ToolListing {
+                name: ToolName::ListSessions,
+                description: "List the other agent sessions running on this computer, by the names \
+                    send_message takes."
+                    .to_owned(),
+                input_schema: Schema::Object {
+                    properties: BTreeMap::new(),
+                    required: Vec::new(),
+                },
+            },
+        ],
+    }
 }
 
 /// Runs the tool until the agent closes its input.
@@ -69,30 +202,45 @@ pub fn run() -> std::process::ExitCode {
         let Some(id) = message.get("id").cloned() else {
             continue;
         };
-        let answer = match message.get("method").and_then(Value::as_str) {
-            Some("initialize") => json!({"jsonrpc": "2.0", "id": id, "result": {
-                "protocolVersion": message
-                    .pointer("/params/protocolVersion")
-                    .cloned()
-                    .unwrap_or_else(|| json!("2025-06-18")),
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "edualc", "version": env!("CARGO_PKG_VERSION")}
-            }}),
-            Some("tools/list") => {
-                json!({"jsonrpc": "2.0", "id": id, "result": {"tools": listing()}})
-            }
+        let line = match message.get("method").and_then(Value::as_str) {
+            Some("initialize") => response_line(
+                id,
+                Reply::Result(Initialized {
+                    protocol_version: message
+                        .pointer("/params/protocolVersion")
+                        .and_then(Value::as_str)
+                        .unwrap_or(PROTOCOL_VERSION)
+                        .to_owned(),
+                    capabilities: Capabilities {
+                        tools: ToolsCapability {},
+                    },
+                    server_info: ServerInfo {
+                        name: "edualc".to_owned(),
+                        version: env!("CARGO_PKG_VERSION").to_owned(),
+                    },
+                }),
+            ),
+            Some("tools/list") => response_line(id, Reply::Result(listing())),
             Some("tools/call") => {
                 let Answer { text, error } = called(&socket, message.get("params"));
-                json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": text}],
-                    "isError": error
-                }})
+                response_line(
+                    id,
+                    Reply::Result(CallResult {
+                        content: vec![Content::Text { text }],
+                        is_error: error,
+                    }),
+                )
             }
-            Some(_) | None => json!({"jsonrpc": "2.0", "id": id, "error": {
-                "code": -32601, "message": "edualc's tool doesn't serve this"
-            }}),
+            Some(_) | None => unserved(id),
         };
-        if writeln!(stdout, "{answer}")
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!(%error, "an answer the tool can't write");
+                continue;
+            }
+        };
+        if writeln!(stdout, "{line}")
             .and_then(|()| stdout.flush())
             .is_err()
         {
