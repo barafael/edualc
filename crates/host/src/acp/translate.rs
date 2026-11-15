@@ -19,7 +19,9 @@ use crate::external::acp::{
     self, AgentMethod, Change, Chunk, Incoming, Notified, OptionKind, PermissionAsked, Prompted,
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
-use crate::external::tool_input::{BashInput, KnownCall, ReadInput};
+use crate::external::tool_input::{
+    BashInput, EditInput, GrepInput, KnownCall, ReadInput, WebFetchInput, WriteInput,
+};
 use crate::external::wire::{
     self, Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta,
     IncomingRequest, Initialized, Message, MessageId, MessageOrigin, MessageStart, ModeId,
@@ -1359,30 +1361,68 @@ fn is_done(call: &ToolCall) -> bool {
 }
 
 /// A tool call as the window knows Claude Code's: by the agent's own names where it gives one
-/// (see [`Agent::tool`]), else by ACP's kind; a tool neither tells about keeps the agent's name.
+/// (see [`Agent::tool`]), else by the file change it shows, else by ACP's kind, with its title
+/// as what it runs, searches for or fetches; a tool none of these tells about keeps the agent's
+/// name.
 fn as_claude_tool(agent: Agent, call: &ToolCall) -> (ToolName, Value) {
     let input = call.raw_input.clone().unwrap_or(Value::Null);
     if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
         return as_known(&known, input);
     }
+    if let Some(known) = file_change(call) {
+        return as_known(&known, input);
+    }
     let title = || call.title.clone().unwrap_or_default();
-    let known = match (call.name.as_deref(), call.kind) {
-        (Some(name), _) => return (ToolName::from(name.to_owned()), input),
-        (None, Some(ToolKind::Execute)) => KnownCall::Bash(BashInput {
+    let known = match call.kind {
+        Some(ToolKind::Execute) => KnownCall::Bash(BashInput {
             command: title(),
             description: None,
         }),
-        (None, Some(ToolKind::Read)) => KnownCall::Read(ReadInput {
+        Some(ToolKind::Read) => KnownCall::Read(ReadInput {
             file_path: first_location(call).unwrap_or_else(|| PathBuf::from(title())),
         }),
-        (None, _) => {
-            return (
-                ToolName::from(call.title.clone().unwrap_or_else(|| "tool".to_owned())),
-                input,
-            );
+        Some(ToolKind::Search) => KnownCall::Grep(GrepInput {
+            pattern: title(),
+            path: first_location(call),
+        }),
+        Some(ToolKind::Fetch) => KnownCall::WebFetch(WebFetchInput { url: title() }),
+        Some(
+            ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Think | ToolKind::Other,
+        )
+        | None => {
+            let name = call
+                .name
+                .clone()
+                .or_else(|| call.title.clone())
+                .unwrap_or_else(|| "tool".to_owned());
+            return (ToolName::from(name), input);
         }
     };
     as_known(&known, input)
+}
+
+/// The first file change a call shows, as an `Edit`, or a `Write` of a new file.
+fn file_change(call: &ToolCall) -> Option<KnownCall> {
+    call.content.iter().flatten().find_map(|part| match part {
+        ToolContent::Diff {
+            path,
+            old_text: Some(old_text),
+            new_text,
+        } => Some(KnownCall::Edit(EditInput {
+            file_path: path.clone(),
+            old_string: old_text.clone(),
+            new_string: new_text.clone(),
+        })),
+        ToolContent::Diff {
+            path,
+            old_text: None,
+            new_text,
+        } => Some(KnownCall::Write(WriteInput {
+            file_path: path.clone(),
+            content: new_text.clone(),
+        })),
+        ToolContent::Content { .. } | ToolContent::Other => None,
+    })
 }
 
 /// A known call by Claude Code's name and input; one whose input can't be written (a path
@@ -2282,6 +2322,87 @@ mod tests {
         );
         assert_eq!(name, ToolName::Read);
         assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
+    }
+
+    /// A tool whose name edualc doesn't know reads by the file change it shows, else by its
+    /// kind; one neither tells about keeps the agent's name.
+    #[test]
+    fn unknown_tools_read_by_their_change_or_kind() {
+        let shown = |name: &str, kind, rest: ToolCall| {
+            as_claude_tool(
+                Agent::Agy,
+                &ToolCall {
+                    tool_call_id: "c".to_owned(),
+                    name: Some(name.to_owned()),
+                    kind: Some(kind),
+                    ..rest
+                },
+            )
+        };
+        let changed = |old_text: Option<&str>| ToolCall {
+            content: Some(vec![ToolContent::Diff {
+                path: PathBuf::from("/w/a.rs"),
+                old_text: old_text.map(str::to_owned),
+                new_text: "new".to_owned(),
+            }]),
+            ..ToolCall::default()
+        };
+        assert_eq!(
+            shown("custom_edit", ToolKind::Edit, changed(Some("old"))),
+            (
+                ToolName::Edit,
+                json!({ "file_path": "/w/a.rs", "old_string": "old", "new_string": "new" })
+            )
+        );
+        assert_eq!(
+            shown("custom_create", ToolKind::Edit, changed(None)),
+            (
+                ToolName::Write,
+                json!({ "file_path": "/w/a.rs", "content": "new" })
+            )
+        );
+        assert_eq!(
+            shown(
+                "custom_search",
+                ToolKind::Search,
+                ToolCall {
+                    title: Some("needle".to_owned()),
+                    locations: Some(vec![Location {
+                        path: PathBuf::from("/w/src"),
+                    }]),
+                    ..ToolCall::default()
+                }
+            ),
+            (
+                ToolName::Grep,
+                json!({ "pattern": "needle", "path": "/w/src" })
+            )
+        );
+        assert_eq!(
+            shown(
+                "custom_fetch",
+                ToolKind::Fetch,
+                ToolCall {
+                    title: Some("https://example.com".to_owned()),
+                    ..ToolCall::default()
+                }
+            ),
+            (ToolName::WebFetch, json!({ "url": "https://example.com" }))
+        );
+        assert_eq!(
+            shown(
+                "custom_tool",
+                ToolKind::Other,
+                ToolCall {
+                    raw_input: Some(json!({ "foo": "bar" })),
+                    ..ToolCall::default()
+                }
+            ),
+            (
+                ToolName::from("custom_tool".to_owned()),
+                json!({ "foo": "bar" })
+            )
+        );
     }
 
     /// A `!` command is told as not run, in the rows the window reads a command's run from,

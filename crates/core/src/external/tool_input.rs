@@ -38,6 +38,20 @@ pub struct EditInput {
     pub new_string: String,
 }
 
+/// `Grep`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrepInput {
+    pub pattern: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
+/// `WebFetch`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebFetchInput {
+    pub url: String,
+}
+
 /// edualc's messaging tool's input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageInput {
@@ -56,6 +70,8 @@ pub enum KnownCall {
     Read(ReadInput),
     Write(WriteInput),
     Edit(EditInput),
+    Grep(GrepInput),
+    WebFetch(WebFetchInput),
     SendMessage(SendMessageInput),
     ListSessions(ListSessionsInput),
 }
@@ -68,6 +84,8 @@ impl KnownCall {
             Self::Read(_) => ToolName::Read,
             Self::Write(_) => ToolName::Write,
             Self::Edit(_) => ToolName::Edit,
+            Self::Grep(_) => ToolName::Grep,
+            Self::WebFetch(_) => ToolName::WebFetch,
             Self::SendMessage(_) => ToolName::EdualcSendMessage,
             Self::ListSessions(_) => ToolName::EdualcListSessions,
         }
@@ -81,6 +99,8 @@ impl KnownCall {
             Self::Read(input) => serde_json::to_value(input),
             Self::Write(input) => serde_json::to_value(input),
             Self::Edit(input) => serde_json::to_value(input),
+            Self::Grep(input) => serde_json::to_value(input),
+            Self::WebFetch(input) => serde_json::to_value(input),
             Self::SendMessage(input) => serde_json::to_value(input),
             Self::ListSessions(input) => serde_json::to_value(input),
         }
@@ -144,6 +164,35 @@ mod tests {
         assert_eq!(
             edit.input().expect("an input"),
             json!({"file_path": "/w/f.txt", "old_string": "two", "new_string": "TWO"})
+        );
+    }
+
+    #[test]
+    fn search_and_fetch_use_claude_codes_field_names() {
+        let grep = KnownCall::Grep(GrepInput {
+            pattern: "needle".to_owned(),
+            path: Some(PathBuf::from("/w/src")),
+        });
+        assert_eq!(grep.name(), ToolName::Grep);
+        assert_eq!(
+            grep.input().expect("an input"),
+            json!({"pattern": "needle", "path": "/w/src"})
+        );
+        let anywhere = KnownCall::Grep(GrepInput {
+            pattern: "needle".to_owned(),
+            path: None,
+        });
+        assert_eq!(
+            anywhere.input().expect("an input"),
+            json!({"pattern": "needle"})
+        );
+        let fetch = KnownCall::WebFetch(WebFetchInput {
+            url: "https://example.com".to_owned(),
+        });
+        assert_eq!(fetch.name(), ToolName::WebFetch);
+        assert_eq!(
+            fetch.input().expect("an input"),
+            json!({"url": "https://example.com"})
         );
     }
 

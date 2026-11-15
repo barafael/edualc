@@ -162,9 +162,13 @@ pub enum ToolContent {
     Content {
         content: Chunk,
     },
-    /// A file changed; the window shows the change from the call's input.
+    /// A file changed: a new file has no old text.
+    #[serde(rename_all = "camelCase")]
     Diff {
         path: PathBuf,
+        #[serde(default)]
+        old_text: Option<String>,
+        new_text: String,
     },
     #[serde(other)]
     Other,
@@ -512,7 +516,8 @@ mod tests {
         assert_eq!(call.status, Some(ToolStatus::Completed));
         assert!(matches!(
             call.content.as_deref(),
-            Some([ToolContent::Diff { .. }])
+            Some([ToolContent::Diff { old_text, new_text, .. }])
+                if old_text.as_deref() == Some("a\n") && new_text == "b\n"
         ));
 
         let asked = r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"sessionUpdate":"tool_call","toolCallId":"call_2","name":"run_command","status":"pending","kind":"execute","title":"wc -l notes.txt","rawInput":{"CommandLine":"wc -l notes.txt"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"1"}"#;
