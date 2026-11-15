@@ -59,8 +59,9 @@ pub enum Error {
     Lost,
 }
 
-/// The program a session talks to: Claude Code, or Google's Antigravity CLI. edualcd's agy
-/// adapter speaks to agy over the Agent Client Protocol and translates for the window.
+/// The program a session talks to: Claude Code, Google's Antigravity CLI, or opencode. edualcd's
+/// ACP adapter speaks to the last two over the Agent Client Protocol and translates for the
+/// window.
 #[derive(
     Debug,
     Clone,
@@ -81,6 +82,7 @@ pub enum Backend {
     #[default]
     Claude,
     Agy,
+    Opencode,
 }
 
 impl Backend {
@@ -89,6 +91,7 @@ impl Backend {
         match self {
             Self::Claude => "Claude",
             Self::Agy => "agy",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -97,6 +100,15 @@ impl Backend {
         match self {
             Self::Claude => "Claude Code",
             Self::Agy => "agy",
+            Self::Opencode => "opencode",
+        }
+    }
+
+    /// Whether edualcd's ACP adapter runs it.
+    pub fn is_acp(self) -> bool {
+        match self {
+            Self::Claude => false,
+            Self::Agy | Self::Opencode => true,
         }
     }
 }
@@ -123,15 +135,17 @@ pub enum Program {
     Claude,
     ClaudeApiKey,
     Agy,
+    Opencode,
 }
 
 impl Program {
-    /// agy signs in itself, so its sign-in doesn't matter.
+    /// agy and opencode sign in themselves, so their sign-in doesn't matter.
     pub fn of(backend: Backend, sign_in: SignInWith) -> Self {
         match (backend, sign_in) {
             (Backend::Claude, SignInWith::Account) => Self::Claude,
             (Backend::Claude, SignInWith::ApiKey) => Self::ClaudeApiKey,
             (Backend::Agy, _) => Self::Agy,
+            (Backend::Opencode, _) => Self::Opencode,
         }
     }
 }

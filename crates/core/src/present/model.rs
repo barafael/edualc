@@ -108,6 +108,7 @@ pub enum Program {
     Claude,
     ClaudeApiKey,
     Agy,
+    Opencode,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

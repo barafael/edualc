@@ -1,14 +1,16 @@
-//! An Agent Client Protocol session: an agent (`agy`, Google's Antigravity CLI) spoken to over
-//! ACP and shown in the window as a Claude Code session. The daemon starts this adapter
-//! (`edualcd --agy-adapter`) in place of `claude`; it speaks stream-json on its stdio as `claude`
-//! does, so the daemon and the window need nothing of their own for it (see [`translate`]).
+//! An Agent Client Protocol session: an agent (`agy`, Google's Antigravity CLI, or `opencode`)
+//! spoken to over ACP and shown in the window as a Claude Code session. The daemon starts this
+//! adapter (`edualcd --agy-adapter`) in place of `claude`; it speaks stream-json on its stdio as
+//! `claude` does, so the daemon and the window need nothing of their own for it (see
+//! [`translate`]).
 //!
 //! The agent runs as it would in a terminal. The adapter, the daemon's child, serves the
 //! session's inbox and publishes its record (see [`inbox`]), so other sessions message it as
 //! they message each other, and carries the messages the agent sends with edualc's tool (see
-//! [`tool`] and [`outbox`]). It keeps the session's transcript, in Claude Code's format, under
-//! edualc's state folder (see [`crate::sessions::agy_projects`]), for the session to be listed
-//! and continued: the agent's own history is a database of its own.
+//! [`tool`] and [`outbox`]). For agy it keeps the session's transcript, in Claude Code's format,
+//! under edualc's state folder (see [`crate::sessions::agy_projects`]), for the session to be
+//! listed and continued: agy's own history is a database of its own. opencode keeps its sessions
+//! itself, so no transcript is kept for it, and they can't be continued yet.
 
 mod inbox;
 mod outbox;
@@ -53,10 +55,11 @@ const CLAUDE_SEND: &str = "mcp__edualc__send_message";
 const CLAUDE_LIST: &str = "mcp__edualc__list_sessions";
 
 /// The agents edualc runs through the Agent Client Protocol, and what each does its own way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 enum Agent {
     Agy,
+    Opencode,
 }
 
 impl Agent {
@@ -64,6 +67,7 @@ impl Agent {
     fn program(self) -> &'static str {
         match self {
             Self::Agy => "agy",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -71,6 +75,7 @@ impl Agent {
     fn arguments(self) -> &'static [&'static str] {
         match self {
             Self::Agy => &["acp", "--disable-telemetry"],
+            Self::Opencode => &["acp"],
         }
     }
 
@@ -78,6 +83,24 @@ impl Agent {
     fn install_hint(self) -> &'static str {
         match self {
             Self::Agy => "install it from antigravity.google",
+            Self::Opencode => "install it from opencode.ai",
+        }
+    }
+
+    /// Whether the adapter keeps the session's transcript for edualc to list and continue it.
+    fn keeps_transcript(self) -> bool {
+        match self {
+            Self::Agy => true,
+            Self::Opencode => false,
+        }
+    }
+
+    /// The arguments it sends with a tool call before the call's own: opencode sends the working
+    /// directory first.
+    fn early_arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Agy => &[],
+            Self::Opencode => &["cwd"],
         }
     }
 
@@ -101,57 +124,91 @@ impl Agent {
     fn tool(self, name: &str, call: &ToolCall) -> Option<(String, Value)> {
         let input = call.raw_input.clone().unwrap_or(Value::Null);
         let field = |name: &str| input.get(name).cloned().unwrap_or(Value::Null);
-        let path = || {
-            input.get("Path").cloned().or_else(|| {
-                call.locations
-                    .as_ref()
-                    .and_then(|locations| locations.first())
-                    .map(|location| json!(location.path))
-            })
+        let location = || {
+            call.locations
+                .as_ref()
+                .and_then(|locations| locations.first())
+                .map(|location| json!(location.path))
         };
         let title = || json!(call.title.clone().unwrap_or_default());
         match self {
-            Self::Agy => match name {
-                AGY_SEND => Some((
-                    CLAUDE_SEND.to_owned(),
-                    json!({"to": field("to"), "message": field("message")}),
-                )),
-                AGY_LIST => Some((CLAUDE_LIST.to_owned(), json!({}))),
-                "run_command" => Some((
-                    "Bash".to_owned(),
-                    json!({
-                        "command": input.get("CommandLine").cloned().unwrap_or_else(title),
-                        "description": field("toolSummary"),
-                    }),
-                )),
-                "read_file" | "view_file" => Some((
-                    "Read".to_owned(),
-                    json!({"file_path": path().unwrap_or_else(title)}),
-                )),
-                // Appending (agy's `Append`) adds to the file: as an edit that adds the lines,
-                // not a Write, which would read as the whole file.
-                "write_file" if input.get("Append") == Some(&Value::Bool(true)) => Some((
-                    "Edit".to_owned(),
-                    json!({
-                        "file_path": path().unwrap_or_else(title),
-                        "old_string": "",
-                        "new_string": field("Content"),
-                    }),
-                )),
-                "write_file" => Some((
-                    "Write".to_owned(),
-                    json!({"file_path": path().unwrap_or_else(title), "content": field("Content")}),
-                )),
-                "edit_file" => Some((
-                    "Edit".to_owned(),
-                    json!({
-                        "file_path": path().unwrap_or_else(title),
-                        "old_string": field("Target"),
-                        "new_string": field("Replacement"),
-                    }),
-                )),
-                _ => None,
-            },
+            Self::Agy => {
+                let path = || input.get("Path").cloned().or_else(location);
+                match name {
+                    AGY_SEND => Some((
+                        CLAUDE_SEND.to_owned(),
+                        json!({"to": field("to"), "message": field("message")}),
+                    )),
+                    AGY_LIST => Some((CLAUDE_LIST.to_owned(), json!({}))),
+                    "run_command" => Some((
+                        "Bash".to_owned(),
+                        json!({
+                            "command": input.get("CommandLine").cloned().unwrap_or_else(title),
+                            "description": field("toolSummary"),
+                        }),
+                    )),
+                    "read_file" | "view_file" => Some((
+                        "Read".to_owned(),
+                        json!({"file_path": path().unwrap_or_else(title)}),
+                    )),
+                    // Appending (agy's `Append`) adds to the file: as an edit that adds the lines,
+                    // not a Write, which would read as the whole file.
+                    "write_file" if input.get("Append") == Some(&Value::Bool(true)) => Some((
+                        "Edit".to_owned(),
+                        json!({
+                            "file_path": path().unwrap_or_else(title),
+                            "old_string": "",
+                            "new_string": field("Content"),
+                        }),
+                    )),
+                    "write_file" => Some((
+                        "Write".to_owned(),
+                        json!({
+                            "file_path": path().unwrap_or_else(title),
+                            "content": field("Content"),
+                        }),
+                    )),
+                    "edit_file" => Some((
+                        "Edit".to_owned(),
+                        json!({
+                            "file_path": path().unwrap_or_else(title),
+                            "old_string": field("Target"),
+                            "new_string": field("Replacement"),
+                        }),
+                    )),
+                    _ => None,
+                }
+            }
+            Self::Opencode => {
+                // Its paths are relative in the arguments and absolute in the locations.
+                let path = || location().or_else(|| input.get("path").cloned());
+                match name {
+                    "shell" => Some((
+                        "Bash".to_owned(),
+                        json!({"command": field("command"), "description": Value::Null}),
+                    )),
+                    "read" => Some((
+                        "Read".to_owned(),
+                        json!({"file_path": path().unwrap_or(Value::Null)}),
+                    )),
+                    "write" => Some((
+                        "Write".to_owned(),
+                        json!({
+                            "file_path": path().unwrap_or(Value::Null),
+                            "content": field("content"),
+                        }),
+                    )),
+                    "edit" => Some((
+                        "Edit".to_owned(),
+                        json!({
+                            "file_path": path().unwrap_or(Value::Null),
+                            "old_string": field("oldString"),
+                            "new_string": field("newString"),
+                        }),
+                    )),
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -165,6 +222,7 @@ impl Agent {
                     error.message.contains("UNAUTHENTICATED")
                         || error.message.contains("not logged into Antigravity")
                 }
+                Self::Opencode => false,
             }
     }
 }
@@ -173,6 +231,9 @@ impl Agent {
 #[derive(Debug, clap::Parser)]
 #[command(name = "edualc --agy-adapter", disable_help_flag = true)]
 struct Args {
+    /// The agent this adapter serves.
+    #[arg(long, value_enum, default_value_t = Agent::Agy)]
+    agent: Agent,
     #[arg(long)]
     cwd: PathBuf,
     /// A new session, under this id.
@@ -197,6 +258,8 @@ enum Error {
     NoSession,
     #[error("no transcript of session {1} says which conversation of {0}'s it is")]
     NoConversation(Agent, SessionId),
+    #[error("continuing {0} sessions isn't supported yet")]
+    ResumeNotSupported(Agent),
     #[error("no runtime folder (XDG_RUNTIME_DIR)")]
     NoRuntime,
     #[error("couldn't make the session's folder: {0}")]
@@ -318,15 +381,18 @@ enum Heard {
 
 async fn adapt(args: Args) -> Result<(), Error> {
     let Args {
+        agent,
         cwd,
         session_id,
         resume,
         model,
     } = args;
-    let agent = Agent::Agy;
     let (id, start) = match (session_id, resume) {
         (Some(id), None) => (id, Start::New),
         (None, Some(id)) => {
+            if !agent.keeps_transcript() {
+                return Err(Error::ResumeNotSupported(agent));
+            }
             let conversation = transcript_path(&cwd, &id)
                 .as_deref()
                 .and_then(acp_session_id)
@@ -334,6 +400,11 @@ async fn adapt(args: Args) -> Result<(), Error> {
             (id, Start::Resume(conversation))
         }
         (Some(_), Some(_)) | (None, None) => return Err(Error::NoSession),
+    };
+    let transcript = if agent.keeps_transcript() {
+        transcript_path(&cwd, &id)
+    } else {
+        None
     };
     // The name the daemon knows the session by, as it names Claude Code's (see `spawn`).
     let name = MessagingName::of(&id, &cwd);
@@ -436,7 +507,7 @@ async fn adapt(args: Args) -> Result<(), Error> {
     let mut out = Out {
         window: tokio::io::stdout(),
         agent: agent_in.take(),
-        transcript: transcript_path(&cwd, &id),
+        transcript,
         calls: HashMap::new(),
         name,
     };

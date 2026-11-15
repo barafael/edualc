@@ -280,6 +280,8 @@ its program: a new session with the other program starts with that program's def
   new mode from your next prompt. `--permission-mode` takes Claude Code's modes, so agy refuses it.
 - **Usage:** agy reports no usage limits, so the sidebar foot shows none for its sessions.
 - **Not available with agy:** shell commands (`!`) and the trust question.
+- **opencode:** edualc runs `opencode acp` in the project. opencode signs in and keeps its
+  sessions itself, so its sessions can't be continued from edualc yet.
 
 ## Look
 

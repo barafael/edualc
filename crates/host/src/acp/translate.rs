@@ -128,6 +128,15 @@ enum Block {
     Thinking(String),
 }
 
+/// A tool call the agent told: kept until it has its arguments, then shown to the window.
+#[derive(Debug, Clone)]
+enum Entry {
+    /// Not shown yet: the agent hasn't sent the call's arguments.
+    Kept(ToolCall),
+    /// Shown to the window.
+    Shown(Shown),
+}
+
 /// A tool call as the window was shown it.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
@@ -176,7 +185,7 @@ pub struct Translator {
     /// The turn's text, for its result.
     said: String,
     next_local: u64,
-    shown: HashMap<String, Shown>,
+    entries: HashMap<String, Entry>,
     permissions: HashMap<String, Permission>,
     /// The tool call each of edualc's tool's calls is, by the agent's id.
     calls: HashMap<CallId, String>,
@@ -211,7 +220,7 @@ impl Translator {
             streaming: None,
             said: String::new(),
             next_local: 0,
-            shown: HashMap::new(),
+            entries: HashMap::new(),
             permissions: HashMap::new(),
             calls: HashMap::new(),
         }
@@ -610,7 +619,7 @@ impl Translator {
             } else {
                 OptionKind::RejectOnce
             };
-            if !allowed && let Some(shown) = self.shown.get_mut(&permission.tool) {
+            if !allowed && let Some(Entry::Shown(shown)) = self.entries.get_mut(&permission.tool) {
                 shown.denied = true;
             }
             let outcome = permission
@@ -654,18 +663,20 @@ impl Translator {
     /// The call of `tool` under way, by the agent's id, that no answer was told for yet.
     fn open_call(&self, tool: &str) -> Option<String> {
         let told: Vec<&String> = self.calls.values().collect();
-        self.shown
-            .iter()
-            .find(|(id, shown)| shown.name == tool && !shown.done && !told.contains(id))
-            .map(|(id, _)| id.clone())
+        self.entries.iter().find_map(|(id, entry)| match entry {
+            Entry::Shown(shown) if shown.name == tool && !shown.done && !told.contains(&id) => {
+                Some(id.clone())
+            }
+            Entry::Kept(_) | Entry::Shown(_) => None,
+        })
     }
 
     /// What edualc's tool answered `call`: the call's result, when the agent says it ended.
     pub fn tool_told(&mut self, call: CallId, answer: &super::tool::Answer) {
-        if let Some(shown) = self
+        if let Some(Entry::Shown(shown)) = self
             .calls
             .remove(&call)
-            .and_then(|id| self.shown.get_mut(&id))
+            .and_then(|id| self.entries.get_mut(&id))
         {
             shown.told = Some(answer.text.clone());
         }
@@ -884,39 +895,60 @@ impl Translator {
     }
 
     fn tool_call(&mut self, call: &ToolCall) -> Vec<Effect> {
-        if self.shown.contains_key(&call.tool_call_id) {
-            return self.tool_call_update(call);
+        match self.entries.get(&call.tool_call_id) {
+            Some(Entry::Kept(kept)) => {
+                let merged = merged(kept, call);
+                return self.call_updated(merged);
+            }
+            Some(Entry::Shown(_)) => return self.tool_call_update(call),
+            None => {}
         }
+        self.call_updated(call.clone())
+    }
+
+    /// A tool call's fields have come: kept until it has its arguments or is done, then shown.
+    fn call_updated(&mut self, call: ToolCall) -> Vec<Effect> {
+        if has_arguments(self.agent, &call) || is_done(&call) {
+            self.show_call(&call)
+        } else {
+            self.entries
+                .insert(call.tool_call_id.clone(), Entry::Kept(call));
+            Vec::new()
+        }
+    }
+
+    fn show_call(&mut self, call: &ToolCall) -> Vec<Effect> {
         let (name, input) = as_claude_tool(self.agent, call);
-        self.shown.insert(
+        self.entries.insert(
             call.tool_call_id.clone(),
-            Shown {
+            Entry::Shown(Shown {
                 name: name.clone(),
                 input: input.clone(),
                 done: false,
                 denied: false,
                 told: None,
-            },
+            }),
         );
         let tool_use =
             json!({"type": "tool_use", "id": call.tool_call_id, "name": name, "input": input});
         let mut effects = self.message_done(Some(tool_use));
-        if matches!(
-            call.status,
-            Some(ToolStatus::Completed | ToolStatus::Failed)
-        ) {
+        if is_done(call) {
             effects.extend(self.tool_call_update(call));
         }
         effects
     }
 
     fn tool_call_update(&mut self, call: &ToolCall) -> Vec<Effect> {
+        if let Some(Entry::Kept(kept)) = self.entries.get(&call.tool_call_id) {
+            let merged = merged(kept, call);
+            return self.call_updated(merged);
+        }
         let failed = match call.status {
             Some(ToolStatus::Completed) => false,
             Some(ToolStatus::Failed) => true,
             Some(ToolStatus::Pending | ToolStatus::InProgress) | None => return Vec::new(),
         };
-        let Some(shown) = self.shown.get_mut(&call.tool_call_id) else {
+        let Some(Entry::Shown(shown)) = self.entries.get_mut(&call.tool_call_id) else {
             return Vec::new();
         };
         if shown.done {
@@ -947,13 +979,18 @@ impl Translator {
     fn asked_permission(&mut self, id: Value, asked: PermissionAsked) -> Vec<Effect> {
         let tool = asked.tool_call.tool_call_id.clone();
         let mut effects = Vec::new();
-        if !self.shown.contains_key(&tool) {
-            effects.extend(self.tool_call(&asked.tool_call));
+        match self.entries.get(&tool) {
+            Some(Entry::Kept(kept)) => {
+                let call = merged(kept, &asked.tool_call);
+                effects.extend(self.show_call(&call));
+            }
+            Some(Entry::Shown(_)) => {}
+            None => effects.extend(self.show_call(&asked.tool_call)),
         }
-        let (name, input) = self.shown.get(&tool).map_or_else(
-            || as_claude_tool(self.agent, &asked.tool_call),
-            |shown| (shown.name.clone(), shown.input.clone()),
-        );
+        let (name, input) = match self.entries.get(&tool) {
+            Some(Entry::Shown(shown)) => (shown.name.clone(), shown.input.clone()),
+            Some(Entry::Kept(_)) | None => as_claude_tool(self.agent, &asked.tool_call),
+        };
         // The agent asks before every MCP tool, in every mode. edualc's own go without asking,
         // as a Claude Code session's messages do.
         if name == CLAUDE_SEND || name == CLAUDE_LIST {
@@ -1011,14 +1048,17 @@ impl Translator {
                 "session_id": self.id.to_string(), "error": "unknown",
             })));
         }
-        // Denied calls the agent never answered for are done now.
+        // Calls the agent never answered for, or never gave arguments for, are done now.
         let cancelled =
             prompted.is_some_and(|prompted| prompted.stop_reason == StopReason::Cancelled);
         let open: Vec<String> = self
-            .shown
+            .entries
             .iter()
-            .filter(|(_, shown)| !shown.done)
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, entry)| match entry {
+                Entry::Shown(shown) if !shown.done => Some(id.clone()),
+                Entry::Kept(_) => Some(id.clone()),
+                Entry::Shown(_) => None,
+            })
             .collect();
         for id in open {
             effects.extend(self.tool_call_update(&ToolCall {
@@ -1125,6 +1165,56 @@ fn prompt_blocks(content: &Value) -> Vec<Value> {
     }
 }
 
+/// The tool call `kept`, with each field `update` has replacing it.
+fn merged(kept: &ToolCall, update: &ToolCall) -> ToolCall {
+    let mut call = kept.clone();
+    let update = update.clone();
+    if update.name.is_some() {
+        call.name = update.name;
+    }
+    if update.title.is_some() {
+        call.title = update.title;
+    }
+    if update.kind.is_some() {
+        call.kind = update.kind;
+    }
+    if update.status.is_some() {
+        call.status = update.status;
+    }
+    if update.raw_input.is_some() {
+        call.raw_input = update.raw_input;
+    }
+    if update.raw_output.is_some() {
+        call.raw_output = update.raw_output;
+    }
+    if update.content.is_some() {
+        call.content = update.content;
+    }
+    if update.locations.is_some() {
+        call.locations = update.locations;
+    }
+    call
+}
+
+/// Whether a tool call's arguments have come: an argument the agent sends before them (see
+/// [`Agent::early_arguments`]) doesn't count.
+fn has_arguments(agent: Agent, call: &ToolCall) -> bool {
+    match &call.raw_input {
+        None => false,
+        Some(Value::Object(fields)) => fields
+            .keys()
+            .any(|field| !agent.early_arguments().contains(&field.as_str())),
+        Some(_) => true,
+    }
+}
+
+fn is_done(call: &ToolCall) -> bool {
+    matches!(
+        call.status,
+        Some(ToolStatus::Completed | ToolStatus::Failed)
+    )
+}
+
 /// A tool call as the window knows Claude Code's: by the agent's own names where it gives one
 /// (see [`Agent::tool`]), else by ACP's kind; a tool neither tells about keeps the agent's name.
 fn as_claude_tool(agent: Agent, call: &ToolCall) -> (String, Value) {
@@ -1216,8 +1306,12 @@ mod tests {
     const ID: &str = "11111111-2222-4333-8444-555555555555";
 
     fn translator(start: Start) -> Translator {
+        translator_for(Agent::Agy, start)
+    }
+
+    fn translator_for(agent: Agent, start: Start) -> Translator {
         Translator::new(
-            Agent::Agy,
+            agent,
             SessionId::try_from(ID.to_owned()).expect("an id"),
             PathBuf::from("/work"),
             start,
@@ -1270,7 +1364,11 @@ mod tests {
 
     /// A translator past `initialize` and `session/new`, its session `s`.
     fn opened() -> Translator {
-        let mut translator = translator(Start::New);
+        opened_with(Agent::Agy)
+    }
+
+    fn opened_with(agent: Agent) -> Translator {
+        let mut translator = translator_for(agent, Start::New);
         translator.start();
         translator.agent_said(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
         translator.agent_said(
@@ -1390,6 +1488,103 @@ mod tests {
         let result = window.last().expect("the result");
         assert_eq!(result.get("result"), Some(&json!("Let me count.Three.")));
         assert_eq!(result.get("is_error"), Some(&json!(false)));
+    }
+
+    /// agy sends a call with its arguments: it is shown at once, before it completes.
+    #[test]
+    fn agys_call_shows_at_once() {
+        let mut translator = opened();
+        let announced = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c1","name":"run_command","kind":"execute","status":"pending","title":"ls","rawInput":{"CommandLine":"ls"}}}}"#,
+        );
+        let window = window_lines(&announced);
+        assert_eq!(kinds(&window), ["assistant"]);
+        let tool_use = window
+            .first()
+            .and_then(|line| line.pointer("/message/content/0"))
+            .expect("the tool call");
+        assert_eq!(tool_use.get("name"), Some(&json!("Bash")));
+        assert_eq!(tool_use.pointer("/input/command"), Some(&json!("ls")));
+    }
+
+    /// opencode names a tool before it sends its arguments: the call isn't shown until they
+    /// come, and then it is one Bash command.
+    #[test]
+    fn opencodes_call_shows_once_its_arguments_come() {
+        let mut translator = opened_with(Agent::Opencode);
+        let announced = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c1","name":"shell","title":"shell","kind":"execute","status":"pending","locations":[{"path":"/w"}],"rawInput":{"cwd":"/w"}}}}"#,
+        );
+        assert!(
+            window_lines(&announced).is_empty(),
+            "nothing before the arguments"
+        );
+        let updated = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"in_progress","kind":"execute","title":"ls","locations":[{"path":"/w"}],"rawInput":{"command":"ls","cwd":"/w"}}}}"#,
+        );
+        let window = window_lines(&updated);
+        assert_eq!(kinds(&window), ["assistant"]);
+        let tool_use = window
+            .first()
+            .and_then(|line| line.pointer("/message/content/0"))
+            .expect("the tool call");
+        assert_eq!(tool_use.get("name"), Some(&json!("Bash")));
+        assert_eq!(tool_use.pointer("/input/command"), Some(&json!("ls")));
+    }
+
+    /// A permission request for a call kept without its arguments shows the call, with the
+    /// arguments the request has.
+    #[test]
+    fn a_permission_request_shows_a_kept_call() {
+        let mut translator = opened_with(Agent::Opencode);
+        let kept = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c1","name":"shell","title":"shell","kind":"execute","status":"pending","locations":[{"path":"/w"}],"rawInput":{"cwd":"/w"}}}}"#,
+        );
+        assert!(window_lines(&kept).is_empty());
+        let asked = translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c1","name":"shell","title":"ls","kind":"execute","status":"pending","rawInput":{"command":"ls","cwd":"/w"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]},"id":"7"}"#,
+        );
+        let window = window_lines(&asked);
+        let tool_use = window
+            .iter()
+            .find_map(|line| line.pointer("/message/content/0"))
+            .expect("the call shown");
+        assert_eq!(tool_use.get("name"), Some(&json!("Bash")));
+        assert_eq!(tool_use.pointer("/input/command"), Some(&json!("ls")));
+        let request = window
+            .iter()
+            .find(|line| line.get("type") == Some(&json!("control_request")))
+            .expect("the window asked");
+        assert_eq!(
+            request.pointer("/request/input/command"),
+            Some(&json!("ls"))
+        );
+        assert_eq!(request.pointer("/request/tool_use_id"), Some(&json!("c1")));
+    }
+
+    /// opencode's file paths are relative in its arguments and absolute in its locations: the
+    /// edit reads as Claude Code's, with the absolute path.
+    #[test]
+    fn opencodes_edit_reads_as_claude_codes() {
+        let call = ToolCall {
+            tool_call_id: "c4".to_owned(),
+            name: Some("edit".to_owned()),
+            kind: Some(ToolKind::Edit),
+            locations: Some(vec![Location {
+                path: PathBuf::from("/w/notes.txt"),
+            }]),
+            raw_input: Some(json!({
+                "path": "notes.txt",
+                "oldString": "two",
+                "newString": "TWO",
+            })),
+            ..ToolCall::default()
+        };
+        let (name, input) = as_claude_tool(Agent::Opencode, &call);
+        assert_eq!(name, "Edit");
+        assert_eq!(input.get("file_path"), Some(&json!("/w/notes.txt")));
+        assert_eq!(input.get("old_string"), Some(&json!("two")));
+        assert_eq!(input.get("new_string"), Some(&json!("TWO")));
     }
 
     /// agy asks before edualc's own messaging tools too: the adapter allows them, and the

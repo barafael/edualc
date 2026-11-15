@@ -236,13 +236,13 @@ component AgentCount inherits HorizontalLayout {
     }
 }
 
-// What a session runs, beside its title in the sidebar: agy, or Claude Code with the API key;
-// nothing for Claude Code on the user's own sign-in, which most sessions are. Only drawn: the
-// row's label says it.
+// What a session runs, beside its title in the sidebar: agy, opencode, or Claude Code with the
+// API key; nothing for Claude Code on the user's own sign-in, which most sessions are. Only
+// drawn: the row's label says it.
 component ProgramMark inherits VerticalLayout {
     in property <Program> program;
     alignment: center;
-    if root.program == Program.agy: Rectangle {
+    if root.program == Program.agy || root.program == Program.opencode: Rectangle {
         border-radius: Theme.radius-s;
         border-width: 1px;
         border-color: Theme.control-border;
@@ -250,7 +250,7 @@ component ProgramMark inherits VerticalLayout {
             padding-left: Theme.space-xs;
             padding-right: Theme.space-xs;
             Text {
-                text: "agy";
+                text: root.program == Program.agy ? "agy" : "opencode";
                 font-size: 1rem * Theme.caption;
                 color: Theme.text-tertiary;
                 vertical-alignment: center;
@@ -269,6 +269,7 @@ component RunningRow inherits Pressable {
     in property <SessionRow> entry;
     // What it runs, for its label.
     property <string> program-said: root.entry.program == Program.agy ? ", agy"
+        : root.entry.program == Program.opencode ? ", opencode"
         : root.entry.program == Program.claude-api-key ? ", with the API key" : "";
     height: Theme.row-tall;
     selected: root.entry.selected;
@@ -333,7 +334,7 @@ component EarlierRow inherits Pressable {
     in property <SessionRow> entry;
     height: Theme.row;
     selected: root.entry.selected;
-    accessible-label: root.entry.title + (root.entry.program == Program.agy ? ", agy" : "") + ", " + root.entry.age + (root.entry.worktree != "" ? ", in the worktree " + root.entry.worktree : "");
+    accessible-label: root.entry.title + (root.entry.program == Program.agy ? ", agy" : root.entry.program == Program.opencode ? ", opencode" : "") + ", " + root.entry.age + (root.entry.worktree != "" ? ", in the worktree " + root.entry.worktree : "");
     clicked => { Sessions.open(root.entry.id); }
     HorizontalLayout {
         padding-left: Theme.space-m;
@@ -381,9 +382,11 @@ component Sidebar inherits Rectangle {
         { program: Program.claude, title: "Claude Code" },
         { program: Program.claude-api-key, title: "Claude Code with the API key…" },
         { program: Program.agy, title: "agy" },
+        { program: Program.opencode, title: "opencode" },
     ] : [
         { program: Program.claude, title: "Claude Code" },
         { program: Program.agy, title: "agy" },
+        { program: Program.opencode, title: "opencode" },
     ];
     // The program the arrow keys are on while the New session menu is open.
     property <int> new-highlighted;

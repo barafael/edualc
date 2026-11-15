@@ -127,7 +127,7 @@ impl Modes {
     pub fn of(backend: claude::Backend) -> Self {
         match backend {
             claude::Backend::Claude => Self::Claude(None),
-            claude::Backend::Agy => Self::Program {
+            claude::Backend::Agy | claude::Backend::Opencode => Self::Program {
                 offered: Vec::new(),
                 current: None,
             },
@@ -645,14 +645,13 @@ impl Status {
         self.turns > 0 || self.doing != Doing::Nothing
     }
 
-    /// The plan's limits, for a session the plan pays for: agy and the API key don't, so a
-    /// Claude Code session's limits aren't theirs.
+    /// The plan's limits, for a session the plan pays for: agy, opencode and the API key don't,
+    /// so a Claude Code session's limits aren't theirs.
     pub(crate) fn plan_limits(&self) -> Option<Limits> {
         match (self.backend, self.sign_in_with) {
             (claude::Backend::Claude, claude::SignInWith::Account) => Some(self.limits),
-            (claude::Backend::Claude, claude::SignInWith::ApiKey) | (claude::Backend::Agy, _) => {
-                None
-            }
+            (claude::Backend::Claude, claude::SignInWith::ApiKey)
+            | (claude::Backend::Agy | claude::Backend::Opencode, _) => None,
         }
     }
 
@@ -1750,8 +1749,8 @@ impl<F: Frontend> App<F> {
     /// Starts a process in the working directory once it is trusted: here, or in the terminal,
     /// which the daemon is asked about.
     fn start(&mut self, resume: Option<Resume>) {
-        // What a folder configures is Claude Code's; agy reads none of it.
-        if self.status.backend == claude::Backend::Agy
+        // What a folder configures is Claude Code's; the ACP agents read none of it.
+        if self.status.backend.is_acp()
             || trust::trusted_in_edualc(&self.cwd, &self.settings)
             || self.accepted_in_terminal.contains(&self.cwd)
         {
@@ -2059,10 +2058,11 @@ impl<F: Frontend> App<F> {
         self.watch = None;
         self.chat.clear();
         self.reset_session(None, None, backend);
-        // agy signs in itself.
-        self.status.sign_in_with = match backend {
-            claude::Backend::Claude => sign_in,
-            claude::Backend::Agy => claude::SignInWith::Account,
+        // agy and opencode sign in themselves.
+        self.status.sign_in_with = if backend.is_acp() {
+            claude::SignInWith::Account
+        } else {
+            sign_in
         };
         self.start(None);
         self.redraw = Redraw::everything();
@@ -2668,10 +2668,12 @@ impl<F: Frontend> App<F> {
             return;
         }
         self.request(&mode.request(), Request::Mode(mode.clone()));
-        // agy takes a mode as a turn starts: the turn under way keeps the one it began with.
-        if self.status.backend == claude::Backend::Agy && self.status.turns > 0 {
+        // An ACP agent takes a mode as a turn starts: the turn under way keeps the one it began
+        // with.
+        if self.status.backend.is_acp() && self.status.turns > 0 {
             self.chat.info(format!(
-                "agy switches to “{}” from your next prompt; this turn goes on in the mode it started in.",
+                "{} switches to “{}” from your next prompt; this turn goes on in the mode it started in.",
+                self.status.backend.agent(),
                 self.status.modes.label(&mode)
             ));
             self.view.scroll_to_end();

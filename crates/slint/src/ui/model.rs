@@ -142,6 +142,7 @@ impl ToSlint for present::Program {
             Self::Claude => slint_ui::Program::Claude,
             Self::ClaudeApiKey => slint_ui::Program::ClaudeApiKey,
             Self::Agy => slint_ui::Program::Agy,
+            Self::Opencode => slint_ui::Program::Opencode,
         }
     }
 }

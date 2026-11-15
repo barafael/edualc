@@ -7,7 +7,7 @@ use std::process::Stdio;
 
 use tokio::process::{Child, Command};
 
-use crate::claude::{Backend, Conversation, FolderConfiguration, Launch, SignInWith};
+use crate::claude::{Conversation, FolderConfiguration, Launch, SignInWith};
 use crate::sessions::MessagingName;
 
 /// Set by Claude Code for its own children. Launched from inside a Claude Code session, the
@@ -36,16 +36,16 @@ pub enum Error {
         "couldn't start claude: {0}. Is Claude Code installed and `claude` on PATH? CLAUDE_BIN can name it."
     )]
     Start(#[source] std::io::Error),
-    #[error("couldn't start edualc's adapter for agy: {0}")]
+    #[error("couldn't start edualc's adapter for an ACP agent: {0}")]
     Adapter(#[source] std::io::Error),
-    #[error("agy sessions can't be copied yet, only continued")]
-    AgyFork,
+    #[error("sessions of ACP agents can't be copied yet, only continued")]
+    AcpFork,
     #[error("no Anthropic API key is kept: add one in edualc's settings")]
     NoApiKey,
     #[error("couldn't read the Anthropic API key: {0}")]
     Keyring(#[source] crate::keyring::Error),
-    #[error("agy signs in itself, not with an Anthropic API key")]
-    AgyApiKey,
+    #[error("agy and opencode sign in themselves, not with an Anthropic API key")]
+    AcpApiKey,
 }
 
 /// A started process, its pipes still in it. Dropped, it is killed.
@@ -63,11 +63,11 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
         .ok()
         .filter(|cwd| cwd.is_dir())
         .ok_or_else(|| Error::NoFolder(launch.cwd.clone()))?;
-    if launch.backend == Backend::Agy {
+    if launch.backend.is_acp() {
         if launch.sign_in == SignInWith::ApiKey {
-            return Err(Error::AgyApiKey);
+            return Err(Error::AcpApiKey);
         }
-        return spawn_agy(launch, &cwd, runtime);
+        return spawn_acp(launch, &cwd, runtime);
     }
     let mut command = Command::new(crate::claude::program());
     command.args([
@@ -141,10 +141,10 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
     })
 }
 
-/// An agy session: edualc's own adapter (see [`crate::acp`]), which runs `agy acp` and speaks
-/// stream-json to the daemon as `claude` does, serves the session's inbox, publishes its record
-/// and carries its messages.
-fn spawn_agy(
+/// An ACP agent's session: edualc's own adapter (see [`crate::acp`]), which runs the agent's
+/// ACP command and speaks stream-json to the daemon as `claude` does, serves the session's
+/// inbox, publishes its record and carries its messages.
+fn spawn_acp(
     launch: &Launch,
     cwd: &Path,
     runtime: &tokio::runtime::Handle,
@@ -152,11 +152,13 @@ fn spawn_agy(
     let program = std::env::current_exe().map_err(Error::Adapter)?;
     let mut command = Command::new(program);
     command.arg(crate::acp::ADAPTER_FLAG);
+    // The backend's own name, which the adapter's `--agent` takes.
+    command.arg(format!("--agent={}", <&'static str>::from(launch.backend)));
     command.arg(format!("--cwd={}", cwd.display()));
     match &launch.conversation {
         Conversation::New(id) => command.arg(format!("--session-id={id}")),
         Conversation::Continue(id) => command.arg(format!("--resume={id}")),
-        Conversation::Fork { .. } => return Err(Error::AgyFork),
+        Conversation::Fork { .. } => return Err(Error::AcpFork),
     };
     if let Some(model) = &launch.model {
         command.arg(format!("--model={}", model_name(model)?));
@@ -203,8 +205,8 @@ impl From<Error> for crate::ipc::StartFailure {
             Error::NoFolder(path) => Self::NoFolder(path),
             Error::NoModel(model) => Self::NoModel(model),
             Error::Start(source) => Self::Start(source.to_string()),
-            error @ (Error::Adapter(_) | Error::AgyFork) => Self::Agy(error.to_string()),
-            error @ (Error::NoApiKey | Error::Keyring(_) | Error::AgyApiKey) => {
+            error @ (Error::Adapter(_) | Error::AcpFork) => Self::Acp(error.to_string()),
+            error @ (Error::NoApiKey | Error::Keyring(_) | Error::AcpApiKey) => {
                 Self::ApiKey(error.to_string())
             }
         }

@@ -148,7 +148,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 20;
+pub const PROTOCOL: u32 = 21;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -494,7 +494,7 @@ pub enum StartFailure {
     #[error("the daemon failed starting it")]
     Crashed,
     #[error("{0}")]
-    Agy(String),
+    Acp(String),
     #[error("{0}")]
     ApiKey(String),
 }

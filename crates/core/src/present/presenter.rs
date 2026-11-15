@@ -631,6 +631,12 @@ impl<F: Frontend> Presenter<F> {
                  message that failed is sent again.",
                 "agy",
             ),
+            crate::claude::Backend::Opencode => (
+                "opencode keeps its own sign-in, so trying again often works. If it keeps \
+                 failing, run opencode in a terminal and sign in when it asks, then try again. \
+                 The message that failed is sent again.",
+                "opencode",
+            ),
         };
         help.clone_into(&mut session.sign_in_help);
         command.clone_into(&mut session.sign_in_command);
@@ -673,6 +679,7 @@ impl<F: Frontend> Presenter<F> {
         // What stands where the bars would, without any.
         match (status.backend, status.sign_in_with) {
             (crate::claude::Backend::Agy, _) => "agy reports no usage limits",
+            (crate::claude::Backend::Opencode, _) => "opencode reports no usage limits",
             (crate::claude::Backend::Claude, crate::claude::SignInWith::ApiKey) => {
                 "API key · billed by the token"
             }
@@ -1339,6 +1346,7 @@ fn program_shown(program: crate::claude::Program) -> model::Program {
         crate::claude::Program::Claude => model::Program::Claude,
         crate::claude::Program::ClaudeApiKey => model::Program::ClaudeApiKey,
         crate::claude::Program::Agy => model::Program::Agy,
+        crate::claude::Program::Opencode => model::Program::Opencode,
     }
 }
 

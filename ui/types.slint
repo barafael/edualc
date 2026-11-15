@@ -120,8 +120,8 @@ export enum SignInState { unknown, signed-in, signed-out }
 export enum SessionRowKind { heading, running, earlier }
 
 // The program a session runs: Claude Code (with the user's sign-in, or with the Anthropic API
-// key in the keyring), or Google's Antigravity CLI.
-export enum Program { claude, claude-api-key, agy }
+// key in the keyring), Google's Antigravity CLI, or opencode.
+export enum Program { claude, claude-api-key, agy, opencode }
 
 export struct SessionRow {
     kind: SessionRowKind,

@@ -192,6 +192,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
                 Program::Claude => (Backend::Claude, SignInWith::Account),
                 Program::ClaudeApiKey => (Backend::Claude, SignInWith::ApiKey),
                 Program::Agy => (Backend::Agy, SignInWith::Account),
+                Program::Opencode => (Backend::Opencode, SignInWith::Account),
             };
             actions.send(Action::NewSession(backend, sign_in));
         }
