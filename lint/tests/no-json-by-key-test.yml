@@ -1,0 +1,18 @@
+id: no-json-by-key
+valid:
+  - |
+    let line: Message = serde_json::from_str(text)?;
+  - |
+    let port = settings.get("port").copied();
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn kind(line: &Value) -> Option<&str> { line.get("type").and_then(Value::as_str) }
+    }
+invalid:
+  - |
+    let kind = line.get("type").and_then(Value::as_str);
+  - |
+    let id = line.pointer("/request/id");
+  - |
+    let ok = said.get("ok").and_then(serde_json::Value::as_bool);

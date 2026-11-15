@@ -1,0 +1,29 @@
+id: no-json-by-key
+language: Rust
+severity: error
+message: "JSON read by key isn't checked by the compiler, and a renamed key reads as missing: parse it where it enters into a type that derives Deserialize (the wire's types are in crates/core/src/external)"
+note: "Tests may read what they check by key. Data that is open by nature, such as a tool's raw input from an agent, may be read so where a type can't say more; a helper that wraps .get isn't seen by this rule, so don't write one to get past it."
+files:
+  - "**/src/**"
+# Known debt, each file to be typed and taken off this list (2026-11-15): the ACP adapter's
+# reading of the window's lines and of agents' tool arguments, its inbox and MCP tool, the
+# window's reading of tool inputs, and the browser demo.
+ignores:
+  - "crates/host/src/acp/translate.rs"
+  - "crates/host/src/acp.rs"
+  - "crates/host/src/acp/inbox.rs"
+  - "crates/host/src/acp/tool.rs"
+  - "crates/core/src/tools.rs"
+  - "crates/slint/src/web/**"
+rule:
+  any:
+    - pattern: $X.pointer($$$)
+    - pattern: $X.get($KEY).and_then(Value::$AS)
+    - pattern: $X.get($KEY).and_then(serde_json::Value::$AS)
+  not:
+    inside:
+      stopBy: end
+      kind: mod_item
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(test\)'

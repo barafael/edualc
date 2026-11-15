@@ -1,0 +1,20 @@
+id: no-json-by-key
+snapshots:
+  "let id = line.pointer(\"/request/id\");\n":
+    labels:
+    - source: line.pointer("/request/id")
+      style: primary
+      start: 9
+      end: 36
+  "let kind = line.get(\"type\").and_then(Value::as_str);\n":
+    labels:
+    - source: line.get("type").and_then(Value::as_str)
+      style: primary
+      start: 11
+      end: 51
+  "let ok = said.get(\"ok\").and_then(serde_json::Value::as_bool);\n":
+    labels:
+    - source: said.get("ok").and_then(serde_json::Value::as_bool)
+      style: primary
+      start: 9
+      end: 60
