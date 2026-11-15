@@ -7,7 +7,6 @@
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
 use sha2::Digest as _;
 use subtle::ConstantTimeEq as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
@@ -15,7 +14,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-use crate::external::claude_files::{SessionKey, SessionRecord};
+use crate::external::claude_files::{InboxLine, SessionKey, SessionRecord};
 use crate::external::wire::SessionId;
 use crate::process;
 use crate::sessions::MessagingName;
@@ -180,13 +179,12 @@ impl Inbox {
 async fn read_posted(stream: UnixStream, token: Token, posted: mpsc::Sender<String>) {
     let mut lines = BufReader::new(stream.take(POSTED_BYTES)).lines();
     let authenticated = match lines.next_line().await {
-        Ok(Some(line)) => serde_json::from_str::<Value>(&line).is_ok_and(|auth| {
-            auth.get("type").and_then(Value::as_str) == Some("auth")
-                && auth
-                    .get("token")
-                    .and_then(Value::as_str)
-                    .is_some_and(|given| bool::from(given.as_bytes().ct_eq(token.0.as_bytes())))
-        }),
+        Ok(Some(line)) => match serde_json::from_str::<InboxLine>(&line) {
+            Ok(InboxLine::Auth { token: given }) => {
+                bool::from(given.as_bytes().ct_eq(token.0.as_bytes()))
+            }
+            Ok(InboxLine::User { .. } | InboxLine::Other) | Err(_) => false,
+        },
         Ok(None) | Err(_) => false,
     };
     if !authenticated {
@@ -194,33 +192,20 @@ async fn read_posted(stream: UnixStream, token: Token, posted: mpsc::Sender<Stri
         return;
     }
     while let Ok(Some(line)) = lines.next_line().await {
-        let Ok(message) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let message = match serde_json::from_str::<InboxLine>(&line) {
+            Ok(InboxLine::User { message }) => message,
+            Ok(InboxLine::Auth { .. } | InboxLine::Other) => continue,
+            Err(error) => {
+                tracing::warn!(%error, "a posted line edualc can't read: dropped");
+                continue;
+            }
         };
-        if message.get("type").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        let Some(text) = message.pointer("/message/content").and_then(text_of) else {
+        let Some(text) = message.into_text() else {
             continue;
         };
         if posted.send(text).await.is_err() {
             return;
         }
-    }
-}
-
-/// A message's content as text: as it is, or its text blocks.
-fn text_of(content: &Value) -> Option<String> {
-    match content {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(blocks) => {
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect();
-            (!texts.is_empty()).then(|| texts.join("\n"))
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => None,
     }
 }
 
@@ -255,12 +240,19 @@ mod tests {
     #[test]
     fn texts_and_names() {
         assert_eq!(hex(&[0, 15, 255]), "000fff");
+        let text = |line: &str| match serde_json::from_str::<InboxLine>(line) {
+            Ok(InboxLine::User { message }) => message.into_text(),
+            Ok(InboxLine::Auth { .. } | InboxLine::Other) | Err(_) => None,
+        };
         assert_eq!(
-            text_of(
-                &serde_json::json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
+            text(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}}"#
             ),
             Some("a\nb".to_owned())
         );
-        assert_eq!(text_of(&serde_json::json!("hi")), Some("hi".to_owned()));
+        assert_eq!(
+            text(r#"{"type":"user","message":{"role":"user","content":"hi"}}"#),
+            Some("hi".to_owned())
+        );
     }
 }

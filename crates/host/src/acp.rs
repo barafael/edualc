@@ -23,7 +23,6 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixListener;
 use tokio::net::unix::OwnedWriteHalf;
@@ -31,7 +30,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
-use crate::external::acp::{RpcError, ToolCall};
+use crate::external::acp::{AgyArguments, OpencodeArguments, RpcError, ToolCall};
 use crate::external::tool_input::{
     BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput, WriteInput,
 };
@@ -122,72 +121,67 @@ impl Agent {
     /// command tools as Read, Write, Edit and Bash, with their arguments by Claude Code's names.
     /// None for a name it doesn't know.
     fn tool(self, name: &str, call: &ToolCall) -> Option<KnownCall> {
-        let input = call.raw_input.clone().unwrap_or(Value::Null);
-        let text = |key: &str| string_argument(&input, key).unwrap_or_default();
         let title = || call.title.clone().unwrap_or_default();
         match self {
             Self::Agy => {
-                let path = || {
-                    string_argument(&input, "Path")
-                        .map(PathBuf::from)
-                        .or_else(|| first_location(call))
-                        .unwrap_or_else(|| PathBuf::from(title()))
-                };
+                let given: AgyArguments = arguments(name, call);
+                let path = given
+                    .path
+                    .or_else(|| first_location(call))
+                    .unwrap_or_else(|| PathBuf::from(title()));
+                let content = given.content.unwrap_or_default();
                 match name {
                     AGY_SEND => Some(KnownCall::SendMessage(SendMessageInput {
-                        to: text("to"),
-                        message: text("message"),
+                        to: given.to.unwrap_or_default(),
+                        message: given.message.unwrap_or_default(),
                     })),
                     AGY_LIST => Some(KnownCall::ListSessions(ListSessionsInput {})),
                     "run_command" => Some(KnownCall::Bash(BashInput {
-                        command: string_argument(&input, "CommandLine").unwrap_or_else(title),
-                        description: string_argument(&input, "toolSummary"),
+                        command: given.command_line.unwrap_or_else(title),
+                        description: given.tool_summary,
                     })),
                     "read_file" | "view_file" => {
-                        Some(KnownCall::Read(ReadInput { file_path: path() }))
+                        Some(KnownCall::Read(ReadInput { file_path: path }))
                     }
-                    // Appending (agy's `Append`) adds to the file: as an edit that adds the lines,
-                    // not a Write, which would read as the whole file.
-                    "write_file" if input.get("Append") == Some(&Value::Bool(true)) => {
+                    // Appending adds to the file: as an edit that adds the lines, not a Write,
+                    // which would read as the whole file.
+                    "write_file" if given.append == Some(true) => {
                         Some(KnownCall::Edit(EditInput {
-                            file_path: path(),
+                            file_path: path,
                             old_string: String::new(),
-                            new_string: text("Content"),
+                            new_string: content,
                         }))
                     }
                     "write_file" => Some(KnownCall::Write(WriteInput {
-                        file_path: path(),
-                        content: text("Content"),
+                        file_path: path,
+                        content,
                     })),
                     "edit_file" => Some(KnownCall::Edit(EditInput {
-                        file_path: path(),
-                        old_string: text("Target"),
-                        new_string: text("Replacement"),
+                        file_path: path,
+                        old_string: given.target.unwrap_or_default(),
+                        new_string: given.replacement.unwrap_or_default(),
                     })),
                     _ => None,
                 }
             }
             Self::Opencode => {
+                let given: OpencodeArguments = arguments(name, call);
                 // Its paths are relative in the arguments and absolute in the locations.
-                let path = || {
-                    first_location(call)
-                        .or_else(|| string_argument(&input, "path").map(PathBuf::from))
-                        .unwrap_or_default()
-                };
+                let path = first_location(call).or(given.path).unwrap_or_default();
                 match name {
                     "shell" => Some(KnownCall::Bash(BashInput {
-                        command: text("command"),
+                        command: given.command.unwrap_or_default(),
                         description: None,
                     })),
-                    "read" => Some(KnownCall::Read(ReadInput { file_path: path() })),
+                    "read" => Some(KnownCall::Read(ReadInput { file_path: path })),
                     "write" => Some(KnownCall::Write(WriteInput {
-                        file_path: path(),
-                        content: text("content"),
+                        file_path: path,
+                        content: given.content.unwrap_or_default(),
                     })),
                     "edit" => Some(KnownCall::Edit(EditInput {
-                        file_path: path(),
-                        old_string: text("oldString"),
-                        new_string: text("newString"),
+                        file_path: path,
+                        old_string: given.old_string.unwrap_or_default(),
+                        new_string: given.new_string.unwrap_or_default(),
                     })),
                     _ => None,
                 }
@@ -331,16 +325,18 @@ fn transcript_path(cwd: &Path, id: &SessionId) -> Option<PathBuf> {
 /// keeps it.
 fn acp_session_id(transcript: &Path) -> Option<String> {
     let text = std::fs::read_to_string(transcript).ok()?;
-    text.lines().find_map(|line| {
-        let line: Value = serde_json::from_str(line).ok()?;
-        (line.get("type").and_then(Value::as_str) == Some("agy-session"))
-            .then(|| {
-                line.get("agySessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .flatten()
-    })
+    text.lines()
+        .find_map(|line| match serde_json::from_str(line).ok()? {
+            TranscriptLine::AgySession { agent_session_id } => Some(agent_session_id),
+            TranscriptLine::User { .. }
+            | TranscriptLine::Assistant { .. }
+            | TranscriptLine::System(_)
+            | TranscriptLine::CustomTitle { .. }
+            | TranscriptLine::AiTitle { .. }
+            | TranscriptLine::Summary { .. }
+            | TranscriptLine::WorktreeState { .. }
+            | TranscriptLine::Other => None,
+        })
 }
 
 /// `program` as found on PATH.
@@ -352,9 +348,22 @@ fn on_path(program: &str) -> Option<PathBuf> {
     })
 }
 
-/// The string argument `key` of a tool call's input, if the agent gave one.
-fn string_argument(input: &Value, key: &str) -> Option<String> {
-    input.get(key).and_then(Value::as_str).map(str::to_owned)
+/// The arguments of tool call `name`, as far as the agent has given them: none yet, or ones
+/// edualc can't read (logged), show as none.
+fn arguments<Arguments>(name: &str, call: &ToolCall) -> Arguments
+where
+    Arguments: serde::de::DeserializeOwned + Default,
+{
+    let Some(input) = call.raw_input.clone() else {
+        return Arguments::default();
+    };
+    match serde_json::from_value::<Option<Arguments>>(input) {
+        Ok(given) => given.unwrap_or_default(),
+        Err(error) => {
+            tracing::warn!(%error, tool = name, "a tool's arguments edualc can't read");
+            Arguments::default()
+        }
+    }
 }
 
 /// The path of a tool call's first location, for a call whose input doesn't name one.

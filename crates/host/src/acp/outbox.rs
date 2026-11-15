@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::fs::{FileType, Mode, OFlags};
-use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::external::claude_files::{SessionKey, SessionRecord};
+use crate::external::claude_files::{InboxLine, InboxMessage, SessionKey, SessionRecord};
+use crate::external::wire::UserContent;
 use crate::sessions::MessagingName;
 use crate::{process, sessions};
 
@@ -499,37 +499,16 @@ pub(super) fn remove(path: &Path) {
     }
 }
 
-/// A line posted into an inbox, as Claude Code's own sessions post them.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum InboxLine<'a> {
-    Auth { token: &'a str },
-    User { message: InboxMessage<'a> },
-}
-
-#[derive(Debug, Serialize)]
-struct InboxMessage<'a> {
-    role: Role,
-    content: &'a str,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Role {
-    User,
-}
-
 /// Posts one message into an inbox as Claude Code's own sessions do: the token, then the
 /// message as a user line. What holds the token is cleared from memory once written.
 fn post(socket: &Path, token: &str, content: &str) -> std::io::Result<()> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_write_timeout(Some(POSTING))?;
-    let auth = Zeroizing::new(serde_json::to_string(&InboxLine::Auth { token })?);
+    let auth = Zeroizing::new(serde_json::to_string(&InboxLine::Auth {
+        token: Zeroizing::new(token.to_owned()),
+    })?);
     let line = serde_json::to_string(&InboxLine::User {
-        message: InboxMessage {
-            role: Role::User,
-            content,
-        },
+        message: InboxMessage::new(UserContent::Text(content.to_owned())),
     })?;
     let posted = Zeroizing::new(format!("{}\n{line}\n", auth.as_str()));
     stream.write_all(posted.as_bytes())?;

@@ -12,6 +12,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::external::acp::{JsonRpc, Reply, RpcErrorBody};
+use crate::external::mcp;
+use crate::external::tool_input::SendMessageInput;
 
 /// The protocol version the tool answers with when the agent names none.
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -195,22 +197,22 @@ pub fn run() -> std::process::ExitCode {
         let Ok(line) = line else {
             break;
         };
-        let Ok(message) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let message = match serde_json::from_str::<mcp::Incoming>(&line) {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!(%error, "a line from the agent the tool can't read");
+                continue;
+            }
         };
         // Notifications want no answer.
-        let Some(id) = message.get("id").cloned() else {
+        let Some(id) = message.id else {
             continue;
         };
-        let line = match message.get("method").and_then(Value::as_str) {
-            Some("initialize") => response_line(
+        let line = match message.method {
+            mcp::Method::Initialize => response_line(
                 id,
                 Reply::Result(Initialized {
-                    protocol_version: message
-                        .pointer("/params/protocolVersion")
-                        .and_then(Value::as_str)
-                        .unwrap_or(PROTOCOL_VERSION)
-                        .to_owned(),
+                    protocol_version: protocol_version(message.params),
                     capabilities: Capabilities {
                         tools: ToolsCapability {},
                     },
@@ -220,9 +222,9 @@ pub fn run() -> std::process::ExitCode {
                     },
                 }),
             ),
-            Some("tools/list") => response_line(id, Reply::Result(listing())),
-            Some("tools/call") => {
-                let Answer { text, error } = called(&socket, message.get("params"));
+            mcp::Method::ToolsList => response_line(id, Reply::Result(listing())),
+            mcp::Method::ToolsCall => {
+                let Answer { text, error } = called(&socket, message.params);
                 response_line(
                     id,
                     Reply::Result(CallResult {
@@ -231,7 +233,7 @@ pub fn run() -> std::process::ExitCode {
                     }),
                 )
             }
-            Some(_) | None => unserved(id),
+            mcp::Method::Other => unserved(id),
         };
         let line = match line {
             Ok(line) => line,
@@ -251,39 +253,51 @@ pub fn run() -> std::process::ExitCode {
 }
 
 /// A call, as the adapter answers it.
-fn called(socket: &std::path::Path, params: Option<&Value>) -> Answer {
-    let name = params
-        .and_then(|params| params.get("name"))
-        .and_then(Value::as_str);
-    let arguments = params.and_then(|params| params.get("arguments"));
-    let text = |field: &str| {
-        arguments
-            .and_then(|arguments| arguments.get(field))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+fn called(socket: &std::path::Path, params: Value) -> Answer {
+    let unreadable = || Answer {
+        text: super::outbox::Refusal::Unreadable.to_string(),
+        error: true,
     };
-    let request = match name {
-        Some("send_message") => match (text("to"), text("message")) {
-            (Some(to), Some(message)) => Request::Send { to, message },
-            (None | Some(_), None | Some(_)) => {
-                return Answer {
-                    text: super::outbox::Refusal::Unreadable.to_string(),
-                    error: true,
-                };
+    let no_such_tool = || Answer {
+        text: "edualc has no such tool.".to_owned(),
+        error: true,
+    };
+    let Ok(call) = serde_json::from_value::<mcp::CallParams>(params) else {
+        return no_such_tool();
+    };
+    let request = match call.name {
+        mcp::CalledTool::SendMessage => {
+            match serde_json::from_value::<SendMessageInput>(call.arguments) {
+                Ok(SendMessageInput { to, message }) => Request::Send { to, message },
+                Err(_) => return unreadable(),
             }
-        },
-        Some("list_sessions") => Request::List,
-        Some(_) | None => {
-            return Answer {
-                text: "edualc has no such tool.".to_owned(),
-                error: true,
-            };
         }
+        mcp::CalledTool::ListSessions => Request::List,
+        mcp::CalledTool::Other => return no_such_tool(),
     };
     asked(socket, &request).unwrap_or_else(|error| Answer {
         text: format!("edualc couldn't be reached: {error}"),
         error: true,
     })
+}
+
+/// The protocol version the agent asked for, else the tool's own.
+fn protocol_version(params: Value) -> String {
+    match serde_json::from_value::<Option<mcp::InitializeParams>>(params) {
+        Ok(Some(mcp::InitializeParams {
+            protocol_version: Some(version),
+        })) => version,
+        Ok(
+            Some(mcp::InitializeParams {
+                protocol_version: None,
+            })
+            | None,
+        ) => PROTOCOL_VERSION.to_owned(),
+        Err(error) => {
+            tracing::warn!(%error, "an initialize the tool can't read: answered with its own version");
+            PROTOCOL_VERSION.to_owned()
+        }
+    }
 }
 
 fn asked(socket: &std::path::Path, request: &Request) -> std::io::Result<Answer> {
@@ -298,6 +312,26 @@ fn asked(socket: &std::path::Path, request: &Request) -> std::io::Result<Answer>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call to a tool edualc doesn't have, or a message without its recipient, is answered
+    /// as an error without reaching the adapter.
+    #[test]
+    fn calls_the_tool_cant_carry_are_errors() {
+        let nowhere = std::path::Path::new("/nonexistent/edualc.sock");
+        let answer = |params: Value| called(nowhere, params);
+        let unknown = answer(serde_json::json!({ "name": "delete_everything" }));
+        assert!(unknown.error);
+        assert_eq!(unknown.text, "edualc has no such tool.");
+        let unaddressed = answer(serde_json::json!({
+            "name": "send_message",
+            "arguments": { "message": "hi" },
+        }));
+        assert!(unaddressed.error);
+        assert_eq!(
+            unaddressed.text,
+            super::super::outbox::Refusal::Unreadable.to_string()
+        );
+    }
 
     #[test]
     fn requests_and_answers_read_back() {

@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::external::wire::SessionId;
+use crate::external::wire::{ContentBlock, SessionId, UserContent};
 use crate::sessions::{LiveKind, LiveStatus};
 
 /// A running session's record, `sessions/<pid>.json` in Claude Code's home, in the fields
@@ -188,4 +189,64 @@ pub struct LiveRecord {
     /// The process's start time, as `/proc/<pid>/stat` has it: tells a reused pid apart.
     #[serde(rename = "procStart")]
     pub proc_start: Option<String>,
+}
+
+/// A line posted into a session's inbox, as Claude Code's own sessions post them: the token,
+/// then each message as a user line.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InboxLine {
+    Auth {
+        token: Zeroizing<String>,
+    },
+    User {
+        message: InboxMessage,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InboxMessage {
+    #[serde(default)]
+    role: Role,
+    pub content: UserContent,
+}
+
+impl InboxMessage {
+    pub fn new(content: UserContent) -> Self {
+        Self {
+            role: Role::User,
+            content,
+        }
+    }
+
+    /// The message's text: as it came, or its text blocks, a line each. None without text.
+    pub fn into_text(self) -> Option<String> {
+        match self.content {
+            UserContent::Text(text) => Some(text),
+            UserContent::Blocks(blocks) => {
+                let texts: Vec<String> = blocks
+                    .into_iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text),
+                        ContentBlock::Thinking { .. }
+                        | ContentBlock::ToolUse { .. }
+                        | ContentBlock::ServerToolUse { .. }
+                        | ContentBlock::ToolResult { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::Other => None,
+                    })
+                    .collect();
+                (!texts.is_empty()).then(|| texts.join("\n"))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Role {
+    #[default]
+    User,
 }

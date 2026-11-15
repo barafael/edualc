@@ -179,6 +179,38 @@ pub struct Location {
     pub path: PathBuf,
 }
 
+/// A tool call's arguments (`rawInput`) as agy 1.5.6 names them, each as far as agy has given
+/// it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AgyArguments {
+    pub path: Option<PathBuf>,
+    pub command_line: Option<String>,
+    #[serde(rename = "toolSummary")]
+    pub tool_summary: Option<String>,
+    pub content: Option<String>,
+    pub append: Option<bool>,
+    pub target: Option<String>,
+    pub replacement: Option<String>,
+    /// edualc's messaging tool's, by its own names.
+    #[serde(rename = "to")]
+    pub to: Option<String>,
+    #[serde(rename = "message")]
+    pub message: Option<String>,
+}
+
+/// A tool call's arguments (`rawInput`) as opencode names them, each as far as opencode has
+/// given it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeArguments {
+    pub path: Option<PathBuf>,
+    pub command: Option<String>,
+    pub content: Option<String>,
+    pub old_string: Option<String>,
+    pub new_string: Option<String>,
+}
+
 /// `session/request_permission`'s parameters.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

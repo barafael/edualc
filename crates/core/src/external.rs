@@ -1,14 +1,15 @@
 //! Formats other programs write, as types: Claude Code's stream-json and transcripts (`wire`),
 //! the inputs of its tools the window knows (`tool_input`), the files it keeps
-//! (`claude_files`), niri's IPC (`niri`), and the Agent Client Protocol agy and opencode speak
-//! (`acp`). They grow
-//! with each release, so their types take keys they don't know, and the
-//! `serde-deny-unknown-fields` rule leaves this module out; the formats edualc owns refuse
-//! unknown keys.
+//! (`claude_files`), niri's IPC (`niri`), the Agent Client Protocol agy and opencode speak
+//! (`acp`), and what they say to edualc's messaging tool over MCP (`mcp`). They grow with each
+//! release, so their types take keys they don't know, and the `serde-deny-unknown-fields` rule
+//! leaves this module out; the formats edualc owns refuse unknown keys.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod acp;
 pub mod claude_files;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mcp;
 pub mod niri;
 pub mod tool_input;
 pub mod wire;
