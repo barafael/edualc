@@ -13,15 +13,15 @@ fn main() -> std::process::ExitCode {
     // An ACP session's adapter, which the daemon starts in place of claude, and the messaging
     // tool it gives the agent (see `acp`).
     match std::env::args().nth(1).as_deref() {
-        Some(edualc_host::acp::ADAPTER_FLAG) => return edualc_host::acp::run_adapter(),
-        Some(edualc_host::acp::TOOL_FLAG) => return edualc_host::acp::run_tool(),
+        Some(edualc_host::ADAPTER_FLAG) => return edualc_host::run_adapter(),
+        Some(edualc_host::TOOL_FLAG) => return edualc_host::run_tool(),
         Some(_) | None => {}
     }
     if let Some(job) = std::env::args()
         .nth(1)
-        .and_then(|argument| argument.parse::<edualc_host::decode::Job>().ok())
+        .and_then(|argument| argument.parse::<edualc_core::decode::Job>().ok())
     {
-        return edualc_host::decode::run(job);
+        return edualc_core::decode::run(job);
     }
-    edualc_host::daemon::run()
+    edualc_host::run()
 }

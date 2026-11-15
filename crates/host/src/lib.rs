@@ -3,10 +3,15 @@
 //! with sans-io cores (see [`daemon`]).
 
 // The window's modules, under the names this crate's modules know them by.
-pub use edualc_core::*;
+use edualc_core::*;
 
-pub mod acp;
-pub mod daemon;
-pub mod files;
-pub mod keyring;
-pub mod spawn;
+mod acp;
+mod daemon;
+mod files;
+mod keyring;
+mod spawn;
+
+// What `edualcd` starts as: the daemon, or an ACP session's adapter or its messaging tool. The
+// image decoder's helper is the window's crate's (`edualc_core::decode`).
+pub use acp::{ADAPTER_FLAG, TOOL_FLAG, run_adapter, run_tool};
+pub use daemon::run;
