@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::fs::{FileType, Mode, OFlags};
-use serde_json::json;
+use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::external::claude_files::{SessionKey, SessionRecord};
 use crate::sessions::MessagingName;
@@ -409,7 +410,7 @@ fn inbox_ok(places: &Places, record: &SessionRecord) -> bool {
 
 /// The token the record's session takes in its inbox, from its key file
 /// (`<pid>.<64 hex>.key`), whose start matches the record's.
-fn peer_token(places: &Places, record: &SessionRecord) -> Option<String> {
+fn peer_token(places: &Places, record: &SessionRecord) -> Option<Zeroizing<String>> {
     let folder = open_folder(&places.sessions)?;
     let prefix = format!("{}.", record.pid);
     std::fs::read_dir(&places.sessions)
@@ -425,7 +426,8 @@ fn peer_token(places: &Places, record: &SessionRecord) -> Option<String> {
                     })
             })
         })
-        .filter_map(|name| read_regular(&folder, &name, KEY_BYTES))
+        // The file's text holds the token too.
+        .filter_map(|name| read_regular(&folder, &name, KEY_BYTES).map(Zeroizing::new))
         .filter_map(|text| serde_json::from_str::<SessionKey>(&text).ok())
         .find(|key| {
             key.proc_start == record.proc_start
@@ -497,21 +499,47 @@ pub(super) fn remove(path: &Path) {
     }
 }
 
+/// A line posted into an inbox, as Claude Code's own sessions post them.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum InboxLine<'a> {
+    Auth { token: &'a str },
+    User { message: InboxMessage<'a> },
+}
+
+#[derive(Debug, Serialize)]
+struct InboxMessage<'a> {
+    role: Role,
+    content: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Role {
+    User,
+}
+
 /// Posts one message into an inbox as Claude Code's own sessions do: the token, then the
-/// message as a user line.
+/// message as a user line. What holds the token is cleared from memory once written.
 fn post(socket: &Path, token: &str, content: &str) -> std::io::Result<()> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_write_timeout(Some(POSTING))?;
-    let auth = json!({"type": "auth", "token": token}).to_string();
-    let line = json!({"type": "user", "message": {"role": "user", "content": content}}).to_string();
-    stream.write_all(format!("{auth}\n{line}\n").as_bytes())?;
+    let auth = Zeroizing::new(serde_json::to_string(&InboxLine::Auth { token })?);
+    let line = serde_json::to_string(&InboxLine::User {
+        message: InboxMessage {
+            role: Role::User,
+            content,
+        },
+    })?;
+    let posted = Zeroizing::new(format!("{}\n{line}\n", auth.as_str()));
+    stream.write_all(posted.as_bytes())?;
     stream.shutdown(std::net::Shutdown::Write)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::io::{BufRead as _, BufReader};
     use std::os::unix::net::UnixListener;
 

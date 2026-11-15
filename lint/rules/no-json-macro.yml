@@ -6,10 +6,9 @@ note: "Tests may use it for what an agent or the CLI sends. Data that is open by
 files:
   - "**/src/**"
 # Known debt, each file to be typed and taken off this list: the browser demo's stand-in Claude,
-# and edualcd's ACP adapter (being typed on branch acp-adapter, 2026-11-15).
+# and the presenter's one tool input built for a `!` command.
 ignores:
   - "crates/slint/src/web/**"
-  - "crates/host/src/acp/outbox.rs"
   - "crates/core/src/present/presenter.rs"
 rule:
   kind: macro_invocation

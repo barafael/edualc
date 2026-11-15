@@ -471,6 +471,22 @@ enum Acting {
     ApiKey,
 }
 
+/// An API key as the user pasted it, not yet checked: cleared from memory once dropped, and
+/// left out of what `Debug` writes, as [`crate::ipc::ApiKey`] is.
+pub struct PastedKey(zeroize::Zeroizing<String>);
+
+impl PastedKey {
+    pub fn new(text: &str) -> Self {
+        Self(zeroize::Zeroizing::new(text.to_owned()))
+    }
+}
+
+impl std::fmt::Debug for PastedKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PastedKey(…)")
+    }
+}
+
 /// What the user did in the window.
 #[derive(Debug)]
 pub enum Action {
@@ -484,7 +500,7 @@ pub enum Action {
     /// The session waiting for it continues signed in so; none: it isn't continued.
     ContinueWith(Option<claude::SignInWith>),
     /// An Anthropic API key, as pasted, for the keyring.
-    StoreApiKey(String),
+    StoreApiKey(PastedKey),
     RemoveApiKey,
     OpenSession(SessionId),
     /// A folder typed into the list of folders, to open.
@@ -1420,7 +1436,7 @@ impl<F: Frontend> App<F> {
                 self.new_session(claude::Backend::Claude, claude::SignInWith::ApiKey);
             }
             Action::ContinueWith(sign_in) => self.continue_with(sign_in),
-            Action::StoreApiKey(text) => self.store_api_key(&text),
+            Action::StoreApiKey(pasted) => self.store_api_key(&pasted.0),
             Action::RemoveApiKey => self.ask_desktop(Act::RemoveApiKey, Acting::ApiKey),
             Action::OpenSession(id) => self.open_session(id),
             Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed), true),
@@ -3309,6 +3325,13 @@ pub fn answer_as<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pasted API key is left out of what an action's `Debug` writes.
+    #[test]
+    fn a_pasted_key_isnt_written_out() {
+        let action = Action::StoreApiKey(PastedKey::new("sk-ant-abc_DEF"));
+        assert!(!format!("{action:?}").contains("abc_DEF"));
+    }
 
     /// A turn counts as under way whoever started it: one this window prompted, or one a
     /// message from another session started, which the window sees only as the session

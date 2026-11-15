@@ -110,7 +110,7 @@ impl Inbox {
             hex(&sha2::Sha256::digest(socket.to_string_lossy().as_bytes()))
         );
         let key = SessionKey {
-            peer_token: token.0.to_string(),
+            peer_token: Zeroizing::new(token.0.to_string()),
             proc_start: started.clone(),
             pid_domain: domain.clone(),
         };

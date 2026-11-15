@@ -214,7 +214,14 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         }),
     );
     let preferences = window.global::<Preferences>();
-    preferences.on_store_api_key(actions.on_text(Action::StoreApiKey));
+    preferences.on_store_api_key({
+        let actions = actions.clone();
+        move |text| {
+            actions.send(Action::StoreApiKey(crate::app::PastedKey::new(
+                text.as_str(),
+            )));
+        }
+    });
     preferences.on_remove_api_key(actions.on(|| Action::RemoveApiKey));
     sessions.on_width_chosen({
         let actions = actions.clone();

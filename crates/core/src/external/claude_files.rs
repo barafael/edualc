@@ -55,7 +55,7 @@ pub struct SessionRecord {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionKey {
-    pub peer_token: String,
+    pub peer_token: zeroize::Zeroizing<String>,
     pub proc_start: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_domain: Option<String>,
