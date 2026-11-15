@@ -9,7 +9,29 @@ default:
 
 # Everything the CI workflow checks; `just in-image arch check` runs it in CI's image.
 [group('check')]
-check: fmt-check lint lint-wasm test deny audit workflows packaging-check images-check licences-check
+check: fmt-check lint lint-wasm test present-check deny audit workflows packaging-check images-check licences-check
+
+# One package's quick loop, for working on it: formats, then ast-grep's rules, clippy and the
+# package's tests (or those whose names contain `filter`), each in one line per finding,
+# stopping at the first stage that fails. A change to edualc-core needs edualc-host's and
+# edualc's loops too, as they build on it; `just lint` and `just test` before handing in.
+[group('check')]
+[arg('package', pattern='edualc-core|edualc-host|edualc', help='the package')]
+feedback package filter="":
+    cargo fmt
+    ast-grep scan --report-style short
+    cargo clippy --locked --quiet -p {{package}} --all-targets --message-format short -- -D warnings
+    python3 -c 'import os, sys; os.closerange(3, os.sysconf("SC_OPEN_MAX")); os.execvp(sys.argv[1], sys.argv[1:])' cargo test --locked --quiet -p {{package}} {{filter}}
+
+# ast-grep's rules alone, one line per finding: no build, so it answers at once.
+[group('check')]
+scan:
+    ast-grep scan --report-style short
+
+# The presentation model is what scripts/present_gen.py writes from the Slint types.
+[group('check')]
+present-check: present
+    git diff --exit-code crates/core/src/present/model.rs crates/slint/src/ui/model.rs
 
 # The Rust sources' formatting (the Nickel files' is in packaging-check).
 [group('check')]
@@ -78,7 +100,13 @@ fmt:
 
 # Writes every generated file kept in the tree.
 [group('write')]
-regenerate: licences manual kept
+regenerate: licences manual kept present
+
+# The presentation model, from ui/types.slint and ui/state.slint: after changing either.
+[group('write')]
+present:
+    python3 scripts/present_gen.py
+    cargo fmt
 
 # THIRD_PARTY_LICENSES.md, then the grammars' licences, which cargo-about doesn't see.
 [group('write')]
