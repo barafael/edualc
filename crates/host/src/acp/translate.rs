@@ -399,7 +399,21 @@ impl Translator {
                 vec![self.request(call, Asked::Open)]
             }
             Asked::Open => {
-                let opened: acp::Opened = serde_json::from_value(result).unwrap_or_default();
+                let opened: acp::Opened = match serde_json::from_value(result) {
+                    Ok(opened) => opened,
+                    Err(error) => match &self.start {
+                        Start::New => {
+                            return self.failed(&format!(
+                                "its answer to opening the session can't be read: {error}"
+                            ));
+                        }
+                        // The session asked for is open whatever else the answer says.
+                        Start::Resume(_) => {
+                            tracing::warn!(%error, agent = %self.agent, "the answer to loading the session can't be read: its models and modes are left out");
+                            acp::Opened::default()
+                        }
+                    },
+                };
                 // A load answers without the id: the session is the one asked for.
                 let session = match (&self.start, opened.session_id) {
                     (Start::Resume(session), _) => session.clone(),
@@ -449,10 +463,13 @@ impl Translator {
                 self.mode = Some(mode);
                 vec![success(request, Value::Object(Map::new()))]
             }
-            Asked::Prompt => {
-                let prompted = serde_json::from_value::<Prompted>(result).ok();
-                self.turn_ended(prompted.as_ref(), None)
-            }
+            Asked::Prompt => match serde_json::from_value::<Prompted>(result) {
+                Ok(prompted) => self.turn_ended(Some(&prompted), None),
+                Err(error) => {
+                    let said = format!("its answer to the prompt can't be read: {error}");
+                    self.turn_ended(None, Some(Failure::Said(&said)))
+                }
+            },
         }
     }
 
@@ -1105,6 +1122,12 @@ impl Translator {
     /// in and try again instead of showing the agent's words.
     fn turn_ended(&mut self, prompted: Option<&Prompted>, failure: Option<Failure>) -> Vec<Effect> {
         let mut effects = self.message_done(None);
+        // A turn the agent cut short ends as failed, saying why, so it doesn't read as done.
+        let failure = failure.or_else(|| {
+            prompted
+                .and_then(|prompted| cut_short(prompted.stop_reason))
+                .map(Failure::Said)
+        });
         let error = failure.map(|failure| match failure {
             Failure::Said(message) | Failure::SignIn(message) => message,
         });
@@ -1168,6 +1191,20 @@ impl Translator {
         self.busy = false;
         effects.extend(self.next_turn());
         effects
+    }
+}
+
+/// Why the agent ended a turn before it was done, in words; none for a turn it finished or the
+/// user interrupted.
+fn cut_short(reason: StopReason) -> Option<&'static str> {
+    match reason {
+        StopReason::EndTurn | StopReason::Cancelled => None,
+        StopReason::MaxTokens => Some("stopped: the answer reached the most it may write at once"),
+        StopReason::MaxTurnRequests => {
+            Some("stopped: the turn reached the most requests it may make")
+        }
+        StopReason::Refusal => Some("refused to go on"),
+        StopReason::Other => Some("stopped, for a reason edualc doesn't know"),
     }
 }
 
@@ -1984,6 +2021,46 @@ mod tests {
                 "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}
             })]
         );
+    }
+
+    /// A turn the agent ends by refusing, or that an answer edualc can't read ends, ends as
+    /// failed with the reason in the conversation; one it ends as done ends as a success.
+    #[test]
+    fn a_turn_cut_short_ends_as_failed_saying_why() {
+        let ended_with = |answer: &str| {
+            let mut translator = opened();
+            let prompted = translator
+                .window_said(r#"{"type":"user","message":{"role":"user","content":"go"}}"#);
+            let rpc = prompt_id(&prompted);
+            let ended = translator.agent_said(&format!(
+                r#"{{"jsonrpc":"2.0","id":{rpc},"result":{answer}}}"#
+            ));
+            let lines = window_lines(&ended);
+            let failed = lines
+                .iter()
+                .find(|line| line.get("type") == Some(&json!("result")))
+                .and_then(|line| line.get("is_error"))
+                .and_then(Value::as_bool)
+                .expect("a result");
+            let said = lines
+                .iter()
+                .filter_map(|line| line.pointer("/message/content/0/text"))
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            (failed, said)
+        };
+        let (failed, said) = ended_with(r#"{"stopReason":"refusal"}"#);
+        assert!(failed);
+        assert!(said.contains("refused to go on"), "{said}");
+        let (failed, said) = ended_with(r#"{"stopReason":"max_tokens"}"#);
+        assert!(failed);
+        assert!(said.contains("the most it may write"), "{said}");
+        let (failed, said) = ended_with(r#"{"no":"stop reason"}"#);
+        assert!(failed);
+        assert!(said.contains("can't be read"), "{said}");
+        let (failed, _) = ended_with(r#"{"stopReason":"end_turn"}"#);
+        assert!(!failed);
     }
 
     /// A turn that fails because Google's API refused agy's sign-in ends with a 401 in its

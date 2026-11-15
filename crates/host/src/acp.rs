@@ -433,8 +433,9 @@ async fn adapt(args: Args) -> Result<(), Error> {
                     return;
                 }
             }
-            let ended = heard.send(Heard::Agent(None)).await;
-            drop(ended);
+            if heard.send(Heard::Agent(None)).await.is_err() {
+                tracing::debug!("the adapter's loop ended before the agent did");
+            }
         });
     }
     if let Some(err) = process.stderr.take() {
@@ -457,8 +458,9 @@ async fn adapt(args: Args) -> Result<(), Error> {
                     return;
                 }
             }
-            let closed = heard.send(Heard::Window(None)).await;
-            drop(closed);
+            if heard.send(Heard::Window(None)).await.is_err() {
+                tracing::debug!("the adapter's loop ended before the window's side closed");
+            }
         });
     }
     let (posted, mut posts) = mpsc::channel::<String>(QUEUE);
@@ -489,8 +491,9 @@ async fn adapt(args: Args) -> Result<(), Error> {
                     let read = BufReader::new(read).read_line(&mut line).await;
                     match read.ok().and_then(|_| serde_json::from_str(&line).ok()) {
                         Some(request) => {
-                            let told = heard.send(Heard::Tool(call, request, write)).await;
-                            drop(told);
+                            if heard.send(Heard::Tool(call, request, write)).await.is_err() {
+                                tracing::debug!("a tool call after the adapter's loop ended");
+                            }
                         }
                         None => tracing::debug!("a tool call that isn't one"),
                     }
