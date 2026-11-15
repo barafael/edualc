@@ -1494,7 +1494,8 @@ mod tests {
         }
     }
 
-    /// Panics unless the transcript's reader knows `line`.
+    /// Panics unless the transcript's reader knows `line`. The session, folder and time a line
+    /// is kept with are added as it is written (`wire::TranscriptEntry`, tested there).
     fn read_from_the_transcript(line: &Value) {
         use crate::external::wire::TranscriptLine;
         let read: TranscriptLine = serde_json::from_value(line.clone())
@@ -1502,12 +1503,6 @@ mod tests {
         assert!(
             !matches!(read, TranscriptLine::Other),
             "a transcript line its reader doesn't know: {line}"
-        );
-        assert!(
-            line.get("sessionId").is_some()
-                && line.get("cwd").is_some()
-                && line.get("timestamp").is_some(),
-            "a transcript line without its session, folder and time: {line}"
         );
     }
 

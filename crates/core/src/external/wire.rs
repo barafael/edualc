@@ -87,7 +87,9 @@ pub struct ToolUseId(String);
 pub struct TaskId(String);
 
 /// One of an agent program's own modes (agy's `accept-edits`), by the program's name for it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, derive_more::Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Deserialize, Serialize, derive_more::Display, derive_more::From,
+)]
 #[serde(transparent)]
 pub struct ModeId(String);
 
@@ -1584,6 +1586,38 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A transcript line is written with the session, folder and time it is of beside its own
+    /// keys, and reads back as the line it was.
+    #[test]
+    fn a_transcript_entry_carries_its_session_folder_and_time() {
+        let line = TranscriptLine::AiTitle {
+            ai_title: "Listing files".to_owned(),
+        };
+        let session = SessionId::try_from("11111111-2222-4333-8444-555555555555".to_owned())
+            .expect("a session id");
+        let written = serde_json::to_value(TranscriptEntry {
+            line: &line,
+            session_id: &session,
+            cwd: std::path::Path::new("/work"),
+            timestamp: jiff::Timestamp::UNIX_EPOCH,
+        })
+        .expect("a written entry");
+        assert_eq!(
+            written,
+            json!({
+                "type": "ai-title",
+                "aiTitle": "Listing files",
+                "sessionId": "11111111-2222-4333-8444-555555555555",
+                "cwd": "/work",
+                "timestamp": "1970-01-01T00:00:00Z",
+            })
+        );
+        let read: TranscriptLine = serde_json::from_value(written).expect("a line read back");
+        assert!(
+            matches!(read, TranscriptLine::AiTitle { ai_title } if ai_title == "Listing files")
+        );
+    }
 
     /// A turn that ended on the API refusing the session's sign-in, as Claude Code 2.1.316 ends
     /// one (recorded 2026-11-02 with an invalid token), is told apart from other failures and
