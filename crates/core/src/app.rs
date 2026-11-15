@@ -3326,6 +3326,223 @@ pub fn answer_as<T: serde::de::DeserializeOwned>(
 mod tests {
     use super::*;
 
+    use crate::present;
+
+    /// A frontend that draws nothing and sends the test what it was shown.
+    struct Recorder {
+        sessions: std::sync::mpsc::Sender<present::model::Session>,
+        commands: std::sync::mpsc::Sender<present::Command>,
+    }
+
+    impl Frontend for Recorder {
+        fn session(&mut self, session: &present::model::Session) {
+            if self.sessions.send(session.clone()).is_err() {
+                tracing::debug!("the test stopped listening");
+            }
+        }
+        fn composer(&mut self, _composer: &present::model::Composer) {}
+        fn sessions(&mut self, _sessions: &present::model::Sessions) {}
+        fn entries(&mut self, _change: present::EntriesChange) {}
+        fn prompt(&mut self, _prompt: &present::model::Prompt) {}
+        fn peek(&mut self, _peek: &present::model::Peek) {}
+        fn side(&mut self, _side: &present::model::Side) {}
+        fn preferences(&mut self, _preferences: &present::model::Preferences) {}
+        fn usage(&mut self, _usage: &present::model::Usage) {}
+        fn transcript(&mut self, _transcript: &present::model::Transcript) {}
+        fn show_image(&mut self, _key: ImageKey, _shown: Result<&crate::decode::Pixels, String>) {}
+        fn keep_images(&mut self, _shown: &HashSet<ImageKey>) {}
+        fn command(&mut self, command: present::Command) {
+            if self.commands.send(command).is_err() {
+                tracing::debug!("the test stopped listening");
+            }
+        }
+        fn draft(&self) -> String {
+            String::new()
+        }
+    }
+
+    /// An app as a window has it, in a folder trusted nowhere, and what it shows and sends the
+    /// daemon, as the test reads them.
+    struct Driven {
+        app: App<Recorder>,
+        sessions: std::sync::mpsc::Receiver<present::model::Session>,
+        commands: std::sync::mpsc::Receiver<present::Command>,
+        sent: std::sync::mpsc::Receiver<ToDaemon>,
+        cwd: PathBuf,
+    }
+
+    impl Driven {
+        fn new() -> Self {
+            let (shown_sessions, sessions) = std::sync::mpsc::channel();
+            let (shown_commands, commands) = std::sync::mpsc::channel();
+            let (link, sent) = std::sync::mpsc::sync_channel(link::QUEUE);
+            let (events, _unread) = async_channel::unbounded();
+            let cwd = PathBuf::from("/nowhere/edualc-app-test");
+            let app = App::new(
+                Recorder {
+                    sessions: shown_sessions,
+                    commands: shown_commands,
+                },
+                events,
+                link,
+                Desktop {
+                    openers: Vec::new(),
+                    finds_windows: false,
+                    text_size: 14.0,
+                },
+                Ok(Settings::default()),
+                Start {
+                    cwd: cwd.clone(),
+                    backend: claude::Backend::Claude,
+                    model: None,
+                },
+            );
+            Self {
+                app,
+                sessions,
+                commands,
+                sent,
+                cwd,
+            }
+        }
+
+        /// Takes `event` as the event loop does, and draws.
+        fn take(&mut self, event: Event) {
+            let flow = self.app.handle(event);
+            assert!(flow.is_continue(), "the app quit");
+            self.app.render();
+        }
+
+        /// What the app sent the daemon since last asked.
+        fn sent(&self) -> Vec<ToDaemon> {
+            self.sent.try_iter().collect()
+        }
+
+        /// The session as it was last shown.
+        fn session(&self) -> present::model::Session {
+            self.sessions
+                .try_iter()
+                .last()
+                .expect("the session was shown")
+        }
+
+        /// What the window was told to do since last asked.
+        fn commands(&self) -> Vec<present::Command> {
+            self.commands.try_iter().collect()
+        }
+    }
+
+    /// A folder trusted nowhere: the daemon is asked whether the terminal trusted it, and the
+    /// session waits; told no, the window shows what the folder would run; trusted, the folder
+    /// is kept as trusted (the change alone, so another window's changes stay), and only then
+    /// does the session start.
+    #[test]
+    fn a_folder_is_trusted_before_its_session_starts() {
+        let mut driven = Driven::new();
+        driven.app.begin(Vec::new(), Vec::new(), None, None, None);
+        let sent = driven.sent();
+        let check = sent
+            .iter()
+            .find_map(|message| {
+                if let ToDaemon::Act {
+                    request,
+                    act: Act::CheckTrust { folder },
+                } = message
+                    && *folder == driven.cwd
+                {
+                    Some(*request)
+                } else {
+                    None
+                }
+            })
+            .expect("the daemon is asked about the folder");
+        assert!(
+            !sent
+                .iter()
+                .any(|message| matches!(message, ToDaemon::Start { .. })),
+            "nothing starts before the folder is trusted"
+        );
+        driven.take(Event::Trusted {
+            request: check,
+            accepted: false,
+            runs: vec![Runs::Hook {
+                event: "SessionStart".to_owned(),
+                matcher: String::new(),
+                action: crate::ipc::HookAction::Command("./setup.sh".to_owned()),
+            }],
+        });
+        let asking = driven.session();
+        assert!(asking.needs_trust);
+        assert_eq!(asking.trust_runs, ["Hook on SessionStart: ./setup.sh"]);
+        assert!(driven.sent().is_empty(), "still nothing starts");
+        driven.take(Event::Action(Action::TrustFolder));
+        let sent = driven.sent();
+        assert!(sent.iter().any(|message| matches!(
+            message,
+            ToDaemon::ChangeSettings(settings::Change::Trust(folder)) if *folder == driven.cwd
+        )));
+        assert!(
+            sent.iter()
+                .any(|message| matches!(message, ToDaemon::Start { .. }))
+        );
+        assert!(!driven.session().needs_trust);
+        assert!(driven.commands().contains(&present::Command::FocusComposer));
+    }
+
+    /// A session started in a folder trusted here, with the generation its process runs as.
+    fn started() -> (Driven, Generation) {
+        let mut driven = Driven::new();
+        driven
+            .app
+            .settings
+            .apply(settings::Change::Trust(driven.cwd.clone()));
+        driven.app.begin(Vec::new(), Vec::new(), None, None, None);
+        let generation = driven
+            .sent()
+            .iter()
+            .find_map(|message| {
+                if let ToDaemon::Start { key, .. } = message {
+                    Some(*key)
+                } else {
+                    None
+                }
+            })
+            .expect("the session starts");
+        driven.take(Event::Claude {
+            generation,
+            output: Output::Started { pid: 7, turns: 0 },
+        });
+        (driven, generation)
+    }
+
+    /// A turn whose result the window can't read ends as failed, saying so, instead of the
+    /// session showing as working for ever.
+    #[test]
+    fn a_turn_whose_result_cant_be_read_ends() {
+        let (mut driven, generation) = started();
+        driven.take(Event::Action(Action::Send("Count the lines".to_owned())));
+        assert!(driven.session().busy, "the turn is under way");
+        let error = serde_json::from_str::<wire::TurnResult>("{")
+            .expect_err("a line cut short doesn't parse");
+        driven.take(Event::Claude {
+            generation,
+            output: Output::Unreadable {
+                lost: claude::Lost::Result,
+                error,
+            },
+        });
+        assert!(!driven.session().busy, "the turn has ended");
+        assert!(
+            driven
+                .app
+                .chat
+                .entries
+                .iter()
+                .any(|entry| entry.copy_text().contains("can't read")),
+            "the conversation says why"
+        );
+    }
+
     /// A pasted API key is left out of what an action's `Debug` writes.
     #[test]
     fn a_pasted_key_isnt_written_out() {

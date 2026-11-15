@@ -36,7 +36,8 @@ in `ipc::MAX_MESSAGE`, which is enough for a thousand sessions.
 The daemon's parts are actors, in the manner of "More Actors with Tokio". Each owns its data and
 runs an event loop on the channels it is given. The channels have no cycles, and an actor shuts
 down when its channels close. The logic is sans-io, so it can be tested without sockets or
-processes; the window's `App` has no such tests yet.
+processes. The window's `App` is driven in tests by events, with a frontend that records what
+it was shown and a channel in place of the daemon; few of its features have such tests yet.
 
 ## No sandbox
 
