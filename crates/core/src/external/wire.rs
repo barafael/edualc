@@ -1138,7 +1138,7 @@ pub struct Rule {
 
 /// AskUserQuestion's input, given back with the user's answers (by question). What else Claude
 /// sent goes back as it came.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Questions {
     pub questions: Vec<Question>,
     /// The user's alone: answers Claude puts in its input are dropped, not taken as theirs.
@@ -1177,7 +1177,7 @@ pub struct Annotation {
     pub preview: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Question {
     pub question: String,
@@ -1191,7 +1191,7 @@ pub struct Question {
     pub rest: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct QuestionOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

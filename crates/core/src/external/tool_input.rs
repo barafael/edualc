@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::external::wire::ToolName;
+use crate::external::wire::{Questions, ToolName};
 
 /// `Bash`'s input, and `Monitor`'s, which runs a command too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +205,8 @@ pub enum KnownCall {
     Edit(EditInput),
     Grep(GrepInput),
     WebFetch(WebFetchInput),
+    Agent(AgentInput),
+    Questions(Questions),
     SendMessage(SendMessageInput),
     ListSessions(ListSessionsInput),
 }
@@ -219,6 +221,8 @@ impl KnownCall {
             Self::Edit(_) => ToolName::Edit,
             Self::Grep(_) => ToolName::Grep,
             Self::WebFetch(_) => ToolName::WebFetch,
+            Self::Agent(_) => ToolName::Agent,
+            Self::Questions(_) => ToolName::AskUserQuestion,
             Self::SendMessage(_) => ToolName::EdualcSendMessage,
             Self::ListSessions(_) => ToolName::EdualcListSessions,
         }
@@ -234,6 +238,8 @@ impl KnownCall {
             Self::Edit(input) => serde_json::to_value(input),
             Self::Grep(input) => serde_json::to_value(input),
             Self::WebFetch(input) => serde_json::to_value(input),
+            Self::Agent(input) => serde_json::to_value(input),
+            Self::Questions(input) => serde_json::to_value(input),
             Self::SendMessage(input) => serde_json::to_value(input),
             Self::ListSessions(input) => serde_json::to_value(input),
         }

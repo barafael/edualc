@@ -31,12 +31,16 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 
-use crate::external::acp::{AgyArguments, OpencodeArguments, RpcError, ToolCall};
+use crate::external::acp::{
+    AgyArguments, AgyQuestion, OpencodeArguments, RpcError, SwarmAction, ToolCall,
+};
 use crate::external::tool_input::{
-    BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput, WriteInput,
+    AgentInput, BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput,
+    WriteInput,
 };
 use crate::external::wire::{
-    BackgroundTask, Message, SessionId, System, TranscriptEntry, TranscriptLine,
+    BackgroundTask, Message, Question, QuestionOption, Questions, SessionId, System,
+    TranscriptEntry, TranscriptLine,
 };
 use crate::sessions::{self, MessagingName};
 use outbox::{Job, Outcome, Places, SendArguments};
@@ -148,6 +152,19 @@ impl Agent {
                         message: given.message.unwrap_or_default(),
                     })),
                     AGY_LIST => Some(KnownCall::ListSessions(ListSessionsInput {})),
+                    // A swarm's board, read as a message to it.
+                    "post_message" => Some(KnownCall::SendMessage(SendMessageInput {
+                        to: "the board".to_owned(),
+                        message: given.text.unwrap_or_default(),
+                    })),
+                    "swarm" if given.action == Some(SwarmAction::Add) => {
+                        Some(KnownCall::Agent(AgentInput {
+                            description: "Joins the swarm".to_owned(),
+                            prompt: given.brief.unwrap_or_default(),
+                            subagent_type: given.name,
+                        }))
+                    }
+                    "ask_question" => Some(KnownCall::Questions(questions(given.questions))),
                     "run_command" => Some(KnownCall::Bash(BashInput::command(
                         given.command_line.unwrap_or_else(title),
                         given.tool_summary,
@@ -369,6 +386,34 @@ where
             tracing::warn!(%error, tool = name, "a tool's arguments edualc can't read");
             Arguments::default()
         }
+    }
+}
+
+/// agy's questions as Claude Code's AskUserQuestion asks them.
+fn questions(asked: Vec<AgyQuestion>) -> Questions {
+    Questions {
+        questions: asked
+            .into_iter()
+            .map(|asked| Question {
+                question: asked.question,
+                header: String::new(),
+                options: asked
+                    .options
+                    .into_iter()
+                    .map(|label| QuestionOption {
+                        label,
+                        description: String::new(),
+                        preview: String::new(),
+                        rest: serde_json::Map::new(),
+                    })
+                    .collect(),
+                multi_select: asked.is_multi_select,
+                rest: serde_json::Map::new(),
+            })
+            .collect(),
+        answers: std::collections::BTreeMap::new(),
+        annotations: std::collections::BTreeMap::new(),
+        rest: serde_json::Map::new(),
     }
 }
 

@@ -2349,6 +2349,55 @@ mod tests {
         assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
     }
 
+    /// agy's swarm tools read as Claude Code's, with arguments as agy 1.5.9 gives them: a post
+    /// to the board as a message, a member joining as an agent with its brief, its questions
+    /// as AskUserQuestion's; what else `swarm` does keeps agy's name.
+    #[test]
+    fn agys_swarm_tools_read_as_claude_codes() {
+        let shown = |name: &str, args: Value| {
+            as_claude_tool(
+                Agent::Agy,
+                &ToolCall {
+                    tool_call_id: "c".to_owned(),
+                    name: Some(name.to_owned()),
+                    raw_input: Some(args),
+                    ..ToolCall::default()
+                },
+            )
+        };
+        assert_eq!(
+            shown("post_message", json!({ "text": "@verifier Ready." })),
+            (
+                ToolName::EdualcSendMessage,
+                json!({ "to": "the board", "message": "@verifier Ready." })
+            )
+        );
+        let (name, input) = shown(
+            "swarm",
+            json!({ "action": "add", "name": "monitor", "brief": "Watch for stalls." }),
+        );
+        assert_eq!(name, ToolName::Agent);
+        assert_eq!(input.get("subagent_type"), Some(&json!("monitor")));
+        assert_eq!(input.get("prompt"), Some(&json!("Watch for stalls.")));
+        assert_eq!(
+            shown("swarm", json!({ "action": "status" })).0,
+            ToolName::from("swarm".to_owned())
+        );
+        let (name, input) = shown(
+            "ask_question",
+            json!({ "questions": [{ "question": "Which?", "options": ["A", "B"], "is_multi_select": true }] }),
+        );
+        assert_eq!(name, ToolName::AskUserQuestion);
+        assert_eq!(
+            input,
+            json!({ "questions": [{
+                "question": "Which?",
+                "options": [{ "label": "A" }, { "label": "B" }],
+                "multiSelect": true,
+            }] })
+        );
+    }
+
     /// agy's subagents are looked at as a turn ends, under agy's id for the conversation;
     /// opencode keeps no records of them, and its are never looked for.
     #[test]

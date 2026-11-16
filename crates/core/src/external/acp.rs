@@ -204,6 +204,39 @@ pub struct AgyArguments {
     pub to: Option<String>,
     #[serde(rename = "message")]
     pub message: Option<String>,
+    /// `post_message`'s, to a swarm's board.
+    #[serde(rename = "text")]
+    pub text: Option<String>,
+    /// `swarm`'s: what it does to the swarm, and with `add` the member's name and brief.
+    #[serde(rename = "action")]
+    pub action: Option<SwarmAction>,
+    #[serde(rename = "name")]
+    pub name: Option<String>,
+    #[serde(rename = "brief")]
+    pub brief: Option<String>,
+    /// `ask_question`'s.
+    #[serde(rename = "questions", default)]
+    pub questions: Vec<AgyQuestion>,
+}
+
+/// What agy's `swarm` tool does, as far as edualc shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwarmAction {
+    /// A member joins, with a brief.
+    Add,
+    #[serde(other)]
+    Other,
+}
+
+/// A question agy's `ask_question` asks.
+#[derive(Debug, Deserialize)]
+pub struct AgyQuestion {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub is_multi_select: bool,
 }
 
 /// A tool call's arguments (`rawInput`) as opencode names them, each as far as opencode has
