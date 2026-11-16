@@ -1054,6 +1054,9 @@ pub(super) fn apply_usage(
     if old.is_none_or(|old| old.open != new.open) {
         global.set_open(new.open.to_slint(images));
     }
+    if old.is_none_or(|old| old.program != new.program) {
+        global.set_program(new.program.to_slint(images));
+    }
     if old.is_none_or(|old| old.loading != new.loading) {
         global.set_loading(new.loading.to_slint(images));
     }

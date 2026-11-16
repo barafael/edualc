@@ -719,9 +719,14 @@ impl<F: Frontend> Presenter<F> {
         }
         usage.loading = panel.waiting > 0;
         usage.note = panel.error.as_deref().unwrap_or("").into();
+        status.backend.program().clone_into(&mut usage.program);
         let mut sections = vec![limits_section(panel.report.as_ref(), status)];
-        if let Some(report) = &panel.report {
-            sections.push(session_section(&report.session));
+        if let Some(session) = panel
+            .report
+            .as_ref()
+            .and_then(|report| report.session.as_ref())
+        {
+            sections.push(session_section(session));
         }
         if let Some(context) = &panel.context {
             sections.push(context_section(context));

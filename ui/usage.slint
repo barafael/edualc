@@ -61,7 +61,7 @@ export component UsagePanel inherits Rectangle {
                     text: "Usage";
                 }
                 Caption {
-                    text: Usage.loading ? "Asking Claude Code" : "As Claude Code's /usage and /context report it";
+                    text: Usage.loading ? "Asking \{Usage.program}" : "As \{Usage.program} reports it";
                 }
             }
             IconButton {
@@ -122,7 +122,7 @@ export component UsagePanel inherits Rectangle {
             padding: Theme.space-xl;
             alignment: start;
             Small {
-                text: Usage.loading ? "" : "Claude Code has no numbers to report yet.";
+                text: Usage.loading ? "" : "\{Usage.program} has no numbers to report yet.";
                 wrap: word-wrap;
             }
         }

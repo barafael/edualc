@@ -922,8 +922,10 @@ pub struct Account {
 /// The answer to `get_usage` (the CLI's `/usage`), as far as the window shows it.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct UsageReport {
-    #[serde(default, deserialize_with = "null_as_default")]
-    pub session: SessionUsage,
+    /// None where the program doesn't count the session's cost and time: edualc's ACP adapter
+    /// sends none.
+    #[serde(default)]
+    pub session: Option<SessionUsage>,
     /// Null where the sign-in is a token handed to Claude Code, which may not ask for them
     /// (Claude Code 2.1.316).
     #[serde(default, deserialize_with = "null_as_default")]

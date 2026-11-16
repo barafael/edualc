@@ -526,6 +526,7 @@ pub struct Preferences {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
     pub open: bool,
+    pub program: String,
     pub loading: bool,
     pub note: String,
     pub sections: Vec<StatSection>,

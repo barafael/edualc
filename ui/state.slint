@@ -330,6 +330,8 @@ export global Focus {
 // The usage panel: the CLI's `/usage` and `/context`, shown over the conversation.
 export global Usage {
     in property <bool> open;
+    // The program the numbers come from, as the window names it: "Claude Code", "agy".
+    in property <string> program;
     // Answers still owed.
     in property <bool> loading;
     // Why something is missing, if it is.
