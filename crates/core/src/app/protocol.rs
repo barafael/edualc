@@ -298,6 +298,10 @@ impl<F: Frontend> App<F> {
                     self.redraw.menus = true;
                 }
             }
+            System::ContextUsed { used, size } => {
+                self.status.context_tokens = used;
+                self.status.context_window = size;
+            }
             System::Other => {}
         }
     }
@@ -374,11 +378,14 @@ impl<F: Frontend> App<F> {
             })
         };
         let windows = &limits.windows;
+        let Some(kept) = self.status.limits_mut() else {
+            return;
+        };
         if let Some(used) = used(&windows.five_hour) {
-            self.status.limits.five_hour = Some(used);
+            kept.five_hour = Some(used);
         }
         if let Some(used) = used(&windows.seven_day) {
-            self.status.limits.seven_day = Some(used);
+            kept.seven_day = Some(used);
         }
         self.set_limit_reset();
     }
@@ -478,7 +485,10 @@ impl<F: Frontend> App<F> {
         self.status.version = initialized.claude_code_version;
         // The plan's limits at once, not only after the first turn reports them; it asks the
         // plan, not the model.
-        if self.status.limits.five_hour.is_none()
+        if self
+            .status
+            .plan_limits()
+            .is_some_and(|limits| limits.five_hour.is_none())
             && self.request(ControlRequest::GetUsage, Request::Usage)
         {
             self.usage.waiting += 1;

@@ -675,12 +675,12 @@ impl<F: Frontend> Presenter<F> {
         session.limit_seven_day = used(limits.seven_day);
         // What stands where the bars would, without any.
         match (status.backend, status.sign_in_with) {
-            (crate::claude::Backend::Agy, _) => "agy reports no usage limits",
             (crate::claude::Backend::Opencode, _) => "opencode reports no usage limits",
             (crate::claude::Backend::Claude, crate::claude::SignInWith::ApiKey) => {
                 "API key · billed by the token"
             }
-            (crate::claude::Backend::Claude, crate::claude::SignInWith::Account) => "Usage",
+            (crate::claude::Backend::Claude, crate::claude::SignInWith::Account)
+            | (crate::claude::Backend::Agy, _) => "Usage",
         }
         .clone_into(&mut session.limits_note);
         let account = &status.account;
@@ -1482,15 +1482,18 @@ fn limits_section(report: Option<&wire::UsageReport>, status: &Status) -> StatSe
                     .as_ref()
                     .and_then(|scope| scope.model.as_ref())
                     .and_then(|model| model.display_name.as_deref());
-                let label = match (limit.kind, model) {
-                    (LimitKind::Session, _) => "This session window (5 hours)".to_owned(),
-                    (LimitKind::WeeklyAll, _) => "This week, all models".to_owned(),
-                    (LimitKind::WeeklyScoped | LimitKind::Other, Some(model)) => {
-                        format!("This week, {model}")
-                    }
-                    (LimitKind::WeeklyScoped, None) => "This week, one model".to_owned(),
-                    (LimitKind::Other, None) => "Another limit".to_owned(),
-                };
+                let label = limit
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| match (limit.kind, model) {
+                        (LimitKind::Session, _) => "This session window (5 hours)".to_owned(),
+                        (LimitKind::WeeklyAll, _) => "This week, all models".to_owned(),
+                        (LimitKind::WeeklyScoped | LimitKind::Other, Some(model)) => {
+                            format!("This week, {model}")
+                        }
+                        (LimitKind::WeeklyScoped, None) => "This week, one model".to_owned(),
+                        (LimitKind::Other, None) => "Another limit".to_owned(),
+                    });
                 limit_row(&label, LimitUse::from(limit))
             })
             .collect(),

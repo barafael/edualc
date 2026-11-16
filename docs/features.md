@@ -288,7 +288,12 @@ its program: a new session with the other program starts with that program's def
   records in `~/.gemini/antigravity-cli/brain/`. The list is brought up to date as agy's tool
   calls and turns end. A post to the board shows as a message to the board, and a member joining
   as an agent with its brief.
-- **Usage:** agy reports no usage limits, so the sidebar foot shows none for its sessions.
+- **Usage:** the sidebar foot shows agy's own quotas, apart from Claude Code's limits. agy shares
+  them among groups of models, and the bars are those of the group your model is in. The usage
+  details list every group's. edualc asks `agy -p /usage` when a session opens and as each turn
+  ends.
+- **Context:** how full the model's context is, as agy and opencode tell it, shows as it does for
+  Claude Code.
 - **Not available with agy:** shell commands (`!`) and the trust question.
 - **opencode:** edualc runs `opencode acp` in the project. opencode signs in and keeps its
   sessions itself, so its sessions can't be continued from edualc yet.

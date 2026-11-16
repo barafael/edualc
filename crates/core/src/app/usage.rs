@@ -73,11 +73,14 @@ impl<F: Frontend> App<F> {
 
     /// The sidebar's bars from the fuller answer: the session's five hours and the week.
     fn take_plan_limits(&mut self, report: &UsageReport) {
+        let Some(kept) = self.status.limits_mut() else {
+            return;
+        };
         for limit in &report.rate_limits.limits {
             let used = LimitUse::from(limit);
             match limit.kind {
-                LimitKind::Session => self.status.limits.five_hour = Some(used),
-                LimitKind::WeeklyAll => self.status.limits.seven_day = Some(used),
+                LimitKind::Session => kept.five_hour = Some(used),
+                LimitKind::WeeklyAll => kept.seven_day = Some(used),
                 LimitKind::WeeklyScoped | LimitKind::Other => {}
             }
         }

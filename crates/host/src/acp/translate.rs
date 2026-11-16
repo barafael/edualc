@@ -19,9 +19,11 @@ use crate::external::acp::{
     self, AgentMethod, Change, Chunk, Incoming, Notified, OptionKind, PermissionAsked, Prompted,
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
+use crate::external::agy::{self, QuotaWindow};
 use crate::external::tool_input::{
     BashInput, EditInput, GrepInput, KnownCall, ReadInput, WebFetchInput, WriteInput,
 };
+use crate::external::wire::LimitKind;
 use crate::external::wire::{
     self, Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta,
     IncomingRequest, Initialized, Message, MessageId, MessageOrigin, MessageStart, ModeId,
@@ -77,6 +79,9 @@ pub enum Effect {
     /// The subagents and swarm agy keeps for conversation `conversation` may have changed: the
     /// window is told their tasks if they did (see [`super::brain`]).
     Subagents { conversation: String },
+    /// Ask the agent's plan how much of its quotas is used (see [`Translator::quotas_told`]):
+    /// for the window's `get_usage` request, or, with none, for the sidebar's bars.
+    Quotas { request: Option<RequestId> },
 }
 
 /// Where the connection to the agent is.
@@ -203,6 +208,15 @@ pub struct Translator {
     permissions: HashMap<RequestId, Permission>,
     /// The tool call each of edualc's tool's calls is, by the agent's id.
     calls: HashMap<CallId, String>,
+    /// How full the model's context is, once the agent said.
+    context: Option<ContextUsed>,
+}
+
+/// How much of the model's context window the session uses, and the window's size, in tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContextUsed {
+    used: u64,
+    size: u64,
 }
 
 impl Translator {
@@ -237,6 +251,7 @@ impl Translator {
             entries: HashMap::new(),
             permissions: HashMap::new(),
             calls: HashMap::new(),
+            context: None,
         }
     }
 
@@ -688,11 +703,22 @@ impl Translator {
                     &format!("{} has modes of its own, not Claude Code's", self.agent),
                 )]
             }
+            wire::ControlRequest::GetUsage if self.agent.reports_quotas() => {
+                vec![Effect::Quotas {
+                    request: Some(request_id),
+                }]
+            }
+            wire::ControlRequest::GetContextUsage => match self.context {
+                Some(context) => vec![success_as(request_id, &context_report(context))],
+                None => vec![failure(
+                    request_id,
+                    &format!("{} hasn't said how full the context is yet", self.agent),
+                )],
+            },
             wire::ControlRequest::StopTask { .. }
             | wire::ControlRequest::GetTaskOutput { .. }
             | wire::ControlRequest::SideQuestion { .. }
-            | wire::ControlRequest::GetUsage
-            | wire::ControlRequest::GetContextUsage => {
+            | wire::ControlRequest::GetUsage => {
                 vec![failure(
                     request_id,
                     &format!("{} doesn't do this", self.agent),
@@ -858,6 +884,14 @@ impl Translator {
 
     /// What changed in the session.
     fn updated(&mut self, update: Change) -> Vec<Effect> {
+        // How full the context is holds for a loaded session as for a new one.
+        if let Change::UsageUpdate { used, size } = update {
+            self.context = Some(ContextUsed { used, size });
+            return vec![Effect::ToWindow(Message::System(System::ContextUsed {
+                used,
+                size,
+            }))];
+        }
         if matches!(self.phase, Phase::Opening { loading: true }) {
             // A loaded session's history: the transcript has it.
             return Vec::new();
@@ -890,6 +924,7 @@ impl Translator {
             | Change::AgentThoughtChunk { .. }
             | Change::UserMessageChunk
             | Change::SessionInfoUpdate { title: None }
+            | Change::UsageUpdate { .. }
             | Change::Other => Vec::new(),
         }
     }
@@ -1208,15 +1243,65 @@ impl Translator {
             model_usage: HashMap::from([(
                 model,
                 ModelUsage {
-                    context_window: None,
+                    context_window: self.context.map(|context| context.size),
                 },
             )]),
             api_error_status: matches!(failure, Some(Failure::SignIn(_))).then_some(401),
         })));
         self.busy = false;
         effects.extend(self.subagents());
+        if self.agent.reports_quotas() {
+            effects.push(Effect::Quotas { request: None });
+        }
         effects.extend(self.next_turn());
         effects
+    }
+}
+
+impl Translator {
+    /// What the agent's plan said of its quotas: the answer to the window's `get_usage`, or the
+    /// sidebar's bars from the quotas the session's model draws on.
+    pub fn quotas_told(
+        &self,
+        request: Option<RequestId>,
+        told: Result<agy::Quotas, super::QuotaError>,
+    ) -> Vec<Effect> {
+        let quotas = match told {
+            Ok(quotas) => quotas,
+            Err(error) => {
+                tracing::warn!(%error, agent = %self.agent, "the plan's quotas couldn't be read");
+                return request
+                    .map(|request| {
+                        failure(
+                            request,
+                            &format!("{} couldn't say its plan's quotas: {error}", self.agent),
+                        )
+                    })
+                    .into_iter()
+                    .collect();
+            }
+        };
+        let model = self.model.as_deref().and_then(|id| {
+            self.models
+                .iter()
+                .find(|model| model.model_id == id)
+                .map(|model| model.name.as_str())
+        });
+        let limits = plan_limits(&quotas, model);
+        match request {
+            Some(request) => vec![success_as(
+                request,
+                &wire::UsageReport {
+                    rate_limits: wire::RateLimitReport { limits },
+                    ..wire::UsageReport::default()
+                },
+            )],
+            None => vec![Effect::ToWindow(Message::RateLimitEvent {
+                rate_limit_info: wire::RateLimits {
+                    windows: limit_windows(&limits),
+                },
+            })],
+        }
     }
 }
 
@@ -1280,6 +1365,85 @@ enum Verdict {
     },
     /// The window couldn't answer: the request is cancelled.
     Unanswered,
+}
+
+/// The context's use as `get_context_usage` answers it: the conversation, and what is free.
+fn context_report(context: ContextUsed) -> wire::ContextReport {
+    let free = context.size.saturating_sub(context.used);
+    wire::ContextReport {
+        categories: [
+            ("Conversation", context.used, wire::ContextKind::Used),
+            ("Free space", free, wire::ContextKind::Free),
+        ]
+        .into_iter()
+        .filter(|(_, tokens, _)| *tokens > 0)
+        .map(|(name, tokens, kind)| wire::ContextCategory {
+            name: name.to_owned(),
+            tokens,
+            kind,
+        })
+        .collect(),
+        total_tokens: context.used,
+        max_tokens: context.size,
+    }
+}
+
+/// How much of a quota is used, from 0 to 1.
+fn quota_used(quota: &agy::Quota) -> f32 {
+    (1.0 - quota.remaining_fraction).clamp(0.0, 1.0)
+}
+
+/// agy's quotas as the plan's limits, each named by its group: those of the group that model
+/// `model` draws on as the session's five hours and week, which the sidebar shows.
+fn plan_limits(quotas: &agy::Quotas, model: Option<&str>) -> Vec<wire::PlanLimit> {
+    quotas
+        .groups
+        .iter()
+        .flat_map(|group| {
+            let drawn_on = model.is_some_and(|model| group.covers(model));
+            group.buckets.iter().map(move |quota| {
+                let (kind, span) = match (quota.window, drawn_on) {
+                    (QuotaWindow::FiveHours, true) => (LimitKind::Session, "5 hours"),
+                    (QuotaWindow::Week, true) => (LimitKind::WeeklyAll, "this week"),
+                    (QuotaWindow::FiveHours, false) => (LimitKind::Other, "5 hours"),
+                    (QuotaWindow::Week, false) => (LimitKind::Other, "this week"),
+                    (QuotaWindow::Other, _) => (LimitKind::Other, "another span"),
+                };
+                wire::PlanLimit {
+                    kind,
+                    percent: quota_used(quota) * 100.0,
+                    resets_at: Some(quota.reset_time),
+                    scope: None,
+                    label: Some(format!("{}, {span}", group.name)),
+                }
+            })
+        })
+        .collect()
+}
+
+/// The sidebar's bars from the plan's limits: the session's five hours and its week.
+fn limit_windows(limits: &[wire::PlanLimit]) -> wire::LimitWindows {
+    let window = |kind| {
+        limits
+            .iter()
+            .find(|limit| limit.kind == kind)
+            .map(|limit| wire::LimitWindow {
+                utilization: Some(limit.percent / 100.0),
+                resets_at: limit.resets_at,
+            })
+    };
+    wire::LimitWindows {
+        five_hour: window(LimitKind::Session),
+        seven_day: window(LimitKind::WeeklyAll),
+    }
+}
+
+/// A success answer carrying `response`; a failure if it can't be written.
+fn success_as(request: RequestId, response: &impl serde::Serialize) -> Effect {
+    match serde_json::to_value(response) {
+        Ok(response) => success(request, response),
+        Err(error) => failure(request, &format!("the answer can't be written: {error}")),
+    }
 }
 
 fn success(request: RequestId, response: Value) -> Effect {
@@ -1545,7 +1709,8 @@ mod tests {
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
                 | Effect::List(_)
-                | Effect::Subagents { .. } => None,
+                | Effect::Subagents { .. }
+                | Effect::Quotas { .. } => None,
             })
             .collect()
     }
@@ -1560,7 +1725,8 @@ mod tests {
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
                 | Effect::List(_)
-                | Effect::Subagents { .. } => None,
+                | Effect::Subagents { .. }
+                | Effect::Quotas { .. } => None,
             })
             .map(|line| serde_json::from_str(&line).expect("a line of JSON"))
             .collect()
@@ -1727,7 +1893,8 @@ mod tests {
                 Effect::ToAgent(_)
                 | Effect::Send { .. }
                 | Effect::List(_)
-                | Effect::Subagents { .. } => {}
+                | Effect::Subagents { .. }
+                | Effect::Quotas { .. } => {}
             }
         }
         let expected = |names: &[&str]| -> std::collections::BTreeSet<String> {
@@ -1816,7 +1983,8 @@ mod tests {
                 | Effect::ToWindow(_)
                 | Effect::Send { .. }
                 | Effect::List(_)
-                | Effect::Subagents { .. } => None,
+                | Effect::Subagents { .. }
+                | Effect::Quotas { .. } => None,
             })
             .expect("a transcript line");
         assert_eq!(first.get("agySessionId"), Some(&json!("s")));
@@ -2417,7 +2585,8 @@ mod tests {
                     | Effect::ToWindow(_)
                     | Effect::Transcript(_)
                     | Effect::Send { .. }
-                    | Effect::List(_) => None,
+                    | Effect::List(_)
+                    | Effect::Quotas { .. } => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -2547,7 +2716,7 @@ mod tests {
     /// the window isn't left waiting on it.
     #[test]
     fn a_request_the_adapter_doesnt_do_is_failed() {
-        let mut translator = opened();
+        let mut translator = opened_with(Agent::Opencode);
         let answered = translator.window_said(&asks("u1", ControlRequest::GetUsage));
         assert!(agent_lines(&answered).is_empty());
         let answers = window_lines(&answered);
@@ -2557,7 +2726,164 @@ mod tests {
         assert_eq!(answer.pointer("/response/request_id"), Some(&json!("u1")));
         assert_eq!(
             answer.pointer("/response/error"),
-            Some(&json!("agy doesn't do this"))
+            Some(&json!("opencode doesn't do this"))
+        );
+    }
+
+    /// How full the context is, as the agent tells it, reaches the window at once, answers
+    /// `get_context_usage`, and gives the turn's result the window's size.
+    #[test]
+    fn the_contexts_use_reaches_the_window() {
+        let mut translator = opened_with(Agent::Opencode);
+        let unknown =
+            window_lines(&translator.window_said(&asks("c0", ControlRequest::GetContextUsage)));
+        assert_eq!(
+            unknown
+                .first()
+                .and_then(|line| line.pointer("/response/subtype")),
+            Some(&json!("error"))
+        );
+        let told = window_lines(&translator.agent_said(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":42000,"size":1048576,"cost":{"amount":0,"currency":"USD"}}}}"#,
+        ));
+        assert_eq!(
+            told.first()
+                .map(|line| (line.get("subtype"), line.get("used"), line.get("size"))),
+            Some((
+                Some(&json!("context_used")),
+                Some(&json!(42_000)),
+                Some(&json!(1_048_576))
+            ))
+        );
+        let answered =
+            window_lines(&translator.window_said(&asks("c1", ControlRequest::GetContextUsage)));
+        let report = answered
+            .first()
+            .and_then(|line| line.pointer("/response/response"))
+            .expect("a report");
+        assert_eq!(report.get("totalTokens"), Some(&json!(42_000)));
+        assert_eq!(report.get("maxTokens"), Some(&json!(1_048_576)));
+        assert_eq!(
+            report.pointer("/categories/1/tokens"),
+            Some(&json!(1_048_576 - 42_000))
+        );
+        let prompted = translator.window_said(&prompt("Hi"));
+        let rpc = agent_lines(&prompted)
+            .iter()
+            .find(|line| line.get("method") == Some(&json!("session/prompt")))
+            .and_then(|line| line.get("id").cloned())
+            .expect("prompted");
+        let ended = window_lines(&translator.agent_said(&format!(
+            r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{"stopReason":"end_turn"}}}}"#
+        )));
+        let result = ended
+            .iter()
+            .find(|line| line.get("type") == Some(&json!("result")))
+            .expect("a result");
+        assert_eq!(
+            result.pointer("/modelUsage/gemini-3.8-flash-high/contextWindow"),
+            Some(&json!(1_048_576))
+        );
+    }
+
+    /// agy's quotas as `agy -p /usage` says them (shortened).
+    fn quotas() -> agy::Quotas {
+        serde_json::from_str::<agy::UsageAnswer>(
+            r#"{"command":{"data":{"groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash","buckets":[{"window":"weekly","remaining_fraction":0.75,"reset_time":"2026-11-22T20:18:23Z"},{"window":"5h","remaining_fraction":0.5,"reset_time":"2026-11-16T13:26:14Z"}]},{"name":"Gemini 4 Argon","description":"Argon quota is separate.","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-22T20:14:06Z"}]}]}}}"#,
+        )
+        .expect("quotas")
+        .command
+        .data
+    }
+
+    /// agy is asked for its quotas for the window's `get_usage` and as each turn ends; the
+    /// sidebar's bars are the quotas of the group the session's model draws on, and the Usage
+    /// panel lists every group's, each named.
+    #[test]
+    fn agys_quotas_are_the_plans_limits() {
+        let mut translator = opened();
+        let asked = translator.window_said(&asks("u1", ControlRequest::GetUsage));
+        assert!(
+            matches!(asked.as_slice(), [Effect::Quotas { request: Some(request) }] if request.to_string() == "u1"),
+            "{asked:?}"
+        );
+        let prompted = translator.window_said(&prompt("Hi"));
+        let rpc = agent_lines(&prompted)
+            .iter()
+            .find(|line| line.get("method") == Some(&json!("session/prompt")))
+            .and_then(|line| line.get("id").cloned())
+            .expect("prompted");
+        let ended = translator.agent_said(&format!(
+            r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{"stopReason":"end_turn"}}}}"#
+        ));
+        assert!(
+            ended
+                .iter()
+                .any(|effect| matches!(effect, Effect::Quotas { request: None }))
+        );
+
+        let bars = window_lines(&translator.quotas_told(None, Ok(quotas())));
+        let windows = bars
+            .first()
+            .and_then(|line| line.pointer("/rate_limit_info/unifiedWindows"))
+            .expect("the bars");
+        assert_eq!(windows.pointer("/five_hour/utilization"), Some(&json!(0.5)));
+        assert_eq!(
+            windows.pointer("/seven_day/utilization"),
+            Some(&json!(0.25))
+        );
+
+        let report = window_lines(
+            &translator.quotas_told(Some(RequestId::from("u1".to_owned())), Ok(quotas())),
+        );
+        let limits = report
+            .first()
+            .and_then(|line| line.pointer("/response/response/rate_limits/limits"))
+            .and_then(Value::as_array)
+            .expect("the limits");
+        let named: Vec<(Option<&Value>, Option<&Value>)> = limits
+            .iter()
+            .map(|limit| (limit.get("kind"), limit.get("label")))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (
+                    Some(&json!("weekly_all")),
+                    Some(&json!("Gemini Models, this week"))
+                ),
+                (
+                    Some(&json!("session")),
+                    Some(&json!("Gemini Models, 5 hours"))
+                ),
+                (
+                    Some(&json!("other")),
+                    Some(&json!("Gemini 4 Argon, this week"))
+                ),
+            ]
+        );
+    }
+
+    /// Quotas agy couldn't say fail the window's `get_usage` with why, and leave the bars.
+    #[test]
+    fn quotas_that_cant_be_read_fail_the_request() {
+        let translator = opened();
+        assert!(
+            translator
+                .quotas_told(None, Err(super::super::QuotaError::TimedOut))
+                .is_empty()
+        );
+        let failed = window_lines(&translator.quotas_told(
+            Some(RequestId::from("u1".to_owned())),
+            Err(super::super::QuotaError::TimedOut),
+        ));
+        assert_eq!(
+            failed
+                .first()
+                .and_then(|line| line.pointer("/response/error")),
+            Some(&json!(
+                "agy couldn't say its plan's quotas: it didn't answer in time"
+            ))
         );
     }
 

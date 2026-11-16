@@ -3,7 +3,8 @@
 //! the conversation's steps (`logs/transcript.jsonl`, one a line, appended), the subagents it
 //! started (`subagents/<conversation>.json`), and a swarm's members (`swarm/members.json`) and
 //! board (`swarm/board.jsonl`, a post a line). A subagent, or a swarm's member, is a
-//! conversation of its own, with a brain folder of its own.
+//! conversation of its own, with a brain folder of its own. Also what `agy -p /usage` says of
+//! the plan's quotas.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -171,11 +172,105 @@ impl AgyTask {
     }
 }
 
+/// What `agy -p /usage --output-format json` prints (agy 1.5.9), in the fields edualc reads:
+/// the plan's quotas.
+#[derive(Debug, Deserialize)]
+pub struct UsageAnswer {
+    pub command: UsageCommand,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UsageCommand {
+    pub data: Quotas,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Quotas {
+    pub groups: Vec<QuotaGroup>,
+}
+
+/// Models that share their quotas: a five hours' and a week's, or only a week's.
+#[derive(Debug, Deserialize)]
+pub struct QuotaGroup {
+    pub name: String,
+    /// Which models are in the group, in words: "Models within this group: Gemini 4 Hydrogen,
+    /// Gemini 3.8 Flash".
+    #[serde(default)]
+    pub description: String,
+    pub buckets: Vec<Quota>,
+}
+
+/// How the group's models are listed in its description.
+const LISTED: &str = "Models within this group: ";
+
+impl QuotaGroup {
+    /// Whether the model agy names `model` ("Gemini 3.8 Flash (High)", its effort in
+    /// brackets) draws on this group's quotas: the group is named after it, or its description
+    /// lists it.
+    pub fn covers(&self, model: &str) -> bool {
+        let model = model
+            .rsplit_once(" (")
+            .map_or(model, |(model, _effort)| model);
+        self.name == model
+            || self.description.strip_prefix(LISTED).is_some_and(|listed| {
+                listed
+                    .trim_end_matches('.')
+                    .split(", ")
+                    .any(|listed| listed == model)
+            })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Quota {
+    pub window: QuotaWindow,
+    /// What is left, from 0 to 1.
+    pub remaining_fraction: f32,
+    pub reset_time: jiff::Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum QuotaWindow {
+    #[serde(rename = "5h")]
+    FiveHours,
+    #[serde(rename = "weekly")]
+    Week,
+    #[serde(other)]
+    Other,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const WORKER: &str = "1e16b130-ab24-45b6-8ebf-b573ab82eb7f";
+
+    /// `/usage`'s answer as agy 1.5.9 prints it (descriptions shortened); a model draws on the
+    /// group that lists it or is named after it, whatever its effort.
+    #[test]
+    fn quotas_read() {
+        let answer: UsageAnswer = serde_json::from_str(
+            r#"{"conversation_id":"","status":"SUCCESS","response":"…","command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.84,"reset_time":"2026-11-22T20:18:23Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-11-16T13:26:14Z"}]},{"name":"Gemini 4 Argon","description":"For paid Pro plans, Argon quota is separate.","buckets":[{"id":"gemini-argon-wtu-weekly","name":"Gemini 4 Argon Weekly Limit","window":"weekly","remaining_fraction":0,"reset_time":"2026-11-22T20:14:06Z"}]}]}}}"#,
+        )
+        .expect("quotas");
+        let groups = &answer.command.data.groups;
+        let [gemini, argon] = groups.as_slice() else {
+            panic!("two groups");
+        };
+        assert_eq!(
+            gemini
+                .buckets
+                .iter()
+                .map(|quota| quota.window)
+                .collect::<Vec<_>>(),
+            [QuotaWindow::Week, QuotaWindow::FiveHours]
+        );
+        assert!(gemini.covers("Gemini 3.8 Flash (High)"));
+        assert!(gemini.covers("Gemini 4 Hydrogen (XHigh)"));
+        assert!(!gemini.covers("Gemini 4 Argon (High)"));
+        assert!(argon.covers("Gemini 4 Argon (High)"));
+        assert!(!argon.covers("Orchestrator (Argon)"));
+    }
 
     /// Steps as agy 1.5.9 writes them: an answer with a tool call, then its result.
     #[test]

@@ -648,7 +648,7 @@ pub struct Status {
     pub context_tokens: u64,
     pub context_window: u64,
     pub cost_usd: f64,
-    pub limits: Limits,
+    pub limits: PlanLimits,
     pub limit_wait: LimitWait,
     pub worktree: Option<Worktree>,
 }
@@ -660,13 +660,23 @@ impl Status {
         self.turns > 0 || self.doing != Doing::Nothing
     }
 
-    /// The plan's limits, for a session the plan pays for: agy, opencode and the API key don't,
-    /// so a Claude Code session's limits aren't theirs.
+    /// The limits of the plan that pays for the session: Claude Code's account's, or agy's;
+    /// none for an API key or opencode, which have none.
     pub(crate) fn plan_limits(&self) -> Option<Limits> {
         match (self.backend, self.sign_in_with) {
-            (claude::Backend::Claude, claude::SignInWith::Account) => Some(self.limits),
+            (claude::Backend::Claude, claude::SignInWith::Account) => Some(self.limits.claude),
+            (claude::Backend::Agy, _) => Some(self.limits.agy),
             (claude::Backend::Claude, claude::SignInWith::ApiKey)
-            | (claude::Backend::Agy | claude::Backend::Opencode, _) => None,
+            | (claude::Backend::Opencode, _) => None,
+        }
+    }
+
+    /// Where the limits the session's program reports are kept; none for opencode.
+    pub(crate) fn limits_mut(&mut self) -> Option<&mut Limits> {
+        match self.backend {
+            claude::Backend::Claude => Some(&mut self.limits.claude),
+            claude::Backend::Agy => Some(&mut self.limits.agy),
+            claude::Backend::Opencode => None,
         }
     }
 
@@ -769,6 +779,13 @@ pub(crate) enum Refusal {
     SignIn,
     /// The plan's usage limit is reached.
     UsageLimit,
+}
+
+/// Each plan's limits, kept apart: a Claude Code session's aren't an agy session's.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PlanLimits {
+    claude: Limits,
+    agy: Limits,
 }
 
 /// How much of the plan's usage limits is used, as far as the CLI said.
@@ -2102,6 +2119,7 @@ impl<F: Frontend> App<F> {
         // shown.
         self.choosing_sign_in = None;
         self.status.context_tokens = 0;
+        self.status.context_window = 0;
         self.status.cost_usd = 0.0;
         self.status.worktree = None;
         self.open_runs.clear();
@@ -3559,32 +3577,36 @@ mod tests {
         assert!(status.in_turn(), "a turn the window prompted");
     }
 
-    /// The plan's limits show for a Claude Code session on the user's own sign-in only: agy
-    /// and the API key aren't on the plan, so its limits would mislead there.
+    /// Claude Code's plan limits show for a Claude Code session on the user's own sign-in only,
+    /// and agy's for an agy session: the API key and opencode have none, and one program's
+    /// limits would mislead in another's session.
     #[test]
-    fn only_a_session_on_the_plan_shows_its_limits() {
+    fn each_session_shows_its_own_plans_limits() {
         let used = LimitUse {
             used: 0.9,
             resets_at: None,
         };
-        let mut status = Status {
-            limits: Limits {
-                five_hour: Some(used),
-                seven_day: None,
-            },
-            ..Status::default()
-        };
-        assert!(
-            status
-                .plan_limits()
-                .and_then(|limits| limits.five_hour)
-                .is_some()
-        );
+        let five_hours = |status: &Status| status.plan_limits().and_then(|limits| limits.five_hour);
+        let mut status = Status::default();
+        if let Some(limits) = status.limits_mut() {
+            limits.five_hour = Some(used);
+        }
+        assert!(five_hours(&status).is_some());
         status.sign_in_with = claude::SignInWith::ApiKey;
         assert!(status.plan_limits().is_none());
         status.backend = claude::Backend::Agy;
         status.sign_in_with = claude::SignInWith::Account;
+        assert!(
+            five_hours(&status).is_none(),
+            "Claude Code's limits aren't agy's"
+        );
+        if let Some(limits) = status.limits_mut() {
+            limits.five_hour = Some(used);
+        }
+        assert!(five_hours(&status).is_some());
+        status.backend = claude::Backend::Opencode;
         assert!(status.plan_limits().is_none());
+        assert!(status.limits_mut().is_none());
     }
 
     /// A model picked for one program is started with that program's sessions only: a new

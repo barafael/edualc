@@ -72,7 +72,7 @@ impl<F: Frontend> App<F> {
     /// waits for.
     pub(super) fn set_limit_reset(&mut self) {
         let now = Timestamp::now();
-        let limits = &self.status.limits;
+        let limits = self.status.plan_limits().unwrap_or_default();
         let waited = match self.status.limit_wait {
             LimitWait::Until(at) => Some(at),
             LimitWait::Idle | LimitWait::Asking => None,

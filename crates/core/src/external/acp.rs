@@ -92,6 +92,12 @@ pub enum Change {
         #[serde(rename = "currentModeId")]
         current_mode_id: String,
     },
+    /// How much of the model's context window the session uses, and the window's size, in
+    /// tokens.
+    UsageUpdate {
+        used: u64,
+        size: u64,
+    },
     #[serde(other)]
     Other,
 }

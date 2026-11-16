@@ -573,6 +573,12 @@ pub enum System {
     ProgramMode {
         mode: ModeId,
     },
+    /// How much of the model's context window an agent program's session uses, and the
+    /// window's size, in tokens, as its adapter reports them.
+    ContextUsed {
+        used: u64,
+        size: u64,
+    },
     /// What runs in the background now (subagents, shell commands, monitors), all of it,
     /// whenever that changes. Their tool calls are done by then, so nothing else shows them.
     BackgroundTasksChanged {
@@ -972,6 +978,10 @@ pub struct PlanLimit {
     pub percent: f32,
     pub resets_at: Option<jiff::Timestamp>,
     pub scope: Option<LimitScope>,
+    /// What the limit is called, where its kind doesn't say: edualc's ACP adapter names agy's
+    /// quotas so. Claude Code sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

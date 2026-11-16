@@ -34,12 +34,13 @@ use tokio::sync::mpsc;
 use crate::external::acp::{
     AgyArguments, AgyQuestion, OpencodeArguments, RpcError, SwarmAction, ToolCall,
 };
+use crate::external::agy;
 use crate::external::tool_input::{
     AgentInput, BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput,
     WriteInput,
 };
 use crate::external::wire::{
-    BackgroundTask, Message, Question, QuestionOption, Questions, SessionId, System,
+    BackgroundTask, Message, Question, QuestionOption, Questions, RequestId, SessionId, System,
     TranscriptEntry, TranscriptLine,
 };
 use crate::sessions::{self, MessagingName};
@@ -54,6 +55,8 @@ pub const TOOL_FLAG: &str = "--agy-tool";
 const QUEUE: usize = 256;
 /// How long the agent gets to end once its input closed, before it is killed.
 const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long the agent gets to say its plan's quotas.
+const QUOTAS_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The tool agy sees edualc's messaging tool as, by the MCP server's name and the tool's.
 const AGY_SEND: &str = "mcp_edualc_send_message";
@@ -108,6 +111,20 @@ impl Agent {
             Self::Agy => true,
             Self::Opencode => false,
         }
+    }
+
+    /// The arguments that make it print its plan's quotas (see [`quotas`]); none for an agent
+    /// without quotas to say.
+    fn quotas_arguments(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Agy => Some(&["-p", "/usage", "--output-format", "json"]),
+            Self::Opencode => None,
+        }
+    }
+
+    /// Whether its plan has quotas it says, which the window shows as the plan's limits.
+    fn reports_quotas(self) -> bool {
+        self.quotas_arguments().is_some()
     }
 
     /// The arguments it sends with a tool call before the call's own: opencode sends the working
@@ -425,6 +442,49 @@ fn first_location(call: &ToolCall) -> Option<PathBuf> {
         .map(|location| location.path.clone())
 }
 
+/// Why the plan's quotas couldn't be read.
+#[derive(Debug, thiserror::Error)]
+enum QuotaError {
+    #[error("{0} has no quotas to say")]
+    NoQuotas(Agent),
+    #[error("{0} isn't on PATH")]
+    NotOnPath(Agent),
+    #[error("couldn't run it: {0}")]
+    Run(#[source] std::io::Error),
+    #[error("it didn't answer in time")]
+    TimedOut,
+    #[error("it failed ({0})")]
+    Failed(std::process::ExitStatus),
+    #[error("its answer can't be read: {0}")]
+    Read(#[source] serde_json::Error),
+}
+
+/// What `agent` says of its plan's quotas, asked in `cwd` (agy reads its settings there).
+async fn quotas(agent: Agent, cwd: PathBuf) -> Result<agy::Quotas, QuotaError> {
+    let arguments = agent
+        .quotas_arguments()
+        .ok_or(QuotaError::NoQuotas(agent))?;
+    let program = on_path(agent.program()).ok_or(QuotaError::NotOnPath(agent))?;
+    let run = Command::new(program)
+        .args(arguments)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(QUOTAS_WAIT, run)
+        .await
+        .map_err(|_late| QuotaError::TimedOut)?
+        .map_err(QuotaError::Run)?;
+    if !output.status.success() {
+        return Err(QuotaError::Failed(output.status));
+    }
+    serde_json::from_slice::<agy::UsageAnswer>(&output.stdout)
+        .map(|answer| answer.command.data)
+        .map_err(QuotaError::Read)
+}
+
 /// What the loop is told.
 #[derive(Debug)]
 enum Heard {
@@ -433,6 +493,7 @@ enum Heard {
     AgentLog(String),
     Peer(String),
     Tool(CallId, tool::Request, OwnedWriteHalf),
+    Quotas(Option<RequestId>, Result<agy::Quotas, QuotaError>),
 }
 
 async fn adapt(args: Args) -> Result<(), Error> {
@@ -561,17 +622,17 @@ async fn adapt(args: Args) -> Result<(), Error> {
             }
         });
     }
-    drop(heard);
-
     let mut out = Out {
         window: tokio::io::stdout(),
         agent: agent_in.take(),
+        program: agent,
         transcript,
         id,
         cwd,
         calls: HashMap::new(),
         name,
         tasks: Vec::new(),
+        heard,
     };
     let started = translator.start();
     out.carry_out(&mut translator, started).await;
@@ -604,6 +665,7 @@ async fn adapt(args: Args) -> Result<(), Error> {
                         tool::Request::List => translator.listing_asked(call),
                     }
                 }
+                Some(Heard::Quotas(request, told)) => translator.quotas_told(request, told),
             },
         };
         out.carry_out(&mut translator, effects).await;
@@ -656,6 +718,8 @@ impl Ending {
 struct Out {
     window: tokio::io::Stdout,
     agent: Option<ChildStdin>,
+    /// Which agent it is.
+    program: Agent,
     transcript: Option<PathBuf>,
     /// The session and the folder it works in, which each transcript line is kept with.
     id: SessionId,
@@ -665,6 +729,8 @@ struct Out {
     name: MessagingName,
     /// The subagents last told to the window.
     tasks: Vec<BackgroundTask>,
+    /// Where what is asked in the background comes back to the loop.
+    heard: mpsc::Sender<Heard>,
 }
 
 impl Out {
@@ -698,8 +764,23 @@ impl Out {
                     self.answer(call, told).await;
                 }
                 Effect::Subagents { conversation } => self.subagents(conversation).await,
+                Effect::Quotas { request } => self.ask_quotas(request),
             }
         }
+    }
+
+    /// Asks the agent for its plan's quotas in the background; the answer comes back to the
+    /// loop.
+    fn ask_quotas(&self, request: Option<RequestId>) {
+        let agent = self.program;
+        let cwd = self.cwd.clone();
+        let heard = self.heard.clone();
+        tokio::spawn(async move {
+            let told = quotas(agent, cwd).await;
+            if heard.send(Heard::Quotas(request, told)).await.is_err() {
+                tracing::debug!("the plan's quotas came after the adapter's loop ended");
+            }
+        });
     }
 
     /// A line to the window.
