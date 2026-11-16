@@ -33,6 +33,21 @@ pub struct Settings {
     /// or Japanese if that isn't a CJK one.
     #[serde(default)]
     pub han_text: Option<CjkLanguage>,
+    /// Whether a message from another session comes in at once, or only once you let its
+    /// sender in. Messages edualc doesn't carry follow the receiving program's own rules.
+    #[serde(default)]
+    pub peer_messages: PeerMessages,
+}
+
+/// How messages from other sessions come into a session edualc runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerMessages {
+    /// You're asked before the first message from each sender, in each session.
+    #[default]
+    AskEachSender,
+    /// Every message comes in without asking.
+    LetAllIn,
 }
 
 /// What sends the draft: Enter (Shift+Enter or Ctrl+Enter start a new line), or Ctrl+Enter
@@ -74,6 +89,7 @@ impl Default for Settings {
             look: Look::default(),
             send_with: SendKey::default(),
             han_text: None,
+            peer_messages: PeerMessages::default(),
         }
     }
 }
@@ -198,6 +214,7 @@ pub enum Change {
     SidebarWidth(Option<u16>),
     /// A folder trusted here, with what is under it.
     Trust(PathBuf),
+    PeerMessages(PeerMessages),
 }
 
 impl Settings {
@@ -216,6 +233,7 @@ impl Settings {
                     self.trusted_folders.push(folder);
                 }
             }
+            Change::PeerMessages(peer_messages) => self.peer_messages = peer_messages,
         }
     }
 }

@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, Program, PromptKind, Question, SendKey, SessionRow, SignInWith, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
+import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, Program, PromptKind, Question, PeerMessages, SendKey, SessionRow, SignInWith, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -292,6 +292,8 @@ export global Preferences {
     in-out property <bool> open;
     in property <SendKey> send-key;
     callback choose-send-key(SendKey);
+    in property <PeerMessages> peer-messages;
+    callback choose-peer-messages(PeerMessages);
     // The language text with Han characters alone is drawn in, as in use (the one chosen, or
     // the desktop's, or Japanese).
     in property <HanLanguage> han-language;

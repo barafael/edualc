@@ -229,6 +229,16 @@ impl ToSlint for present::SendKey {
     }
 }
 
+impl ToSlint for present::PeerMessages {
+    type Slint = slint_ui::PeerMessages;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::AskEachSender => slint_ui::PeerMessages::AskEachSender,
+            Self::LetAllIn => slint_ui::PeerMessages::LetAllIn,
+        }
+    }
+}
+
 impl ToSlint for present::HanLanguage {
     type Slint = slint_ui::HanLanguage;
     fn to_slint(&self, _: &Drawing) -> Self::Slint {
@@ -1027,6 +1037,9 @@ pub(super) fn apply_preferences(
     let global = window.global::<slint_ui::Preferences>();
     if old.is_none_or(|old| old.send_key != new.send_key) {
         global.set_send_key(new.send_key.to_slint(images));
+    }
+    if old.is_none_or(|old| old.peer_messages != new.peer_messages) {
+        global.set_peer_messages(new.peer_messages.to_slint(images));
     }
     if old.is_none_or(|old| old.han_language != new.han_language) {
         global.set_han_language(new.han_language.to_slint(images));

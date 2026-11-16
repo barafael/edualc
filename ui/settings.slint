@@ -3,7 +3,7 @@
 // keyring keeps.
 
 import { Theme } from "theme.slint";
-import { FocusArea, HanLanguage, SendKey } from "types.slint";
+import { FocusArea, HanLanguage, PeerMessages, SendKey } from "types.slint";
 import { Focus, Preferences } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
 
@@ -124,6 +124,30 @@ export component SettingsPanel inherits Rectangle {
                     detail: "Enter starts a new line, so a stray Enter never sends half a message.";
                     chosen: Preferences.send-key == SendKey.ctrl-enter;
                     clicked => { Preferences.choose-send-key(SendKey.ctrl-enter); }
+                }
+                Rectangle {
+                    height: Theme.space-m;
+                }
+                Text {
+                    text: "Messages from other sessions";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: "For messages edualc carries: those to agy and opencode sessions, and those agy and opencode sessions send to sessions edualc runs. Other messages to Claude Code follow its crossSessionInbound setting.";
+                    wrap: word-wrap;
+                }
+                Choice {
+                    title: "Ask before letting a new sender in";
+                    detail: "The first message from each sender waits until you let it in. Its later messages in that session come in at once.";
+                    chosen: Preferences.peer-messages == PeerMessages.ask-each-sender;
+                    clicked => { Preferences.choose-peer-messages(PeerMessages.ask-each-sender); }
+                }
+                Choice {
+                    title: "Let every message in";
+                    detail: "Sessions message each other without asking you.";
+                    chosen: Preferences.peer-messages == PeerMessages.let-all-in;
+                    clicked => { Preferences.choose-peer-messages(PeerMessages.let-all-in); }
                 }
                 Rectangle {
                     height: Theme.space-m;

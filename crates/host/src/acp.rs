@@ -44,6 +44,7 @@ use crate::external::wire::{
     TranscriptEntry, TranscriptLine,
 };
 use crate::sessions::{self, MessagingName};
+use crate::settings::{self, PeerMessages};
 use outbox::{Job, Outcome, Places, SendArguments};
 use translate::{CallId, Effect, Start, ToolServer, Translator};
 
@@ -485,13 +486,26 @@ async fn quotas(agent: Agent, cwd: PathBuf) -> Result<agy::Quotas, QuotaError> {
         .map_err(QuotaError::Read)
 }
 
+/// How the user wants other sessions' messages let in, as the settings say now. Settings that
+/// can't be read ask about each new sender: what can't be read lets nobody in unasked.
+fn peer_messages() -> PeerMessages {
+    match settings::load() {
+        Ok(settings) => settings.peer_messages,
+        Err(error) => {
+            tracing::warn!(%error, "the settings can't be read: asking about each new sender");
+            PeerMessages::AskEachSender
+        }
+    }
+}
+
 /// What the loop is told.
 #[derive(Debug)]
 enum Heard {
     Window(Option<String>),
     Agent(Option<String>),
     AgentLog(String),
-    Peer(String),
+    /// Another session's message, and whether the user wants each new sender asked about.
+    Peer(String, PeerMessages),
     Tool(CallId, tool::Request, OwnedWriteHalf),
     Quotas(Option<RequestId>, Result<agy::Quotas, QuotaError>),
 }
@@ -589,7 +603,10 @@ async fn adapt(args: Args) -> Result<(), Error> {
         let heard = heard.clone();
         tokio::spawn(async move {
             while let Some(post) = posts.recv().await {
-                if heard.send(Heard::Peer(post)).await.is_err() {
+                let peer_messages = tokio::task::spawn_blocking(peer_messages)
+                    .await
+                    .unwrap_or(PeerMessages::AskEachSender);
+                if heard.send(Heard::Peer(post, peer_messages)).await.is_err() {
                     return;
                 }
             }
@@ -655,7 +672,7 @@ async fn adapt(args: Args) -> Result<(), Error> {
                     eprintln!("{agent}: {line}");
                     continue;
                 }
-                Some(Heard::Peer(post)) => translator.peer(post),
+                Some(Heard::Peer(post, peer_messages)) => translator.peer(post, peer_messages),
                 Some(Heard::Tool(call, request, write)) => {
                     out.calls.insert(call, write);
                     match request {

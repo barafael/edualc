@@ -8,8 +8,8 @@ use crate::app::{Action, Event, PermissionMode};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, Preferences, Program,
-    Prompt, SendKey, Session, Sessions, Side, SignInWith, Transcript, Usage,
+    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, PeerMessages, Preferences,
+    Program, Prompt, SendKey, Session, Sessions, Side, SignInWith, Transcript, Usage,
 };
 use crate::settings::{self, Zoom};
 
@@ -142,6 +142,15 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
             actions.send(Action::SendWith(match key {
                 SendKey::Enter => settings::SendKey::Enter,
                 SendKey::CtrlEnter => settings::SendKey::CtrlEnter,
+            }));
+        }
+    });
+    window.global::<Preferences>().on_choose_peer_messages({
+        let actions = actions.clone();
+        move |peer_messages| {
+            actions.send(Action::PeerMessages(match peer_messages {
+                PeerMessages::AskEachSender => settings::PeerMessages::AskEachSender,
+                PeerMessages::LetAllIn => settings::PeerMessages::LetAllIn,
             }));
         }
     });

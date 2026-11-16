@@ -252,6 +252,10 @@ export enum ComposerSize { fit, chosen, tall, full }
 // (Enter starts a new line).
 export enum SendKey { enter, ctrl-enter }
 
+// How messages from other sessions come into a session edualc runs: once you let each sender
+// in, or all at once.
+export enum PeerMessages { ask-each-sender, let-all-in }
+
 // The language text with Han characters alone is drawn in (see `src/cjk.rs`).
 export enum HanLanguage { japanese, simplified-chinese, traditional-chinese, korean }
 

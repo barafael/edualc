@@ -185,6 +185,10 @@ pub enum ToolName {
     /// edualc's tool listing the sessions, as an agy session calls it.
     #[strum(serialize = "mcp__edualc__list_sessions")]
     EdualcListSessions,
+    /// Not a tool: edualc asks under this name whether another session's message may come in
+    /// (see [`crate::external::tool_input::IncomingMessageInput`]).
+    #[strum(serialize = "edualc_incoming_message")]
+    EdualcIncomingMessage,
     #[strum(default)]
     Other(String),
 }
@@ -231,6 +235,7 @@ impl ToolName {
             | Self::SendMessage
             | Self::EdualcSendMessage
             | Self::EdualcListSessions
+            | Self::EdualcIncomingMessage
             | Self::Other(_) => ToolKind::Other,
         }
     }
@@ -262,6 +267,7 @@ impl ToolName {
             | Self::SendMessage
             | Self::EdualcSendMessage
             | Self::EdualcListSessions
+            | Self::EdualcIncomingMessage
             | Self::Other(_) => false,
         }
     }

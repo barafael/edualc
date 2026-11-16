@@ -10,8 +10,8 @@ use strum::IntoEnumIterator;
 use super::model::{
     self, Activity, BlockKind, Cjk, CjkChars, CommandItem, DiffKind, DiffLine, Entry, EntryKind,
     GroupRole, HanLanguage, ImageChip, ImageState, LiveState, MdBlock, MenuItem, PeekStep,
-    PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey,
-    SessionRow, SessionRowKind, ShownImage, SideExchange, SideState, SignInState, StatRow,
+    PeerMessages, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption,
+    SendKey, SessionRow, SessionRowKind, ShownImage, SideExchange, SideState, SignInState, StatRow,
     StatSection, StepKind, TableRow, TaskItem, TaskKind, ToolState,
 };
 use super::{Command, EntriesChange, Frontend, Image, Look, Styled};
@@ -25,7 +25,7 @@ use crate::cjk::{CjkLanguage, CjkText, Standing};
 use crate::colour::Coloured;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
-use crate::external::tool_input::{BashInput, WebFetchInput};
+use crate::external::tool_input::{BashInput, IncomingMessageInput, WebFetchInput};
 use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -237,6 +237,13 @@ impl<F: Frontend> Presenter<F> {
         self.preferences.send_key = match key {
             settings::SendKey::Enter => SendKey::Enter,
             settings::SendKey::CtrlEnter => SendKey::CtrlEnter,
+        };
+    }
+
+    pub fn set_peer_messages(&mut self, peer_messages: settings::PeerMessages) {
+        self.preferences.peer_messages = match peer_messages {
+            settings::PeerMessages::AskEachSender => PeerMessages::AskEachSender,
+            settings::PeerMessages::LetAllIn => PeerMessages::LetAllIn,
         };
     }
 
@@ -1211,7 +1218,18 @@ struct ToolPrompt {
 fn tool_prompt(ask: &Ask, cwd: &Path, backend: crate::claude::Backend) -> ToolPrompt {
     let view = tools::describe(&ask.tool, &ask.input, cwd, tools::Depth::Headline);
     let agent = backend.agent();
-    let (title, summary) = if ask.tool == ToolName::Bash {
+    let (title, summary) = if ask.tool == ToolName::EdualcIncomingMessage {
+        let incoming = tools::read::<IncomingMessageInput>(&ask.tool, &ask.input);
+        let from = incoming
+            .as_ref()
+            .map_or("Another session", |incoming| incoming.from.as_str());
+        (
+            format!("Let this message from {from} in?"),
+            incoming
+                .map(|incoming| incoming.message)
+                .unwrap_or_default(),
+        )
+    } else if ask.tool == ToolName::Bash {
         let bash = tools::read::<BashInput>(&ask.tool, &ask.input);
         // Claude can ask for a command to run outside Claude Code's own sandbox.
         let outside = bash
@@ -1263,7 +1281,18 @@ fn always_label(rule: &wire::Suggestion) -> String {
         wire::RuleDestination::UserSettings => " in every project",
         wire::RuleDestination::Other => "",
     };
+    let incoming = ToolName::EdualcIncomingMessage.to_string();
     match rule {
+        // edualc's own offer, for a message waiting to come in: its sender, for the session.
+        wire::Suggestion::AddRules { rules, .. }
+            if let [rule] = rules.as_slice()
+                && rule.tool_name == incoming =>
+        {
+            format!(
+                "Let messages from {} in",
+                rule.rule_content.as_deref().unwrap_or("this sender")
+            )
+        }
         wire::Suggestion::AddRules { rules, destination } => {
             let named: Vec<String> = rules
                 .iter()

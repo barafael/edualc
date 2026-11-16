@@ -7,9 +7,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::external::tool_input::{
-    AgentInput, BashInput, EditInput, GlobInput, GrepInput, MultiEditInput, NotebookEditInput,
-    ReadInput, SendMessageInput, SkillInput, TodoStatus, TodoWriteInput, WebFetchInput,
-    WebSearchInput, WriteInput,
+    AgentInput, BashInput, EditInput, GlobInput, GrepInput, IncomingMessageInput, MultiEditInput,
+    NotebookEditInput, ReadInput, SendMessageInput, SkillInput, TodoStatus, TodoWriteInput,
+    WebFetchInput, WebSearchInput, WriteInput,
 };
 use crate::external::wire::{ContentBlock, PlanInput, Questions, ToolName, UserContent};
 
@@ -234,6 +234,15 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
                 }
             }
         }
+        ToolName::EdualcIncomingMessage => {
+            if let Some(IncomingMessageInput { from, message }) = read(name, input) {
+                view.title = format!("Message from {from}");
+                view.summary = first_line(&message);
+                if full {
+                    view.detail = message;
+                }
+            }
+        }
         ToolName::Other(name) if name.starts_with("mcp__") => {
             let mut parts = name.trim_start_matches("mcp__").splitn(2, "__");
             let server = parts.next().unwrap_or("");
@@ -276,7 +285,8 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
         | ToolName::AskUserQuestion
         | ToolName::ExitPlanMode
         | ToolName::SendMessage
-        | ToolName::EdualcSendMessage => Writing::Prose,
+        | ToolName::EdualcSendMessage
+        | ToolName::EdualcIncomingMessage => Writing::Prose,
         ToolName::Bash
         | ToolName::BashOutput
         | ToolName::KillShell
@@ -327,6 +337,7 @@ pub fn file_of(name: &ToolName, input: &Value) -> Option<PathBuf> {
         | ToolName::SendMessage
         | ToolName::EdualcSendMessage
         | ToolName::EdualcListSessions
+        | ToolName::EdualcIncomingMessage
         | ToolName::Other(_) => None,
     }
 }

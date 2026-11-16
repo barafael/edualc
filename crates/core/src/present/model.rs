@@ -173,6 +173,13 @@ pub enum SendKey {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PeerMessages {
+    #[default]
+    AskEachSender,
+    LetAllIn,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum HanLanguage {
     #[default]
     Japanese,
@@ -516,6 +523,7 @@ pub struct Side {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub send_key: SendKey,
+    pub peer_messages: PeerMessages,
     pub han_language: HanLanguage,
     pub running_sessions: i32,
     pub api_key_kept: bool,

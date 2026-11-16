@@ -9,7 +9,7 @@
 //! goes to the session's transcript, in Claude Code's transcript format, for the session to be
 //! listed and shown again.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use serde_json::{Map, Value};
@@ -20,6 +20,7 @@ use crate::external::acp::{
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
 use crate::external::agy::{self, QuotaWindow};
+use crate::external::tool_input::IncomingMessageInput;
 use crate::external::tool_input::{
     BashInput, EditInput, GrepInput, KnownCall, ReadInput, WebFetchInput, WriteInput,
 };
@@ -31,6 +32,7 @@ use crate::external::wire::{
     StreamEvent, System, ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent,
     UserLine, UserMessage,
 };
+use crate::settings::PeerMessages;
 
 use super::outbox::unwrapped;
 use super::{Agent, first_location};
@@ -210,6 +212,10 @@ pub struct Translator {
     calls: HashMap<CallId, String>,
     /// How full the model's context is, once the agent said.
     context: Option<ContextUsed>,
+    /// Other sessions' messages waiting to come in, by the request asking the window.
+    waiting: HashMap<RequestId, String>,
+    /// The senders the user let in for the session, by the names they gave.
+    senders_let_in: BTreeSet<String>,
 }
 
 /// How much of the model's context window the session uses, and the window's size, in tokens.
@@ -252,6 +258,8 @@ impl Translator {
             permissions: HashMap::new(),
             calls: HashMap::new(),
             context: None,
+            waiting: HashMap::new(),
+            senders_let_in: BTreeSet::new(),
         }
     }
 
@@ -729,6 +737,32 @@ impl Translator {
 
     /// The window's answer to a permission request: the agent's, or the messaging tool's.
     fn window_answered(&mut self, reply: wire::Reply) -> Vec<Effect> {
+        let request = match &reply {
+            wire::Reply::Success { request_id, .. } | wire::Reply::Error { request_id, .. } => {
+                request_id
+            }
+        };
+        if let Some(content) = self.waiting.remove(request) {
+            return match reply {
+                wire::Reply::Success {
+                    response:
+                        wire::PermissionResult::Allow {
+                            updated_permissions,
+                            ..
+                        },
+                    ..
+                } => self.let_in(content, &updated_permissions),
+                // Turned down: the agent never sees it, and its turn goes on.
+                wire::Reply::Success {
+                    response: wire::PermissionResult::Deny { .. },
+                    ..
+                } => Vec::new(),
+                wire::Reply::Error { error, .. } => {
+                    tracing::warn!(%error, "the window couldn't ask about a message: turned down");
+                    Vec::new()
+                }
+            };
+        }
         let (request_id, verdict) = match reply {
             wire::Reply::Success {
                 request_id,
@@ -807,9 +841,88 @@ impl Translator {
         }
     }
 
-    /// Another session's message came into the inbox: shown as such, and given to the agent as
-    /// a prompt once it is free.
-    pub fn peer(&mut self, content: String) -> Vec<Effect> {
+    /// Another session's message came into the inbox. One from a sender the user let in, or
+    /// any with `peer_messages` letting all in, comes in; another waits while the window asks.
+    pub fn peer(&mut self, content: String, peer_messages: PeerMessages) -> Vec<Effect> {
+        let (name, body) = unwrapped(&content);
+        let let_in = match peer_messages {
+            PeerMessages::LetAllIn => true,
+            PeerMessages::AskEachSender => name
+                .as_ref()
+                .is_some_and(|name| self.senders_let_in.contains(name)),
+        };
+        if let_in {
+            return self.came_in(content);
+        }
+        let request = RequestId::from(self.local_id("message"));
+        // A sender without a name can't be let in for later: each of its messages is asked.
+        let offered = name.as_ref().map(|name| wire::Suggestion::AddRules {
+            rules: vec![wire::Rule {
+                tool_name: ToolName::EdualcIncomingMessage.to_string(),
+                rule_content: Some(name.clone()),
+            }],
+            destination: wire::RuleDestination::Session,
+        });
+        let input = IncomingMessageInput {
+            from: name.unwrap_or_else(|| "another session".to_owned()),
+            message: body,
+        };
+        let (input, offered) = match (
+            serde_json::to_value(&input),
+            offered
+                .map(|offered| serde_json::to_value(&offered))
+                .transpose(),
+        ) {
+            (Ok(input), Ok(offered)) => (input, offered),
+            (Err(error), _) | (_, Err(error)) => {
+                tracing::warn!(%error, "a message waiting to come in can't be asked about: turned down");
+                return Vec::new();
+            }
+        };
+        self.waiting.insert(request.clone(), content);
+        vec![Effect::ToWindow(Message::ControlRequest {
+            request_id: request,
+            request: IncomingRequest::CanUseTool {
+                tool_name: ToolName::EdualcIncomingMessage,
+                input,
+                permission_suggestions: offered.into_iter().collect(),
+                description: String::new(),
+                tool_use_id: None,
+            },
+        })]
+    }
+
+    /// A message the window was asked about: the user let it in, and maybe its sender.
+    fn let_in(&mut self, content: String, offered: &[wire::PermissionUpdate]) -> Vec<Effect> {
+        let sender = offered.iter().find_map(|update| match update {
+            wire::PermissionUpdate::Offered(offered) => {
+                match serde_json::from_value::<wire::Suggestion>(offered.clone()) {
+                    Ok(wire::Suggestion::AddRules { rules, .. }) => {
+                        rules.into_iter().find_map(|rule| {
+                            (rule.tool_name == ToolName::EdualcIncomingMessage.to_string())
+                                .then_some(rule.rule_content)
+                                .flatten()
+                        })
+                    }
+                    Ok(
+                        wire::Suggestion::SetMode { .. }
+                        | wire::Suggestion::AddDirectories { .. }
+                        | wire::Suggestion::Other,
+                    )
+                    | Err(_) => None,
+                }
+            }
+            wire::PermissionUpdate::SetMode { .. } => None,
+        });
+        if let Some(sender) = sender {
+            self.senders_let_in.insert(sender);
+        }
+        self.came_in(content)
+    }
+
+    /// Another session's message, let in: shown as such, and given to the agent as a prompt
+    /// once it is free.
+    fn came_in(&mut self, content: String) -> Vec<Effect> {
         let (name, body) = unwrapped(&content);
         let mut effects = vec![
             Effect::ToWindow(Message::User(UserLine::from_peer(
@@ -1867,6 +1980,7 @@ mod tests {
         ));
         effects.extend(translator.peer(
             "<cross-session-message from=\"calm-heron\">hello</cross-session-message>".to_owned(),
+            PeerMessages::LetAllIn,
         ));
         effects.extend(translator.window_said(&said(&Input::bash_command("ls"))));
         effects.extend(translator.agent_said(&format!(
@@ -2380,7 +2494,7 @@ mod tests {
             .and_then(|line| line.get("id").cloned())
             .expect("prompted");
         let envelope = "<cross-session-message from-name=\"tidy-otter-work-12\" from-mode=\"prompting\">\nHi there\n</cross-session-message>";
-        let peer = translator.peer(envelope.to_owned());
+        let peer = translator.peer(envelope.to_owned(), PeerMessages::LetAllIn);
         let shown = window_lines(&peer);
         assert_eq!(
             shown.first().and_then(|line| line.pointer("/origin/name")),
@@ -2401,6 +2515,84 @@ mod tests {
         assert_eq!(
             next.pointer("/params/prompt/0/text"),
             Some(&json!(envelope))
+        );
+    }
+
+    /// A message from a sender the user hasn't let in waits while the window asks, offering
+    /// to let the sender in. Turned down, the agent never sees it; let in with its sender, it
+    /// comes in, and so does the sender's next message, unasked. Another sender is asked about.
+    #[test]
+    fn a_new_senders_message_waits_to_be_let_in() {
+        let mut translator = opened();
+        let from = |name: &str, text: &str| {
+            format!(
+                "<cross-session-message from-name=\"{name}\" from-mode=\"prompting\">\n{text}\n</cross-session-message>"
+            )
+        };
+        let asked = window_lines(
+            &translator.peer(from("tidy-otter", "First"), PeerMessages::AskEachSender),
+        );
+        let [card] = asked.as_slice() else {
+            panic!("one question: {asked:?}");
+        };
+        assert_eq!(
+            card.pointer("/request/tool_name"),
+            Some(&json!("edualc_incoming_message"))
+        );
+        assert_eq!(
+            card.pointer("/request/input"),
+            Some(&json!({"from": "tidy-otter", "message": "First"}))
+        );
+        let offered = card
+            .pointer("/request/permission_suggestions/0")
+            .cloned()
+            .expect("letting the sender in, offered");
+        let answer = |request: &Value, response: Value| {
+            serde_json::to_string(&json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": request, "response": response},
+            }))
+            .expect("a line")
+        };
+        let request = card.get("request_id").cloned().expect("an id");
+        let turned_down = translator.window_said(&answer(
+            &request,
+            json!({"behavior": "deny", "message": "No."}),
+        ));
+        assert!(turned_down.is_empty(), "{turned_down:?}");
+
+        let asked = window_lines(
+            &translator.peer(from("tidy-otter", "Second"), PeerMessages::AskEachSender),
+        );
+        let request = asked
+            .first()
+            .and_then(|card| card.get("request_id"))
+            .cloned()
+            .expect("asked again");
+        let let_in = translator.window_said(&answer(
+            &request,
+            json!({"behavior": "allow", "updatedInput": {}, "updatedPermissions": [offered]}),
+        ));
+        assert_eq!(
+            agent_lines(&let_in)
+                .iter()
+                .find_map(|line| line.pointer("/params/prompt/0/text"))
+                .cloned(),
+            Some(json!(from("tidy-otter", "Second")))
+        );
+
+        let unasked = translator.peer(from("tidy-otter", "Third"), PeerMessages::AskEachSender);
+        assert!(
+            window_lines(&unasked)
+                .iter()
+                .all(|line| line.get("type") != Some(&json!("control_request"))),
+            "the sender was let in"
+        );
+        let other =
+            window_lines(&translator.peer(from("calm-heron", "Hi"), PeerMessages::AskEachSender));
+        assert_eq!(
+            other.first().and_then(|line| line.get("type")),
+            Some(&json!("control_request"))
         );
     }
 

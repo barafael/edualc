@@ -123,6 +123,14 @@ folder's name, and two digits. Since the ID picks the words and digits, the name
 however often the session restarts. edualc picks a new session's ID itself (`--session-id`), so
 the name holds from the first start.
 
+### Messages that wait to be let in
+
+A message from another session to an agy or opencode session waits until you let it in. The
+session shows it on a card: let it in, turn it down, or let in that sender's messages for the
+rest of the session. A message you turn down never reaches the agent, and its turn goes on. In
+the settings you can let every message in without asking instead. Messages to a Claude Code
+session follow Claude Code's own `crossSessionInbound` setting.
+
 ## What runs beside the turn
 
 A chip shows what Claude runs besides the current step, such as "2 agents, 1 command". Click it
@@ -263,6 +271,8 @@ effect at once and is kept in `~/.config/edualc/settings.json`.
 - **Text in Han characters alone:** Chinese, Japanese and Korean draw many Han characters
   differently. A message with kana is set as Japanese and one with Hangul as Korean. Here you
   choose how a message in Han characters alone is set.
+- **Messages from other sessions:** ask before letting each new sender in, or let every message
+  in (see [Messages that wait to be let in](#messages-that-wait-to-be-let-in)).
 - **Shut down edualc's daemon:** the daemon runs the sessions of every window, and a newly
   installed edualc takes over only after it shuts down. Shutting it down ends every session in
   every window; you can continue them from the sidebar in the next window you open.

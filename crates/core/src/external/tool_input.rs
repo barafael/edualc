@@ -192,6 +192,15 @@ pub struct SendMessageInput {
     pub message: String,
 }
 
+/// A message from another session that waits to be let in, as edualc asks about it (see
+/// [`crate::external::wire::ToolName::EdualcIncomingMessage`]): who sent it, by the name it
+/// gave, and the message without its envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingMessageInput {
+    pub from: String,
+    pub message: String,
+}
+
 /// edualc's tool listing the sessions takes nothing: an empty object.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsInput {}

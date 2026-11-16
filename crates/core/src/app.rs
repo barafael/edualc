@@ -571,6 +571,8 @@ pub enum Action {
     RecolourCode,
     /// The key that sends the draft, as chosen in the settings.
     SendWith(settings::SendKey),
+    /// How messages from other sessions come in, as chosen in the settings.
+    PeerMessages(settings::PeerMessages),
     /// The language of text in Han characters alone, as chosen in the settings.
     HanLanguage(crate::cjk::CjkLanguage),
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
@@ -1192,6 +1194,7 @@ impl<F: Frontend> App<F> {
         view.set_sidebar_width(settings.sidebar_width_px);
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
+        view.set_peer_messages(settings.peer_messages);
         view.set_han_language(settings.han_language());
         Self {
             view,
@@ -1542,6 +1545,10 @@ impl<F: Frontend> App<F> {
             Action::SendWith(key) => {
                 self.view.set_send_key(key);
                 self.change_settings(settings::Change::SendWith(key));
+            }
+            Action::PeerMessages(peer_messages) => {
+                self.view.set_peer_messages(peer_messages);
+                self.change_settings(settings::Change::PeerMessages(peer_messages));
             }
             Action::HanLanguage(language) => {
                 self.view.set_han_language(language);
@@ -2911,6 +2918,10 @@ impl<F: Frontend> App<F> {
                     (revise, false)
                 }
             }
+            // Another session's message, turned down: nothing of the session's own is stopped.
+            AskKind::Tool { .. } if ask.tool == ToolName::EdualcIncomingMessage => {
+                ("The user turned the message down.".to_owned(), false)
+            }
             AskKind::Tool { .. } if feedback.is_empty() => (
                 "The user denied this tool use. Stop and wait for their instructions.".to_owned(),
                 true,
@@ -3551,6 +3562,45 @@ mod tests {
                 .any(|entry| entry.copy_text().contains("can't read")),
             "the conversation says why"
         );
+    }
+
+    /// Another session's message, turned down during a turn, is turned down alone: the turn
+    /// isn't stopped, as a bare Deny of a tool call stops it.
+    #[test]
+    fn a_message_turned_down_stops_nothing() {
+        let (mut driven, generation) = started();
+        driven.take(Event::Action(Action::Send("Count the lines".to_owned())));
+        driven.sent();
+        driven.take(Event::Claude {
+            generation,
+            output: Output::of_line(
+                r#"{"type":"control_request","request_id":"m1","request":{"subtype":"can_use_tool","tool_name":"edualc_incoming_message","input":{"from":"tidy-otter","message":"Hi"}}}"#
+                    .to_owned(),
+            ),
+        });
+        driven.take(Event::Action(Action::Deny {
+            request: RequestId::from("m1".to_owned()),
+            feedback: String::new(),
+        }));
+        let answered: String = driven
+            .sent()
+            .into_iter()
+            .filter_map(|message| {
+                if let ToDaemon::Input { text, .. } = message {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let answer: serde_json::Value = serde_json::from_str(&answered).expect("an answer");
+        assert_eq!(
+            answer.pointer("/response/response/behavior"),
+            Some(&serde_json::json!("deny"))
+        );
+        assert_eq!(answer.pointer("/response/response/interrupt"), None);
+        assert!(!driven.app.status.stop_asked);
+        assert!(driven.session().busy, "the turn goes on");
     }
 
     /// A pasted API key is left out of what an action's `Debug` writes.
