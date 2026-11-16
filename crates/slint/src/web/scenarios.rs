@@ -3,12 +3,22 @@
 //! to comment on), ask how to smooth (questions with previews), draw the gain chart (an image
 //! in a tool's card); anything else is told what to try.
 
+use std::collections::BTreeMap;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use serde_json::{Value, json};
+use serde::Deserialize as _;
+use serde_json::Map;
 
-use super::daemon::{Interrupted, Out, Turn};
+use super::daemon::{Interrupted, Out, Turn, input};
 use super::demo;
+use crate::app::{Mode, PermissionMode};
+use crate::external::tool_input::{BashInput, EditInput, GrepInput, ReadInput};
+use crate::external::wire::{
+    Account, CommandInfo, ContentBlock, GivenAnswers, Initialized, Message, ModelInfo,
+    PermissionResult, PlanInput, Question, QuestionOption, Questions, ReceivedImage, Rule,
+    RuleDestination, Suggestion, ToolInput, ToolName, UserContent, UserLine,
+};
 
 /// Plays the turn for `prompt`, to its end or an interrupt.
 pub(super) async fn play(turn: Turn, prompt: String) {
@@ -135,45 +145,62 @@ async fn fix(turn: &Turn) -> Result<&'static str, Interrupted> {
         .await?;
     let stats = turn.path("src/stats.rs");
     turn.run(
-        "Read",
-        &json!({"file_path": stats}),
+        ToolName::Read,
+        input(&ReadInput::whole(stats.clone())),
         "     1\t//! Distance and elevation for a track.\n     2\t\n     3\tuse crate::gpx::Point;",
         400,
     )
     .await?;
     turn.run(
-        "Grep",
-        &json!({"pattern": "elevation_m", "path": turn.path("src"), "output_mode": "content"}),
+        ToolName::Grep,
+        input(&GrepInput {
+            pattern: "elevation_m".to_owned(),
+            path: Some(turn.path("src")),
+            glob: None,
+        }),
         "src/gpx.rs:6:    pub elevation_m: f64,\nsrc/stats.rs:17:        let climb_m = to.elevation_m - from.elevation_m;",
         350,
     )
     .await?;
     turn.run(
-        "Bash",
-        &json!({"command": "cargo run -q -- tests/fixtures/*.gpx",
-                "description": "Summarize the fixture tracks"}),
+        ToolName::Bash,
+        command(
+            "cargo run -q -- tests/fixtures/*.gpx",
+            "Summarize the fixture tracks",
+        ),
         "ridge-loop     14.2 km  ↑  1412 m  ↓  1398 m\nriver-flat      9.8 km  ↑   318 m  ↓   321 m",
         800,
     )
     .await?;
     turn.say(GAIN_ANALYSIS).await?;
-    let input = json!({"file_path": stats, "old_string": GAIN_OLD, "new_string": GAIN_NEW});
-    let edit = turn.call("Edit", &input);
-    let suggestions = json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}]);
-    let answer = turn.ask("Edit", &input, &edit, &suggestions).await?;
+    let change = input(&EditInput::once(
+        stats.clone(),
+        GAIN_OLD.to_owned(),
+        GAIN_NEW.to_owned(),
+    ));
+    let edit = turn.call(ToolName::Edit, change.clone());
+    let suggestions = [Suggestion::SetMode {
+        mode: Mode::Known(PermissionMode::AcceptEdits),
+    }];
+    let answer = turn
+        .ask(ToolName::Edit, change, &edit, &suggestions)
+        .await?;
     if !allowed(&answer) {
-        turn.result(&edit, &json!(declined(&answer)), true);
+        turn.result(&edit, declined(&answer), true);
         turn.say("Left `stats.rs` as it was.").await?;
         return Ok("Declined.");
     }
     turn.result(
         &edit,
-        &json!(format!("The file {stats} has been updated successfully.")),
+        text(format!(
+            "The file {} has been updated successfully.",
+            stats.display()
+        )),
         false,
     );
     turn.run(
-        "Bash",
-        &json!({"command": "cargo test", "description": "Run the tests"}),
+        ToolName::Bash,
+        command("cargo test", "Run the tests"),
         "running 7 tests\n.......\ntest result: ok. 7 passed; 0 failed; 0 ignored",
         1200,
     )
@@ -185,23 +212,30 @@ async fn fix(turn: &Turn) -> Result<&'static str, Interrupted> {
 async fn benchmark(turn: &Turn) -> Result<&'static str, Interrupted> {
     turn.say("I'll run the `summarize` benchmark, to see what the threshold costs.")
         .await?;
-    let input = json!({"command": "cargo bench --bench summarize",
-                       "description": "Run the summarize benchmark"});
-    let bash = turn.call("Bash", &input);
-    let suggestions = json!([{"type": "addRules", "behavior": "allow", "destination": "localSettings",
-                              "rules": [{"toolName": "Bash", "ruleContent": "cargo bench:*"}]}]);
-    let answer = turn.ask("Bash", &input, &bash, &suggestions).await?;
+    let bench = command(
+        "cargo bench --bench summarize",
+        "Run the summarize benchmark",
+    );
+    let bash = turn.call(ToolName::Bash, bench.clone());
+    let suggestions = [Suggestion::AddRules {
+        rules: vec![Rule {
+            tool_name: "Bash".to_owned(),
+            rule_content: Some("cargo bench:*".to_owned()),
+        }],
+        destination: RuleDestination::LocalSettings,
+    }];
+    let answer = turn.ask(ToolName::Bash, bench, &bash, &suggestions).await?;
     if !allowed(&answer) {
-        turn.result(&bash, &json!(declined(&answer)), true);
+        turn.result(&bash, declined(&answer), true);
         turn.say("Skipped the benchmark.").await?;
         return Ok("Declined.");
     }
     turn.wait(1500).await?;
     turn.result(
         &bash,
-        &json!(
+        text(
             "summarize/ridge-loop   time:   [412.3 µs 415.0 µs 418.1 µs]\n                       change: [+1.2% +1.8% +2.5%]\n\
-             summarize/river-flat   time:   [301.7 µs 303.2 µs 304.9 µs]\n                       change: [+0.9% +1.4% +2.0%]"
+             summarize/river-flat   time:   [301.7 µs 303.2 µs 304.9 µs]\n                       change: [+0.9% +1.4% +2.0%]",
         ),
         false,
     );
@@ -243,20 +277,23 @@ the next fix happens to be.
 async fn plan(turn: &Turn) -> Result<&'static str, Interrupted> {
     turn.say("I've read `stats.rs` and `main.rs`. Here's how I'd add splits.")
         .await?;
-    let input = json!({"plan": SPLITS_PLAN});
-    let exit = turn.call("ExitPlanMode", &input);
-    let answer = turn.ask("ExitPlanMode", &input, &exit, &json!([])).await?;
+    let plan = input(&PlanInput {
+        plan: SPLITS_PLAN.to_owned(),
+        rest: Map::new(),
+    });
+    let exit = turn.call(ToolName::ExitPlanMode, plan.clone());
+    let answer = turn.ask(ToolName::ExitPlanMode, plan, &exit, &[]).await?;
     if allowed(&answer) {
         turn.result(
             &exit,
-            &json!("User has approved your plan. You can now start coding."),
+            text("User has approved your plan. You can now start coding."),
             false,
         );
         turn.say("Approved. I'll start with `stats::splits` and its test.")
             .await?;
         Ok("Approved.")
     } else {
-        turn.result(&exit, &json!(declined(&answer)), true);
+        turn.result(&exit, declined(&answer), true);
         turn.say(
             "Understood. I'll fold your comments into the plan: interpolating elevation and time \
              at each split's end, and the `splits` array keeping the summary's field order.",
@@ -269,41 +306,70 @@ async fn plan(turn: &Turn) -> Result<&'static str, Interrupted> {
 async fn questions(turn: &Turn) -> Result<&'static str, Interrupted> {
     turn.say("There are a few ways to do this. Two questions first.")
         .await?;
-    let input = json!({"questions": [
-        {"question": "How should noisy elevation be smoothed?", "header": "Smoothing", "multiSelect": false,
-         "options": [
-            {"label": "Threshold (3 m)",
-             "description": "Count a climb once it passes 3 m. Simple, and what most trackers do.",
-             "preview": "let rise = h - anchor;\nif rise.abs() >= 3.0 {\n    gain += rise.max(0.0);\n    anchor = h;\n}"},
-            {"label": "Moving average",
-             "description": "Average each point with its neighbours first. Smooths, but flattens real short climbs.",
-             "preview": "let h: Vec<f64> = heights\n    .windows(5)\n    .map(mean)\n    .collect();"},
-            {"label": "Digital elevation model",
-             "description": "Replace GPS elevation with map data. Most accurate; needs a download per region."}]},
-        {"question": "Which outputs should show the smoothed gain?", "header": "Outputs", "multiSelect": true,
-         "options": [
-            {"label": "Table", "description": "The default one-line summary."},
-            {"label": "JSON", "description": "`--json`, for scripts."},
-            {"label": "Splits", "description": "Each split's gain and loss."}]},
-    ]});
-    let ask = turn.call("AskUserQuestion", &input);
+    let option = |label: &str, description: &str, preview: &str| QuestionOption {
+        label: label.to_owned(),
+        description: description.to_owned(),
+        preview: preview.to_owned(),
+        rest: Map::new(),
+    };
+    let question = |question: &str, header: &str, multi_select, options| Question {
+        question: question.to_owned(),
+        header: header.to_owned(),
+        options,
+        multi_select,
+        rest: Map::new(),
+    };
+    let asked = input(&Questions {
+        questions: vec![
+            question(
+                "How should noisy elevation be smoothed?",
+                "Smoothing",
+                false,
+                vec![
+                    option(
+                        "Threshold (3 m)",
+                        "Count a climb once it passes 3 m. Simple, and what most trackers do.",
+                        "let rise = h - anchor;\nif rise.abs() >= 3.0 {\n    gain += rise.max(0.0);\n    anchor = h;\n}",
+                    ),
+                    option(
+                        "Moving average",
+                        "Average each point with its neighbours first. Smooths, but flattens real short climbs.",
+                        "let h: Vec<f64> = heights\n    .windows(5)\n    .map(mean)\n    .collect();",
+                    ),
+                    option(
+                        "Digital elevation model",
+                        "Replace GPS elevation with map data. Most accurate; needs a download per region.",
+                        "",
+                    ),
+                ],
+            ),
+            question(
+                "Which outputs should show the smoothed gain?",
+                "Outputs",
+                true,
+                vec![
+                    option("Table", "The default one-line summary.", ""),
+                    option("JSON", "`--json`, for scripts.", ""),
+                    option("Splits", "Each split's gain and loss.", ""),
+                ],
+            ),
+        ],
+        answers: BTreeMap::new(),
+        annotations: BTreeMap::new(),
+        rest: Map::new(),
+    });
+    let ask = turn.call(ToolName::AskUserQuestion, asked.clone());
     let answer = turn
-        .ask("AskUserQuestion", &input, &ask, &json!([]))
+        .ask(ToolName::AskUserQuestion, asked, &ask, &[])
         .await?;
-    let answers = answer
-        .pointer("/updatedInput/answers")
-        .and_then(Value::as_object)
-        .map(|answers| {
-            answers
-                .iter()
-                .map(|(question, picked)| format!("- **{question}** {}", picked_text(picked)))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
+    let answers = given_answers(&answer)
+        .iter()
+        .map(|(question, picked)| format!("- **{question}** {picked}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     turn.result(
         &ask,
-        &json!("User has answered your questions."),
+        text("User has answered your questions."),
         !allowed(&answer),
     );
     if answers.is_empty() {
@@ -316,27 +382,54 @@ async fn questions(turn: &Turn) -> Result<&'static str, Interrupted> {
     Ok("Answered.")
 }
 
-fn picked_text(picked: &Value) -> String {
-    picked
-        .as_str()
-        .map_or_else(|| picked.to_string(), str::to_owned)
+/// The answers the window gave to AskUserQuestion, by question.
+fn given_answers(answer: &PermissionResult) -> BTreeMap<String, String> {
+    match answer {
+        PermissionResult::Allow {
+            updated_input: ToolInput::AsAsked(given),
+            ..
+        } => GivenAnswers::deserialize(given).map_or_else(
+            |error| {
+                tracing::warn!(%error, "answers the demo can't read");
+                BTreeMap::new()
+            },
+            |given| given.answers,
+        ),
+        PermissionResult::Allow {
+            updated_input: ToolInput::Answered(questions),
+            ..
+        } => questions.answers.clone(),
+        PermissionResult::Allow {
+            updated_input: ToolInput::Plan(_),
+            ..
+        }
+        | PermissionResult::Deny { .. } => BTreeMap::new(),
+    }
 }
 
 async fn chart(turn: &Turn) -> Result<&'static str, Interrupted> {
     turn.run(
-        "Bash",
-        &json!({"command": "cargo run -q --example gain_chart -- tests/fixtures/ridge-loop.gpx docs/gain.png",
-                "description": "Chart the cumulative gain of ridge-loop"}),
+        ToolName::Bash,
+        command(
+            "cargo run -q --example gain_chart -- tests/fixtures/ridge-loop.gpx docs/gain.png",
+            "Chart the cumulative gain of ridge-loop",
+        ),
         "wrote docs/gain.png (960×400)",
         900,
     )
     .await?;
-    let read = turn.call("Read", &json!({"file_path": turn.path("docs/gain.png")}));
+    let read = turn.call(
+        ToolName::Read,
+        input(&ReadInput::whole(turn.path("docs/gain.png"))),
+    );
     turn.wait(300).await?;
     turn.result(
         &read,
-        &json!([{"type": "image", "source": {
-            "type": "base64", "media_type": "image/png", "data": BASE64.encode(demo::GAIN_CHART)}}]),
+        UserContent::Blocks(vec![ContentBlock::Image {
+            source: Some(ReceivedImage::Base64 {
+                data: BASE64.encode(demo::GAIN_CHART),
+            }),
+        }]),
         false,
     );
     turn.say(
@@ -349,39 +442,81 @@ async fn chart(turn: &Turn) -> Result<&'static str, Interrupted> {
 }
 
 /// Whether the window allowed the call.
-fn allowed(answer: &Value) -> bool {
-    answer.get("behavior").and_then(Value::as_str) == Some("allow")
+fn allowed(answer: &PermissionResult) -> bool {
+    matches!(answer, PermissionResult::Allow { .. })
 }
 
 /// A denial's result, with what the user said to do instead.
-fn declined(answer: &Value) -> String {
-    let said = answer
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    format!("{} {said}", crate::external::wire::DENIED)
+fn declined(answer: &PermissionResult) -> UserContent {
+    let said = match answer {
+        PermissionResult::Deny { message, .. } => message.as_str(),
+        PermissionResult::Allow { .. } => "",
+    };
+    text(format!("{} {said}", crate::external::wire::DENIED))
+}
+
+/// A tool's result of text alone.
+fn text(text: impl Into<String>) -> UserContent {
+    UserContent::Text(text.into())
+}
+
+/// Bash's input: a command, and what it does.
+fn command(command: &str, description: &str) -> serde_json::Value {
+    input(&BashInput::command(
+        command.to_owned(),
+        Some(description.to_owned()),
+    ))
 }
 
 /// The answer to `initialize`: the models, commands and account the window lists.
-pub(super) fn initialize() -> Value {
-    json!({
-        "models": [
-            {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-opus-5-5",
-             "description": "Opus 5.5 for most work"},
-            {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5-5",
-             "description": "Sonnet 5.5, faster"},
-            {"value": "haiku", "displayName": "Haiku", "resolvedModel": "claude-haiku-5-5",
-             "description": "Haiku 5.5, fastest"}],
-        "commands": [
-            {"name": "compact", "description": "Clear the conversation but keep a summary",
-             "argumentHint": "[instructions]"},
-            {"name": "review", "description": "Review a pull request", "argumentHint": "[pr]"},
-            {"name": "init", "description": "Write a CLAUDE.md for this project"},
-            {"name": "cost", "description": "Show the cost of this session"}],
-        "agents": [], "output_style": "default", "available_output_styles": ["default"],
-        "account": {"email": "you@example.com", "subscriptionType": "max", "apiProvider": "firstParty"},
-        "claude_code_version": "2.1.316",
-    })
+pub(super) fn initialized() -> Initialized {
+    let model =
+        |value: &str, display_name: &str, resolved_model: &str, description: &str| ModelInfo {
+            value: value.to_owned(),
+            display_name: display_name.to_owned(),
+            resolved_model: resolved_model.to_owned(),
+            description: description.to_owned(),
+        };
+    let command = |name: &str, description: &str, argument_hint: &str| CommandInfo {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        argument_hint: argument_hint.to_owned(),
+    };
+    Initialized {
+        models: vec![
+            model(
+                "default",
+                "Default (recommended)",
+                "claude-opus-5-5",
+                "Opus 5.5 for most work",
+            ),
+            model(
+                "sonnet",
+                "Sonnet",
+                "claude-sonnet-5-5",
+                "Sonnet 5.5, faster",
+            ),
+            model("haiku", "Haiku", "claude-haiku-5-5", "Haiku 5.5, fastest"),
+        ],
+        commands: vec![
+            command(
+                "compact",
+                "Clear the conversation but keep a summary",
+                "[instructions]",
+            ),
+            command("review", "Review a pull request", "[pr]"),
+            command("init", "Write a CLAUDE.md for this project", ""),
+            command("cost", "Show the cost of this session", ""),
+        ],
+        account: Account {
+            email: "you@example.com".to_owned(),
+            subscription_type: "max".to_owned(),
+            organization: String::new(),
+            api_provider: "firstParty".to_owned(),
+        },
+        claude_code_version: "2.1.316".to_owned(),
+        program_modes: None,
+    }
 }
 
 /// The answer to a side question (`/btw`).
@@ -428,10 +563,9 @@ pub(super) fn shell(out: &Out, command: &str) {
         )
     };
     let replayed = |content: String| {
-        out.line(&json!({
-            "type": "user", "session_id": out.session(), "isReplay": true,
-            "message": {"role": "user", "content": content},
-        }));
+        out.line(&Message::User(UserLine::replayed(UserContent::Text(
+            content,
+        ))));
     };
     replayed(format!("<bash-input>{command}</bash-input>"));
     replayed(format!(

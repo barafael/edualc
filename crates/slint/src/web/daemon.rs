@@ -4,16 +4,23 @@
 //! shows the answer come. Nothing leaves the page.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_channel::{Receiver, Sender};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::{Map, Value};
 use web_time::Duration;
 
 use super::demo;
 use super::scenarios;
-use crate::app::Event;
+use crate::app::{Event, Mode, PermissionMode};
 use crate::claude::{Launch, Output};
+use crate::external::wire::{
+    ApiMessage, ContentBlock, ContextReport, ControlRequest, ControlResponse, Delta,
+    IncomingRequest, Input, Message, MessageId, MessageStart, ModelUsage, PermissionResult, Reply,
+    RequestId, ResultKind, SessionId, SideAnswer, StreamEvent, Suggestion, System, ToolName,
+    ToolUseId, TurnResult, Usage, UserContent, UserLine,
+};
 use crate::ipc::{Act, ActFailure, ActId, Answer, Generation, PasteFailure, Place, Read, ToDaemon};
 
 /// What the demo's Claude says it runs as.
@@ -171,25 +178,32 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
 pub(super) struct Out {
     key: Generation,
     events: Sender<Event>,
-    session: String,
-    pub(super) cwd: String,
+    session: SessionId,
+    cwd: PathBuf,
 }
 
 impl Out {
     /// One stream-json line, as `claude -p` writes it.
-    pub(super) fn line(&self, message: &Value) {
-        tell(&self.events, self.key, Output::of_line(message.to_string()));
+    pub(super) fn line(&self, message: &Message) {
+        match serde_json::to_string(message) {
+            Ok(line) => tell(&self.events, self.key, Output::of_line(line)),
+            Err(error) => tracing::warn!(%error, "a line the demo can't write"),
+        }
     }
 
-    pub(super) fn session(&self) -> &str {
-        &self.session
-    }
-
-    fn respond(&self, request_id: &Value, response: &Value) {
-        self.line(&json!({
-            "type": "control_response",
-            "response": {"subtype": "success", "request_id": request_id, "response": response},
-        }));
+    /// Answers request `request_id` with `response`, or with why it can't be written.
+    fn respond(&self, request_id: RequestId, response: &impl Serialize) {
+        let response = match serde_json::to_value(response) {
+            Ok(response) => ControlResponse::Success {
+                request_id,
+                response,
+            },
+            Err(error) => ControlResponse::Error {
+                request_id,
+                error: error.to_string(),
+            },
+        };
+        self.line(&Message::ControlResponse { response });
     }
 }
 
@@ -197,7 +211,7 @@ impl Out {
 #[derive(Debug)]
 pub(super) enum Said {
     /// The answer to the permission request or question it waits on.
-    Answer(Value),
+    Answer(PermissionResult),
     Interrupt,
 }
 
@@ -206,7 +220,7 @@ pub(super) enum Said {
 struct Session {
     out: Out,
     model: String,
-    mode: String,
+    mode: PermissionMode,
     turns: u32,
     /// The turn under way, to tell what the window says to it.
     turn: Option<Sender<Said>>,
@@ -221,11 +235,11 @@ impl Session {
             out: Out {
                 key,
                 events,
-                session: launch.conversation.id().as_str().to_owned(),
-                cwd: launch.cwd.display().to_string(),
+                session: launch.conversation.id().clone(),
+                cwd: launch.cwd.clone(),
             },
             model: launch.model.clone().unwrap_or_else(|| MODEL.to_owned()),
-            mode: "default".to_owned(),
+            mode: PermissionMode::Default,
             turns: 0,
             turn: None,
             pieces: String::new(),
@@ -234,24 +248,26 @@ impl Session {
 
     /// A line the window wrote to the process.
     fn take(&mut self, line: &str) {
-        let Ok(message) = serde_json::from_str::<Value>(line) else {
-            return;
+        let input = match serde_json::from_str::<Input>(line) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::warn!(%error, "a line from the window the demo can't read");
+                return;
+            }
         };
-        match message.get("type").and_then(Value::as_str) {
-            Some("control_request") => self.control(&message),
-            Some("control_response") => {
-                let answer = message
-                    .pointer("/response/response")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                self.tell_turn(Said::Answer(answer));
-            }
-            Some("user") => self.prompt(&message),
-            Some("bash_command") => {
-                let command = message.get("command").and_then(Value::as_str);
-                scenarios::shell(&self.out, command.unwrap_or_default());
-            }
-            Some(_) | None => {}
+        match input {
+            Input::ControlRequest {
+                request_id,
+                request,
+            } => self.control(request_id, request),
+            Input::ControlResponse {
+                response: Reply::Success { response, .. },
+            } => self.tell_turn(Said::Answer(response)),
+            Input::ControlResponse {
+                response: Reply::Error { error, .. },
+            } => tracing::warn!(%error, "the window turned a request down"),
+            Input::User { message, .. } => self.prompt(&message.content),
+            Input::BashCommand { command, .. } => scenarios::shell(&self.out, &command),
         }
     }
 
@@ -263,69 +279,69 @@ impl Session {
         }
     }
 
-    fn control(&mut self, message: &Value) {
-        let request_id = message.get("request_id").cloned().unwrap_or(Value::Null);
-        let request = message.get("request").cloned().unwrap_or(Value::Null);
-        let field = |name: &str| {
-            request
-                .get(name)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        let response = match field("subtype").as_str() {
-            "initialize" => scenarios::initialize(),
-            "interrupt" => {
-                self.tell_turn(Said::Interrupt);
-                json!({})
+    fn control(&mut self, request_id: RequestId, request: ControlRequest) {
+        let nothing = Map::new();
+        match request {
+            ControlRequest::Initialize { .. } => {
+                self.out.respond(request_id, &scenarios::initialized());
             }
-            "set_model" => {
-                self.model = Some(field("model"))
+            ControlRequest::Interrupt => {
+                self.tell_turn(Said::Interrupt);
+                self.out.respond(request_id, &nothing);
+            }
+            ControlRequest::SetModel { model } => {
+                self.model = Some(model)
                     .filter(|model| !model.is_empty())
                     .unwrap_or_else(|| MODEL.to_owned());
-                json!({})
+                self.out.respond(request_id, &nothing);
             }
-            "set_permission_mode" => {
-                self.mode = field("mode");
-                json!({})
+            ControlRequest::SetPermissionMode { mode } => {
+                self.mode = mode;
+                self.out.respond(request_id, &nothing);
             }
-            "side_question" => {
+            ControlRequest::SideQuestion { question, .. } => {
                 // Answered after a moment, as a model would; the window waits for it.
                 let out = self.out.clone();
-                let question = field("question");
                 let answered = slint::spawn_local(async move {
                     pause(Duration::from_millis(900)).await;
-                    out.respond(
-                        &request_id,
-                        &json!({"response": scenarios::side_answer(&question), "synthetic": false}),
-                    );
+                    let answer = SideAnswer {
+                        response: scenarios::side_answer(&question).to_owned(),
+                        synthetic: false,
+                    };
+                    out.respond(request_id, &answer);
                 });
                 if let Err(error) = answered {
                     tracing::warn!(%error, "no side answer");
                 }
-                return;
             }
-            "get_context_usage" => {
-                json!({"totalTokens": 38_200, "maxTokens": 200_000, "percentage": 19})
+            ControlRequest::GetContextUsage => {
+                let report = ContextReport {
+                    categories: Vec::new(),
+                    total_tokens: 38_200,
+                    max_tokens: 200_000,
+                };
+                self.out.respond(request_id, &report);
             }
-            _ => json!({}),
-        };
-        self.out.respond(&request_id, &response);
+            ControlRequest::StopTask { .. }
+            | ControlRequest::GetTaskOutput { .. }
+            | ControlRequest::SetProgramMode { .. }
+            | ControlRequest::GetUsage => self.out.respond(request_id, &nothing),
+        }
     }
 
     /// A prompt: a turn plays the scenario it picks.
-    fn prompt(&mut self, message: &Value) {
-        let content = message.pointer("/message/content");
-        let prompt = if let Some(text) = content.and_then(Value::as_str) {
-            text.to_owned()
-        } else {
-            content
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
+    fn prompt(&mut self, content: &crate::external::wire::Content) {
+        use crate::external::wire::{Block, Content};
+        let prompt = match content {
+            Content::Text(text) => text.clone(),
+            Content::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Text { text } => Some(text.as_str()),
+                    Block::Image(_) => None,
+                })
                 .collect::<Vec<_>>()
-                .join(" ")
+                .join(" "),
         };
         self.turns += 1;
         let (said, inbox) = async_channel::unbounded();
@@ -336,15 +352,25 @@ impl Session {
             model: self.model.clone(),
             number: self.turns,
         };
-        self.out.line(&json!({
-            "type": "system", "subtype": "init", "session_id": self.out.session(),
-            "model": self.model, "permissionMode": self.mode, "cwd": self.out.cwd,
-            "tools": ["Bash", "Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": [],
+        self.out.line(&Message::System(System::Init {
+            session_id: self.out.session.clone(),
+            model: self.model.clone(),
+            permission_mode: Mode::Known(self.mode),
+            cwd: self.out.cwd.clone(),
         }));
         if let Err(error) = slint::spawn_local(scenarios::play(turn, prompt)) {
             tracing::warn!(%error, "the turn couldn't start");
         }
     }
+}
+
+/// A tool's input, from its type in [`crate::external::tool_input`] or the wire's. Fails only
+/// for a path that isn't UTF-8, which the demo's aren't: logged, the call shows no input.
+pub(super) fn input(typed: &impl Serialize) -> Value {
+    serde_json::to_value(typed).unwrap_or_else(|error| {
+        tracing::warn!(%error, "a tool input the demo can't write");
+        Value::Null
+    })
 }
 
 /// The turn under way: where it writes, and what the window says to it.
@@ -374,83 +400,118 @@ impl Turn {
         self.heard()
     }
 
-    fn assistant(&self, content: &Value, id: &str) {
-        self.out.line(&json!({
-            "type": "assistant", "session_id": self.out.session(), "parent_tool_use_id": null,
-            "message": {"id": id, "role": "assistant", "model": self.model, "content": content,
-                        "usage": {"input_tokens": 2400, "cache_read_input_tokens": 18_000,
-                                  "output_tokens": 350}},
-        }));
+    fn assistant(&self, content: Vec<ContentBlock>, id: MessageId) {
+        self.out.line(&Message::Assistant {
+            message: ApiMessage {
+                id,
+                content,
+                usage: Usage {
+                    input_tokens: 2400,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 18_000,
+                    output_tokens: 350,
+                },
+            },
+            parent_tool_use_id: None,
+            error: None,
+        });
     }
 
     /// Text, streamed as it is written, then whole.
     pub(super) async fn say(&self, text: &str) -> Result<(), Interrupted> {
-        let id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-        let event = |event: Value| {
-            self.out.line(&json!({
-                "type": "stream_event", "event": event, "parent_tool_use_id": null,
-            }));
+        let id = MessageId::from(format!("msg_{}", uuid::Uuid::new_v4().simple()));
+        let event = |event: StreamEvent| {
+            self.out.line(&Message::StreamEvent {
+                event,
+                parent_tool_use_id: None,
+            });
         };
-        event(json!({"type": "message_start", "message": {"id": id}}));
-        event(json!({"type": "content_block_start", "index": 0,
-                     "content_block": {"type": "text", "text": ""}}));
+        event(StreamEvent::MessageStart {
+            message: MessageStart { id: id.clone() },
+        });
+        event(StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Text {
+                text: String::new(),
+            },
+        });
         let characters: Vec<char> = text.chars().collect();
         for piece in characters.chunks(24) {
-            let piece: String = piece.iter().collect();
-            event(json!({"type": "content_block_delta", "index": 0,
-                         "delta": {"type": "text_delta", "text": piece}}));
+            event(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::Text {
+                    text: piece.iter().collect(),
+                },
+            });
             self.wait(20).await?;
         }
-        event(json!({"type": "content_block_stop", "index": 0}));
-        self.assistant(&json!([{"type": "text", "text": text}]), &id);
+        event(StreamEvent::ContentBlockStop { index: 0 });
+        self.assistant(
+            vec![ContentBlock::Text {
+                text: text.to_owned(),
+            }],
+            id,
+        );
         Ok(())
     }
 
     /// A tool call; its id, for its result.
-    pub(super) fn call(&self, name: &str, input: &Value) -> String {
-        let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
+    pub(super) fn call(&self, name: ToolName, input: Value) -> ToolUseId {
+        let id = ToolUseId::from(format!("toolu_{}", uuid::Uuid::new_v4().simple()));
         self.assistant(
-            &json!([{"type": "tool_use", "id": id, "name": name, "input": input}]),
-            &format!("msg_{}", uuid::Uuid::new_v4().simple()),
+            vec![ContentBlock::ToolUse {
+                id: id.clone(),
+                name,
+                input,
+            }],
+            MessageId::from(format!("msg_{}", uuid::Uuid::new_v4().simple())),
         );
         id
     }
 
-    pub(super) fn result(&self, id: &str, content: &Value, error: bool) {
-        self.out.line(&json!({
-            "type": "user", "session_id": self.out.session(), "parent_tool_use_id": null,
-            "message": {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": id, "content": content, "is_error": error}]},
-        }));
+    pub(super) fn result(&self, id: &ToolUseId, content: UserContent, is_error: bool) {
+        self.out
+            .line(&Message::User(UserLine::of_session(UserContent::Blocks(
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: Some(content),
+                    is_error,
+                }],
+            ))));
     }
 
     /// A tool call that needs no asking, its result after `milliseconds`.
     pub(super) async fn run(
         &self,
-        name: &str,
-        input: &Value,
+        name: ToolName,
+        input: Value,
         output: &str,
         milliseconds: u64,
     ) -> Result<(), Interrupted> {
         let id = self.call(name, input);
         self.wait(milliseconds).await?;
-        self.result(&id, &json!(output), false);
+        self.result(&id, UserContent::Text(output.to_owned()), false);
         Ok(())
     }
 
     /// Asks the window to allow tool call `id`; its answer, as the window gave it.
     pub(super) async fn ask(
         &self,
-        name: &str,
-        input: &Value,
-        id: &str,
-        suggestions: &Value,
-    ) -> Result<Value, Interrupted> {
-        self.out.line(&json!({
-            "type": "control_request", "request_id": format!("perm_{id}"),
-            "request": {"subtype": "can_use_tool", "tool_name": name, "input": input,
-                        "permission_suggestions": suggestions, "tool_use_id": id},
-        }));
+        name: ToolName,
+        input: Value,
+        id: &ToolUseId,
+        suggestions: &[Suggestion],
+    ) -> Result<PermissionResult, Interrupted> {
+        self.out.line(&Message::ControlRequest {
+            request_id: RequestId::from(format!("perm_{id}")),
+            request: IncomingRequest::CanUseTool {
+                tool_name: name,
+                input,
+                permission_suggestions: suggestions.iter().map(self::input).collect(),
+                description: String::new(),
+                tool_use_id: Some(id.clone()),
+            },
+        });
         match self.inbox.recv().await {
             Ok(Said::Answer(answer)) => Ok(answer),
             Ok(Said::Interrupt) | Err(_) => Err(Interrupted),
@@ -459,33 +520,36 @@ impl Turn {
 
     /// The turn's end.
     pub(super) fn finish(&self, text: &str) {
-        self.out.line(&json!({
-            "type": "result", "subtype": "success", "is_error": false, "duration_ms": 4200,
-            "duration_api_ms": 3900, "num_turns": self.number, "result": text,
-            "session_id": self.out.session(), "total_cost_usd": 0.0123 * f64::from(self.number),
-            "usage": {"input_tokens": 2400, "output_tokens": 350},
-            "modelUsage": {self.model.as_str(): {
-                "inputTokens": 2400, "outputTokens": 350, "cacheReadInputTokens": 18_000,
-                "cacheCreationInputTokens": 0, "costUSD": 0.0123, "contextWindow": 200_000}},
+        self.out.line(&Message::Result(TurnResult {
+            subtype: ResultKind::Success,
+            is_error: false,
+            result: Some(text.to_owned()),
+            errors: Vec::new(),
+            total_cost_usd: Some(0.0123 * f64::from(self.number)),
+            model_usage: HashMap::from([(
+                self.model.clone(),
+                ModelUsage {
+                    context_window: Some(200_000),
+                },
+            )]),
+            api_error_status: None,
         }));
     }
 
     /// The turn's end, as an interrupt makes it.
     pub(super) fn interrupted(&self) {
-        self.out.line(&json!({
-            "type": "user", "parent_tool_use_id": null,
-            "message": {"role": "user", "content": [
-                {"type": "text", "text": "[Request interrupted by user]"}]},
-        }));
+        self.out
+            .line(&Message::User(UserLine::of_session(UserContent::Blocks(
+                vec![ContentBlock::Text {
+                    text: "[Request interrupted by user]".to_owned(),
+                }],
+            ))));
         self.finish("interrupted");
     }
 
     /// The folder the turn works in, for the paths its tools name.
-    pub(super) fn path(&self, relative: &str) -> String {
-        Path::new(&self.out.cwd)
-            .join(relative)
-            .display()
-            .to_string()
+    pub(super) fn path(&self, relative: &str) -> PathBuf {
+        self.out.cwd.join(relative)
     }
 }
 

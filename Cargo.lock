@@ -1294,6 +1294,7 @@ dependencies = [
  "edualc-core",
  "lucide-static-svg",
  "proptest",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",

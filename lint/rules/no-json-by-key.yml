@@ -5,9 +5,6 @@ message: "JSON read by key isn't checked by the compiler, and a renamed key read
 note: "Tests may read what they check by key. Data that is open by nature, such as a tool's raw input from an agent, may be read so where a type can't say more; a helper that wraps .get isn't seen by this rule, so don't write one to get past it."
 files:
   - "**/src/**"
-# Known debt, each file to be typed and taken off this list (2026-11-15): the browser demo.
-ignores:
-  - "crates/slint/src/web/**"
 rule:
   any:
     - pattern: $X.pointer($$$)

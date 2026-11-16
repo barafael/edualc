@@ -64,7 +64,18 @@ impl SessionId {
 }
 
 /// A tool call, which permission requests and results refer back to.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize, Serialize, derive_more::From)]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    derive_more::From,
+    derive_more::Display,
+)]
 #[serde(transparent)]
 pub struct ToolUseId(String);
 
@@ -1147,6 +1158,14 @@ pub struct Questions {
     pub annotations: BTreeMap<String, Annotation>,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// The answers in AskUserQuestion's input as the window gives it back, by question: as Claude
+/// Code reads them, and the browser demo's Claude.
+#[derive(Debug, Default, Deserialize)]
+pub struct GivenAnswers {
+    #[serde(default)]
+    pub answers: BTreeMap<String, String>,
 }
 
 /// What the user adds to an answer, as AskUserQuestion takes it.
