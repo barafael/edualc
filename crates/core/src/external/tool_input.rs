@@ -1,6 +1,6 @@
-//! The inputs of the tools the window knows, with the field names Claude Code gives them. An
-//! agent's tool call is translated into one of these (see `crates/host/src/acp`), so the window
-//! reads the same shape whichever agent made the call.
+//! The inputs of the tools the window knows, with the field names Claude Code gives them, as
+//! far as the window reads them. An agent's tool call is translated into one of these (see
+//! `crates/host/src/acp`), so the window reads the same shape whichever agent made the call.
 
 use std::path::PathBuf;
 
@@ -9,18 +9,54 @@ use serde_json::Value;
 
 use crate::external::wire::ToolName;
 
-/// `Bash`'s input.
+/// `Bash`'s input, and `Monitor`'s, which runs a command too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BashInput {
     pub command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_in_background: Option<bool>,
+    /// Asked for to run outside Claude Code's own sandbox.
+    #[serde(
+        rename = "dangerouslyDisableSandbox",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub outside_sandbox: Option<bool>,
+}
+
+impl BashInput {
+    /// A command alone, as the adapter or the user's `!` gives one.
+    pub fn command(command: String, description: Option<String>) -> Self {
+        Self {
+            command,
+            description,
+            run_in_background: None,
+            outside_sandbox: None,
+        }
+    }
 }
 
 /// `Read`'s input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadInput {
     pub file_path: PathBuf,
+    /// The first line read, counted from 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+impl ReadInput {
+    /// The whole file.
+    pub fn whole(file_path: PathBuf) -> Self {
+        Self {
+            file_path,
+            offset: None,
+            limit: None,
+        }
+    }
 }
 
 /// `Write`'s input.
@@ -36,6 +72,49 @@ pub struct EditInput {
     pub file_path: PathBuf,
     pub old_string: String,
     pub new_string: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace_all: Option<bool>,
+}
+
+impl EditInput {
+    /// One occurrence replaced.
+    pub fn once(file_path: PathBuf, old_string: String, new_string: String) -> Self {
+        Self {
+            file_path,
+            old_string,
+            new_string,
+            replace_all: None,
+        }
+    }
+}
+
+/// `MultiEdit`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiEditInput {
+    pub file_path: PathBuf,
+    pub edits: Vec<OneEdit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OneEdit {
+    pub old_string: String,
+    pub new_string: String,
+}
+
+/// `NotebookEdit`'s input; a deleted cell has no new source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookEditInput {
+    pub notebook_path: PathBuf,
+    #[serde(default)]
+    pub new_source: String,
+}
+
+/// `Glob`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobInput {
+    pub pattern: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
 }
 
 /// `Grep`'s input.
@@ -44,15 +123,69 @@ pub struct GrepInput {
     pub pattern: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// The files searched, as a glob.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glob: Option<String>,
 }
 
 /// `WebFetch`'s input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebFetchInput {
     pub url: String,
+    /// What to take from the page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
 }
 
-/// edualc's messaging tool's input.
+/// `WebSearch`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchInput {
+    pub query: String,
+}
+
+/// `Agent`'s input (`Task`'s, before Claude Code renamed it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInput {
+    pub description: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+}
+
+/// `Skill`'s input: the skill by name, under the key the release names it by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// `TodoWrite`'s input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoWriteInput {
+    pub todos: Vec<Todo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Todo {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    #[serde(other)]
+    Other,
+}
+
+/// edualc's messaging tool's input, and Claude Code's `SendMessage`'s.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageInput {
     pub to: String,
@@ -115,10 +248,7 @@ mod tests {
 
     #[test]
     fn a_command_without_a_description_leaves_it_out() {
-        let call = KnownCall::Bash(BashInput {
-            command: "ls -la".to_owned(),
-            description: None,
-        });
+        let call = KnownCall::Bash(BashInput::command("ls -la".to_owned(), None));
         assert_eq!(call.name(), ToolName::Bash);
         assert_eq!(
             call.input().expect("an input"),
@@ -128,10 +258,10 @@ mod tests {
 
     #[test]
     fn a_command_with_a_description_keeps_it() {
-        let call = KnownCall::Bash(BashInput {
-            command: "wc -l notes.txt".to_owned(),
-            description: Some("Count lines".to_owned()),
-        });
+        let call = KnownCall::Bash(BashInput::command(
+            "wc -l notes.txt".to_owned(),
+            Some("Count lines".to_owned()),
+        ));
         assert_eq!(
             call.input().expect("an input"),
             json!({"command": "wc -l notes.txt", "description": "Count lines"})
@@ -140,9 +270,7 @@ mod tests {
 
     #[test]
     fn file_tools_use_claude_codes_field_names() {
-        let read = KnownCall::Read(ReadInput {
-            file_path: PathBuf::from("/w/f.txt"),
-        });
+        let read = KnownCall::Read(ReadInput::whole(PathBuf::from("/w/f.txt")));
         assert_eq!(
             read.input().expect("an input"),
             json!({"file_path": "/w/f.txt"})
@@ -155,11 +283,11 @@ mod tests {
             write.input().expect("an input"),
             json!({"file_path": "/w/f.txt", "content": "hi\n"})
         );
-        let edit = KnownCall::Edit(EditInput {
-            file_path: PathBuf::from("/w/f.txt"),
-            old_string: "two".to_owned(),
-            new_string: "TWO".to_owned(),
-        });
+        let edit = KnownCall::Edit(EditInput::once(
+            PathBuf::from("/w/f.txt"),
+            "two".to_owned(),
+            "TWO".to_owned(),
+        ));
         assert_eq!(edit.name(), ToolName::Edit);
         assert_eq!(
             edit.input().expect("an input"),
@@ -172,6 +300,7 @@ mod tests {
         let grep = KnownCall::Grep(GrepInput {
             pattern: "needle".to_owned(),
             path: Some(PathBuf::from("/w/src")),
+            glob: None,
         });
         assert_eq!(grep.name(), ToolName::Grep);
         assert_eq!(
@@ -181,6 +310,7 @@ mod tests {
         let anywhere = KnownCall::Grep(GrepInput {
             pattern: "needle".to_owned(),
             path: None,
+            glob: None,
         });
         assert_eq!(
             anywhere.input().expect("an input"),
@@ -188,6 +318,7 @@ mod tests {
         );
         let fetch = KnownCall::WebFetch(WebFetchInput {
             url: "https://example.com".to_owned(),
+            prompt: None,
         });
         assert_eq!(fetch.name(), ToolName::WebFetch);
         assert_eq!(

@@ -1,11 +1,17 @@
 //! How a tool call reads in the chat: its name, a one-line summary (the command, the file),
 //! the input worth showing when expanded, and for edits a diff.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::external::wire::{ContentBlock, ToolName, UserContent};
+use crate::external::tool_input::{
+    AgentInput, BashInput, EditInput, GlobInput, GrepInput, MultiEditInput, NotebookEditInput,
+    ReadInput, SendMessageInput, SkillInput, TodoStatus, TodoWriteInput, WebFetchInput,
+    WebSearchInput, WriteInput,
+};
+use crate::external::wire::{ContentBlock, PlanInput, Questions, ToolName, UserContent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffKind {
@@ -49,8 +55,8 @@ const MAX_DIFF_LINES: usize = 400;
 
 pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> ToolView {
     let full = depth == Depth::Full;
-    let field = |key: &str| str_field(input, key);
-    let path = |key: &str| short_path(field(key), cwd);
+    let path = |path: &Path| short_path(path, cwd);
+    let place = |place: Option<&PathBuf>| place.map(|place| path(place)).unwrap_or_default();
     let mut view = ToolView {
         title: name.to_string(),
         ..ToolView::default()
@@ -58,163 +64,174 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
     match name {
         // A Monitor runs a command too, in the background, and says what it watches for.
         ToolName::Bash | ToolName::Monitor => {
-            let command = field("command");
-            view.summary = first_line(command);
-            if command.contains('\n') || command.chars().count() > 90 {
-                view.detail = command.to_owned();
-            }
-            if !field("description").is_empty() {
-                view.detail = if view.detail.is_empty() {
-                    format!("# {}", field("description"))
-                } else {
-                    format!("# {}\n{}", field("description"), view.detail)
-                };
-            }
-            if *name == ToolName::Bash
-                && input.get("run_in_background").and_then(Value::as_bool) == Some(true)
-            {
-                view.title = "Bash (background)".into();
+            if let Some(bash) = read::<BashInput>(name, input) {
+                command_view(&mut view, &bash);
+                if *name == ToolName::Bash && bash.run_in_background == Some(true) {
+                    view.title = "Bash (background)".into();
+                }
             }
         }
         ToolName::Read => {
-            view.summary = path("file_path");
-            if let Some(offset) = input.get("offset").and_then(Value::as_u64) {
-                let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(0);
-                let range = if limit > 0 {
-                    format!("lines {offset}–{}", offset + limit)
-                } else {
-                    format!("from line {offset}")
-                };
-                view.summary = format!("{}  {range}", view.summary);
+            if let Some(read) = read::<ReadInput>(name, input) {
+                view.summary = path(&read.file_path);
+                if let Some(offset) = read.offset {
+                    let range = match read.limit.filter(|&limit| limit > 0) {
+                        Some(limit) => format!("lines {offset}–{}", offset.saturating_add(limit)),
+                        None => format!("from line {offset}"),
+                    };
+                    view.summary = format!("{}  {range}", view.summary);
+                }
             }
         }
         // The whole file, as it will be: a wall of `+` lines would say the same, louder.
         ToolName::Write => {
-            view.summary = path("file_path");
-            if full {
-                view.detail = field("content").to_owned();
+            if let Some(write) = read::<WriteInput>(name, input) {
+                view.summary = path(&write.file_path);
+                if full {
+                    view.detail = write.content;
+                }
             }
         }
         ToolName::Edit => {
-            view.summary = path("file_path");
-            if input.get("replace_all").and_then(Value::as_bool) == Some(true) {
-                view.summary += "  (all occurrences)";
-            }
-            if full {
-                view.diff = diff(field("old_string"), field("new_string"));
+            if let Some(edit) = read::<EditInput>(name, input) {
+                view.summary = path(&edit.file_path);
+                if edit.replace_all == Some(true) {
+                    view.summary += "  (all occurrences)";
+                }
+                if full {
+                    view.diff = diff(&edit.old_string, &edit.new_string);
+                }
             }
         }
         ToolName::MultiEdit => {
-            view.summary = path("file_path");
-            for edit in input
-                .get("edits")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|_| full)
-            {
-                let edited = |key: &str| edit.get(key).and_then(Value::as_str).unwrap_or("");
-                view.diff
-                    .extend(diff(edited("old_string"), edited("new_string")));
+            if let Some(edits) = read::<MultiEditInput>(name, input) {
+                view.summary = path(&edits.file_path);
+                for edit in edits.edits.iter().filter(|_| full) {
+                    view.diff.extend(diff(&edit.old_string, &edit.new_string));
+                }
             }
         }
         // The cell's new source, as it will be, shown whole.
         ToolName::NotebookEdit => {
-            view.summary = path("notebook_path");
-            if full {
-                view.detail = field("new_source").to_owned();
+            if let Some(edit) = read::<NotebookEditInput>(name, input) {
+                view.summary = path(&edit.notebook_path);
+                if full {
+                    view.detail = edit.new_source;
+                }
             }
         }
-        ToolName::Glob => view.summary = with_place(field("pattern"), &path("path")),
-        ToolName::Grep => {
-            let mut what = field("pattern").to_owned();
-            if !field("glob").is_empty() {
-                what = format!("{what}  ({})", field("glob"));
+        ToolName::Glob => {
+            if let Some(glob) = read::<GlobInput>(name, input) {
+                view.summary = with_place(&glob.pattern, &place(glob.path.as_ref()));
             }
-            view.summary = with_place(&what, &path("path"));
+        }
+        ToolName::Grep => {
+            if let Some(grep) = read::<GrepInput>(name, input) {
+                let what = match grep.glob.filter(|glob| !glob.is_empty()) {
+                    Some(glob) => format!("{}  ({glob})", grep.pattern),
+                    None => grep.pattern,
+                };
+                view.summary = with_place(&what, &place(grep.path.as_ref()));
+            }
         }
         ToolName::WebFetch => {
-            view.summary = field("url").to_owned();
-            view.detail = field("prompt").to_owned();
+            if let Some(fetch) = read::<WebFetchInput>(name, input) {
+                view.summary = fetch.url;
+                view.detail = fetch.prompt.unwrap_or_default();
+            }
         }
-        ToolName::WebSearch => view.summary = field("query").to_owned(),
+        ToolName::WebSearch => {
+            if let Some(search) = read::<WebSearchInput>(name, input) {
+                view.summary = search.query;
+            }
+        }
         ToolName::Task | ToolName::Agent => {
-            view.title = match field("subagent_type") {
-                "" => "Agent".into(),
-                kind => format!("Agent · {kind}"),
-            };
-            view.summary = field("description").to_owned();
-            if full {
-                view.detail = field("prompt").to_owned();
+            view.title = "Agent".into();
+            if let Some(agent) = read::<AgentInput>(name, input) {
+                if let Some(kind) = agent.subagent_type.filter(|kind| !kind.is_empty()) {
+                    view.title = format!("Agent · {kind}");
+                }
+                view.summary = agent.description;
+                if full {
+                    view.detail = agent.prompt;
+                }
             }
         }
         ToolName::Skill => {
-            view.summary = first_non_empty(&[field("skill"), field("command"), field("name")])
+            if let Some(skill) = read::<SkillInput>(name, input) {
+                view.summary = [skill.skill, skill.command, skill.name]
+                    .into_iter()
+                    .flatten()
+                    .find(|named| !named.is_empty())
+                    .unwrap_or_default();
+            }
         }
         ToolName::TodoWrite => {
-            let todos = input.get("todos").and_then(Value::as_array);
-            view.summary = format!("{} items", todos.map_or(0, Vec::len));
-            view.detail = todos
-                .into_iter()
-                .flatten()
-                .filter(|_| full)
-                .map(|todo| {
-                    let mark = match todo.get("status").and_then(Value::as_str) {
-                        Some("completed") => "☑",
-                        Some("in_progress") => "◐",
-                        Some(_) | None => "☐",
-                    };
-                    let text = todo.get("content").and_then(Value::as_str).unwrap_or("");
-                    format!("{mark} {text}")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            if let Some(list) = read::<TodoWriteInput>(name, input) {
+                view.summary = format!("{} items", list.todos.len());
+                view.detail = list
+                    .todos
+                    .iter()
+                    .filter(|_| full)
+                    .map(|todo| {
+                        let mark = match todo.status {
+                            TodoStatus::Completed => "☑",
+                            TodoStatus::InProgress => "◐",
+                            TodoStatus::Pending | TodoStatus::Other => "☐",
+                        };
+                        format!("{mark} {}", todo.content)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
         }
         ToolName::AskUserQuestion => {
-            let questions = input.get("questions").and_then(Value::as_array);
             view.title = "Question".into();
-            view.summary = questions
-                .and_then(|questions| questions.first())
-                .and_then(|question| question.get("question"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
+            if let Some(asked) = read::<Questions>(name, input) {
+                view.summary = asked
+                    .questions
+                    .into_iter()
+                    .next()
+                    .map(|question| question.question)
+                    .unwrap_or_default();
+            }
         }
         ToolName::ExitPlanMode => {
             view.title = "Plan".into();
             view.summary = "Ready for review".into();
-            if full {
-                view.markdown = field("plan").to_owned();
+            if full && let Some(plan) = read::<PlanInput>(name, input) {
+                view.markdown = plan.plan;
             }
         }
         ToolName::SendMessage => {
-            let to = field("to");
-            // An inbox's address (`uds:…`, as Claude Code tells a session to answer by) says
-            // nothing to the user; it stays in the detail.
-            let addressed = ["uds:", "bridge:", "did:"]
-                .iter()
-                .any(|scheme| to.starts_with(scheme));
-            view.title = if addressed {
-                "Message to another session".to_owned()
-            } else {
-                format!("Message to {to}")
-            };
-            let message = field("message");
-            view.summary = first_line(message);
-            if full {
-                view.detail = if addressed {
-                    format!("{message}\n\nTo {to}")
+            if let Some(SendMessageInput { to, message }) = read(name, input) {
+                // An inbox's address (`uds:…`, as Claude Code tells a session to answer by)
+                // says nothing to the user; it stays in the detail.
+                let addressed = ["uds:", "bridge:", "did:"]
+                    .iter()
+                    .any(|scheme| to.starts_with(scheme));
+                view.title = if addressed {
+                    "Message to another session".to_owned()
                 } else {
-                    message.to_owned()
+                    format!("Message to {to}")
                 };
+                view.summary = first_line(&message);
+                if full {
+                    view.detail = if addressed {
+                        format!("{message}\n\nTo {to}")
+                    } else {
+                        message
+                    };
+                }
             }
         }
         ToolName::EdualcSendMessage => {
-            view.title = format!("Message to {}", field("to"));
-            let message = field("message");
-            view.summary = first_line(message);
-            if full {
-                view.detail = message.to_owned();
+            if let Some(SendMessageInput { to, message }) = read(name, input) {
+                view.title = format!("Message to {to}");
+                view.summary = first_line(&message);
+                if full {
+                    view.detail = message;
+                }
             }
         }
         ToolName::Other(name) if name.starts_with("mcp__") => {
@@ -281,6 +298,79 @@ pub fn describe(name: &ToolName, input: &Value, cwd: &Path, depth: Depth) -> Too
     view
 }
 
+/// The file a call reads, writes or edits.
+pub fn file_of(name: &ToolName, input: &Value) -> Option<PathBuf> {
+    match name {
+        ToolName::Read => read::<ReadInput>(name, input).map(|read| read.file_path),
+        ToolName::Write => read::<WriteInput>(name, input).map(|write| write.file_path),
+        ToolName::Edit => read::<EditInput>(name, input).map(|edit| edit.file_path),
+        ToolName::MultiEdit => read::<MultiEditInput>(name, input).map(|edits| edits.file_path),
+        ToolName::NotebookEdit => {
+            read::<NotebookEditInput>(name, input).map(|edit| edit.notebook_path)
+        }
+        ToolName::Bash
+        | ToolName::BashOutput
+        | ToolName::KillShell
+        | ToolName::Monitor
+        | ToolName::NotebookRead
+        | ToolName::Glob
+        | ToolName::Grep
+        | ToolName::Ls
+        | ToolName::WebFetch
+        | ToolName::WebSearch
+        | ToolName::Task
+        | ToolName::Agent
+        | ToolName::Skill
+        | ToolName::TodoWrite
+        | ToolName::AskUserQuestion
+        | ToolName::ExitPlanMode
+        | ToolName::SendMessage
+        | ToolName::EdualcSendMessage
+        | ToolName::EdualcListSessions
+        | ToolName::Other(_) => None,
+    }
+}
+
+/// A command's card: the `!` command the user ran, as Bash's.
+pub fn describe_command(command: &BashInput) -> ToolView {
+    let mut view = ToolView {
+        title: ToolName::Bash.to_string(),
+        ..ToolView::default()
+    };
+    command_view(&mut view, command);
+    view
+}
+
+/// A command's first line, the whole of a long one, and its description.
+fn command_view(view: &mut ToolView, bash: &BashInput) {
+    let command = &bash.command;
+    view.summary = first_line(command);
+    if command.contains('\n') || command.chars().count() > 90 {
+        view.detail.clone_from(command);
+    }
+    if let Some(description) = bash.description.as_deref().filter(|text| !text.is_empty()) {
+        view.detail = if view.detail.is_empty() {
+            format!("# {description}")
+        } else {
+            format!("# {description}\n{}", view.detail)
+        };
+    }
+}
+
+/// A tool's input as its type; none for one that isn't, such as the empty input of a call
+/// still streaming in.
+pub(crate) fn read<Input: DeserializeOwned>(name: &ToolName, input: &Value) -> Option<Input> {
+    match Input::deserialize(input) {
+        Ok(read) => Some(read),
+        Err(error) => {
+            if !input.as_object().is_some_and(serde_json::Map::is_empty) {
+                tracing::debug!(%error, tool = %name, "a tool's input that isn't its shape");
+            }
+            None
+        }
+    }
+}
+
 /// A unified line diff with three lines of context around each change.
 fn diff(old: &str, new: &str) -> Vec<(DiffKind, String)> {
     let text_diff = similar::TextDiff::from_lines(old, new);
@@ -310,13 +400,12 @@ const CARD_PATH_CHARS: usize = 60;
 
 /// A path as a card shows it: relative to the working directory inside it; otherwise as
 /// [`shortened_path`] gives it, so a long one keeps its file's name in view.
-pub fn short_path(path: &str, cwd: &Path) -> String {
-    Path::new(path)
-        .strip_prefix(cwd)
+pub fn short_path(path: &Path, cwd: &Path) -> String {
+    path.strip_prefix(cwd)
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
         .map_or_else(
-            || shortened_path(Path::new(path), CARD_PATH_CHARS),
+            || shortened_path(path, CARD_PATH_CHARS),
             |relative| relative.display().to_string(),
         )
 }
@@ -369,15 +458,6 @@ fn first_line(text: &str) -> String {
     }
 }
 
-fn first_non_empty(options: &[&str]) -> String {
-    options
-        .iter()
-        .find(|option| !option.is_empty())
-        .copied()
-        .unwrap_or("")
-        .to_owned()
-}
-
 fn compact(input: &Value, max: usize) -> String {
     let text = input.to_string();
     if text == "{}" {
@@ -395,11 +475,6 @@ pub fn truncate_chars(text: &str, max: usize) -> String {
         Some((i, _)) => format!("{}…", &text[..i]),
         None => text.to_owned(),
     }
-}
-
-/// A string field of a tool's input; "" when missing.
-pub fn str_field<'a>(input: &'a Value, key: &str) -> &'a str {
-    input.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
 /// A tool result as text: its text blocks joined, pictures named, Claude Code's error wrapper
@@ -451,15 +526,15 @@ mod tests {
     #[test]
     fn a_card_keeps_the_file_name_of_a_long_path() {
         let cwd = Path::new("/srv/project");
-        assert_eq!(short_path("/srv/project/src/main.rs", cwd), "src/main.rs");
+        let short = |path: &str| short_path(Path::new(path), cwd);
+        assert_eq!(short("/srv/project/src/main.rs"), "src/main.rs");
         assert_eq!(
-            short_path(
-                "/var/tmp/claude-1000/-home-someone-code-a-project/0a1b2c3d/scratchpad/shell.png",
-                cwd
+            short(
+                "/var/tmp/claude-1000/-home-someone-code-a-project/0a1b2c3d/scratchpad/shell.png"
             ),
             "/…/scratchpad/shell.png"
         );
-        assert_eq!(short_path("/etc/hosts", cwd), "/etc/hosts");
+        assert_eq!(short("/etc/hosts"), "/etc/hosts");
     }
 
     #[test]
@@ -479,6 +554,82 @@ mod tests {
                 (DiffKind::Added, "B".into()),
                 (DiffKind::Context, "c".into()),
             ]
+        );
+    }
+
+    /// Each card reads its tool's input by Claude Code's names, the optional ones included;
+    /// a call still streaming in, its input empty, shows its name alone.
+    #[test]
+    fn cards_read_claude_codes_inputs() {
+        let cwd = Path::new("/p");
+        let line = |name: ToolName, input: Value| {
+            let view = describe(&name, &input, cwd, Depth::Full);
+            (view.title, view.summary, view.detail)
+        };
+        assert_eq!(
+            line(
+                ToolName::Read,
+                json!({ "file_path": "/p/a.rs", "offset": 10, "limit": 5 })
+            ),
+            ("Read".into(), "a.rs  lines 10–15".into(), String::new())
+        );
+        assert_eq!(
+            line(
+                ToolName::Grep,
+                json!({ "pattern": "fn main", "path": "/p/src", "glob": "*.rs" })
+            ),
+            (
+                "Grep".into(),
+                "fn main  (*.rs)  in src".into(),
+                String::new()
+            )
+        );
+        assert_eq!(
+            line(
+                ToolName::Agent,
+                json!({ "description": "Look around", "prompt": "List the files.", "subagent_type": "Explore" })
+            ),
+            (
+                "Agent · Explore".into(),
+                "Look around".into(),
+                "List the files.".into()
+            )
+        );
+        assert_eq!(
+            line(
+                ToolName::WebFetch,
+                json!({ "url": "https://example.com", "prompt": "The title" })
+            ),
+            (
+                "WebFetch".into(),
+                "https://example.com".into(),
+                "The title".into()
+            )
+        );
+        assert_eq!(
+            line(
+                ToolName::TodoWrite,
+                json!({ "todos": [
+                    { "content": "Read", "status": "completed", "activeForm": "Reading" },
+                    { "content": "Write", "status": "in_progress", "activeForm": "Writing" },
+                ] })
+            ),
+            (
+                "TodoWrite".into(),
+                "2 items".into(),
+                "☑ Read\n◐ Write".into()
+            )
+        );
+        assert_eq!(
+            line(
+                ToolName::AskUserQuestion,
+                json!({ "questions": [{ "question": "Which?", "header": "Pick", "options": [], "multiSelect": false }] })
+            ),
+            ("Question".into(), "Which?".into(), String::new())
+        );
+        assert_eq!(
+            line(ToolName::Grep, json!({})),
+            ("Grep".into(), String::new(), String::new())
         );
     }
 

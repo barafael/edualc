@@ -25,6 +25,7 @@ use crate::cjk::{CjkLanguage, CjkText, Standing};
 use crate::colour::Coloured;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
+use crate::external::tool_input::{BashInput, WebFetchInput};
 use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
@@ -545,9 +546,8 @@ impl<F: Frontend> Presenter<F> {
             }
             // A card as Claude's own commands get, titled as the user's.
             Body::Shell { shell, expanded } => {
-                let depth = card_depth(*expanded, row.hidden);
-                let input = serde_json::json!({ "command": shell.command });
-                let mut view = tools::describe(&ToolName::Bash, &input, cwd, depth);
+                let mut view =
+                    tools::describe_command(&BashInput::command(shell.command.clone(), None));
                 view.title = "You ran".to_owned();
                 let state = shell_state(shell.state);
                 card(&mut row, view, state, &shell.output, *expanded, han);
@@ -1205,27 +1205,31 @@ struct ToolPrompt {
 
 fn tool_prompt(ask: &Ask, cwd: &Path, backend: crate::claude::Backend) -> ToolPrompt {
     let view = tools::describe(&ask.tool, &ask.input, cwd, tools::Depth::Headline);
-    let field = |key: &str| tools::str_field(&ask.input, key).to_owned();
     let agent = backend.agent();
     let (title, summary) = if ask.tool == ToolName::Bash {
+        let bash = tools::read::<BashInput>(&ask.tool, &ask.input);
         // Claude can ask for a command to run outside Claude Code's own sandbox.
-        let outside =
-            ask.input.get("dangerouslyDisableSandbox") == Some(&serde_json::Value::Bool(true));
+        let outside = bash
+            .as_ref()
+            .is_some_and(|bash| bash.outside_sandbox == Some(true));
         let title = if outside {
             format!("Allow {agent} to run this command outside Claude Code's sandbox?")
         } else {
             format!("Allow {agent} to run this command?")
         };
-        (title, field("command"))
+        (title, bash.map(|bash| bash.command).unwrap_or_default())
     } else {
         match ask.tool.kind() {
             ToolKind::Edit | ToolKind::Write => (
                 format!("Allow {agent} to edit {}?", view.summary),
                 String::new(),
             ),
-            ToolKind::Web if ask.tool == ToolName::WebFetch => {
-                (format!("Allow {agent} to fetch this page?"), field("url"))
-            }
+            ToolKind::Web if ask.tool == ToolName::WebFetch => (
+                format!("Allow {agent} to fetch this page?"),
+                tools::read::<WebFetchInput>(&ask.tool, &ask.input)
+                    .map(|fetch| fetch.url)
+                    .unwrap_or_default(),
+            ),
             ToolKind::Read
             | ToolKind::Command
             | ToolKind::Search

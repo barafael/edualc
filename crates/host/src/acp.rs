@@ -136,31 +136,25 @@ impl Agent {
                         message: given.message.unwrap_or_default(),
                     })),
                     AGY_LIST => Some(KnownCall::ListSessions(ListSessionsInput {})),
-                    "run_command" => Some(KnownCall::Bash(BashInput {
-                        command: given.command_line.unwrap_or_else(title),
-                        description: given.tool_summary,
-                    })),
-                    "read_file" | "view_file" => {
-                        Some(KnownCall::Read(ReadInput { file_path: path }))
-                    }
+                    "run_command" => Some(KnownCall::Bash(BashInput::command(
+                        given.command_line.unwrap_or_else(title),
+                        given.tool_summary,
+                    ))),
+                    "read_file" | "view_file" => Some(KnownCall::Read(ReadInput::whole(path))),
                     // Appending adds to the file: as an edit that adds the lines, not a Write,
                     // which would read as the whole file.
-                    "write_file" if given.append == Some(true) => {
-                        Some(KnownCall::Edit(EditInput {
-                            file_path: path,
-                            old_string: String::new(),
-                            new_string: content,
-                        }))
-                    }
+                    "write_file" if given.append == Some(true) => Some(KnownCall::Edit(
+                        EditInput::once(path, String::new(), content),
+                    )),
                     "write_file" => Some(KnownCall::Write(WriteInput {
                         file_path: path,
                         content,
                     })),
-                    "edit_file" => Some(KnownCall::Edit(EditInput {
-                        file_path: path,
-                        old_string: given.target.unwrap_or_default(),
-                        new_string: given.replacement.unwrap_or_default(),
-                    })),
+                    "edit_file" => Some(KnownCall::Edit(EditInput::once(
+                        path,
+                        given.target.unwrap_or_default(),
+                        given.replacement.unwrap_or_default(),
+                    ))),
                     _ => None,
                 }
             }
@@ -169,20 +163,20 @@ impl Agent {
                 // Its paths are relative in the arguments and absolute in the locations.
                 let path = first_location(call).or(given.path).unwrap_or_default();
                 match name {
-                    "shell" => Some(KnownCall::Bash(BashInput {
-                        command: given.command.unwrap_or_default(),
-                        description: None,
-                    })),
-                    "read" => Some(KnownCall::Read(ReadInput { file_path: path })),
+                    "shell" => Some(KnownCall::Bash(BashInput::command(
+                        given.command.unwrap_or_default(),
+                        None,
+                    ))),
+                    "read" => Some(KnownCall::Read(ReadInput::whole(path))),
                     "write" => Some(KnownCall::Write(WriteInput {
                         file_path: path,
                         content: given.content.unwrap_or_default(),
                     })),
-                    "edit" => Some(KnownCall::Edit(EditInput {
-                        file_path: path,
-                        old_string: given.old_string.unwrap_or_default(),
-                        new_string: given.new_string.unwrap_or_default(),
-                    })),
+                    "edit" => Some(KnownCall::Edit(EditInput::once(
+                        path,
+                        given.old_string.unwrap_or_default(),
+                        given.new_string.unwrap_or_default(),
+                    ))),
                     _ => None,
                 }
             }

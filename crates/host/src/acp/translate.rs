@@ -1374,18 +1374,19 @@ fn as_claude_tool(agent: Agent, call: &ToolCall) -> (ToolName, Value) {
     }
     let title = || call.title.clone().unwrap_or_default();
     let known = match call.kind {
-        Some(ToolKind::Execute) => KnownCall::Bash(BashInput {
-            command: title(),
-            description: None,
-        }),
-        Some(ToolKind::Read) => KnownCall::Read(ReadInput {
-            file_path: first_location(call).unwrap_or_else(|| PathBuf::from(title())),
-        }),
+        Some(ToolKind::Execute) => KnownCall::Bash(BashInput::command(title(), None)),
+        Some(ToolKind::Read) => KnownCall::Read(ReadInput::whole(
+            first_location(call).unwrap_or_else(|| PathBuf::from(title())),
+        )),
         Some(ToolKind::Search) => KnownCall::Grep(GrepInput {
             pattern: title(),
             path: first_location(call),
+            glob: None,
         }),
-        Some(ToolKind::Fetch) => KnownCall::WebFetch(WebFetchInput { url: title() }),
+        Some(ToolKind::Fetch) => KnownCall::WebFetch(WebFetchInput {
+            url: title(),
+            prompt: None,
+        }),
         Some(
             ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Think | ToolKind::Other,
         )
@@ -1408,11 +1409,11 @@ fn file_change(call: &ToolCall) -> Option<KnownCall> {
             path,
             old_text: Some(old_text),
             new_text,
-        } => Some(KnownCall::Edit(EditInput {
-            file_path: path.clone(),
-            old_string: old_text.clone(),
-            new_string: new_text.clone(),
-        })),
+        } => Some(KnownCall::Edit(EditInput::once(
+            path.clone(),
+            old_text.clone(),
+            new_text.clone(),
+        ))),
         ToolContent::Diff {
             path,
             old_text: None,
@@ -1451,13 +1452,12 @@ fn result_text(call: &ToolCall, failed: bool) -> String {
         }
     }
     if parts.is_empty()
-        && let Some(output) = call
+        && let Some(Ok(printed)) = call
             .raw_output
             .as_ref()
-            .and_then(|output| output.get("output"))
-            .and_then(Value::as_str)
+            .map(<acp::PrintedOutput as serde::Deserialize>::deserialize)
     {
-        parts.push(output.to_owned());
+        parts.push(printed.output);
     }
     if parts.is_empty() {
         return if failed { "Failed." } else { "Done." }.to_owned();
@@ -2322,6 +2322,24 @@ mod tests {
         );
         assert_eq!(name, ToolName::Read);
         assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
+    }
+
+    /// What a command printed, as agy gives it in the call's raw output, is the call's result;
+    /// a raw output of another shape isn't.
+    #[test]
+    fn a_commands_printed_output_is_its_result() {
+        let ended = |raw_output| {
+            result_text(
+                &ToolCall {
+                    tool_call_id: "c".to_owned(),
+                    raw_output: Some(raw_output),
+                    ..ToolCall::default()
+                },
+                false,
+            )
+        };
+        assert_eq!(ended(json!({ "output": "3 notes.txt\n" })), "3 notes.txt\n");
+        assert_eq!(ended(json!({ "files": ["a"] })), "Done.");
     }
 
     /// A tool whose name edualc doesn't know reads by the file change it shows, else by its

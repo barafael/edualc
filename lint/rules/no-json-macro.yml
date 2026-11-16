@@ -5,11 +5,9 @@ message: "json! writes JSON by hand, which the compiler doesn't check: build a t
 note: "Tests may use it for what an agent or the CLI sends. Data that is open by nature, such as a tool's raw input, stays a serde_json::Value that is passed on, not built."
 files:
   - "**/src/**"
-# Known debt, each file to be typed and taken off this list: the browser demo's stand-in Claude,
-# and the presenter's one tool input built for a `!` command.
+# Known debt, each file to be typed and taken off this list: the browser demo's stand-in Claude.
 ignores:
   - "crates/slint/src/web/**"
-  - "crates/core/src/present/presenter.rs"
 rule:
   kind: macro_invocation
   has:

@@ -179,6 +179,13 @@ pub struct Location {
     pub path: PathBuf,
 }
 
+/// A tool call's `rawOutput` when it is what a command printed, as agy gives it; other tools'
+/// outputs have shapes of their own.
+#[derive(Debug, Deserialize)]
+pub struct PrintedOutput {
+    pub output: String,
+}
+
 /// A tool call's arguments (`rawInput`) as agy 1.5.6 names them, each as far as agy has given
 /// it.
 #[derive(Debug, Default, Deserialize)]

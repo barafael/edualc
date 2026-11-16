@@ -5,8 +5,6 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use serde_json::Value;
-
 use crate::chat::{Body, Entry, Tool, ToolState};
 use crate::external::wire::ToolKind;
 use crate::tools;
@@ -174,7 +172,11 @@ fn phrase(kind: ToolKind, tools: &[&&Tool]) -> String {
 fn files_phrase(verb: &str, tools: &[&&Tool]) -> String {
     let mut files: Vec<String> = tools
         .iter()
-        .filter_map(|tool| file_name(&tool.input))
+        .filter_map(|tool| tools::file_of(&tool.name, &tool.input))
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect();
     files.dedup();
     match files.as_slice() {
@@ -182,16 +184,6 @@ fn files_phrase(verb: &str, tools: &[&&Tool]) -> String {
         [first, second] => format!("{verb} {first} and {second}"),
         _ => format!("{verb} {} files", tools.len()),
     }
-}
-
-fn file_name(input: &Value) -> Option<String> {
-    let path = input
-        .get("file_path")
-        .or_else(|| input.get("notebook_path"))
-        .and_then(Value::as_str)?;
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -236,8 +228,14 @@ mod tests {
             ("Bash", json!({ "command": "ls" })),
             ("Read", json!({ "file_path": "/p/a.md" })),
             ("Read", json!({ "file_path": "/p/b.rs" })),
-            ("Edit", json!({ "file_path": "/p/src/main.rs" })),
-            ("Write", json!({ "file_path": "/p/NOTES.md" })),
+            (
+                "Edit",
+                json!({ "file_path": "/p/src/main.rs", "old_string": "a", "new_string": "b" }),
+            ),
+            (
+                "Write",
+                json!({ "file_path": "/p/NOTES.md", "content": "notes" }),
+            ),
         ]);
         let shown = group(&chat.entries, &HashSet::new(), Path::new("/p"));
         let Some(Grouping::Head(line)) = shown.first() else {
