@@ -861,6 +861,59 @@ pub enum IncomingRequest {
     Other,
 }
 
+impl IncomingRequest {
+    /// edualc's question whether another session's message may come in: from the sender of
+    /// that name (none if it gave none), the message without its envelope. A named sender is
+    /// offered to be let in for the session (see [`sender_let_in`]).
+    pub fn incoming_message(from: Option<&str>, message: String) -> serde_json::Result<Self> {
+        let offered = from
+            .map(|from| {
+                serde_json::to_value(Suggestion::AddRules {
+                    rules: vec![Rule {
+                        tool_name: ToolName::EdualcIncomingMessage.to_string(),
+                        rule_content: Some(from.to_owned()),
+                    }],
+                    destination: RuleDestination::Session,
+                })
+            })
+            .transpose()?;
+        let input = crate::external::tool_input::IncomingMessageInput {
+            from: from.unwrap_or("another session").to_owned(),
+            message,
+        };
+        Ok(Self::CanUseTool {
+            tool_name: ToolName::EdualcIncomingMessage,
+            input: serde_json::to_value(input)?,
+            permission_suggestions: offered.into_iter().collect(),
+            description: String::new(),
+            tool_use_id: None,
+        })
+    }
+}
+
+/// The sender the user let in for the session, in answering an
+/// [`IncomingRequest::incoming_message`]: the offer they took, if they took it.
+pub fn sender_let_in(updates: &[PermissionUpdate]) -> Option<String> {
+    let incoming = ToolName::EdualcIncomingMessage.to_string();
+    updates.iter().find_map(|update| match update {
+        PermissionUpdate::Offered(offered) => {
+            match serde_json::from_value::<Suggestion>(offered.clone()) {
+                Ok(Suggestion::AddRules { rules, .. }) => rules
+                    .into_iter()
+                    .find(|rule| rule.tool_name == incoming)
+                    .and_then(|rule| rule.rule_content),
+                Ok(
+                    Suggestion::SetMode { .. }
+                    | Suggestion::AddDirectories { .. }
+                    | Suggestion::Other,
+                )
+                | Err(_) => None,
+            }
+        }
+        PermissionUpdate::SetMode { .. } => None,
+    })
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
 pub enum ControlResponse {

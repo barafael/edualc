@@ -20,15 +20,13 @@ use crate::external::acp::{
     RpcError, StopReason, ToolCall, ToolContent, ToolKind, ToolStatus,
 };
 use crate::external::agy::{self, QuotaWindow};
-use crate::external::tool_input::IncomingMessageInput;
 use crate::external::tool_input::{
     BashInput, EditInput, GrepInput, KnownCall, ReadInput, WebFetchInput, WriteInput,
 };
-use crate::external::wire::LimitKind;
 use crate::external::wire::{
-    self, Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, Delta,
-    IncomingRequest, Initialized, Message, MessageId, MessageOrigin, MessageStart, ModeId,
-    ModelInfo, ModelUsage, ProgramMode, ProgramModes, RequestId, ResultKind, SessionId,
+    self, Account, ApiMessage, AssistantError, ContentBlock, ControlResponse, DENIED, Delta,
+    IncomingRequest, Initialized, LimitKind, Message, MessageId, MessageOrigin, MessageStart,
+    ModeId, ModelInfo, ModelUsage, ProgramMode, ProgramModes, RequestId, ResultKind, SessionId,
     StreamEvent, System, ToolName, ToolUseId, TranscriptLine, TurnResult, Usage, UserContent,
     UserLine, UserMessage,
 };
@@ -36,7 +34,6 @@ use crate::settings::PeerMessages;
 
 use super::outbox::unwrapped;
 use super::{Agent, first_location};
-use crate::external::wire::DENIED;
 
 /// JSON-RPC's code for a method the receiver doesn't have.
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -854,67 +851,25 @@ impl Translator {
         if let_in {
             return self.came_in(content);
         }
-        let request = RequestId::from(self.local_id("message"));
         // A sender without a name can't be let in for later: each of its messages is asked.
-        let offered = name.as_ref().map(|name| wire::Suggestion::AddRules {
-            rules: vec![wire::Rule {
-                tool_name: ToolName::EdualcIncomingMessage.to_string(),
-                rule_content: Some(name.clone()),
-            }],
-            destination: wire::RuleDestination::Session,
-        });
-        let input = IncomingMessageInput {
-            from: name.unwrap_or_else(|| "another session".to_owned()),
-            message: body,
-        };
-        let (input, offered) = match (
-            serde_json::to_value(&input),
-            offered
-                .map(|offered| serde_json::to_value(&offered))
-                .transpose(),
-        ) {
-            (Ok(input), Ok(offered)) => (input, offered),
-            (Err(error), _) | (_, Err(error)) => {
+        let request = match IncomingRequest::incoming_message(name.as_deref(), body) {
+            Ok(request) => request,
+            Err(error) => {
                 tracing::warn!(%error, "a message waiting to come in can't be asked about: turned down");
                 return Vec::new();
             }
         };
-        self.waiting.insert(request.clone(), content);
+        let request_id = RequestId::from(self.local_id("message"));
+        self.waiting.insert(request_id.clone(), content);
         vec![Effect::ToWindow(Message::ControlRequest {
-            request_id: request,
-            request: IncomingRequest::CanUseTool {
-                tool_name: ToolName::EdualcIncomingMessage,
-                input,
-                permission_suggestions: offered.into_iter().collect(),
-                description: String::new(),
-                tool_use_id: None,
-            },
+            request_id,
+            request,
         })]
     }
 
     /// A message the window was asked about: the user let it in, and maybe its sender.
     fn let_in(&mut self, content: String, offered: &[wire::PermissionUpdate]) -> Vec<Effect> {
-        let sender = offered.iter().find_map(|update| match update {
-            wire::PermissionUpdate::Offered(offered) => {
-                match serde_json::from_value::<wire::Suggestion>(offered.clone()) {
-                    Ok(wire::Suggestion::AddRules { rules, .. }) => {
-                        rules.into_iter().find_map(|rule| {
-                            (rule.tool_name == ToolName::EdualcIncomingMessage.to_string())
-                                .then_some(rule.rule_content)
-                                .flatten()
-                        })
-                    }
-                    Ok(
-                        wire::Suggestion::SetMode { .. }
-                        | wire::Suggestion::AddDirectories { .. }
-                        | wire::Suggestion::Other,
-                    )
-                    | Err(_) => None,
-                }
-            }
-            wire::PermissionUpdate::SetMode { .. } => None,
-        });
-        if let Some(sender) = sender {
+        if let Some(sender) = wire::sender_let_in(offered) {
             self.senders_let_in.insert(sender);
         }
         self.came_in(content)
