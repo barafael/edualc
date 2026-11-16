@@ -8,8 +8,8 @@ use crate::chat::{Origin, UserText};
 use crate::claude::{Lost, Output};
 use crate::external::wire::{
     self, Activity, AssistantError, CommandInfo, ContentBlock, ControlRequest, ControlResponse,
-    IncomingRequest, Initialized, Message, Progress, RateLimits, ResultKind, Sender, StreamEvent,
-    System, TurnResult, UserContent,
+    HoldCause, HoldOutcome, HoldState, IncomingRequest, Initialized, Message, Progress, RateLimits,
+    ResultKind, Sender, StreamEvent, System, TurnResult, UserContent,
 };
 use crate::ipc::Generation;
 use crate::present::Frontend;
@@ -292,6 +292,16 @@ impl<F: Frontend> App<F> {
                 self.chat
                     .set_tool_state(&tool_use_id, crate::chat::ToolState::Denied);
             }
+            System::PeerMessageHold {
+                state,
+                from_name,
+                cause,
+                outcome,
+            } => {
+                if let Some(text) = hold_text(state, from_name.as_deref(), cause, outcome) {
+                    self.chat.info(text);
+                }
+            }
             System::ProgramMode { mode } => {
                 if let Modes::Program { current, .. } = &mut self.status.modes {
                     *current = Some(mode);
@@ -493,5 +503,53 @@ impl<F: Frontend> App<F> {
         {
             self.usage.waiting += 1;
         }
+    }
+}
+
+/// What the conversation says of another session's message Claude Code held: why it waits, and
+/// what became of it; nothing for a state edualc doesn't know.
+fn hold_text(
+    state: HoldState,
+    from: Option<&str>,
+    cause: Option<HoldCause>,
+    outcome: Option<HoldOutcome>,
+) -> Option<String> {
+    let from = from.unwrap_or("another session");
+    match state {
+        HoldState::Held => {
+            let why = match cause {
+                Some(HoldCause::ModeMismatch) => {
+                    "one of you bypasses permissions and the other asks"
+                }
+                Some(HoldCause::NoModeAsserted | HoldCause::ModeUnknown) => {
+                    "it didn't say whether it asks before running tools"
+                }
+                Some(
+                    HoldCause::ExplicitSetting
+                    | HoldCause::ManagedSetting
+                    | HoldCause::RepoSetting
+                    | HoldCause::InvalidSetting
+                    | HoldCause::BypassDefault,
+                ) => "its crossSessionInbound setting holds messages from other sessions",
+                Some(HoldCause::Other) | None => "of its rules for other sessions' messages",
+            };
+            Some(format!(
+                "Claude Code is holding a message from {from}: {why}. It can't be let in from \
+                 edualc, so it expires unless that changes."
+            ))
+        }
+        HoldState::Released => Some(format!("The held message from {from} came in.")),
+        HoldState::Dropped => Some(match outcome {
+            Some(HoldOutcome::Expired) => {
+                format!("The held message from {from} expired without coming in.")
+            }
+            Some(HoldOutcome::Refused) => {
+                format!("Claude Code turned the held message from {from} away.")
+            }
+            Some(HoldOutcome::Dropped | HoldOutcome::Discarded | HoldOutcome::Other) | None => {
+                format!("The held message from {from} was dropped without coming in.")
+            }
+        }),
+        HoldState::Other => None,
     }
 }

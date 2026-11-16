@@ -575,6 +575,19 @@ pub enum System {
     PermissionDenied {
         tool_use_id: ToolUseId,
     },
+    /// Another session's message that Claude Code held rather than let in, and what became of
+    /// it (2.1.323). A host can't approve a held message: it comes in only if the policy
+    /// changes, and expires otherwise.
+    PeerMessageHold {
+        state: HoldState,
+        /// The sender's name, as it gave one.
+        #[serde(default)]
+        from_name: Option<String>,
+        #[serde(default)]
+        cause: Option<HoldCause>,
+        #[serde(default)]
+        outcome: Option<HoldOutcome>,
+    },
     /// An agent program is in another of its own modes now.
     ProgramMode {
         mode: ModeId,
@@ -717,6 +730,53 @@ pub struct BackgroundTask {
     /// Run for Claude Code itself, not for the conversation; its own list leaves these out.
     #[serde(default)]
     pub ambient: bool,
+}
+
+/// Where a held message from another session is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldState {
+    Held,
+    /// It came in after all.
+    Released,
+    /// It never will.
+    Dropped,
+    #[serde(other)]
+    Other,
+}
+
+/// Why Claude Code held another session's message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HoldCause {
+    /// The sender runs in the other permission class: it bypasses permissions and this
+    /// session asks, or the other way round.
+    ModeMismatch,
+    /// The sender didn't say how it runs, and this session bypasses permissions.
+    NoModeAsserted,
+    ModeUnknown,
+    /// A `crossSessionInbound` setting of `hold`.
+    ExplicitSetting,
+    ManagedSetting,
+    RepoSetting,
+    InvalidSetting,
+    BypassDefault,
+    #[serde(other)]
+    Other,
+}
+
+/// Why a held message was dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldOutcome {
+    /// Nobody let it in in time, which a session run by edualc can't.
+    Expired,
+    Refused,
+    Dropped,
+    /// The session ended with it still held.
+    Discarded,
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

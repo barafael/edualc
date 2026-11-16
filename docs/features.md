@@ -128,8 +128,12 @@ the name holds from the first start.
 A message from another session to an agy or opencode session waits until you let it in. The
 session shows it on a card: let it in, turn it down, or let in that sender's messages for the
 rest of the session. A message you turn down never reaches the agent, and its turn goes on. In
-the settings you can let every message in without asking instead. Messages to a Claude Code
-session follow Claude Code's own `crossSessionInbound` setting.
+the settings you can let every message in without asking instead.
+
+Messages to a Claude Code session follow Claude Code's own `crossSessionInbound` setting. By
+default Claude Code holds a message from a session that bypasses permissions when yours asks, or
+the other way round. A session edualc runs can't let a held message in, so the conversation says
+that one is held, and why, and then that it expired.
 
 ## What runs beside the turn
 

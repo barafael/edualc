@@ -3603,6 +3603,43 @@ mod tests {
         assert!(driven.session().busy, "the turn goes on");
     }
 
+    /// A message Claude Code holds is said in the conversation, with why, and so is its end:
+    /// the session can't let it in, so the user would otherwise never know it came.
+    #[test]
+    fn a_held_message_is_told() {
+        let (mut driven, generation) = started();
+        let said = |driven: &Driven| -> Vec<String> {
+            driven
+                .app
+                .chat
+                .entries
+                .iter()
+                .map(|entry| entry.copy_text().to_owned())
+                .collect()
+        };
+        for line in [
+            r#"{"type":"system","subtype":"peer_message_hold","state":"held","message_uuid":"m","lane":"socket","from":"uds:/run/user/1000/cc-socks/9.sock","from_name":"calm-heron","cause":"mode-mismatch","uuid":"u1","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"peer_message_hold","state":"dropped","message_uuid":"m","lane":"socket","from":"uds:/run/user/1000/cc-socks/9.sock","from_name":"calm-heron","outcome":"expired","uuid":"u2","session_id":"s"}"#,
+        ] {
+            driven.take(Event::Claude {
+                generation,
+                output: Output::of_line(line.to_owned()),
+            });
+        }
+        let said = said(&driven);
+        assert!(
+            said.iter()
+                .any(|text| text.contains("holding a message from calm-heron")
+                    && text.contains("bypasses permissions")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|text| text.contains("from calm-heron expired")),
+            "{said:?}"
+        );
+    }
+
     /// A pasted API key is left out of what an action's `Debug` writes.
     #[test]
     fn a_pasted_key_isnt_written_out() {
