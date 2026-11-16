@@ -89,7 +89,7 @@ In `crates/core/src`:
 | `chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `sidebar.rs` | the conversation as entries; how tool calls, Markdown and plan comments are shown; runs of tool calls folded into one line; the sidebar's list |
 | `sessions.rs`, `trust.rs`, `settings.rs`, `folder.rs`, `process.rs`, `desktop.rs` | Claude Code's files, which folders are trusted, the settings, checking a folder you name, what `/proc` says about a process, notifications, other programs' windows and what a folder opens in. The daemon does the reading and writing. |
 | `decode.rs`, `decode/` | making images safe to show and send, and the locked-down process that decodes them |
-| `external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, the Agent Client Protocol, and niri's IPC. These accept keys they don't know, since each release adds some. |
+| `external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, the inputs of its tools, the Agent Client Protocol, what agy keeps of its conversations, MCP as edualc's messaging tool reads it, and niri's IPC. These accept keys they don't know, since each release adds some. |
 | `cjk.rs` | which language a text's Han characters are in |
 
 In `crates/host/src`:
@@ -97,8 +97,8 @@ In `crates/host/src`:
 | | |
 |---|---|
 | `daemon.rs`, `spawn.rs` | the daemon's actors, starting `claude` or agy's adapter, and acting on the desktop |
-| `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings |
-| `acp.rs`, `acp/` | a session of an agent spoken to over the Agent Client Protocol (agy, opencode): the adapter (`edualcd --agy-adapter`) that speaks ACP to the agent and Claude Code's stream-json to the daemon; its inbox; the messages it sends to other sessions |
+| `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings; an agy subagent's steps and a swarm's board, translated into transcript lines as they are read |
+| `acp.rs`, `acp/` | a session of an agent spoken to over the Agent Client Protocol (agy, opencode): the adapter (`edualcd --agy-adapter`) that speaks ACP to the agent and Claude Code's stream-json to the daemon; its inbox; the messages it sends to other sessions; agy's records of its subagents and swarm (`brain.rs`) |
 | `bin/edualcd.rs` | the daemon's program |
 
 In `crates/slint/src`:

@@ -282,6 +282,12 @@ its program: a new session with the other program starts with that program's def
 - **Modes:** the mode menu lists agy's own modes, by agy's names, with the one agy is in ticked.
   agy takes a mode as a turn starts. Switch during a turn, and the window says that agy uses the
   new mode from your next prompt. `--permission-mode` takes Claude Code's modes, so agy refuses it.
+- **Subagents and swarms:** the subagents an agy session starts, and its swarm's workers, show
+  among the session's background tasks, with the swarm's board as one more. Click one to follow
+  it in the side panel, as you follow a Claude Code subagent. edualc reads them from agy's own
+  records in `~/.gemini/antigravity-cli/brain/`. The list is brought up to date as agy's tool
+  calls and turns end. A post to the board shows as a message to the board, and a member joining
+  as an agent with its brief.
 - **Usage:** agy reports no usage limits, so the sidebar foot shows none for its sessions.
 - **Not available with agy:** shell commands (`!`) and the trust question.
 - **opencode:** edualc runs `opencode acp` in the project. opencode signs in and keeps its
