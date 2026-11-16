@@ -74,6 +74,9 @@ pub enum Effect {
     },
     /// The running sessions, for the call.
     List(CallId),
+    /// The subagents and swarm agy keeps for conversation `conversation` may have changed: the
+    /// window is told their tasks if they did (see [`super::brain`]).
+    Subagents { conversation: String },
 }
 
 /// Where the connection to the agent is.
@@ -310,6 +313,18 @@ impl Translator {
         }
     }
 
+    /// For an agent that keeps records of the subagents it starts, a look at them: they change
+    /// as its tool calls end, and as its turns do.
+    fn subagents(&self) -> Option<Effect> {
+        self.agent
+            .keeps_subagents()
+            .then(|| self.acp_session())
+            .flatten()
+            .map(|session| Effect::Subagents {
+                conversation: session.to_owned(),
+            })
+    }
+
     /// A line from the agent.
     pub fn agent_said(&mut self, line: &str) -> Vec<Effect> {
         let incoming = match serde_json::from_str::<Incoming>(line) {
@@ -452,6 +467,7 @@ impl Translator {
                 for input in std::mem::take(&mut self.held) {
                     effects.extend(self.window_input(input));
                 }
+                effects.extend(self.subagents());
                 effects
             }
             Asked::Model(window) => window
@@ -1062,7 +1078,7 @@ impl Translator {
             content: Some(UserContent::Text(text)),
             is_error: failed || shown.denied,
         }]);
-        vec![
+        let mut effects = vec![
             Effect::ToWindow(Message::User(UserLine::of_session(content.clone()))),
             Effect::Transcript(TranscriptLine::User {
                 message: UserMessage { content },
@@ -1070,7 +1086,9 @@ impl Translator {
                 is_sidechain: false,
                 origin: None,
             }),
-        ]
+        ];
+        effects.extend(self.subagents());
+        effects
     }
 
     /// The agent asks whether a tool call may go ahead: the window asks the user.
@@ -1196,6 +1214,7 @@ impl Translator {
             api_error_status: matches!(failure, Some(Failure::SignIn(_))).then_some(401),
         })));
         self.busy = false;
+        effects.extend(self.subagents());
         effects.extend(self.next_turn());
         effects
     }
@@ -1364,7 +1383,7 @@ fn is_done(call: &ToolCall) -> bool {
 /// (see [`Agent::tool`]), else by the file change it shows, else by ACP's kind, with its title
 /// as what it runs, searches for or fetches; a tool none of these tells about keeps the agent's
 /// name.
-fn as_claude_tool(agent: Agent, call: &ToolCall) -> (ToolName, Value) {
+pub(super) fn as_claude_tool(agent: Agent, call: &ToolCall) -> (ToolName, Value) {
     let input = call.raw_input.clone().unwrap_or(Value::Null);
     if let Some(known) = call.name.as_deref().and_then(|name| agent.tool(name, call)) {
         return as_known(&known, input);
@@ -1525,7 +1544,8 @@ mod tests {
                 Effect::ToAgent(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
-                | Effect::List(_) => None,
+                | Effect::List(_)
+                | Effect::Subagents { .. } => None,
             })
             .collect()
     }
@@ -1539,7 +1559,8 @@ mod tests {
                 Effect::ToWindow(_)
                 | Effect::Transcript(_)
                 | Effect::Send { .. }
-                | Effect::List(_) => None,
+                | Effect::List(_)
+                | Effect::Subagents { .. } => None,
             })
             .map(|line| serde_json::from_str(&line).expect("a line of JSON"))
             .collect()
@@ -1703,7 +1724,10 @@ mod tests {
                     read_from_the_transcript(&line);
                     transcript.extend(kinds(&[line]));
                 }
-                Effect::ToAgent(_) | Effect::Send { .. } | Effect::List(_) => {}
+                Effect::ToAgent(_)
+                | Effect::Send { .. }
+                | Effect::List(_)
+                | Effect::Subagents { .. } => {}
             }
         }
         let expected = |names: &[&str]| -> std::collections::BTreeSet<String> {
@@ -1791,7 +1815,8 @@ mod tests {
                 Effect::ToAgent(_)
                 | Effect::ToWindow(_)
                 | Effect::Send { .. }
-                | Effect::List(_) => None,
+                | Effect::List(_)
+                | Effect::Subagents { .. } => None,
             })
             .expect("a transcript line");
         assert_eq!(first.get("agySessionId"), Some(&json!("s")));
@@ -2322,6 +2347,33 @@ mod tests {
         );
         assert_eq!(name, ToolName::Read);
         assert_eq!(input.get("file_path"), Some(&json!("/w/f.txt")));
+    }
+
+    /// agy's subagents are looked at as a turn ends, under agy's id for the conversation;
+    /// opencode keeps no records of them, and its are never looked for.
+    #[test]
+    fn subagents_are_looked_at_as_a_turn_ends() {
+        let looked = |agent| {
+            let mut translator = opened_with(agent);
+            let prompted = translator.window_said(&prompt("go"));
+            let rpc = prompt_id(&prompted);
+            translator
+                .agent_said(&format!(
+                    r#"{{"jsonrpc":"2.0","id":{rpc},"result":{{"stopReason":"end_turn"}}}}"#
+                ))
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Subagents { conversation } => Some(conversation),
+                    Effect::ToAgent(_)
+                    | Effect::ToWindow(_)
+                    | Effect::Transcript(_)
+                    | Effect::Send { .. }
+                    | Effect::List(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(looked(Agent::Agy), ["s"]);
+        assert!(looked(Agent::Opencode).is_empty());
     }
 
     /// What a command printed, as agy gives it in the call's raw output, is the call's result;

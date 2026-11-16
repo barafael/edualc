@@ -12,6 +12,7 @@
 //! listed and continued: agy's own history is a database of its own. opencode keeps its sessions
 //! itself, so no transcript is kept for it, and they can't be continued yet.
 
+pub(crate) mod brain;
 mod inbox;
 mod outbox;
 mod tool;
@@ -34,7 +35,9 @@ use crate::external::acp::{AgyArguments, OpencodeArguments, RpcError, ToolCall};
 use crate::external::tool_input::{
     BashInput, EditInput, KnownCall, ListSessionsInput, ReadInput, SendMessageInput, WriteInput,
 };
-use crate::external::wire::{SessionId, TranscriptEntry, TranscriptLine};
+use crate::external::wire::{
+    BackgroundTask, Message, SessionId, System, TranscriptEntry, TranscriptLine,
+};
 use crate::sessions::{self, MessagingName};
 use outbox::{Job, Outcome, Places, SendArguments};
 use translate::{CallId, Effect, Start, ToolServer, Translator};
@@ -88,6 +91,15 @@ impl Agent {
 
     /// Whether the adapter keeps the session's transcript for edualc to list and continue it.
     fn keeps_transcript(self) -> bool {
+        match self {
+            Self::Agy => true,
+            Self::Opencode => false,
+        }
+    }
+
+    /// Whether it keeps records of the subagents and swarms it starts, which edualc shows as
+    /// the session's background tasks (see [`brain`]).
+    fn keeps_subagents(self) -> bool {
         match self {
             Self::Agy => true,
             Self::Opencode => false,
@@ -514,6 +526,7 @@ async fn adapt(args: Args) -> Result<(), Error> {
         cwd,
         calls: HashMap::new(),
         name,
+        tasks: Vec::new(),
     };
     let started = translator.start();
     out.carry_out(&mut translator, started).await;
@@ -605,6 +618,8 @@ struct Out {
     /// The tool's calls waiting for their answer.
     calls: HashMap<CallId, OwnedWriteHalf>,
     name: MessagingName,
+    /// The subagents last told to the window.
+    tasks: Vec<BackgroundTask>,
 }
 
 impl Out {
@@ -625,16 +640,7 @@ impl Out {
                         tracing::warn!(%error, "a line for the agent that can't be written: not sent");
                     }
                 },
-                Effect::ToWindow(message) => match serde_json::to_string(&message) {
-                    Ok(line) => {
-                        if write_line(&mut self.window, &line).await.is_err() {
-                            tracing::debug!("the window's side closed");
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "a line for the window that can't be written: not sent");
-                    }
-                },
+                Effect::ToWindow(message) => self.tell(&message).await,
                 Effect::Transcript(line) => self.keep(&line),
                 Effect::Send { call, to, message } => {
                     let told = self.carried(Job::Send(SendArguments { to, message })).await;
@@ -646,7 +652,36 @@ impl Out {
                     translator.tool_told(call, &told);
                     self.answer(call, told).await;
                 }
+                Effect::Subagents { conversation } => self.subagents(conversation).await,
             }
+        }
+    }
+
+    /// A line to the window.
+    async fn tell(&mut self, message: &Message) {
+        match serde_json::to_string(message) {
+            Ok(line) => {
+                if write_line(&mut self.window, &line).await.is_err() {
+                    tracing::debug!("the window's side closed");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a line for the window that can't be written: not sent");
+            }
+        }
+    }
+
+    /// The window told the subagents the agent keeps for `conversation`, if they changed.
+    async fn subagents(&mut self, conversation: String) {
+        let Ok(conversation) = SessionId::try_from(conversation) else {
+            tracing::debug!("a conversation id that isn't agy's: no subagents read");
+            return;
+        };
+        let tasks = brain::tasks(&conversation);
+        if tasks != self.tasks {
+            self.tasks.clone_from(&tasks);
+            self.tell(&Message::System(System::BackgroundTasksChanged { tasks }))
+                .await;
         }
     }
 

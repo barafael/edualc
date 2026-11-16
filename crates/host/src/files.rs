@@ -17,6 +17,9 @@ use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
 use rustix::io::Errno;
 use tokio::sync::mpsc;
 
+use crate::acp::brain;
+use crate::external::agy::{self, AgyTask};
+use crate::external::wire::TranscriptLine;
 use crate::folder::Folder;
 use crate::ipc::{self, ActId, Answer, FromDaemon, Place, Read, Target, Watched};
 use crate::sessions;
@@ -28,14 +31,68 @@ type Outbox = mpsc::Sender<FromDaemon>;
 /// The most sessions listed at once.
 const MOST_SESSIONS: usize = 1000;
 
-/// Where a transcript is.
-pub fn resolve(place: &Place) -> PathBuf {
-    match place {
-        Place::Path(path) => path.clone(),
-        Place::Session { cwd, id } => sessions::locate(cwd, id),
-        Place::Subagent { cwd, id, task } => {
-            sessions::transcript_of(&sessions::written_transcript(cwd, id), task)
+/// A transcript, by where it is and how it is written.
+#[derive(Debug)]
+pub enum Source {
+    /// In Claude Code's format, which the ACP adapter writes too.
+    Transcript(PathBuf),
+    /// An agy conversation's steps, read as its transcript (see [`brain::step_line`]).
+    AgySteps(PathBuf),
+    /// An agy swarm's board, read as what its members said (see [`brain::post_line`]).
+    AgyBoard(PathBuf),
+}
+
+impl Source {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Transcript(path) | Self::AgySteps(path) | Self::AgyBoard(path) => path,
         }
+    }
+
+    /// The transcript's whole lines after byte `from`, in Claude Code's format, and where the
+    /// next read starts.
+    fn read_from(&self, from: u64) -> std::io::Result<(Vec<String>, u64)> {
+        let (lines, offset) = sessions::read_lines_from(self.path(), from)?;
+        let lines = match self {
+            Self::Transcript(_) => lines,
+            Self::AgySteps(_) => translated(&lines, brain::step_line),
+            Self::AgyBoard(_) => translated(&lines, brain::post_line),
+        };
+        Ok((lines, offset))
+    }
+}
+
+/// Lines another program wrote, as transcript lines; a line giving none is left out.
+fn translated(lines: &[String], line: fn(&str) -> Option<TranscriptLine>) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|written| line(written))
+        .filter_map(|transcribed| {
+            serde_json::to_string(&transcribed)
+                .inspect_err(|error| tracing::warn!(%error, "a transcript line not written"))
+                .ok()
+        })
+        .collect()
+}
+
+/// Where a transcript is: an agy session's subagents and board are in agy's own records, by the
+/// conversation the task names.
+pub fn resolve(place: &Place) -> Source {
+    match place {
+        Place::Path(path) => Source::Transcript(path.clone()),
+        Place::Session { cwd, id } => Source::Transcript(sessions::locate(cwd, id)),
+        Place::Subagent { cwd, id, task } => match (AgyTask::of(task), agy::brain()) {
+            (Some(AgyTask::Conversation(conversation)), Some(brain)) => Source::AgySteps(
+                agy::generated(&brain, &conversation).join("logs/transcript.jsonl"),
+            ),
+            (Some(AgyTask::Board(conversation)), Some(brain)) => {
+                Source::AgyBoard(agy::generated(&brain, &conversation).join("swarm/board.jsonl"))
+            }
+            (Some(_), None) | (None, _) => Source::Transcript(sessions::transcript_of(
+                &sessions::written_transcript(cwd, id),
+                task,
+            )),
+        },
     }
 }
 
@@ -68,17 +125,20 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
             Answer::Sessions(sessions::list(&cwd, limit.min(MOST_SESSIONS), known))
         }
         Read::Transcript { place, from } => {
-            let path = resolve(&place);
+            let source = resolve(&place);
             // Only a transcript is read, by no link (`sessions::open_transcript`): a place a
             // window names could otherwise lead the daemon to any file of the user's.
-            let read = match sessions::read_lines_from(&path, from) {
+            let read = match source.read_from(from) {
                 Ok((lines, offset)) => {
                     send_lines(request, &lines, pieces);
                     Ok(offset)
                 }
                 Err(error) => Err(error.to_string()),
             };
-            Answer::Transcript { path, read }
+            Answer::Transcript {
+                path: source.path().to_owned(),
+                read,
+            }
         }
         Read::WorktreeOf { cwd, id } => Answer::Worktree(
             sessions::find_transcript(&cwd, &id)
@@ -490,7 +550,7 @@ fn start(target: &Target) -> Watch {
     match target {
         Target::Records => Watch::new(sessions::config_dir().join("sessions"), None),
         Target::Transcript(place) => {
-            let file = resolve(place);
+            let file = resolve(place).path().to_owned();
             let goal = file.parent().map(Path::to_path_buf).unwrap_or_default();
             Watch::new(goal, Some(file))
         }
