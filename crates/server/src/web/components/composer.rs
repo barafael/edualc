@@ -18,6 +18,11 @@ use crate::web::View;
 use crate::web::view::image_url;
 use crate::web::widgets::{Icon, IconButton, Lucide, Meter};
 
+/// The last request for the composer to take the focus that a composer took. One just made
+/// takes a request it missed (a session come to from a page, a folder just trusted), as the
+/// native window's composer, which is always there, takes each.
+static FOCUS_TAKEN: GlobalSignal<u32> = Signal::global(|| 0);
+
 /// The text box's id, for focusing it and reading its caret.
 const INPUT: &str = "composer-input";
 /// The command list's id, which the text box names as what it completes from.
@@ -155,13 +160,13 @@ pub fn Composer() -> Element {
         }
         None => size.set(ComposerSize::Fit),
     });
-    // A request for the focus, as a new session starts or one opens.
+    // A request for the focus, as a new session starts or one opens: also one made just before
+    // this composer was (see `FOCUS_TAKEN`).
     let focus_serial = use_memo(move || view.page.read().focus_composer);
-    let mut focus_seen = use_signal(|| *focus_serial.peek());
     use_effect(move || {
         let serial = focus_serial();
-        if serial != *focus_seen.peek() {
-            focus_seen.set(serial);
+        if serial != *FOCUS_TAKEN.peek() {
+            *FOCUS_TAKEN.write() = serial;
             // On a touch screen it waits to be tapped: the keyboard would cover what opened.
             crate::web::dom::grab_focus_at_end(INPUT);
         }
@@ -594,12 +599,12 @@ pub fn Composer() -> Element {
                         },
                     }
                     if !session.tasks.is_empty() {
-                        super::sidebar::TasksChip {}
+                        super::sessions::TasksChip {}
                     }
-                    // As the sidebar shows a session: a hand while Claude waits for the user, a
+                    // As the lists show a session: a hand while Claude waits for the user, a
                     // dot while it works.
                     if session.busy {
-                        super::sidebar::LiveDot {
+                        super::sessions::LiveDot {
                             state: if waiting { LiveState::Waiting } else { LiveState::Busy },
                         }
                         span { class: "composer-status", "{session.status}" }

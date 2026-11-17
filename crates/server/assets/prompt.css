@@ -86,9 +86,11 @@
    scrolled, and out of reach of the keys and screen readers), and the review fills the column
    down to the prompt. */
 .column:has(.plan-review) { container-type: inline-size; }
-.column:has(.plan-review) > .transcript,
-.column:has(.plan-review) > :has(> .transcript) { flex: 0 0 0; min-height: 0; overflow: hidden; visibility: hidden; }
-.column:has(.plan-review) > .dock { flex: 1; min-height: 0; }
+.column:not(.showing-changes):has(.plan-review) > .conversation { flex: 0 0 0; min-height: 0; overflow: hidden; visibility: hidden; }
+.column:not(.showing-changes):has(.plan-review) > .dock { flex: 1; min-height: 0; }
+/* What the session changed is over the plan too, while it is open; the prompt stays under it,
+   as in the native window. */
+.column.showing-changes .plan-review { display: none; }
 .plan-review {
     flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface);
     margin-inline: calc((100% - 100cqw) / 2);

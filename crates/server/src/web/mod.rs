@@ -78,18 +78,20 @@ pub fn Shell() -> Element {
 
 /// Every part's stylesheet, linked here, from the start, rather than by each part: a link is
 /// put in the page by an effect of the part that names it first, and only once, so a part shown
-/// and hidden in the same moment (the sidebar, as a narrow window starts) would leave its
-/// stylesheet out for good. A part's new stylesheet goes in this list.
+/// and hidden in the same moment would leave its stylesheet out for good. A part's new
+/// stylesheet goes in this list.
 #[component]
 fn Stylesheets() -> Element {
     rsx! {
-        document::Stylesheet { href: asset!("/assets/sidebar.css") }
+        document::Stylesheet { href: asset!("/assets/sessions.css") }
         document::Stylesheet { href: asset!("/assets/header.css") }
         document::Stylesheet { href: asset!("/assets/transcript.css") }
         document::Stylesheet { href: asset!("/assets/prompt.css") }
         document::Stylesheet { href: asset!("/assets/bars.css") }
         document::Stylesheet { href: asset!("/assets/composer.css") }
         document::Stylesheet { href: asset!("/assets/panels.css") }
+        document::Stylesheet { href: asset!("/assets/pages.css") }
+        document::Stylesheet { href: asset!("/assets/changes.css") }
     }
 }
 
@@ -154,15 +156,16 @@ fn decoded(value: &str) -> String {
 }
 
 #[cfg(any(feature = "web", feature = "mobile"))]
-/// Starts the window's app on a line edualcd greeted (`link`), in `cwd`, opening `resume` if
-/// given: what it shows goes to `view`, and it hears `events`' receiver's (as `app.run` is
-/// given it). The page starts it so, and the Android app on each edualcd it reaches.
+/// Starts the window's app on a line edualcd greeted (`link`): in `cwd`, opening `resume` if
+/// given, or with no folder on the start page of projects. What it shows goes to `view`, and it
+/// hears `events`' receiver's (as `app.run` is given it). The page starts it so, and the
+/// Android app on each edualcd it reaches.
 pub fn begin(
     view: View,
     events: async_channel::Sender<edualc_core::app::Event>,
     link: edualc_core::link::Link,
     greeting: edualc_core::link::Greeting,
-    cwd: std::path::PathBuf,
+    cwd: Option<std::path::PathBuf>,
     resume: Option<edualc_core::external::wire::SessionId>,
 ) -> edualc_core::app::App<view::PageFrontend> {
     use edualc_core::app::{App, Desktop};
@@ -176,7 +179,7 @@ pub fn begin(
         Desktop::of(&greeting, text_size),
         greeting.settings.clone(),
         edualc_core::app::Start {
-            cwd: Some(cwd),
+            cwd,
             backend: edualc_core::claude::Backend::Claude,
             model: None,
         },
@@ -221,7 +224,8 @@ async fn run(view: View) {
         Ok(greeting) => greeting,
         Err(error) => return lost(error.to_string()),
     };
-    let cwd = dir.map_or_else(|| greeting.home.clone(), std::path::PathBuf::from);
+    // The folder the address names, or the projects to choose from.
+    let cwd = dir.map(std::path::PathBuf::from);
     let (events, received) = async_channel::unbounded();
     let (line, queue) = async_channel::bounded(QUEUE);
     let app = begin(view, events.clone(), line, greeting, cwd, None);

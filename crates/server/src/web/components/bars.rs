@@ -80,6 +80,7 @@ pub fn WatchBar() -> Element {
 #[component]
 pub fn TrustBar() -> Element {
     let view = use_context::<View>();
+    let dialogs = use_context::<super::pages::DialogOpen>();
     let session = view.session.read();
     let runs = !session.trust_runs.is_empty();
     rsx! {
@@ -111,13 +112,8 @@ pub fn TrustBar() -> Element {
                 "Without its settings, Claude Code starts with only your own: none of this runs, and neither do any MCP servers or claude.ai connectors, yours included. You're asked again next time."
             }
             div { class: "dock-bar-actions",
-                Button {
-                    onclick: move |_| {
-                        let mut page = view.page;
-                        page.write().projects_asked += 1;
-                    },
-                    "Open another folder"
-                }
+                // The dialog of folders, over the question, which stays if none is chosen.
+                Button { onclick: move |_| dialogs.open_folder(view), "Open another folder" }
                 // The focus comes here as the question shows, never to "Trust this folder": a
                 // stray Enter starts Claude Code with none of the folder's settings.
                 button {

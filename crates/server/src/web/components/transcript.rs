@@ -166,8 +166,10 @@ pub fn Transcript() -> Element {
     let mut opening = use_signal(|| 0_u32);
     let reviewing =
         use_memo(move || view.prompt.read().kind == PromptKind::Plan && view.page.read().reviewing);
-    // Covered by the usage details or the plan, it doesn't move behind them.
-    let covered = use_memo(move || view.usage.read().open || reviewing());
+    // Covered by the usage details, the plan or what the session changed, it doesn't move
+    // behind them.
+    let covered =
+        use_memo(move || view.usage.read().open || view.changes.read().open || reviewing());
     let to_end_serial = use_memo(move || view.page.read().scroll_to_end);
     let opened_serial = use_memo(move || view.page.read().opened);
 

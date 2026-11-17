@@ -1,0 +1,138 @@
+/* The start page, a project's page, their dialogs and the session switcher (ui/start.slint,
+   ui/project.slint, ui/newproject.slint; src/web/components/pages.rs), and what the bar across
+   the top says of where the window is. */
+
+/* The bar: where the window is, and the sessions that wait. */
+.crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-xs); }
+.crumb {
+    flex: 0 1 auto; min-width: 0; height: var(--chip); padding: 0 var(--space-s); border: none;
+    border-radius: var(--radius-s); background: transparent; color: var(--text-secondary); cursor: pointer;
+}
+.crumb:hover { background: var(--hover); color: var(--text); }
+.crumb:active { background: var(--pressed); }
+.crumb-rule { color: var(--text-faint); flex: none; }
+.crumbs .header-title { padding: 0 var(--space-s); }
+.header-needs {
+    display: inline-flex; align-items: center; gap: var(--space-xs); flex: none;
+    height: var(--chip); box-sizing: border-box; padding: 0 var(--space-m);
+    border: 1px solid var(--warning); border-radius: calc(var(--chip) / 2);
+    background: transparent; color: var(--warning-text); font-size: var(--small); cursor: pointer;
+    white-space: nowrap;
+}
+.header-needs:hover { background: var(--hover); }
+.header-needs:active { background: var(--pressed); }
+
+/* A page: a column down the middle, scrolled as a whole. */
+.page { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
+.page-column {
+    box-sizing: border-box; width: min(100%, 72em); margin: 0 auto; min-height: 100%;
+    padding: var(--space-xl); display: flex; flex-direction: column; gap: var(--space-l);
+}
+.page-column.narrow { width: min(100%, 48em); }
+.page-head { display: flex; align-items: center; gap: var(--space-m); flex-wrap: wrap; }
+.page-title { margin: 0; font-size: var(--display); font-weight: 600; color: var(--text); }
+.page-names { flex: 1 1 12em; min-width: 0; display: flex; flex-direction: column; }
+.page-filter { flex: 1 1 12em; min-width: 0; }
+.page-filter.wide { flex: none; width: 100%; box-sizing: border-box; }
+.page-section { margin: 0 0 var(--space-s); font-size: var(--title); font-weight: 600; color: var(--text); }
+.page-empty { margin: 0; color: var(--text-secondary); font-size: var(--small); }
+/* A project's sessions take the page's height, not a list's of their own. */
+.page .session-list { flex: none; overflow: visible; }
+
+/* The sessions that wait for you. */
+.needs-you { display: flex; flex-direction: column; gap: var(--space-s); }
+.waiting-row {
+    display: flex; align-items: center; gap: var(--space-m); text-align: left; width: 100%;
+    box-sizing: border-box; padding: var(--space-m) var(--space-l);
+    border: 1px solid var(--warning); border-radius: var(--radius-m);
+    background: var(--surface-raised); color: var(--text); cursor: pointer;
+}
+.waiting-row:hover { background: var(--hover); }
+.waiting-row:active { background: var(--pressed); }
+.waiting-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.waiting-line { display: flex; align-items: baseline; gap: var(--space-s); }
+.waiting-title { font-weight: 600; }
+.waiting-question {
+    color: var(--text-secondary); font-size: var(--small); overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+}
+.waiting-open { flex: none; color: var(--accent); font-size: var(--small); white-space: nowrap; }
+
+/* The projects, as cards. */
+.cards {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22em), 1fr));
+    gap: var(--space-l); align-items: start;
+}
+.card {
+    display: flex; flex-direction: column; min-width: 0;
+    border: 1px solid var(--divider); border-radius: var(--radius-l); background: var(--card);
+    overflow: hidden;
+}
+.card-head {
+    display: flex; align-items: flex-start; gap: var(--space-m); text-align: left;
+    padding: var(--space-m) var(--space-l); border: none; background: transparent; color: var(--text);
+    cursor: pointer;
+}
+.card-head:hover { background: var(--hover); }
+.card-head:active { background: var(--pressed); }
+.card-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.card-name { font-size: var(--title); font-weight: 600; }
+.card-marks { flex: none; display: flex; align-items: center; gap: var(--space-s); white-space: nowrap; }
+.card-chip {
+    padding: 0 var(--space-s); border-radius: var(--radius-s); background: var(--subtle);
+    color: var(--text-secondary); font-size: var(--caption);
+}
+.card-chip.waiting { color: var(--warning-text); border: 1px solid var(--warning); background: transparent; }
+.card-said {
+    /* A margin, not padding: a clamped box shows the next line in its padding. */
+    margin: 0 var(--space-l) var(--space-m); padding: 0; color: var(--text-secondary); font-size: var(--small);
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+}
+.card-sessions { display: flex; flex-direction: column; border-top: 1px solid var(--divider); padding: var(--space-xs); }
+.card-session {
+    display: flex; align-items: center; gap: var(--space-s); text-align: left; min-height: var(--row);
+    padding: 0 var(--space-m); border: none; border-radius: var(--radius-s);
+    background: transparent; color: var(--text); cursor: pointer;
+}
+.card-session:hover { background: var(--hover); }
+.card-session:active { background: var(--pressed); }
+.card-session-title { flex: 1; }
+.card-none { margin: 0; padding: 0 var(--space-l) var(--space-m); }
+
+/* The dialogs over a page, and the switcher over a session. */
+.page-overlay { position: fixed; z-index: 60; }
+.page-dialog { width: min(calc(100% - 2 * var(--space-l)), 520px); }
+.page-dialog.tall { width: min(calc(100% - 2 * var(--space-l)), 640px); }
+.page-dialog .overlay-title { flex: 1; }
+.dialog-icon { color: var(--claude); display: inline-flex; }
+.dialog-body { display: flex; flex-direction: column; gap: var(--space-s); padding: var(--space-l) var(--space-xl); min-height: 0; }
+.dialog-label { color: var(--text-secondary); font-size: var(--small); margin-top: var(--space-xs); }
+.dialog-hint { margin: 0; overflow-wrap: anywhere; }
+.dialog-problem { color: var(--danger-text); font-size: var(--small); overflow-wrap: anywhere; }
+.dialog-check { display: flex; align-items: center; gap: var(--space-s); min-height: var(--control); cursor: pointer; }
+.dialog-check input { accent-color: var(--accent); width: 1.1em; height: 1.1em; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-s); margin-top: var(--space-s); }
+.dialog-row { display: flex; align-items: center; gap: var(--space-s); }
+.dialog-row .field { flex: 1; min-width: 0; }
+.dialog-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.switcher-head { padding: var(--space-m); border-bottom: 1px solid var(--divider); }
+.switcher .page-empty { padding: var(--space-l); }
+.switcher .dialog-list { padding: var(--space-xs); }
+.switcher-item {
+    display: flex; align-items: center; gap: var(--space-m); min-height: var(--row-tall);
+    padding: 0 var(--space-m); border-radius: var(--radius-s); cursor: pointer;
+}
+.switcher-item:hover { background: var(--hover); }
+.switcher-item.chosen { background: var(--selected); }
+.switcher-item.selected .switcher-texts > :first-child { font-weight: 600; }
+.switcher-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* Narrow: the place alone, without the way it was reached (Back goes there), and the bar's
+   buttons as their icons, so the place keeps some room. */
+@media (max-width: 640px) {
+    .crumb, .crumb-rule { display: none; }
+    .header-needs-text, .header-btw-text { display: none; }
+    .header-needs { padding: 0 var(--space-s); }
+    .page-column { padding: var(--space-l) var(--space-m); }
+    .waiting-open { display: none; }
+}

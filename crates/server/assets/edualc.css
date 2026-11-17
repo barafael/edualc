@@ -44,7 +44,7 @@
 
 .window {
     /* Scrollbars in the look's colours, thin, with no track of the toolkit's own (Firefox draws one white
-       beside the sidebar's list, the conversation and the settings otherwise). Inherited. */
+       beside a list, the conversation and the settings otherwise). Inherited. */
     scrollbar-color: color-mix(in srgb, var(--text) 35%, transparent) transparent;
     scrollbar-width: thin;
     /* Fills laid over a surface, and the diffs' faint backgrounds. */
@@ -77,7 +77,6 @@
     --chip: max(28px, calc(var(--base) * 2));
     --row-tall: max(42px, calc(var(--base) * 2.9));
     --header: max(46px, calc(var(--base) * 3.1));
-    --sidebar: max(272px, calc(var(--base) * 18));
     --side-panel: max(340px, calc(var(--base) * 24));
     /* The conversation's measure: its column, and what is wider (tables, the bars). */
     --measure: calc(var(--base) * 46);
@@ -109,12 +108,10 @@ body { overflow: hidden; }
 
 /* The window's areas. */
 .layout { display: flex; height: 100%; }
-.sidebar {
-    width: var(--sidebar); flex: none; background: var(--surface-raised);
-    border-right: 1px solid var(--divider); display: flex; flex-direction: column; min-height: 0;
-}
 .column { flex: 1; min-width: 360px; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .transcript { flex: 1; min-height: 0; overflow-y: auto; }
+/* The conversation's place, which what the session changed comes over (changes.css). */
+.conversation { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .dock {
     width: min(calc(100% - 2 * var(--column-margin)), var(--wide-measure)); margin: 0 auto;
     padding-bottom: var(--space-s); display: flex; flex-direction: column; gap: var(--space-s);
@@ -125,19 +122,12 @@ body { overflow: hidden; }
 }
 
 /* A narrow window (a phone's, the Android app's): the conversation takes the whole width, and
-   the sidebar and the side panel come over it, the sidebar over a scrim that hides it as it is
-   tapped. The sidebar starts hidden there, and hides as a session opens (components/mod.rs). */
-.scrim { display: none; }
+   the side panel comes over it. */
 @media (max-width: 640px) {
     .window { --column-margin: var(--space-m); }
     .layout { position: relative; }
     .column { min-width: 0; }
-    .layout > aside.sidebar {
-        position: absolute; inset: 0 auto 0 0; z-index: 30;
-        width: min(85vw, 340px) !important; min-width: 0; box-shadow: 0 0 24px var(--shadow);
-    }
     .layout > .side { position: absolute; inset: 0; z-index: 30; width: auto; min-width: 0; border-left: none; }
-    .scrim { display: block; position: absolute; inset: 0; z-index: 29; background: var(--dim); }
 }
 
 /* Controls (ui/widgets.slint). */

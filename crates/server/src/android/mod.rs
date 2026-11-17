@@ -8,9 +8,9 @@
 //! its line is unencrypted. What the window does on the phone itself (a link opened, a
 //! notification, the clipboard) is Android's (`java`).
 //!
-//! The window works where its edualcd's home folder is, or opens the session it last showed
-//! there again (Android ends an app in the background, and starts it anew as it comes back);
-//! it opens other folders from its list, as the page does. Closing it (the settings' "Choose
+//! The window opens the session it last showed on that edualcd again, in the folder it was
+//! started in (Android ends an app in the background, and starts it anew as it comes back), or
+//! else on the projects, to choose from, as the page does. Closing it (the settings' "Choose
 //! another edualcd") goes back to the start screen.
 
 // Dioxus's `rsx!` keeps its templates in `OnceLock`s: its state, not ours (as in `web`).
@@ -118,7 +118,7 @@ impl Kept {
             .map(|error| error.to_string())
     }
 
-    /// Keeps the session `last` shows (best effort: lost, a new session opens).
+    /// Keeps the session `last` shows (best effort: lost, the window opens on the projects).
     fn keep_last(&mut self, last: LastShown) {
         if self.last.as_ref() == Some(&last) {
             return;
@@ -405,16 +405,17 @@ fn Start(
     }
 }
 
-/// An edualcd reached: its line, its greeting, and the session to open and where.
+/// An edualcd reached: its line, its greeting, and the session to open and where (neither: the
+/// start page).
 struct Reached {
     link: Link,
     greeting: Greeting,
     resume: Option<SessionId>,
-    cwd: PathBuf,
+    cwd: Option<PathBuf>,
 }
 
 /// Reaches `server`, opens its line, and finds where the window opens: the session shown last
-/// there, if edualcd still keeps it, in the folder it was started in; else edualcd's home.
+/// there, if edualcd still keeps it, in the folder it was started in; else the projects.
 /// Blocking: on a thread of its own.
 fn reached(
     server: &Server,
@@ -425,15 +426,16 @@ fn reached(
     let home = connected.greeting.home.clone();
     let (resume, cwd) = match last {
         Some(id) => match connected.saved(&id) {
-            Ok(Saved::StartedIn(folder)) => (Some(id), folder),
-            Ok(Saved::Unplaced) => (Some(id), home),
-            Ok(Saved::Nowhere) => (None, home),
+            Ok(Saved::StartedIn(folder)) => (Some(id), Some(folder)),
+            Ok(Saved::Unplaced) => (Some(id), Some(home)),
+            Ok(Saved::Nowhere) => (None, None),
             Err(error) => {
                 tracing::info!(%error, "the session shown last wasn't found");
-                (None, home)
+                (None, None)
             }
         },
-        None => (None, home),
+        // Nothing to go on with: the projects, to choose from.
+        None => (None, None),
     };
     let (link, greeting) = line::run(connected, events);
     Ok(Reached {

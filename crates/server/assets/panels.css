@@ -157,3 +157,9 @@
 /* The daemon's shutdown: the button, and its cancel while it asks again. */
 .daemon-shutdown { display: flex; gap: var(--space-s); align-items: center; }
 .settings-actions { display: flex; margin-top: var(--space-s); }
+
+/* The settings' account: who is signed in, and what the session cost. */
+.account-lines { display: flex; flex-direction: column; gap: var(--space-xs); }
+.account-line { display: flex; gap: var(--space-s); font-size: var(--small); }
+.account-line .label { width: 8em; flex: none; color: var(--text-tertiary); }
+.account-line .value { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }

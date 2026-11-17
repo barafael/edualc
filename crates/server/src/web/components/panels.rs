@@ -5,7 +5,7 @@
 //! The settings page is opened and closed by the window itself, not by the app: its state is a
 //! page-level signal, [`SettingsOpen`], which `components::Window` provides with
 //! `use_context_provider(|| SettingsOpen(Signal::new(false)))` and every part reads with
-//! [`use_settings_open`]. What opens it does as the native sidebar's button does:
+//! [`use_settings_open`]. What opens it does as the native window's button does:
 //! [`SettingsOpen::open`] closes the usage details first. Ctrl+, opens it from wherever the
 //! focus is (the window's shortcuts, `components::Window`).
 
@@ -14,7 +14,8 @@ use dioxus::prelude::*;
 use edualc_core::app::Action;
 use edualc_core::cjk::CjkLanguage;
 use edualc_core::present::model::{
-    HanLanguage, PeekStep, SendKey, SideExchange, SideState, StatRow, StepKind, TaskKind,
+    HanLanguage, PeekStep, PlaceView, SendKey, SideExchange, SideState, SignInState, StatRow,
+    StepKind, TaskKind,
 };
 use edualc_core::settings;
 
@@ -39,7 +40,7 @@ impl SettingsOpen {
     pub fn close(self, view: View) {
         let mut open = self.0;
         open.set(false);
-        back_to_writing(view);
+        back_home(view);
     }
 }
 
@@ -71,10 +72,16 @@ fn scroll_to_end(list: Option<MountedEvent>) {
     }
 }
 
-/// Sends the focus to the composer, as the native window's `go-to(FocusArea.writing)`.
-fn back_to_writing(view: View) {
+/// Sends the focus back to the home of where the window is, as the native window's
+/// `close-settings` does: the composer in a session, the page's filter otherwise. For what was
+/// over the window and is put away: the focus was in it.
+pub(super) fn back_home(view: View) {
     let mut page = view.page;
-    page.write().focus_composer += 1;
+    if view.nav.peek().view == PlaceView::Session {
+        page.write().focus_composer += 1;
+    } else {
+        page.write().focus_page += 1;
+    }
 }
 
 /// Side questions (the terminal's `/btw`), beside the conversation instead of over the input:
@@ -344,7 +351,7 @@ fn UsagePanel() -> Element {
     let shown = tab().min(count.saturating_sub(1));
     let close = move || {
         view.act(Action::HideUsage);
-        back_to_writing(view);
+        back_home(view);
     };
     rsx! {
         div {
@@ -573,6 +580,7 @@ fn SettingsPanel() -> Element {
                                 onclick: move |()| view.act(Action::SendWith(settings::SendKey::CtrlEnter)),
                             }
                         }
+                        Account {}
                         DaemonSettings { running: preferences.running_sessions }
                         // The app reaches one edualcd at a time; the start screen lists the others.
                         if cfg!(feature = "mobile") {
@@ -678,6 +686,40 @@ fn Choice(
     }
 }
 
+/// Who is signed in to the program the session runs, and what the session has cost, once any
+/// of it is known.
+#[component]
+fn Account() -> Element {
+    let view = use_context::<View>();
+    let session = view.session.read();
+    let lines = [
+        ("Email", &session.email),
+        ("Organization", &session.organization),
+        ("Provider", &session.provider),
+        (session.program.as_str(), &session.version),
+        ("This session", &session.cost),
+    ];
+    if lines.iter().all(|(_, value)| value.is_empty()) {
+        return rsx! {};
+    }
+    let heading = match session.sign_in {
+        SignInState::SignedIn => "Signed in",
+        SignInState::SignedOut => "Account (not signed in)",
+        SignInState::Unknown => "Account",
+    };
+    rsx! {
+        h3 { class: "settings-heading spaced", "{heading}" }
+        div { class: "account-lines",
+            for (label , value) in lines.into_iter().filter(|(_, value)| !value.is_empty()) {
+                div { key: "{label}", class: "account-line",
+                    span { class: "label", "{label}" }
+                    span { class: "value", title: "{value}", "{value}" }
+                }
+            }
+        }
+    }
+}
+
 /// edualc's daemon, which runs every window's sessions: shut down, for a newly installed edualc
 /// to take over. The first press asks again, saying how many sessions end.
 #[component]
@@ -692,7 +734,7 @@ fn DaemonSettings(running: i32) -> Element {
     rsx! {
         h3 { class: "settings-heading spaced", "edualc's daemon" }
         p { class: "small",
-            "It runs the sessions of every window, and goes on while one runs, so a newly installed edualc takes over only once it is shut down. Shutting down ends every session, in every window; the sidebar continues them in the next window you open."
+            "It runs the sessions of every window, and goes on while one runs, so a newly installed edualc takes over only once it is shut down. Shutting down ends every session, in every window; the start page lets you continue them in the next window you open."
         }
         div { class: "daemon-shutdown",
             Button {

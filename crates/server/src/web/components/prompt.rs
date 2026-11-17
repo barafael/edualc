@@ -661,7 +661,7 @@ fn PlanReview() -> Element {
 fn SectionRow(index: usize, section: PlanSection) -> Element {
     let view = use_context::<View>();
     let commented = !section.comment.is_empty();
-    let excerpt = section.excerpt.clone();
+    let excerpt = &section.excerpt;
     let (comment_icon, comment_class, comment_label) = if commented {
         (
             Lucide::MessageSquareText,
@@ -704,9 +704,12 @@ fn SectionRow(index: usize, section: PlanSection) -> Element {
                 }
                 if section.editing {
                     CommentEditor {
-                        index,
+                        id: "plan-comment-{index}",
                         text: section.comment.clone(),
-                        about: section.excerpt,
+                        label: "Comment on: {excerpt}",
+                        placeholder: "Your comment on this part",
+                        onsave: move |text| view.act(Action::SetComment { section: index, text }),
+                        oncancel: move |()| view.act(Action::CancelComment),
                     }
                 }
             }
@@ -720,45 +723,53 @@ fn SectionRow(index: usize, section: PlanSection) -> Element {
     }
 }
 
-/// Writing a comment on a part of the plan: Ctrl+Enter keeps it, Esc drops the edit. `about` is
-/// the part's first words, naming the editor for assistive technology.
+/// Writing a comment, on a part of the plan or on a line of what the session changed (as the
+/// native window's one `CommentEditor` is for both): Ctrl+Enter keeps it, Esc drops the edit.
+/// `label` names the editor for assistive technology; `class` is for where it is drawn.
 #[component]
-fn CommentEditor(index: usize, text: String, about: String) -> Element {
-    let view = use_context::<View>();
+pub(super) fn CommentEditor(
+    id: String,
+    text: String,
+    label: String,
+    placeholder: String,
+    onsave: EventHandler<String>,
+    oncancel: EventHandler<()>,
+    #[props(default, into)] class: String,
+) -> Element {
     let mut written = use_signal(|| text);
-    use_effect(move || focus_at_end(&format!("plan-comment-{index}")));
-    let save = move || {
-        view.act(Action::SetComment {
-            section: index,
-            text: written.peek().clone(),
-        });
-    };
-    let cancel = move || view.act(Action::CancelComment);
+    let field = id.clone();
+    use_effect(move || focus_at_end(&field));
     rsx! {
-        div { class: "plan-editor",
+        div { class: "plan-editor {class}",
             textarea {
-                id: "plan-comment-{index}",
+                id,
                 class: "plan-editor-input",
                 rows: "2",
-                "aria-label": "Comment on: {about}",
-                "aria-placeholder": "Your comment on this part",
+                "aria-label": "{label}",
+                "aria-placeholder": "{placeholder}",
                 value: "{written}",
                 oninput: move |event| written.set(event.value()),
                 onkeydown: move |event| {
                     let key = event.key();
                     if key == Key::Enter && event.modifiers().ctrl() {
                         event.prevent_default();
-                        save();
+                        onsave.call(written.peek().clone());
                     } else if key == Key::Escape {
+                        // The comment's own Esc: it puts away nothing that is under the editor.
                         event.prevent_default();
-                        cancel();
+                        event.stop_propagation();
+                        oncancel.call(());
                     }
                 },
             }
             div { class: "plan-editor-actions",
                 div { class: "caption", "Ctrl+Enter to keep, Esc to drop" }
-                Button { onclick: move |_| cancel(), "Cancel" }
-                Button { primary: true, onclick: move |_| save(), "Comment" }
+                Button { onclick: move |_| oncancel.call(()), "Cancel" }
+                Button {
+                    primary: true,
+                    onclick: move |_| onsave.call(written.peek().clone()),
+                    "Comment"
+                }
             }
         }
     }

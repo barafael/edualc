@@ -93,8 +93,9 @@ The app keeps the edualcds it paired with, and the session it showed last, in it
 open that session again, it asks edualcd where it was started (`Read::Saved`).
 
 A narrow window (a phone's, or a browser's on one) gets a layout of its own (`edualc.css`): the
-sidebar comes over the conversation, starts hidden, and hides when a session opens; the side panel
-takes the whole width.
+bar across the top shows the place alone and its buttons as icons, the less used of them behind
+one; the side panel takes the whole width. The bar's button opens the session switcher, where a
+touch screen has no Ctrl+K.
 
 ## The network side
 
@@ -188,7 +189,7 @@ In `crates/server/src`:
 | | |
 |---|---|
 | `main.rs`, `serve.rs` | edualcd's command line, and starting the daemon, its network side and the page |
-| `web/` | the page: its frontend of the presenter (`web/view.rs`), and its components, one for each area of `ui/app.slint` |
+| `web/` | the page: its frontend of the presenter (`web/view.rs`), and its components, one for each area of `ui/app.slint`: the bar across the top, the start page, a project's page and the session switcher (`components/pages.rs`), a session's conversation, and what the session changed (`components/changes.rs`) |
 | `line.rs` | the page's connection to edualcd |
 | `android/` | the Android app: its start screen (the paired edualcds, pairing), and what it asks of Android through JNI (`java.rs`: the clipboard, notifications, its files folder) |
 

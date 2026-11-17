@@ -1,6 +1,7 @@
-//! Moving the focus on the page by an element's id, once the element is drawn: it may only now
-//! be shown (a panel just opened, the sidebar shown again). By the browser's own script, which
-//! the server's render passes over, and which the Android app's WebView runs alike.
+//! Moving the focus on the page by an element's id (or the view to it), once the element is
+//! drawn: it may only now be shown (a panel or a dialog just opened). By the browser's own
+//! script, which the server's render passes over, and which the Android app's WebView runs
+//! alike.
 
 use dioxus::prelude::*;
 
@@ -44,6 +45,12 @@ pub fn grab_focus(id: &str) {
 /// As [`grab_focus`], the caret after the text (a session opened, its draft in the composer).
 pub fn grab_focus_at_end(id: &str) {
     on_drawn(id, &format!("{UNLESS_TYPED_ON_TOUCH} {FOCUS_AT_END}"));
+}
+
+/// Brings the element with `id` into view where a list has scrolled it out, no further than
+/// that takes (a row chosen with the keys while the focus stays in a field).
+pub fn reveal(id: &str) {
+    on_drawn(id, "element.scrollIntoView({ block: 'nearest' });");
 }
 
 /// Moves the focus to the next of a menu's items (`forward`) or the one before, staying at the

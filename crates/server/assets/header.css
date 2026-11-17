@@ -1,11 +1,10 @@
-/* Above the conversation (ui/app.slint's Header; src/web/components/header.rs). */
+/* The bar across the top (ui/topbar.slint; src/web/components/header.rs). */
 
 .header {
     height: var(--header); box-sizing: border-box; flex: none;
     display: flex; align-items: center; gap: var(--space-s);
-    padding: 0 var(--space-m); border-bottom: 1px solid var(--divider);
+    padding: 0 var(--space-m); border-bottom: 1px solid var(--divider); position: relative;
 }
-.header.sidebar-hidden { padding-left: var(--space-s); }
 .header-title {
     flex: 1; min-width: 0; margin: 0; font-size: inherit; font-weight: 600; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -56,9 +55,59 @@
 }
 .header-unseen { width: 8px; height: 8px; border-radius: 4px; background: var(--claude); flex: none; }
 
-/* Where the sidebar's chips go while it is hidden. */
-.header .chip-slot { display: inline-flex; flex: none; }
 .header-unencrypted {
     display: inline-flex; align-items: center; gap: var(--space-xs); flex: none;
     color: var(--warning-text); font-size: var(--small); white-space: nowrap;
+}
+
+/* edualc's heron, in Claude's colour. About once a minute, for a second or so, it looks over its
+   shoulder, preens or flaps its wings, in turn: 61 s, 83 s and 47 s apart. */
+.heron-mark {
+    width: 24px; height: 24px; flex: none; background: var(--claude);
+    mask: var(--heron) center / contain no-repeat;
+    animation: heron 194.71s step-end infinite;
+}
+@keyframes heron {
+    0% { mask-image: var(--heron); }
+    31.329% { mask-image: var(--heron-back); }
+    32.099% { mask-image: var(--heron); }
+    74.727% { mask-image: var(--heron-preen-1); }
+    74.850% { mask-image: var(--heron-preen-2); }
+    74.973% { mask-image: var(--heron-preen-1); }
+    75.096% { mask-image: var(--heron-preen-2); }
+    75.220% { mask-image: var(--heron-preen-1); }
+    75.343% { mask-image: var(--heron-preen-2); }
+    75.466% { mask-image: var(--heron); }
+    99.605% { mask-image: var(--heron-half); }
+    99.661% { mask-image: var(--heron-up); }
+    99.718% { mask-image: var(--heron-half); }
+    99.774% { mask-image: var(--heron); }
+    99.831% { mask-image: var(--heron-half); }
+    99.887% { mask-image: var(--heron-up); }
+    99.944% { mask-image: var(--heron-half); }
+    100% { mask-image: var(--heron); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .heron-mark { animation: none; }
+}
+
+/* The limit's use warms as it fills, as its meter does. */
+.header-btw.warning { color: var(--warning-text); }
+.header-btw.danger { color: var(--danger-text); }
+
+/* What a narrow window keeps behind one button (a new session, the usage, the look, the
+   settings): in the bar while there is room. Narrow, a menu under the button, over a backdrop
+   that puts it away on a press beside it. */
+.header-more { display: flex; align-items: center; gap: var(--space-s); flex: none; }
+.icon-button.header-more-button, .header-more-backdrop { display: none; }
+@media (max-width: 640px) {
+    .heron-mark { display: none; }
+    .icon-button.header-more-button { display: inline-flex; }
+    .header-more-backdrop { display: block; position: fixed; inset: 0; z-index: 40; }
+    .header-more { display: none; }
+    .header-more.open {
+        display: flex; position: absolute; top: calc(100% + var(--space-xs)); right: var(--space-s); z-index: 50;
+        padding: var(--space-xs); background: var(--surface); border: 1px solid var(--divider);
+        border-radius: var(--radius-m); box-shadow: 0 4px 12px var(--dim);
+    }
 }

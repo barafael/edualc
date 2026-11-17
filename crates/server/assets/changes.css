@@ -1,0 +1,93 @@
+/* What the session changed, over the conversation (ui/changes.slint;
+   src/web/components/changes.rs). */
+
+/* Its own width, not the window's, decides how it is laid out: the side panel may be beside
+   it. */
+.changes {
+    position: absolute; inset: 0; z-index: 20; background: var(--surface);
+    display: flex; flex-direction: column; min-height: 0; container-type: inline-size;
+}
+.changes:focus { outline: none; }
+/* The conversation under it keeps where it was scrolled, out of reach of the keys and screen
+   readers, as under the plan's review (prompt.css). */
+.column.showing-changes .transcript-area { visibility: hidden; }
+.changes-head {
+    flex: none; display: flex; align-items: center; gap: var(--space-m); flex-wrap: wrap;
+    padding: var(--space-s) var(--space-m) var(--space-s) var(--space-l);
+    border-bottom: 1px solid var(--divider);
+}
+.changes-names { flex: 1 1 8em; min-width: 0; display: flex; align-items: baseline; gap: var(--space-s); }
+.changes-title { margin: 0; font-size: var(--title); font-weight: 600; color: var(--text); }
+.changes-scopes { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius-m); background: var(--subtle); }
+.changes-scope {
+    height: var(--chip); padding: 0 var(--space-m); border: none; border-radius: var(--radius-s);
+    background: transparent; color: var(--text-secondary); font-size: var(--small); cursor: pointer;
+    white-space: nowrap;
+}
+.changes-scope:hover { background: var(--hover); }
+.changes-scope[aria-pressed="true"] { background: var(--selected); color: var(--text); }
+.changes-note { margin: 0; padding: var(--space-s) var(--space-l); color: var(--text-secondary); font-size: var(--small); }
+
+/* The files beside the diff of the one chosen; narrow, above it. */
+.changes-body { flex: 1; min-height: 0; display: flex; }
+.changes-files {
+    width: min(40%, 22em); flex: none; overflow-y: auto; border-right: 1px solid var(--divider);
+    display: flex; flex-direction: column;
+}
+.changes-file {
+    position: relative; display: flex; align-items: flex-start; gap: var(--space-s); text-align: left;
+    padding: var(--space-s) var(--space-s) var(--space-s) var(--space-m);
+    border: none; background: transparent; color: var(--text); cursor: pointer;
+}
+.changes-file:hover { background: var(--hover); }
+.changes-file.selected { background: var(--selected); }
+.changes-file-kind { color: var(--text-secondary); margin-top: 2px; display: inline-flex; }
+.changes-file.added .changes-file-kind { color: var(--success); }
+.changes-file.deleted .changes-file-kind { color: var(--danger-text); }
+.changes-file-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.changes-file-path { font-family: var(--mono); font-size: var(--code-size); overflow-wrap: anywhere; }
+.changes-file-facts { display: flex; flex-wrap: wrap; gap: var(--space-s); }
+.changes-added { color: var(--success); }
+.changes-removed { color: var(--danger-text); }
+.changes-reviewed { color: var(--success); display: inline-flex; margin-top: 2px; }
+.changes-reviewed.stale { color: var(--warning-text); }
+
+.changes-diff { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.changes-diff-head {
+    flex: none; display: flex; align-items: center; gap: var(--space-m);
+    padding: var(--space-s) var(--space-m) var(--space-s) var(--space-l); border-bottom: 1px solid var(--divider);
+}
+.changes-diff-path { flex: 1; font-family: var(--mono); font-size: var(--code-size); }
+.changes-rows { flex: 1; min-height: 0; overflow: auto; font-family: var(--mono); font-size: var(--code-size); line-height: 1.5; }
+.changes-row { display: flex; align-items: flex-start; gap: var(--space-s); padding-right: var(--space-s); }
+.changes-row.added { background: var(--added); }
+.changes-row.removed { background: var(--removed); }
+.changes-row.gap { color: var(--text-faint); }
+.changes-number {
+    flex: none; width: 3.5em; text-align: right; color: var(--text-faint); user-select: none;
+    font-variant-numeric: tabular-nums;
+}
+.changes-sign { flex: none; width: 1ch; user-select: none; }
+.changes-row.added .changes-sign { color: var(--success); }
+.changes-row.removed .changes-sign { color: var(--danger-text); }
+.changes-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A line's comment button shows as the line is pointed at or reached by the keys, and stays
+   while the line has a comment. */
+.icon-button.changes-comment-button { opacity: 0; }
+.changes-row:hover .changes-comment-button, .changes-comment-button:focus-visible,
+.changes-comment-button.commented { opacity: 1; }
+.changes-comment-button.commented { color: var(--accent); }
+@media (pointer: coarse) { .icon-button.changes-comment-button { opacity: 1; } }
+.changes-comment { margin: var(--space-xs) var(--space-m) var(--space-s) 8em; font-family: var(--sans); font-size: var(--base); }
+
+.changes-foot {
+    flex: none; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-m);
+    flex-wrap: wrap; padding: var(--space-s) var(--space-l); border-top: 1px solid var(--divider);
+}
+
+@container (max-width: 720px) {
+    .changes-body { flex-direction: column; }
+    .changes-files { width: auto; max-height: 30%; border-right: none; border-bottom: 1px solid var(--divider); }
+    .changes-number { width: 2.5em; }
+    .changes-comment { margin-left: var(--space-m); }
+}

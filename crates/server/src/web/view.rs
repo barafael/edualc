@@ -24,8 +24,10 @@ pub struct Page {
     pub focus_composer: u32,
     pub focus_side: u32,
     pub focus_prompt: u32,
-    /// The sidebar's filter is to take the focus, once it is drawn (Ctrl+K).
-    pub filter_wanted: bool,
+    /// Bumped to focus the start or project page (its filter).
+    pub focus_page: u32,
+    /// Bumped as a new project's folder was made: its dialog closes.
+    pub project_created: u32,
     /// Bumped to go to the transcript's end.
     pub scroll_to_end: u32,
     /// Bumped as a session's transcript is loaded: shown at its end.
@@ -34,13 +36,10 @@ pub struct Page {
     pub show_tasks: u32,
     /// Bumped as the folder typed in the list of folders opened.
     pub projects_opened: u32,
-    /// Bumped to open the list of folders from elsewhere (the trust bar).
-    pub projects_asked: u32,
     pub model_index: i32,
     pub mode_index: i32,
     pub reviewing: bool,
     pub composer_height: Option<u16>,
-    pub sidebar_width: Option<u16>,
     /// The base text size, in CSS pixels.
     pub text_size: f32,
     /// Device pixels to a CSS pixel, as the app reads it (a browser's page asks the browser).
@@ -59,11 +58,15 @@ pub struct Page {
 /// Every part of the window, as signals.
 #[derive(Clone, Copy)]
 pub struct View {
+    /// Where the window is: the start page, a project's, or a session.
+    pub nav: Signal<model::Nav>,
     pub session: Signal<model::Session>,
     pub composer: Signal<model::Composer>,
     pub sessions: Signal<model::Sessions>,
     pub prompt: Signal<model::Prompt>,
     pub peek: Signal<model::Peek>,
+    /// What the session changed in its folder.
+    pub changes: Signal<model::Changes>,
     pub side: Signal<model::Side>,
     pub preferences: Signal<model::Preferences>,
     pub usage: Signal<model::Usage>,
@@ -97,6 +100,8 @@ impl View {
 
     pub fn new() -> Self {
         Self {
+            nav: Signal::new(model::Nav::default()),
+            changes: Signal::new(model::Changes::default()),
             session: Signal::new(model::Session {
                 title: "New session".to_owned(),
                 limit_five_hour: -1.0,
@@ -122,7 +127,6 @@ impl View {
         }
     }
 
-    /// Hands an action to the app.
     /// A new session with the program the shown one runs, signed in as it is: the page has no
     /// menu of programs.
     pub fn new_session(&self) {
@@ -136,6 +140,26 @@ impl View {
         self.act(Action::NewSession(backend, sign_in));
     }
 
+    /// Opens a session one of the lists names (a project's card, what needs you, the switcher):
+    /// in its folder, attached to if the daemon runs it (`hosted`). One whose id doesn't read
+    /// opens its project.
+    pub fn jump(&self, folder: &str, session: &str, hosted: &str) {
+        use edualc_core::app::SessionTarget;
+        use edualc_core::external::wire::SessionId;
+        use edualc_core::overview::SessionRef;
+        let folder = std::path::PathBuf::from(folder);
+        let Ok(session) = SessionId::try_from(session.to_owned()) else {
+            self.act(Action::EnterProject(folder));
+            return;
+        };
+        let opens = match hosted.parse() {
+            Ok(hosted) => SessionRef::Hosted { hosted, session },
+            Err(_) => SessionRef::Session(session),
+        };
+        self.act(Action::JumpTo(SessionTarget { folder, opens }));
+    }
+
+    /// Hands an action to the app.
     pub fn act(&self, action: Action) {
         if !self.try_act(action) {
             tracing::debug!("an action while no app runs");
@@ -151,6 +175,20 @@ impl View {
             .as_ref()
             .is_some_and(|events| events.try_send(Event::Action(action)).is_ok())
     }
+}
+
+/// Calls `then` each time one of the page's counters (`read`) has moved since the part that
+/// uses this was made. What was asked for before then was asked of the window as it was: a
+/// part made later doesn't do it again.
+pub fn use_bumped(read: fn(&Page) -> u32, mut then: impl FnMut() + 'static) {
+    let view = use_context::<View>();
+    let serial = use_memo(move || read(&view.page.read()));
+    let made_at = use_hook(|| *serial.peek());
+    use_effect(move || {
+        if serial() != made_at {
+            then();
+        }
+    });
 }
 
 /// The page, as the presenter's frontend. Only in the browser and the Android app: the server
@@ -169,9 +207,10 @@ impl PageFrontend {
 
 #[cfg(any(feature = "web", feature = "mobile"))]
 impl Frontend for PageFrontend {
-    /// Where the window is (the start page, a project, a session): the page has no start or
-    /// project page, and opens in a session.
-    fn nav(&mut self, _old: Option<&model::Nav>, _nav: &model::Nav) {}
+    fn nav(&mut self, _old: Option<&model::Nav>, nav: &model::Nav) {
+        let mut shown = self.view.nav;
+        shown.set(nav.clone());
+    }
 
     fn session(&mut self, _old: Option<&model::Session>, session: &model::Session) {
         let mut shown = self.view.session;
@@ -211,8 +250,10 @@ impl Frontend for PageFrontend {
         shown.set(peek.clone());
     }
 
-    /// What the session changed in its folder: the page has no Changes view.
-    fn changes(&mut self, _old: Option<&model::Changes>, _changes: &model::Changes) {}
+    fn changes(&mut self, _old: Option<&model::Changes>, changes: &model::Changes) {
+        let mut shown = self.view.changes;
+        shown.set(changes.clone());
+    }
 
     fn side(&mut self, _old: Option<&model::Side>, side: &model::Side) {
         let mut shown = self.view.side;
@@ -290,11 +331,12 @@ impl Frontend for PageFrontend {
             Command::Look(look) => page.write().look = look,
             Command::Quit => page.write().closed = true,
             Command::SessionShown(session) => page.write().session = session,
-            // The page shows code as it is, and has no start page, project page or switcher.
+            Command::NewProjectCreated => page.write().project_created += 1,
+            Command::FocusPage => page.write().focus_page += 1,
+            // The page shows code as it is; the switcher and the dialog for a new project are
+            // opened by the page's own keys and buttons, and the app asks for neither.
             Command::RecolourCode
             | Command::DrawColouredCode
-            | Command::NewProjectCreated
-            | Command::FocusPage
             | Command::ToggleSwitcher
             | Command::OpenNewProject => {}
         }
