@@ -9,7 +9,7 @@ default:
 
 # Everything the CI workflow checks; `just in-image arch check` runs it in CI's image.
 [group('check')]
-check: fmt-check lint lint-wasm test present-check deny audit workflows packaging-check images-check licences-check
+check: fmt-check lint lint-wasm test deny audit workflows packaging-check images-check licences-check
 
 # One package's quick loop, for working on it: formats, then ast-grep's rules, clippy and the
 # package's tests (or those whose names contain `filter`), each in one line per finding,
@@ -28,22 +28,19 @@ feedback package filter="":
 scan:
     ast-grep scan --report-style short
 
-# The presentation model is what scripts/present_gen.py writes from the Slint types.
-[group('check')]
-present-check: present
-    git diff --exit-code crates/core/src/present/model.rs crates/slint/src/ui/model.rs
-
 # The Rust sources' formatting (the Nickel files' is in packaging-check).
 [group('check')]
 fmt-check:
     cargo fmt --check
 
-# The formatting, ast-grep's rules and their tests, clippy, and the docs' links.
+# The formatting, ast-grep's rules and their tests, clippy, the presentation model against the
+# Slint files, and the docs' links.
 [group('check')]
 lint: fmt-check && doc
     ast-grep test
     ast-grep scan
     cargo clippy --locked --all-targets -- -D warnings
+    cargo run --locked --quiet -p present-gen -- --check
 
 # The docs, private items included; a link that doesn't resolve fails (see Cargo.toml's lints).
 [group('check')]
@@ -100,13 +97,13 @@ fmt:
 
 # Writes every generated file kept in the tree.
 [group('write')]
-regenerate: licences manual kept present
+regenerate: present licences manual kept
 
-# The presentation model, from ui/types.slint and ui/state.slint: after changing either.
+# The presentation model (crates/core/src/present/model.rs) and the window's side of it
+# (crates/slint/src/ui/model.rs), from ui/types.slint and ui/state.slint.
 [group('write')]
 present:
-    python3 scripts/present_gen.py
-    cargo fmt
+    cargo run --locked --quiet -p present-gen
 
 # THIRD_PARTY_LICENSES.md, then the grammars' licences, which cargo-about doesn't see.
 [group('write')]

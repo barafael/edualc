@@ -68,20 +68,21 @@ change, and tells the window. Nothing is checked on a schedule, with two excepti
 
 ## Layout
 
-edualc is a Cargo workspace of three crates:
+edualc is a Cargo workspace of four crates:
 
 | | |
 |---|---|
 | `crates/core` (`edualc-core`) | what every window shares: the conversation, `App` that owns its state, what a window shows (`present`), the protocol, and the window's connection to the daemon. It builds for Linux and for `wasm32` (the browser demo); what only Linux has is behind `#[cfg(not(target_arch = "wasm32"))]`. |
 | `crates/host` (`edualc-host`, the `edualcd` binary) | the daemon: it runs `claude` or agy's adapter, reads Claude Code's files, and acts on the desktop |
 | `crates/slint` (`edualc`) | the window, drawn with Slint, and the browser demo |
+| `crates/present-gen` | writes the presentation model (`present/model.rs`) and the window's side of it (`ui/model.rs`) from `ui/types.slint` and `ui/state.slint`, read with Slint's own parser. Run `just present` after changing either Slint file; `just lint` fails while the written files are out of date. |
 
 In `crates/core/src`:
 
 | | |
 |---|---|
 | `app.rs`, `app/` | `App`, the single owner of all state. Your actions, the daemon's messages, timers (`repeat`) and what the daemon read reach it as `Event`s on one channel. `app/` holds applying what the process says (`protocol`), the side panel (`side`, `peek`), what runs beside the turn (`tasks`), the usage panel (`usage`), images, and worktrees. |
-| `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `scripts/present_gen.py`), handed to a `Frontend` once per batch, each part only when it changed |
+| `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `crates/present-gen`), handed to a `Frontend` once per batch, each part only when it changed |
 | `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
 | `link.rs` | the window's connection, whatever carries it: the channel its messages go on, the daemon's greeting, and the `Inbox` that turns the daemon's messages into `Event`s |
