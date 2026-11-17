@@ -17,6 +17,7 @@ ignore = [
   { id = "RUSTSEC-2026-0371", reason = "zbus_names, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, folded into zbus: Slint's accessibility (AT-SPI) stack" },
   { id = "RUSTSEC-2026-0441", reason = "pin-utils, unmaintained: Slint's macros block on futures with spin_on" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono, unmaintained: Slint's core needs it for its date functions; no feature turns it off" },
   { id = "RUSTSEC-2025-0141", reason = "bincode 1, unmaintained and called complete by its authors: syntect reads its bundled grammars with it" },
 ]
 
