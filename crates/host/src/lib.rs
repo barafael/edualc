@@ -9,6 +9,7 @@ mod acp;
 mod daemon;
 mod files;
 mod keyring;
+mod snapshots;
 mod spawn;
 
 // What `edualcd` starts as: the daemon, or an ACP session's adapter or its messaging tool. The

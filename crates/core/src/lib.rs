@@ -6,6 +6,7 @@
 //! (`#[cfg(not(target_arch = "wasm32"))]`), which the browser build leaves out.
 
 pub mod app;
+pub mod changes;
 pub mod chat;
 pub mod cjk;
 pub mod claude;

@@ -74,6 +74,29 @@ paragraph or single list item. Then choose:
 - **Approve:** your comments go into the approved plan as notes under their parts. Claude receives
   it as an "Approved Plan (edited by user)".
 
+## Changes
+
+Before and after each turn, edualc's daemon looks at the session's folder, or at the worktree the
+session works in. So it can show what the turn changed, whoever changed it. A line under each
+turn says its number, how long it took and the tokens it sent and got, then what it changed
+("2 files · +5 −0"). That, or **Changes** in the top bar, opens the view over the conversation:
+
+- **Last turn, Since you looked, Whole session:** which changes it shows. "Since you looked"
+  starts when you last closed the view.
+- **Who changed each file:** "Claude's edit" when Claude's Edit, Write or NotebookEdit tool named
+  it in that turn; "by a command" when it changed in a turn without them, as a formatter or a
+  script would change it; "between turns" when it changed outside any turn.
+- **Mark reviewed:** the mark stays until the file changes again, then the file says "changed
+  since".
+- **Comments:** comment on any line of a diff. **Send to Claude** sends them together, each with
+  its file, its line's number and the line.
+
+Files `.gitignore` names, `.git`, repositories and worktrees inside the folder, binary files and
+files over 1 MiB are left out, and the view says how many. Only sessions edualc runs are looked
+at, not those in a terminal. A turn Claude Code starts by itself, for another session's message,
+isn't seen as a turn yet, so its changes show as made between turns. The snapshots are kept in
+`~/.local/state/edualc/changes/`, and those of a session nobody looked at for 30 days are deleted.
+
 ## Start page
 
 Opening `edualc` without a folder opens the start page:

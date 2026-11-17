@@ -22,7 +22,7 @@ use crate::external::agy::{self, AgyTask};
 use crate::external::wire::TranscriptLine;
 use crate::folder::Folder;
 use crate::ipc::{self, ActId, Answer, FromDaemon, Place, ProjectOverview, Read, Target, Watched};
-use crate::{sessions, settings};
+use crate::{sessions, settings, snapshots};
 
 /// Where what is told to a window goes.
 type Outbox = mpsc::Sender<FromDaemon>;
@@ -200,7 +200,43 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
                 .map(Folder::into_path)
                 .map_err(|problem| problem.to_string()),
         ),
+        Read::Changes { session, scope } => Answer::Changes(
+            kept_changes(&session)
+                .and_then(|store| store.changes(scope).map_err(|error| unkept(&error))),
+        ),
+        Read::Diff {
+            session,
+            scope,
+            root,
+            path,
+        } => Answer::Diff(kept_changes(&session).and_then(|store| {
+            store
+                .hunks(scope, &root, &path)
+                .map(crate::changes::Diff::fitted)
+                .map_err(|error| unkept(&error))
+        })),
     }
+}
+
+/// A session's changes as the keeper wrote them.
+fn kept_changes(
+    session: &crate::external::wire::SessionId,
+) -> Result<snapshots::Store, ipc::Unkept> {
+    let home =
+        snapshots::home().ok_or_else(|| ipc::Unkept("there is no state folder".to_owned()))?;
+    snapshots::Store::open(&home, session).map_err(|error| unkept(&error))
+}
+
+/// A store's error in words, with what caused it, for the window.
+fn unkept(error: &snapshots::Error) -> ipc::Unkept {
+    let mut words = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        words.push_str(": ");
+        words.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    ipc::Unkept(words)
 }
 
 /// A transcript's lines to the window, as text in pieces that fit messages (a line may be longer

@@ -38,7 +38,7 @@ export struct MdBlock {
     column-stretch: [float],
 }
 
-export enum EntryKind { user, assistant, thinking, tool, image, peer, info, error }
+export enum EntryKind { user, assistant, thinking, tool, image, peer, info, error, turn-end }
 
 // How far an image in the conversation is: decoded and shown, still being decoded, or not to
 // be shown.
@@ -107,6 +107,9 @@ export struct Entry {
     group-open: bool,
     // A later call of a folded run: not in the list at all (see `View::new`).
     hidden: bool,
+    // Under a turn: what it changed in the session's folder, in short ("2 files · +5 −0"), or
+    // "" until the daemon says, or if it changed nothing.
+    changed: string,
 }
 
 // How a running session is doing.
@@ -146,6 +149,44 @@ export struct SessionRow {
 
 // The side panel (`/btw`): open, folded away into the header's button, or not there.
 export enum SideView { hidden, shown, folded }
+
+// Which changes the Changes view shows: the last turn's, those since you last looked, or the
+// whole session's.
+export enum ChangeScope { turn, since-looked, session }
+
+export enum ChangeKind { added, changed, deleted }
+
+// Who changed a file: Claude's editing tools, a command, both, or nobody in a turn.
+export enum ChangeWho { claude, command, both, between-turns }
+
+export enum ChangeReview { not-reviewed, reviewed, changed-since }
+
+// A file a session changed, as the Changes view lists it.
+export struct ChangedFile {
+    // Its path in the session's folder, or the worktree's name and the path in it.
+    path: string,
+    kind: ChangeKind,
+    who: ChangeWho,
+    added: int,
+    removed: int,
+    review: ChangeReview,
+    // Your comments on its lines, not sent yet.
+    comments: int,
+    selected: bool,
+}
+
+// A line of a changed file's diff, or the gap between two hunks, with its numbers in the old
+// file and the new ("" where it has none) and your comment on it.
+export enum DiffRowKind { same, removed, added, gap }
+
+export struct DiffRow {
+    kind: DiffRowKind,
+    old: string,
+    new: string,
+    text: string,
+    comment: string,
+    editing: bool,
+}
 
 export enum SideState { pending, retrying, answered, failed }
 

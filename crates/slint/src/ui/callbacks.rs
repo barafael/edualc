@@ -10,8 +10,9 @@ use crate::app::{Action, Event, PermissionMode, SessionTarget};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Nav, Peek, PeerMessages,
-    Preferences, Program, Prompt, SendKey, Session, Sessions, Side, SignInWith, Transcript, Usage,
+    AppWindow, ChangeScope, Changes, Clipboard, Composer, Focus, HanLanguage, LineBreak, Nav, Peek,
+    PeerMessages, Preferences, Program, Prompt, SendKey, Session, Sessions, Side, SignInWith,
+    Transcript, Usage,
 };
 use crate::ipc::HostedId;
 use crate::overview::SessionRef;
@@ -195,6 +196,26 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     let peek = window.global::<Peek>();
     peek.on_follow(actions.on_text(|task| Action::OpenPeek(task.into())));
     peek.on_close(actions.on(|| Action::ClosePeek));
+
+    let changes = window.global::<Changes>();
+    changes.on_show(actions.on(|| Action::ShowChanges));
+    changes.on_close(actions.on(|| Action::CloseChanges));
+    changes.on_choose_scope({
+        let actions = actions.clone();
+        move |scope| {
+            actions.send(Action::ChangesScope(match scope {
+                ChangeScope::Turn => crate::changes::Scope::Turn,
+                ChangeScope::SinceLooked => crate::changes::Scope::SinceLooked,
+                ChangeScope::Session => crate::changes::Scope::Session,
+            }));
+        }
+    });
+    changes.on_select(actions.on_index(Action::SelectChangedFile));
+    changes.on_mark_reviewed(actions.on(|| Action::MarkReviewed));
+    changes.on_edit_comment(actions.on_index(Action::EditLineComment));
+    changes.on_set_comment(actions.on_index_text(Action::SetLineComment));
+    changes.on_cancel_comment(actions.on(|| Action::CancelLineComment));
+    changes.on_send_comments(actions.on(|| Action::SendLineComments));
 
     let sessions = window.global::<Sessions>();
     sessions.on_new_session({

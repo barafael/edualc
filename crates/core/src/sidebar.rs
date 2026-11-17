@@ -30,8 +30,8 @@ pub struct Listing<'a> {
     pub own: Option<Own<'a>>,
     /// What other Claude Code processes run, in any folder.
     pub live: &'a [LiveSession],
-    /// What edualc's daemon runs: it alone knows what each signed in with. Claude Code's are
-    /// among `live` too; agy's adapter writes no record there.
+    /// What edualc's daemon runs: it alone knows what each signed in with. Claude Code and
+    /// agy's adapter write a record of each, so these are among `live` too, once it is written.
     pub hosted: &'a [Hosted],
     /// The project's saved sessions, the newest first.
     pub saved: &'a [SessionInfo],
@@ -154,7 +154,7 @@ pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
                 ),
             }),
     );
-    // What the daemon runs that no record lists (agy's sessions), in another window or in none.
+    // What the daemon runs that no record lists yet, as just after it started.
     let unlisted: Vec<Running> = listing
         .hosted
         .iter()
@@ -405,8 +405,8 @@ mod tests {
         );
     }
 
-    /// A session edualc's daemon runs that no record lists, as agy's, is listed from what the
-    /// daemon says, in another window or in none.
+    /// A session edualc's daemon runs that no record lists yet is listed from what the daemon
+    /// says, in another window or in none; one a record lists, once.
     #[test]
     fn a_session_the_daemon_runs_is_running() {
         let saved = [

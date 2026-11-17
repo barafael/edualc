@@ -81,7 +81,7 @@ In `crates/core/src`:
 
 | | |
 |---|---|
-| `app.rs`, `app/` | `App`, the single owner of all state. Your actions, the daemon's messages, timers (`repeat`) and what the daemon read reach it as `Event`s on one channel. `app/` holds applying what the process says (`protocol`), the side panel (`side`, `peek`), what runs beside the turn (`tasks`), the usage panel (`usage`), images, and worktrees. |
+| `app.rs`, `app/` | `App`, the single owner of all state. Your actions, the daemon's messages, timers (`repeat`) and what the daemon read reach it as `Event`s on one channel. `app/` holds applying what the process says (`protocol`), the side panel (`side`, `peek`), the Changes view (`changes`), what runs beside the turn (`tasks`), the usage panel (`usage`), images, and worktrees. |
 | `present/` | the `Presenter`: the state turned into what a window shows, as plain data (`model.rs`, generated from `ui/types.slint` and `ui/state.slint` by `crates/present-gen`), handed to a `Frontend` once per batch, each part only when it changed |
 | `colour.rs` | what a window that colours code is asked and tells back: a block to colour, and the same block coloured |
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
@@ -92,6 +92,7 @@ In `crates/core/src`:
 | `decode.rs`, `decode/` | making images safe to show and send, and the locked-down process that decodes them |
 | `external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, the inputs of its tools, the Agent Client Protocol, what agy keeps of its conversations, MCP as edualc's messaging tool reads it, and niri's IPC. These accept keys they don't know, since each release adds some. |
 | `cjk.rs` | which language a text's Han characters are in |
+| `changes.rs` | what a session changed in its folder, as the Changes view shows it: scopes, who changed a file, review marks, diffs |
 
 In `crates/host/src`:
 
@@ -99,6 +100,7 @@ In `crates/host/src`:
 |---|---|
 | `daemon.rs`, `spawn.rs` | the daemon's actors, starting `claude` or agy's adapter, and acting on the desktop |
 | `files.rs` | what the daemon reads and watches for windows (with inotify), and saving the settings; an agy subagent's steps and a swarm's board, translated into transcript lines as they are read |
+| `snapshots.rs` | the snapshots of a session's folder before and after each turn, the contents they name kept once each by hash (`~/.local/state/edualc/changes/`), and the keeper task that alone writes them |
 | `acp.rs`, `acp/` | a session of an agent spoken to over the Agent Client Protocol (agy, opencode): the adapter (`edualcd --agy-adapter`) that speaks ACP to the agent and Claude Code's stream-json to the daemon; its inbox; the messages it sends to other sessions; agy's records of its subagents and swarm (`brain.rs`) |
 | `bin/edualcd.rs` | the daemon's program |
 
@@ -118,7 +120,7 @@ Elsewhere:
 
 | | |
 |---|---|
-| `ui/*.slint` | the window: top bar (`topbar.slint`), start page and open-folder dialog (`start.slint`), new-project dialog (`newproject.slint`), project session list (`project.slint`), conversation (`app.slint`), settings and panels |
+| `ui/*.slint` | the window: top bar (`topbar.slint`), start page and open-folder dialog (`start.slint`), new-project dialog (`newproject.slint`), project session list (`project.slint`), conversation (`app.slint`), the Changes view (`changes.slint`), settings and panels |
 | `web/` | the browser demo's page, with its fonts |
 | `assets/` | the heron (standing, its idle poses, and its wing beats), the app's icon, desktop entry, metainfo and manual page |
 | `dist/` | packaging: one description in Nickel (`package.ncl`) that the deb, rpm and Arch files are written from |

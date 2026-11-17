@@ -6,7 +6,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { BlockKind, DiffKind, DiffLine, Entry, EntryKind, GroupRole, ImageState, MdBlock, ShownImage, ToolState } from "types.slint";
-import { Clipboard, Transcript } from "state.slint";
+import { Changes, Clipboard, Transcript } from "state.slint";
 import { Caption, CodeBox, Icon, IconButton, Pressable, Selectable, Small, TableCell } from "widgets.slint";
 
 // A table as wide as its cells need, up to the column. Narrower, its cells wrap, each column
@@ -582,6 +582,54 @@ export component EntryView inherits VerticalLayout {
         default-font-size: 1rem * Theme.small;
         cjk: root.entry.cjk;
         line-height-factor: Theme.line-factor(root.entry.cjk);
+    }
+    // Under a turn: its facts, and what it changed, which opens the Changes view.
+    if root.entry.kind == EntryKind.turn-end: HorizontalLayout {
+        spacing: Theme.space-s;
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 1px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.divider;
+        }
+        Selectable {
+            text: root.entry.body;
+            key: "e\{root.index}:text";
+            horizontal-stretch: 0;
+            default-color: Theme.text-faint;
+            default-font-size: 1rem * Theme.small;
+            cjk: root.entry.cjk;
+        }
+        if root.entry.changed != "": Pressable {
+            horizontal-stretch: 0;
+            border-radius: Theme.radius-s;
+            accessible-label: "Changes: " + root.entry.changed;
+            clicked => { Changes.show(); }
+            HorizontalLayout {
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-xs;
+                spacing: Theme.space-xs;
+                Icon {
+                    source: @image-url("@lucide/git-compare.svg");
+                    tint: Theme.link;
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.entry.changed;
+                    color: Theme.link;
+                    font-size: 1rem * Theme.small;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 1px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.divider;
+        }
     }
     if root.entry.kind == EntryKind.error: Rectangle {
         border-radius: Theme.radius-m;

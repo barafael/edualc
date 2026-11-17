@@ -48,6 +48,7 @@ impl ToSlint for present::EntryKind {
             Self::Peer => slint_ui::EntryKind::Peer,
             Self::Info => slint_ui::EntryKind::Info,
             Self::Error => slint_ui::EntryKind::Error,
+            Self::TurnEnd => slint_ui::EntryKind::TurnEnd,
         }
     }
 }
@@ -154,6 +155,63 @@ impl ToSlint for present::SideView {
             Self::Hidden => slint_ui::SideView::Hidden,
             Self::Shown => slint_ui::SideView::Shown,
             Self::Folded => slint_ui::SideView::Folded,
+        }
+    }
+}
+
+impl ToSlint for present::ChangeScope {
+    type Slint = slint_ui::ChangeScope;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::Turn => slint_ui::ChangeScope::Turn,
+            Self::SinceLooked => slint_ui::ChangeScope::SinceLooked,
+            Self::Session => slint_ui::ChangeScope::Session,
+        }
+    }
+}
+
+impl ToSlint for present::ChangeKind {
+    type Slint = slint_ui::ChangeKind;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::Added => slint_ui::ChangeKind::Added,
+            Self::Changed => slint_ui::ChangeKind::Changed,
+            Self::Deleted => slint_ui::ChangeKind::Deleted,
+        }
+    }
+}
+
+impl ToSlint for present::ChangeWho {
+    type Slint = slint_ui::ChangeWho;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::Claude => slint_ui::ChangeWho::Claude,
+            Self::Command => slint_ui::ChangeWho::Command,
+            Self::Both => slint_ui::ChangeWho::Both,
+            Self::BetweenTurns => slint_ui::ChangeWho::BetweenTurns,
+        }
+    }
+}
+
+impl ToSlint for present::ChangeReview {
+    type Slint = slint_ui::ChangeReview;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::NotReviewed => slint_ui::ChangeReview::NotReviewed,
+            Self::Reviewed => slint_ui::ChangeReview::Reviewed,
+            Self::ChangedSince => slint_ui::ChangeReview::ChangedSince,
+        }
+    }
+}
+
+impl ToSlint for present::DiffRowKind {
+    type Slint = slint_ui::DiffRowKind;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::Same => slint_ui::DiffRowKind::Same,
+            Self::Removed => slint_ui::DiffRowKind::Removed,
+            Self::Added => slint_ui::DiffRowKind::Added,
+            Self::Gap => slint_ui::DiffRowKind::Gap,
         }
     }
 }
@@ -412,6 +470,7 @@ impl ToSlint for present::Entry {
             group_state: self.group_state.to_slint(images),
             group_open: self.group_open.to_slint(images),
             hidden: self.hidden.to_slint(images),
+            changed: self.changed.to_slint(images),
         }
     }
     fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
@@ -439,6 +498,36 @@ impl ToSlint for present::SessionRow {
             worktree: self.worktree.to_slint(images),
             agents: self.agents.to_slint(images),
             program: self.program.to_slint(images),
+        }
+    }
+}
+
+impl ToSlint for present::ChangedFile {
+    type Slint = slint_ui::ChangedFile;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::ChangedFile {
+            path: self.path.to_slint(images),
+            kind: self.kind.to_slint(images),
+            who: self.who.to_slint(images),
+            added: self.added.to_slint(images),
+            removed: self.removed.to_slint(images),
+            review: self.review.to_slint(images),
+            comments: self.comments.to_slint(images),
+            selected: self.selected.to_slint(images),
+        }
+    }
+}
+
+impl ToSlint for present::DiffRow {
+    type Slint = slint_ui::DiffRow;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::DiffRow {
+            kind: self.kind.to_slint(images),
+            old: self.old.to_slint(images),
+            new: self.new.to_slint(images),
+            text: self.text.to_slint(images),
+            comment: self.comment.to_slint(images),
+            editing: self.editing.to_slint(images),
         }
     }
 }
@@ -1059,6 +1148,65 @@ pub(super) fn apply_peek(
     }
     if old.is_none_or(|old| old.note != new.note) {
         global.set_note(new.note.to_slint(images));
+    }
+}
+
+/// Brings the `Changes` global in line with `new`, setting what differs from `old` (all,
+/// for none).
+pub(super) fn apply_changes(
+    window: &AppWindow,
+    old: Option<&present::Changes>,
+    new: &present::Changes,
+    images: &Drawing,
+) {
+    let global = window.global::<slint_ui::Changes>();
+    if old.is_none_or(|old| old.open != new.open) {
+        global.set_open(new.open.to_slint(images));
+    }
+    if old.is_none_or(|old| old.scope != new.scope) {
+        global.set_scope(new.scope.to_slint(images));
+    }
+    if old.is_none_or(|old| old.summary != new.summary) {
+        global.set_summary(new.summary.to_slint(images));
+    }
+    if old.is_none_or(|old| old.note != new.note) {
+        global.set_note(new.note.to_slint(images));
+    }
+    match old {
+        Some(old) if old.files != new.files => {
+            if let Some(model) = resync(&global.get_files(), &old.files, &new.files, images) {
+                global.set_files(model);
+            }
+        }
+        Some(_) => {}
+        None => global.set_files(new.files.to_slint(images)),
+    }
+    if old.is_none_or(|old| old.file_path != new.file_path) {
+        global.set_file_path(new.file_path.to_slint(images));
+    }
+    if old.is_none_or(|old| old.file_review != new.file_review) {
+        global.set_file_review(new.file_review.to_slint(images));
+    }
+    match old {
+        Some(old) if old.diff != new.diff => {
+            if let Some(model) = resync(&global.get_diff(), &old.diff, &new.diff, images) {
+                global.set_diff(model);
+            }
+        }
+        Some(_) => {}
+        None => global.set_diff(new.diff.to_slint(images)),
+    }
+    if old.is_none_or(|old| old.diff_note != new.diff_note) {
+        global.set_diff_note(new.diff_note.to_slint(images));
+    }
+    if old.is_none_or(|old| old.comments != new.comments) {
+        global.set_comments(new.comments.to_slint(images));
+    }
+    if old.is_none_or(|old| old.editing_comment != new.editing_comment) {
+        global.set_editing_comment(new.editing_comment.to_slint(images));
+    }
+    if old.is_none_or(|old| old.last_turn != new.last_turn) {
+        global.set_last_turn(new.last_turn.to_slint(images));
     }
 }
 

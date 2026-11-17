@@ -108,6 +108,19 @@ pub enum Body {
     },
     Info(String),
     Error(String),
+    /// The end of a turn of the conversation shown.
+    TurnEnd(TurnEnd),
+}
+
+/// A turn as it ended: its number in the conversation shown, how long it took, the tokens it
+/// sent and got, and what it changed in the session's folder, once the daemon says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnEnd {
+    pub number: usize,
+    pub duration_ms: Option<u64>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub changed: Option<crate::changes::Summary>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +142,7 @@ impl Entry {
             | Body::Peer { text, .. } => text,
             Body::Tool { tool, .. } => &tool.output,
             Body::Shell { shell, .. } => &shell.output,
-            Body::Image(_) => "",
+            Body::Image(_) | Body::TurnEnd(_) => "",
         }
     }
 }
@@ -355,7 +368,8 @@ impl Chat {
             | Body::Image(_)
             | Body::Peer { .. }
             | Body::Info(_)
-            | Body::Error(_) => None,
+            | Body::Error(_)
+            | Body::TurnEnd(_) => None,
         }
     }
 
@@ -386,7 +400,8 @@ impl Chat {
                 | Body::Shell { .. }
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => false,
+                | Body::Error(_)
+                | Body::TurnEnd(_) => false,
             };
             if shows {
                 self.changes.push(Change::Updated(index));
@@ -407,7 +422,8 @@ impl Chat {
                 | Body::Shell { .. }
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => &[],
+                | Body::Error(_)
+                | Body::TurnEnd(_) => &[],
             })
             .copied()
             .collect()
@@ -465,7 +481,8 @@ impl Chat {
                 | Body::Image(_)
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => None,
+                | Body::Error(_)
+                | Body::TurnEnd(_) => None,
             });
         match running {
             Some((index, shell)) => {
@@ -523,6 +540,54 @@ impl Chat {
         }
     }
 
+    /// A line under a turn that ended, numbered by the messages that started turns: your
+    /// prompts and other sessions' messages, those of the saved transcript among them.
+    pub fn turn_ended(&mut self, duration_ms: Option<u64>, tokens_in: u64, tokens_out: u64) {
+        let number = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                !entry.nested && matches!(entry.body, Body::User(_) | Body::Peer { .. })
+            })
+            .count()
+            .max(1);
+        self.push(
+            Body::TurnEnd(TurnEnd {
+                number,
+                duration_ms,
+                tokens_in,
+                tokens_out,
+                changed: None,
+            }),
+            false,
+        );
+    }
+
+    /// What the last turn changed in the session's folder, as the daemon says after it ended.
+    pub fn turn_changed(&mut self, summary: crate::changes::Summary) {
+        let last = self
+            .entries
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find_map(|(index, entry)| match &mut entry.body {
+                Body::TurnEnd(turn) => Some((index, turn)),
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Tool { .. }
+                | Body::Shell { .. }
+                | Body::Image(_)
+                | Body::Peer { .. }
+                | Body::Info(_)
+                | Body::Error(_) => None,
+            });
+        if let Some((index, turn)) = last {
+            turn.changed = Some(summary);
+            self.changes.push(Change::Updated(index));
+        }
+    }
+
     pub fn toggle(&mut self, index: usize) {
         let Some(entry) = self.entries.get_mut(index) else {
             return;
@@ -536,7 +601,8 @@ impl Chat {
             | Body::Image(_)
             | Body::Peer { .. }
             | Body::Info(_)
-            | Body::Error(_) => return,
+            | Body::Error(_)
+            | Body::TurnEnd(_) => return,
         }
         self.changes.push(Change::Updated(index));
     }
@@ -1091,7 +1157,8 @@ mod tests {
                 | Body::Image(_)
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => None,
+                | Body::Error(_)
+                | Body::TurnEnd(_) => None,
             })
             .collect()
     }
@@ -1274,7 +1341,8 @@ mod tests {
                 | Body::Image(_)
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => None,
+                | Body::Error(_)
+                | Body::TurnEnd(_) => None,
             })
             .collect();
         assert_eq!(states, [ToolState::Denied, ToolState::Failed]);
@@ -1369,7 +1437,8 @@ mod tests {
                 | Body::Image(_)
                 | Body::Peer { .. }
                 | Body::Info(_)
-                | Body::Error(_) => format!("{:?}", entry.copy_text()),
+                | Body::Error(_)
+                | Body::TurnEnd(_) => format!("{:?}", entry.copy_text()),
             })
             .collect();
         assert_eq!(
@@ -1474,5 +1543,50 @@ mod tests {
             Some(Body::Tool { tool, .. }) if tool.state == ToolState::Done
         ));
         assert_eq!(chat.take_changes(), [Change::Reset]);
+    }
+
+    /// A turn's line is numbered by the prompts before it, those of the saved transcript
+    /// among them, which have no line; what a turn changed, said after it ended, goes on the
+    /// last one.
+    #[test]
+    fn turns_are_numbered_and_take_their_changes() {
+        let mut chat = Chat::default();
+        chat.user("from the transcript");
+        chat.user("also from the transcript");
+        chat.user("now");
+        chat.turn_ended(Some(1000), 10, 2);
+        chat.user("again");
+        chat.turn_ended(None, 20, 4);
+        drop(chat.take_changes());
+        let summary = crate::changes::Summary {
+            files: 2,
+            added: 5,
+            removed: 0,
+        };
+        chat.turn_changed(summary);
+        let turns: Vec<TurnEnd> = chat
+            .entries
+            .iter()
+            .filter_map(|entry| match entry.body {
+                Body::TurnEnd(turn) => Some(turn),
+                Body::User(_)
+                | Body::Assistant(_)
+                | Body::Thinking { .. }
+                | Body::Tool { .. }
+                | Body::Shell { .. }
+                | Body::Image(_)
+                | Body::Peer { .. }
+                | Body::Info(_)
+                | Body::Error(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            turns
+                .iter()
+                .map(|turn| (turn.number, turn.changed))
+                .collect::<Vec<_>>(),
+            [(3, None), (4, Some(summary))]
+        );
+        assert_eq!(chat.take_changes(), [Change::Updated(5)]);
     }
 }

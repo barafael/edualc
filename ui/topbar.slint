@@ -3,7 +3,7 @@
 
 import { Look, Theme } from "theme.slint";
 import { FocusArea, PermissionKind, PlaceView, SideView, TaskKind } from "types.slint";
-import { Focus, Nav, Peek, Preferences, Session, Side, Usage } from "state.slint";
+import { Changes, Focus, Nav, Peek, Preferences, Session, Side, Usage } from "state.slint";
 import { AreaFence, Caption, Icon, IconButton, MenuButton, Meter, Pressable, Small, TextButton } from "widgets.slint";
 import { HeronMark } from "heron.slint";
 
@@ -435,6 +435,39 @@ export component TopBar inherits Rectangle {
             }
             if Nav.view == PlaceView.session && Session.context != "": ContextMeter {
                 y: (parent.height - self.height) / 2;
+            }
+            if Nav.view == PlaceView.session: Pressable {
+                selected: Changes.open;
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                accessible-label: Changes.open ? "Back to the conversation"
+                    : Changes.last-turn != "" ? "Changes: the last turn changed " + Changes.last-turn
+                    : "Changes";
+                clicked => {
+                    if Changes.open {
+                        Changes.close();
+                    } else {
+                        Changes.show();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    Icon {
+                        source: @image-url("@lucide/git-compare.svg");
+                        tint: Changes.last-turn != "" ? Theme.claude : Theme.text-secondary;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if !root.tight: Text {
+                        text: Changes.last-turn != "" ? Changes.last-turn : "Changes";
+                        color: Changes.open ? Theme.text : Theme.text-secondary;
+                        font-size: 1rem * Theme.small;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
             }
             if Nav.view == PlaceView.session: Pressable {
                 selected: Side.view == SideView.shown;

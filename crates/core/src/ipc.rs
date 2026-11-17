@@ -337,7 +337,24 @@ pub enum Read {
     /// The folder at a path (the picker's, a worktree's), made whole, if it is one:
     /// `Answer::Folder`.
     Folder(PathBuf),
+    /// What a session changed in its folder, in `scope`: `Answer::Changes`.
+    Changes {
+        session: SessionId,
+        scope: crate::changes::Scope,
+    },
+    /// How a file a session changed changed, in `scope`: `Answer::Diff`.
+    Diff {
+        session: SessionId,
+        scope: crate::changes::Scope,
+        root: PathBuf,
+        path: PathBuf,
+    },
 }
+
+/// Why a session's changes weren't read: the daemon's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("{0}")]
+pub struct Unkept(pub String);
 
 /// A project with its recent sessions, for the start page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +381,8 @@ pub enum Answer {
     },
     Worktree(Option<Worktree>),
     Folder(Result<PathBuf, String>),
+    Changes(Result<crate::changes::ChangeSet, Unkept>),
+    Diff(Result<crate::changes::Diff, Unkept>),
 }
 
 /// What the daemon tells the window.
@@ -447,6 +466,11 @@ pub enum FromDaemon {
     Created {
         request: ActId,
         result: Result<PathBuf, CreateProjectError>,
+    },
+    /// The session shown under `key` ended a turn, which changed this in its folder.
+    TurnChanged {
+        key: Generation,
+        summary: crate::changes::Summary,
     },
 }
 
@@ -808,6 +832,17 @@ pub enum Act {
         parent: PathBuf,
         name: ProjectName,
         git: bool,
+    },
+    /// You looked at a session's changes: "since you last looked" starts now. Not answered.
+    ChangesLooked {
+        session: SessionId,
+    },
+    /// You marked a file a session changed reviewed, as it holds `now` (none: deleted). Not
+    /// answered.
+    MarkReviewed {
+        session: SessionId,
+        path: PathBuf,
+        now: Option<crate::changes::ContentId>,
     },
 }
 

@@ -9,12 +9,13 @@ use i_slint_compiler::source_path::SourcePath;
 
 /// The globals whose state the presenter owns, in no particular order: the others are the
 /// window's own.
-const PRESENTED: [&str; 10] = [
+const PRESENTED: [&str; 11] = [
     "Session",
     "Composer",
     "Sessions",
     "Prompt",
     "Peek",
+    "Changes",
     "Side",
     "Nav",
     "Preferences",

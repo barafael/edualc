@@ -113,6 +113,7 @@ pub trait Frontend {
     fn entries(&mut self, change: EntriesChange);
     fn prompt(&mut self, prompt: &model::Prompt);
     fn peek(&mut self, peek: &model::Peek);
+    fn changes(&mut self, changes: &model::Changes);
     fn side(&mut self, side: &model::Side);
     fn preferences(&mut self, preferences: &model::Preferences);
     fn usage(&mut self, usage: &model::Usage);

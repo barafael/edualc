@@ -141,6 +141,9 @@ impl Inbox {
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
             FromDaemon::Trusted { request, trust } => Some(Event::Trusted { request, trust }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
+            FromDaemon::TurnChanged { key, summary } => {
+                Some(claude(key, Output::TurnChanged(summary)))
+            }
             FromDaemon::Pasted {
                 request,
                 piece,
@@ -174,7 +177,9 @@ impl Inbox {
                     | ipc::Answer::Sessions(_)
                     | ipc::Answer::Transcript { .. }
                     | ipc::Answer::Worktree(_)
-                    | ipc::Answer::Folder(_)) => other,
+                    | ipc::Answer::Folder(_)
+                    | ipc::Answer::Changes(_)
+                    | ipc::Answer::Diff(_)) => other,
                 };
                 Some(Event::Answered {
                     request,

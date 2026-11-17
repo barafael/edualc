@@ -38,6 +38,7 @@ pub enum EntryKind {
     Peer,
     Info,
     Error,
+    TurnEnd,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -117,6 +118,48 @@ pub enum SideView {
     Hidden,
     Shown,
     Folded,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ChangeScope {
+    #[default]
+    Turn,
+    SinceLooked,
+    Session,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ChangeKind {
+    #[default]
+    Added,
+    Changed,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ChangeWho {
+    #[default]
+    Claude,
+    Command,
+    Both,
+    BetweenTurns,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ChangeReview {
+    #[default]
+    NotReviewed,
+    Reviewed,
+    ChangedSince,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DiffRowKind {
+    #[default]
+    Same,
+    Removed,
+    Added,
+    Gap,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -295,6 +338,7 @@ pub struct Entry {
     pub group_state: ToolState,
     pub group_open: bool,
     pub hidden: bool,
+    pub changed: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -309,6 +353,28 @@ pub struct SessionRow {
     pub worktree: String,
     pub agents: i32,
     pub program: Program,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    pub kind: ChangeKind,
+    pub who: ChangeWho,
+    pub added: i32,
+    pub removed: i32,
+    pub review: ChangeReview,
+    pub comments: i32,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffRow {
+    pub kind: DiffRowKind,
+    pub old: String,
+    pub new: String,
+    pub text: String,
+    pub comment: String,
+    pub editing: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -559,6 +625,23 @@ pub struct Peek {
     pub steps: Vec<PeekStep>,
     pub output: Vec<String>,
     pub note: String,
+}
+
+/// The `Changes` global's state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub open: bool,
+    pub scope: ChangeScope,
+    pub summary: String,
+    pub note: String,
+    pub files: Vec<ChangedFile>,
+    pub file_path: String,
+    pub file_review: ChangeReview,
+    pub diff: Vec<DiffRow>,
+    pub diff_note: String,
+    pub comments: i32,
+    pub editing_comment: bool,
+    pub last_turn: String,
 }
 
 /// The `Side` global's state.

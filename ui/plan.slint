@@ -8,8 +8,9 @@ import { Prompt } from "state.slint";
 import { Caption, Icon, IconButton, TextButton, Title } from "widgets.slint";
 import { BlockView } from "transcript.slint";
 
-// Writing a comment: Ctrl+Enter keeps it, Esc drops the edit.
-component CommentEditor inherits Rectangle {
+// Writing a comment: Ctrl+Enter keeps it, Esc drops the edit. The Changes view's line comments
+// are written in it too.
+export component CommentEditor inherits Rectangle {
     in property <string> text;
     // The part's first words, naming the editor for assistive technology.
     in property <string> about;

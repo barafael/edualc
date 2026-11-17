@@ -105,6 +105,9 @@ fn read_for(events: &Sender<Event>, request: ActId, read: Read) {
         Read::WorktreeOf { .. } | Read::LinkedWorktree { .. } => Answer::Worktree(None),
         Read::TypedFolder(typed) => Answer::Folder(demo_folder(Path::new(typed.trim()))),
         Read::Folder(path) => Answer::Folder(demo_folder(&path)),
+        // The demo's sessions change no folder.
+        Read::Changes { .. } => Answer::Changes(Ok(crate::changes::ChangeSet::default())),
+        Read::Diff { .. } => Answer::Diff(Ok(crate::changes::Diff::default())),
     };
     let event = Event::Answered {
         request,
@@ -164,6 +167,8 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
             request,
             result: Err(crate::ipc::CreateProjectError::InBrowser),
         },
+        // Not answered.
+        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } => return,
         Act::OpenIn { .. }
         | Act::OpenUrl(_)
         | Act::Notify { .. }

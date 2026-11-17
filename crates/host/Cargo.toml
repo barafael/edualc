@@ -22,8 +22,12 @@ jiff = { version = "0.2.38", features = ["serde"] }
 # An agy session's inbox token, cleared from memory once dropped.
 zeroize = "1.9"
 # An agy session's inbox (see `agy`), as Claude Code's own: its key file is named by the SHA-256
-# of the inbox's path, its token is random, and a peer's token is compared in constant time.
+# of the inbox's path, its token is random, and a peer's token is compared in constant time. The
+# changes' snapshots (see `snapshots`) keep files' contents by their SHA-256 too.
 sha2 = "0.11"
+# The changes' snapshots walk a session's folder as git sees it: `.gitignore` and its kin, as
+# ripgrep reads them.
+ignore = "0.4"
 getrandom = { version = "0.4", features = ["std"] }
 subtle = "2.6"
 # An ACP session's adapter's command line.

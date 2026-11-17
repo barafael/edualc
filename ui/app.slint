@@ -4,8 +4,9 @@
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, SyntaxColours, Theme } from "theme.slint";
 import { Activity, ComposerSize, FocusArea, LiveState, PlaceView, PromptKind, SendKey, SideView, SignInWith, SwitcherItem } from "types.slint";
-import { Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { Changes, Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, LiveDot, Pressable, Small, TextButton, Title } from "widgets.slint";
+import { ChangesPanel } from "changes.slint";
 import { EntryView } from "transcript.slint";
 import { Heron } from "heron.slint";
 import { NewProjectDialog } from "newproject.slint";
@@ -19,8 +20,8 @@ import { TopBar } from "topbar.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, SyntaxColours, Theme } from "theme.slint";
-export { Activity, BlockKind, CardSessionItem, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveState, MdBlock, PeekStep, PermissionKind, PlaceView, PlanSection, ProjectCard, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, SwitcherItem, TaskItem, TaskKind, ToolState, WaitingItem } from "types.slint";
-export { Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+export { Activity, BlockKind, CardSessionItem, ChangedFile, ChangeKind, ChangeReview, ChangeScope, ChangeWho, Cjk, CjkChars, CommandItem, DiffRow, DiffRowKind, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveState, MdBlock, PeekStep, PermissionKind, PlaceView, PlanSection, ProjectCard, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, SwitcherItem, TaskItem, TaskKind, ToolState, WaitingItem } from "types.slint";
+export { Changes, Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
 // Quick switcher opened with Ctrl+K inside a session to jump to another session across projects.
 component SessionSwitcher inherits Rectangle {
@@ -1636,6 +1637,10 @@ export component AppWindow inherits Window {
                     root.switcher-open = false;
                     return accept;
                 }
+                if Changes.open && !Changes.editing-comment && !Usage.open && !Preferences.open {
+                    Changes.close();
+                    return accept;
+                }
                 if root.new-project-open {
                     root.new-project-open = false;
                     return accept;
@@ -1771,9 +1776,9 @@ export component AppWindow inherits Window {
                             }
                         }
                         key-pressed(event) => {
-                            // Covered by the usage details, the settings or the plan, it doesn't
-                            // move behind them.
-                            if Usage.open || Preferences.open || (Prompt.kind == PromptKind.plan && Prompt.reviewing) {
+                            // Covered by the usage details, the settings, the plan or the
+                            // changes, it doesn't move behind them.
+                            if Usage.open || Preferences.open || Changes.open || (Prompt.kind == PromptKind.plan && Prompt.reviewing) {
                                 return reject;
                             }
                             if event.text == Key.DownArrow {
@@ -2102,7 +2107,14 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                     }
-                    if !transcript.follow && !(Prompt.kind == PromptKind.plan && Prompt.reviewing): IconButton {
+                    // Over the conversation, and over the plan while it is open.
+                    if Changes.open: ChangesPanel {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                    if !transcript.follow && !Changes.open && !(Prompt.kind == PromptKind.plan && Prompt.reviewing): IconButton {
                         x: parent.width - self.width - Theme.space-xl;
                         y: parent.height - self.height - Theme.space-m;
                         icon: @image-url("@lucide/arrow-down.svg");

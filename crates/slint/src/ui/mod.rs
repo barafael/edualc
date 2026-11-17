@@ -200,6 +200,7 @@ pub(crate) struct SlintFrontend {
     session: Option<present::Session>,
     composer: Option<present::Composer>,
     sessions: Option<present::Sessions>,
+    changes: Option<present::Changes>,
     prompt: Option<present::Prompt>,
     peek: Option<present::Peek>,
     side: Option<present::Side>,
@@ -245,6 +246,7 @@ impl SlintFrontend {
             session: None,
             composer: None,
             sessions: None,
+            changes: None,
             prompt: None,
             peek: None,
             side: None,
@@ -426,6 +428,11 @@ impl Frontend for SlintFrontend {
     fn peek(&mut self, peek: &present::Peek) {
         model::apply_peek(&self.window, self.peek.as_ref(), peek, &self.drawing);
         self.peek = Some(peek.clone());
+    }
+
+    fn changes(&mut self, changes: &present::Changes) {
+        model::apply_changes(&self.window, self.changes.as_ref(), changes, &self.drawing);
+        self.changes = Some(changes.clone());
     }
 
     fn side(&mut self, side: &present::Side) {

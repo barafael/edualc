@@ -1,0 +1,365 @@
+// What the session changed in its folder, over the conversation: the files on the left (or above,
+// in a narrow window), the diff of the one picked on the right, a comment on any line, and your
+// comments sent to Claude together (see `crates/core/src/app/changes.rs`).
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ChangedFile, ChangeKind, ChangeReview, ChangeScope, ChangeWho, DiffRow, DiffRowKind } from "types.slint";
+import { Changes } from "state.slint";
+import { Caption, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
+import { CommentEditor } from "plan.slint";
+
+component ScopeButton inherits Pressable {
+    in property <ChangeScope> scope;
+    in property <string> text;
+    selected: Changes.scope == root.scope;
+    height: Theme.chip;
+    border-radius: Theme.radius-m;
+    accessible-role: tab;
+    accessible-label: root.text;
+    clicked => { Changes.choose-scope(root.scope); }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        Text {
+            text: root.text;
+            font-size: 1rem * Theme.small;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
+
+component FileRow inherits Pressable {
+    in property <ChangedFile> file;
+    in property <int> index;
+    selected: root.file.selected;
+    accessible-label: root.file.path;
+    accessible-description: root.who-words + ", +\{root.file.added} −\{root.file.removed}"
+        + (root.file.review == ChangeReview.reviewed ? ", reviewed" : root.file.review == ChangeReview.changed-since ? ", changed since you reviewed it" : "");
+    clicked => { Changes.select(root.index); }
+    property <string> who-words: root.file.who == ChangeWho.claude ? "Claude's edit"
+        : root.file.who == ChangeWho.command ? "by a command"
+        : root.file.who == ChangeWho.both ? "Claude and a command"
+        : "between turns";
+    HorizontalLayout {
+        padding: Theme.space-s;
+        padding-left: Theme.space-m;
+        spacing: Theme.space-s;
+        Icon {
+            source: root.file.kind == ChangeKind.added ? @image-url("@lucide/file-plus.svg")
+                : root.file.kind == ChangeKind.deleted ? @image-url("@lucide/file-minus.svg")
+                : @image-url("@lucide/file-diff.svg");
+            tint: root.file.kind == ChangeKind.added ? Theme.added-text
+                : root.file.kind == ChangeKind.deleted ? Theme.removed-text
+                : Theme.text-secondary;
+            width: Theme.icon-small;
+            y: Theme.space-xs;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            spacing: 2px;
+            Text {
+                text: root.file.path;
+                color: Theme.text;
+                font-size: 1rem * Theme.small;
+                overflow: elide;
+                accessible-role: none;
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                Caption {
+                    text: root.who-words;
+                    color: root.file.who == ChangeWho.claude ? Theme.text-secondary : Theme.warning-text;
+                    accessible-role: none;
+                }
+                Caption {
+                    text: "+\{root.file.added}";
+                    color: Theme.added-text;
+                    accessible-role: none;
+                }
+                Caption {
+                    text: "−\{root.file.removed}";
+                    color: Theme.removed-text;
+                    accessible-role: none;
+                }
+                if root.file.comments > 0: Caption {
+                    text: root.file.comments == 1 ? "1 comment" : "\{root.file.comments} comments";
+                    color: Theme.accent;
+                    accessible-role: none;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        if root.file.review != ChangeReview.not-reviewed: Icon {
+            source: root.file.review == ChangeReview.reviewed ? @image-url("@lucide/circle-check.svg") : @image-url("@lucide/circle-dot.svg");
+            tint: root.file.review == ChangeReview.reviewed ? Theme.added-text : Theme.warning-text;
+            width: Theme.icon-small;
+            y: Theme.space-xs;
+        }
+    }
+}
+
+component DiffRowView inherits VerticalLayout {
+    in property <DiffRow> diff-line;
+    in property <int> index;
+    in property <length> number-width;
+    hover := TouchArea {
+        height: band.preferred-height;
+        band := Rectangle {
+            width: 100%;
+            background: root.diff-line.kind == DiffRowKind.added ? Theme.added
+                : root.diff-line.kind == DiffRowKind.removed ? Theme.removed
+                : transparent;
+            HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-s;
+                spacing: Theme.space-s;
+                for number in [root.diff-line.old, root.diff-line.new]: Text {
+                    width: root.number-width;
+                    text: number;
+                    color: Theme.text-faint;
+                    horizontal-alignment: right;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    line-height-factor: Theme.code-line-factor;
+                    accessible-role: none;
+                }
+                Text {
+                    width: 10px;
+                    text: root.diff-line.kind == DiffRowKind.added ? "+" : root.diff-line.kind == DiffRowKind.removed ? "−" : "";
+                    color: root.diff-line.kind == DiffRowKind.added ? Theme.added-text : Theme.removed-text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    line-height-factor: Theme.code-line-factor;
+                    accessible-role: none;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    text: root.diff-line.kind == DiffRowKind.gap ? "⋯" : root.diff-line.text;
+                    wrap: word-wrap;
+                    color: root.diff-line.kind == DiffRowKind.gap ? Theme.text-faint : Theme.text;
+                    font-family: Theme.mono;
+                    font-size: 1rem * Theme.code-size;
+                    line-height-factor: Theme.code-line-factor;
+                }
+                if root.diff-line.kind != DiffRowKind.gap: IconButton {
+                    icon: root.diff-line.comment == "" ? @image-url("@lucide/message-square-plus.svg") : @image-url("@lucide/message-square-text.svg");
+                    label: (root.diff-line.comment == "" ? "Comment on line " : "Edit the comment on line ") + (root.diff-line.new != "" ? root.diff-line.new : root.diff-line.old);
+                    tint: root.diff-line.comment == "" ? Theme.text-faint : Theme.accent;
+                    width: 22px;
+                    height: 22px;
+                    icon-size: Theme.icon-small;
+                    // Faint until the line is pointed at, so the diff reads first.
+                    opacity: hover.has-hover || root.diff-line.comment != "" ? 1 : 0.25;
+                    clicked => { Changes.edit-comment(root.index); }
+                }
+            }
+        }
+    }
+    if root.diff-line.comment != "" && !root.diff-line.editing: Rectangle {
+        background: Theme.selected;
+        HorizontalLayout {
+            padding: Theme.space-s;
+            padding-left: Theme.space-xl;
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/message-square-text.svg");
+                tint: Theme.accent;
+                width: Theme.icon-small;
+            }
+            Text {
+                text: root.diff-line.comment;
+                color: Theme.text;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: @image-url("@lucide/trash.svg");
+                label: "Remove the comment";
+                width: 22px;
+                height: 22px;
+                icon-size: Theme.icon-small;
+                clicked => { Changes.set-comment(root.index, ""); }
+            }
+        }
+    }
+    if root.diff-line.editing: CommentEditor {
+        text: root.diff-line.comment;
+        about: root.diff-line.text;
+        save(text) => { Changes.set-comment(root.index, text); }
+        cancel => { Changes.cancel-comment(); }
+    }
+}
+
+component FileList inherits ListView {
+    for file[index] in Changes.files: FileRow {
+        file: file;
+        index: index;
+    }
+}
+
+// The diff of the file picked, with its name and "Mark reviewed" above it.
+component DiffPane inherits VerticalLayout {
+    if Changes.file-path != "": HorizontalLayout {
+        padding: Theme.space-s;
+        padding-left: Theme.space-m;
+        spacing: Theme.space-s;
+        Text {
+            text: Changes.file-path;
+            color: Theme.text;
+            font-weight: 600;
+            overflow: elide;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        TextButton {
+            text: Changes.file-review == ChangeReview.reviewed ? "Reviewed"
+                : Changes.file-review == ChangeReview.changed-since ? "Changed since: mark again"
+                : "Mark reviewed";
+            enabled: Changes.file-review != ChangeReview.reviewed;
+            has-icon: Changes.file-review == ChangeReview.reviewed;
+            icon: @image-url("@lucide/check.svg");
+            clicked => { Changes.mark-reviewed(); }
+        }
+    }
+    if Changes.diff-note != "": HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-m;
+        Caption {
+            text: Changes.diff-note;
+            wrap: word-wrap;
+        }
+    }
+    ListView {
+        vertical-stretch: 1;
+        for row[index] in Changes.diff: DiffRowView {
+            diff-line: row;
+            index: index;
+            number-width: 3.5rem * Theme.code-size;
+        }
+    }
+}
+
+export component ChangesPanel inherits Rectangle {
+    background: Theme.surface;
+    // Narrow, the files go above the diff.
+    property <bool> stacked: self.width < 720px;
+    // Over the conversation: the wheel stays here.
+    TouchArea {
+        scroll-event(event) => { return accept; }
+    }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 56px;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/git-compare.svg");
+                tint: Theme.claude;
+                width: 22px;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                Title {
+                    text: "Changes";
+                }
+                Caption {
+                    text: Changes.summary;
+                    overflow: elide;
+                }
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.space-xs;
+                ScopeButton {
+                    scope: ChangeScope.turn;
+                    text: "Last turn";
+                    y: (parent.height - self.height) / 2;
+                }
+                ScopeButton {
+                    scope: ChangeScope.since-looked;
+                    text: "Since you looked";
+                    y: (parent.height - self.height) / 2;
+                }
+                ScopeButton {
+                    scope: ChangeScope.session;
+                    text: "Whole session";
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Back to the conversation (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { Changes.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        if Changes.note != "": Small {
+            text: Changes.note;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            x: Theme.space-xl;
+            width: parent.width - 2 * Theme.space-xl;
+            height: self.preferred-height + Theme.space-m;
+            vertical-alignment: center;
+        }
+        if !root.stacked: HorizontalLayout {
+            vertical-stretch: 1;
+            FileList {
+                width: min(340px, root.width * 40%);
+            }
+            Rectangle {
+                width: 1px;
+                background: Theme.divider;
+            }
+            DiffPane {
+                horizontal-stretch: 1;
+            }
+        }
+        if root.stacked: VerticalLayout {
+            vertical-stretch: 1;
+            FileList {
+                height: min(max(120px, Changes.files.length * 3.5rem), 30% * root.height);
+            }
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+            DiffPane {
+                vertical-stretch: 1;
+            }
+        }
+        if Changes.comments > 0: Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        if Changes.comments > 0: HorizontalLayout {
+            padding: Theme.space-m;
+            padding-left: Theme.space-xl;
+            spacing: Theme.space-m;
+            alignment: end;
+            Caption {
+                text: "Each goes with its file, line and the line's text.";
+                vertical-alignment: center;
+            }
+            TextButton {
+                text: Changes.comments == 1 ? "Send the comment to Claude" : "Send \{Changes.comments} comments to Claude";
+                primary: true;
+                clicked => { Changes.send-comments(); }
+            }
+        }
+    }
+}

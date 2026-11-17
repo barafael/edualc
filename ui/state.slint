@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CardSessionItem, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PeerMessages, PermissionKind, PlaceView, PlanSection, Program, ProjectCard, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, SignInWith, StatSection, SwitcherItem, TaskItem, TaskKind, WaitingItem } from "types.slint";
+import { Activity, CardSessionItem, ChangedFile, ChangeReview, ChangeScope, CommandItem, ComposerSize, DiffRow, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PeerMessages, PermissionKind, PlaceView, PlanSection, Program, ProjectCard, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, SignInWith, StatSection, SwitcherItem, TaskItem, TaskKind, WaitingItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -257,6 +257,40 @@ export global Peek {
     // Follow the task with this id.
     callback follow(string);
     callback close;
+}
+
+// What the session changed in its folder (see `crates/core/src/changes.rs`), over the
+// conversation while open.
+export global Changes {
+    in property <bool> open;
+    in property <ChangeScope> scope;
+    // "3 files · +12 −4", or that nothing changed.
+    in property <string> summary;
+    // What the snapshots left out, why there are none, or that they are being read.
+    in property <string> note;
+    in property <[ChangedFile]> files;
+    // The file shown, and its diff.
+    in property <string> file-path;
+    in property <ChangeReview> file-review;
+    in property <[DiffRow]> diff;
+    // The diff was cut to fit, it is being read, or why it wasn't.
+    in property <string> diff-note;
+    // Your comments, on any file, not sent yet.
+    in property <int> comments;
+    // A comment is being written: Esc is for it, not for closing the view.
+    in property <bool> editing-comment;
+    // The top bar's button: what the last turn changed in short, or "" before it changed
+    // anything.
+    in property <string> last-turn;
+    callback show;
+    callback close;
+    callback choose-scope(ChangeScope);
+    callback select(int);
+    callback mark-reviewed;
+    callback edit-comment(int);
+    callback set-comment(int, string);
+    callback cancel-comment;
+    callback send-comments;
 }
 
 // Side questions (`/btw`): answered with the conversation's context, never part of it.

@@ -19,7 +19,7 @@
 //! hanging up detaches its sessions, which run on; one left alone and quiet for [`QUIET`] ends,
 //! its input closing. When no window and no session are left for [`IDLE`], the daemon ends.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -39,7 +39,7 @@ use crate::ipc::{
     self, Act, ActFailure, ActId, CreateProjectError, Deframer, FromDaemon, Generation, Hosted,
     HostedId, HostedState, LineSplitter, PasteFailure, ProjectName, StartFailure, Stream, ToDaemon,
 };
-use crate::{files, sessions, settings, spawn, tools, trust};
+use crate::{files, sessions, settings, snapshots, spawn, tools, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -109,10 +109,14 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
     let (listener, _lock) = listener.into_tokio()?;
     let (hub, requests) = mpsc::channel(QUEUE);
     let (running, mut sessions) = watch::channel(0usize);
+    // With no state folder, nothing keeps the changes, and what is sent for them is dropped.
+    let (keeper, jobs) = mpsc::channel(QUEUE);
+    let keeper_task = snapshots::home().map(|home| tokio::spawn(snapshots::keep(home, jobs)));
     let hub_task = tokio::spawn(Hub::default().event_loop(
         requests,
         running,
         tokio::runtime::Handle::current(),
+        keeper.clone(),
     ));
     let (settings_keeper, settings_changes) = mpsc::channel(QUEUE);
     tokio::spawn(files::keep_settings(settings_changes));
@@ -134,6 +138,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
                         channel,
                         last_window,
                         hub.clone(),
+                        keeper.clone(),
                         settings_keeper.clone(),
                     ));
                     quiet_since = None;
@@ -164,10 +169,18 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
             (false, _) => None,
         };
     }
-    // The hub's requests close; it ends its sessions, and is awaited.
+    // The hub's requests close; it ends its sessions, and is awaited; then the keeper, once
+    // they have sent it their last turns.
     drop(hub);
     if let Err(error) = hub_task.await {
         tracing::error!(%error, "the hub failed");
+    }
+    drop(keeper);
+    if let Some(Err(error)) = match keeper_task {
+        Some(task) => Some(task.await),
+        None => None,
+    } {
+        tracing::error!(%error, "the changes' keeper failed");
     }
     Ok(())
 }
@@ -178,6 +191,7 @@ async fn window(
     channel: ipc::AsyncChannel,
     id: WindowId,
     hub: mpsc::Sender<ToHub>,
+    keeper: mpsc::Sender<snapshots::Job>,
     settings_keeper: mpsc::Sender<files::SettingsChange>,
 ) {
     let (mut reading, mut writing) = channel.split();
@@ -235,7 +249,7 @@ async fn window(
     });
     let writer = tokio::spawn(write(writing, answers));
     let connection = Connection::new(id)
-        .event_loop(received, outbox, hub, settings_keeper)
+        .event_loop(received, outbox, hub, keeper, settings_keeper)
         .await;
     tracing::info!(window = ?connection.id, "a window's connection ended");
     reader.abort();
@@ -272,6 +286,13 @@ enum Effect {
     ChangeSettings(crate::settings::Change),
     /// For the window's watches.
     Watch(files::Order),
+    /// For the changes' keeper.
+    Looked { session: SessionId },
+    Reviewed {
+        session: SessionId,
+        path: PathBuf,
+        now: Option<crate::changes::ContentId>,
+    },
 }
 
 /// What a window asks of the hub, by its keys.
@@ -333,6 +354,7 @@ impl Connection {
         mut requests: mpsc::Receiver<ToDaemon>,
         outbox: mpsc::Sender<FromDaemon>,
         hub: mpsc::Sender<ToHub>,
+        keeper: mpsc::Sender<snapshots::Job>,
         settings_keeper: mpsc::Sender<files::SettingsChange>,
     ) -> Self {
         let window = self.id;
@@ -395,6 +417,12 @@ impl Connection {
                     Effect::Refuse { key, failure } => {
                         tell(&outbox, FromDaemon::Failed { key, failure }).await;
                     }
+                    Effect::Looked { session } => {
+                        keep(&keeper, snapshots::Job::Looked { session }).await;
+                    }
+                    Effect::Reviewed { session, path, now } => {
+                        keep(&keeper, snapshots::Job::Reviewed { session, path, now }).await;
+                    }
                 }
             }
         }
@@ -456,6 +484,14 @@ impl Connection {
             }
             // A second hello, or a key not in use.
             ToDaemon::Hello { .. } | ToDaemon::Identify { .. } => Vec::new(),
+            ToDaemon::Act {
+                act: Act::ChangesLooked { session },
+                ..
+            } => vec![Effect::Looked { session }],
+            ToDaemon::Act {
+                act: Act::MarkReviewed { session, path, now },
+                ..
+            } => vec![Effect::Reviewed { session, path, now }],
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
             ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
             ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
@@ -497,6 +533,8 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         | Act::Notify { .. }
         | Act::FocusWindowOf { .. }
         | Act::StopSession(_)) => act,
+        // For the changes' keeper, which a window's connection hands them to.
+        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } => return,
     };
     if let Act::CreateProject { parent, name, git } = act {
         let created =
@@ -691,7 +729,9 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         | Act::CreateProject { .. }
         | Act::StoreApiKey(_)
         | Act::RemoveApiKey
-        | Act::CheckApiKey => {}
+        | Act::CheckApiKey
+        | Act::ChangesLooked { .. }
+        | Act::MarkReviewed { .. } => {}
     }
     Ok(())
 }
@@ -812,6 +852,7 @@ impl Hub {
         mut requests: mpsc::Receiver<ToHub>,
         running: watch::Sender<usize>,
         runtime: tokio::runtime::Handle,
+        keeper: mpsc::Sender<snapshots::Job>,
     ) -> Self {
         let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
@@ -844,7 +885,10 @@ impl Hub {
                                         runtime.clone(),
                                         commands,
                                         shown,
-                                        Some(states_tx.clone()),
+                                        Reporting {
+                                            states: Some(states_tx.clone()),
+                                            keeper: keeper.clone(),
+                                        },
                                     ));
                                 }
                                 Step::Tell { id, command: Order::Attach { key } } => {
@@ -1073,21 +1117,94 @@ async fn send(orders: &BTreeMap<HostedId, mpsc::Sender<Command>>, id: HostedId, 
 }
 
 /// Starts a session's process and runs it, telling the window it is shown in.
+/// Hands the changes' keeper a job; with no keeper (no state folder), it is dropped.
+async fn keep(keeper: &mpsc::Sender<snapshots::Job>, job: snapshots::Job) {
+    if keeper.send(job).await.is_err() {
+        tracing::debug!("nothing keeps the changes");
+    }
+}
+
+/// A session's turn, as its lines tell it, for the changes' keeper (sans-io).
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Doing {
+    #[default]
+    BetweenTurns,
+    /// With the files Claude's editing tools named so far.
+    Turn { touched: BTreeSet<PathBuf> },
+}
+
+impl Doing {
+    /// A line the process wrote: the files it names, if a turn is under way.
+    fn saw(&mut self, line: &str) {
+        if let Self::Turn { touched } = self {
+            touched.extend(snapshots::edited(line));
+        }
+    }
+
+    /// What the keeper is told as the session becomes `busy` or not: a turn starts, or ends,
+    /// its changes in short to go to `changed`.
+    fn follow(
+        &mut self,
+        busy: bool,
+        place: &Place,
+        changed: &mpsc::Sender<crate::changes::Summary>,
+    ) -> Option<snapshots::Job> {
+        match (std::mem::take(self), busy) {
+            (Self::BetweenTurns, true) => {
+                *self = Self::Turn {
+                    touched: BTreeSet::new(),
+                };
+                Some(snapshots::Job::TurnStarted {
+                    session: place.session.clone(),
+                    cwd: place.cwd.clone(),
+                })
+            }
+            (Self::Turn { touched }, false) => Some(snapshots::Job::TurnEnded {
+                session: place.session.clone(),
+                touched,
+                done: changed.clone(),
+            }),
+            (doing, _) => {
+                *self = doing;
+                None
+            }
+        }
+    }
+}
+
+/// Whom a session tells about itself: the hub, what it does; the changes' keeper, its turns.
+#[derive(Debug)]
+struct Reporting {
+    states: Option<mpsc::UnboundedSender<(HostedId, HostedState)>>,
+    keeper: mpsc::Sender<snapshots::Job>,
+}
+
+/// Where a session works, and its changes' name.
+#[derive(Debug)]
+struct Place {
+    cwd: PathBuf,
+    /// The id it started under: its changes are kept under it.
+    session: SessionId,
+}
+
 async fn host(
     id: HostedId,
     launch: Launch,
     runtime: tokio::runtime::Handle,
     commands: mpsc::Receiver<Command>,
     shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
-    states: Option<mpsc::UnboundedSender<(HostedId, HostedState)>>,
+    reporting: Reporting,
 ) -> Session {
     let session = Session::new(id);
-    let cwd = launch.cwd.clone();
+    let place = Place {
+        cwd: launch.cwd.clone(),
+        session: launch.conversation.id().clone(),
+    };
     let spawned = tokio::task::spawn_blocking(move || spawn::spawn(&launch, &runtime)).await;
     let failure = match spawned {
         Ok(Ok(spawned)) => {
             return session
-                .event_loop(&cwd, spawned, commands, shown, states)
+                .event_loop(&place, spawned, commands, shown, reporting)
                 .await;
         }
         Ok(Err(error)) => StartFailure::from(error),
@@ -1195,12 +1312,17 @@ impl Session {
     /// it ends.
     async fn event_loop(
         mut self,
-        cwd: &Path,
+        place: &Place,
         spawned: spawn::Spawned,
         mut commands: mpsc::Receiver<Command>,
         shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
-        states: Option<mpsc::UnboundedSender<(HostedId, HostedState)>>,
+        reporting: Reporting,
     ) -> Self {
+        let cwd = place.cwd.as_path();
+        let Reporting { states, keeper } = reporting;
+        let mut doing = Doing::default();
+        // What the keeper says a turn changed; this loop keeps a sender, so it stays open.
+        let (changed, mut turns_changed) = mpsc::channel(QUEUE);
         let spawn::Spawned { mut child } = spawned;
         let Some(pid) = child.id() else {
             return self;
@@ -1254,6 +1376,9 @@ impl Session {
                         self.active = Instant::now();
                         self.pending.answered(&line);
                         self.publish_state(cwd, &mut last_state, states.as_ref());
+                        if let Some(job) = doing.follow(self.pending.turns > 0, place, &changed) {
+                            keep(&keeper, job).await;
+                        }
                         self.write(&mut stdin, line);
                     }
                     Some(Command::Attach { key, outbox }) => {
@@ -1281,14 +1406,23 @@ impl Session {
                         self.active = Instant::now();
 
                         if stream == Stream::Out {
+                            doing.saw(&line);
                             self.pending.said(&line);
                             self.publish_state(cwd, &mut last_state, states.as_ref());
+                            if let Some(job) = doing.follow(self.pending.turns > 0, place, &changed) {
+                                keep(&keeper, job).await;
+                            }
                         }
                         if let Some((key, outbox)) = &shown {
                             send_line(outbox, *key, stream, &line).await;
                         }
                     }
                     None => output_open = false,
+                },
+                Some(summary) = turns_changed.recv() => {
+                    if let Some((key, outbox)) = &shown {
+                        tell(outbox, FromDaemon::TurnChanged { key: *key, summary }).await;
+                    }
                 },
                 ended = child.wait() => break ended.ok().and_then(|status| status.code()),
                 () = deadline => {
@@ -1312,9 +1446,16 @@ impl Session {
             }
         }
         while let Some((stream, line)) = output.recv().await {
+            if stream == Stream::Out {
+                doing.saw(&line);
+            }
             if let Some((key, outbox)) = &shown {
                 send_line(outbox, *key, stream, &line).await;
             }
+        }
+        // A turn the process ended in ends with it.
+        if let Some(job) = doing.follow(false, place, &changed) {
+            keep(&keeper, job).await;
         }
         if let Some((key, outbox)) = &shown {
             tell(outbox, FromDaemon::Ended { key: *key, code }).await;
@@ -1671,6 +1812,48 @@ mod tests {
         }
     }
 
+    /// A keeper nobody runs: what is sent to it is dropped.
+    fn no_keeper() -> mpsc::Sender<snapshots::Job> {
+        mpsc::channel(8).0
+    }
+
+    fn place() -> Place {
+        Place {
+            cwd: PathBuf::new(),
+            session: launch().conversation.id().clone(),
+        }
+    }
+
+    fn reporting() -> Reporting {
+        Reporting {
+            states: None,
+            keeper: no_keeper(),
+        }
+    }
+
+    /// A turn starts as the session becomes busy, with the files Claude's editing tools name
+    /// in it, and ends as it becomes idle; nothing is said while it stays either.
+    #[test]
+    fn a_session_tells_the_keeper_its_turns() {
+        let (changed, _summaries) = mpsc::channel(1);
+        let place = place();
+        let mut doing = Doing::default();
+        doing.saw(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t0","name":"Write","input":{"file_path":"/p/early.rs","content":"x"}}]},"parent_tool_use_id":null}"#);
+        assert!(doing.follow(false, &place, &changed).is_none());
+        assert!(matches!(
+            doing.follow(true, &place, &changed),
+            Some(snapshots::Job::TurnStarted { .. })
+        ));
+        assert!(doing.follow(true, &place, &changed).is_none());
+        doing.saw(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/p/a.rs","old_string":"a","new_string":"b"}}]},"parent_tool_use_id":null}"#);
+        let Some(snapshots::Job::TurnEnded { touched, .. }) = doing.follow(false, &place, &changed)
+        else {
+            panic!("the turn ends");
+        };
+        assert_eq!(touched, BTreeSet::from([PathBuf::from("/p/a.rs")]));
+        assert_eq!(doing, Doing::BetweenTurns);
+    }
+
     fn piece(key: Generation, text: &str, last: bool) -> ToDaemon {
         ToDaemon::Input {
             key,
@@ -1982,6 +2165,7 @@ mod tests {
             requests,
             running,
             tokio::runtime::Handle::current(),
+            no_keeper(),
         ));
         let (outbox, mut told) = mpsc::channel(8);
         hub.send(ToHub::Joined {
@@ -2005,6 +2189,7 @@ mod tests {
             requests,
             running,
             tokio::runtime::Handle::current(),
+            no_keeper(),
         ));
         let mut heard = Vec::new();
         for window in [WindowId(1), WindowId(2)] {
@@ -2113,7 +2298,7 @@ mod tests {
                 .expect("queued");
         });
         let session = Session::new(HostedId::default().next())
-            .event_loop(Path::new(""), cat(), commands, None, None)
+            .event_loop(&place(), cat(), commands, None, reporting())
             .await;
         attach.await.expect("the attaching task");
         assert_eq!(session.lines_in, 2);
@@ -2142,13 +2327,18 @@ mod tests {
         let (orders, commands) = mpsc::channel(8);
         let (outbox, mut answers) = mpsc::channel(QUEUE);
         let key = Generation::default().next();
-        let session = tokio::spawn(Session::new(HostedId::default().next()).event_loop(
-            Path::new(""),
-            running("sleep", &["30"]),
-            commands,
-            None,
-            None,
-        ));
+        let place = place();
+        let session = tokio::spawn(async move {
+            Session::new(HostedId::default().next())
+                .event_loop(
+                    &place,
+                    running("sleep", &["30"]),
+                    commands,
+                    None,
+                    reporting(),
+                )
+                .await
+        });
         // More than a pipe holds: its writing waits on the process for good.
         let unread = "x".repeat(4 * 1024 * 1024);
         orders.send(Command::Line(unread)).await.expect("queued");

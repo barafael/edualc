@@ -38,6 +38,7 @@ use crate::sidebar;
 use crate::trust;
 
 mod api_key;
+mod changes;
 #[cfg_attr(target_arch = "wasm32", path = "app/web_images.rs")]
 mod images;
 mod limits;
@@ -48,6 +49,7 @@ mod tasks;
 mod usage;
 mod worktree;
 
+pub use changes::{ChangesView, LineComment, Listed, Picked, comments_on, rows as diff_rows};
 pub use peek::{CommandOutput, Conversation, Followed, Peek, PeekView, Step, StepKind};
 pub use side::{Answer, SideChat, SideView};
 pub use tasks::{Place, Running, TaskProgress, Tasks};
@@ -273,6 +275,19 @@ pub enum Event {
     WorktreeRead {
         id: SessionId,
         worktree: Option<Worktree>,
+    },
+    /// What a session changed in `scope`, or why it wasn't read.
+    ChangesRead {
+        session: SessionId,
+        scope: crate::changes::Scope,
+        result: Result<crate::changes::ChangeSet, String>,
+    },
+    /// A changed file's diff, or why it wasn't read.
+    DiffRead {
+        session: SessionId,
+        root: PathBuf,
+        path: PathBuf,
+        result: Result<crate::changes::Diff, String>,
     },
 
     /// Something watched changed: the running sessions' records, or a followed transcript.
@@ -626,6 +641,17 @@ pub enum Action {
     ToggleSide,
     DismissSide,
     CopySide(usize),
+    /// The Changes view: open it, close it, its scope, the file whose diff it shows, marking
+    /// that file reviewed, and comments on its lines, sent together.
+    ShowChanges,
+    CloseChanges,
+    ChangesScope(crate::changes::Scope),
+    SelectChangedFile(usize),
+    MarkReviewed,
+    EditLineComment(usize),
+    SetLineComment(usize, String),
+    CancelLineComment,
+    SendLineComments,
     /// Follow a subagent's conversation in the side panel.
     OpenPeek(wire::TaskId),
     ClosePeek,
@@ -725,6 +751,9 @@ pub struct Status {
     pub limits: PlanLimits,
     pub limit_wait: LimitWait,
     pub worktree: Option<Worktree>,
+    /// What its last turn changed in its folder, as the daemon's snapshots tell; none before a
+    /// turn changed anything.
+    pub turn_changed: Option<crate::changes::Summary>,
 }
 
 impl Status {
@@ -1006,6 +1035,8 @@ struct Redraw {
     usage: bool,
     tasks: bool,
     peek: bool,
+    /// The Changes view, or what the last turn changed.
+    changes: bool,
 }
 
 impl Redraw {
@@ -1021,6 +1052,7 @@ impl Redraw {
             usage: true,
             tasks: true,
             peek: true,
+            changes: true,
         }
     }
 }
@@ -1074,6 +1106,17 @@ enum Reading {
     Sessions { cwd: PathBuf },
     /// The worktree a session entered.
     Worktree { id: SessionId },
+    /// What a session changed, for the Changes view.
+    Changes {
+        session: SessionId,
+        scope: crate::changes::Scope,
+    },
+    /// A changed file's diff, for the Changes view.
+    Diff {
+        session: SessionId,
+        root: PathBuf,
+        path: PathBuf,
+    },
 }
 
 impl Reading {
@@ -1147,6 +1190,31 @@ impl Reading {
                 };
                 Some(Event::WorktreeRead { id, worktree })
             }
+            Self::Changes { session, scope } => {
+                let ipc::Answer::Changes(result) = answer else {
+                    return None;
+                };
+                Some(Event::ChangesRead {
+                    session,
+                    scope,
+                    result: result.map_err(|unkept| unkept.to_string()),
+                })
+            }
+            Self::Diff {
+                session,
+                root,
+                path,
+            } => {
+                let ipc::Answer::Diff(result) = answer else {
+                    return None;
+                };
+                Some(Event::DiffRead {
+                    session,
+                    root,
+                    path,
+                    result: result.map_err(|unkept| unkept.to_string()),
+                })
+            }
         }
     }
 }
@@ -1186,6 +1254,10 @@ pub struct App<F: Frontend> {
     watch: Option<Watch>,
     /// The subagent whose conversation the side panel follows.
     peek: Option<Peek>,
+    /// The Changes view, while open.
+    changes: Option<ChangesView>,
+    /// Comments on lines of the session's changes, not sent yet.
+    line_comments: Vec<LineComment>,
     /// What is done with the daemon's answers to what was read, by request.
     answers: HashMap<ActId, Reading>,
     /// Why the settings couldn't be read, to say once the window is up.
@@ -1324,6 +1396,8 @@ impl<F: Frontend> App<F> {
             notified: HashMap::new(),
             watch: None,
             peek: None,
+            changes: None,
+            line_comments: Vec::new(),
             answers: HashMap::new(),
             settings_problem,
             records: None,
@@ -1442,6 +1516,17 @@ impl<F: Frontend> App<F> {
             Event::PeekGrew { task, result } => self.peek_grew(&task, result),
             Event::LiveListed(live) => self.live_listed(live),
             Event::WorktreeRead { id, worktree } => self.worktree_read(&id, worktree),
+            Event::ChangesRead {
+                session,
+                scope,
+                result,
+            } => self.changes_read(&session, scope, result),
+            Event::DiffRead {
+                session,
+                root,
+                path,
+                result,
+            } => self.diff_read(&session, &root, &path, result),
             Event::Acted { request, result } => self.acted(request, result),
             Event::Answered {
                 request,
@@ -1635,6 +1720,15 @@ impl<F: Frontend> App<F> {
             Action::CopySide(index) => self.copy_side(index),
             Action::SideToConversation => self.side_to_conversation(),
             Action::BranchSide => self.branch_side(),
+            Action::ShowChanges => self.show_changes(),
+            Action::CloseChanges => self.close_changes(),
+            Action::ChangesScope(scope) => self.choose_changes_scope(scope),
+            Action::SelectChangedFile(index) => self.select_changed_file(index),
+            Action::MarkReviewed => self.mark_reviewed(),
+            Action::EditLineComment(row) => self.edit_line_comment(row),
+            Action::SetLineComment(row, text) => self.set_line_comment(row, &text),
+            Action::CancelLineComment => self.cancel_line_comment(),
+            Action::SendLineComments => self.send_line_comments(),
             Action::OpenPeek(task) => self.open_peek(task),
             Action::ClosePeek => self.close_peek(),
             Action::StopTask(task) => self.stop_task(task),
@@ -1826,6 +1920,13 @@ impl<F: Frontend> App<F> {
         if redraw.peek || redraw.tasks {
             self.view
                 .render_peek(self.peek.as_ref(), &self.status.tasks);
+        }
+        if redraw.changes {
+            self.view.render_changes(
+                self.changes.as_ref(),
+                &self.line_comments,
+                self.status.turn_changed,
+            );
         }
         if redraw.side {
             let can_ask = self.watch.is_none();
@@ -2343,6 +2444,10 @@ impl<F: Frontend> App<F> {
         self.status.context_window = 0;
         self.status.cost_usd = 0.0;
         self.status.worktree = None;
+        // What it changed, and comments on that, belong to the session shown before.
+        self.status.turn_changed = None;
+        self.changes = None;
+        self.line_comments.clear();
         self.open_runs.clear();
         self.shell_rows.clear();
         // What failed belongs to the session it was sent in.
@@ -3755,6 +3860,7 @@ mod tests {
 
     impl Frontend for Recorder {
         fn nav(&mut self, _nav: &present::model::Nav) {}
+        fn changes(&mut self, _changes: &present::model::Changes) {}
         fn session(&mut self, session: &present::model::Session) {
             if self.sessions.send(session.clone()).is_err() {
                 tracing::debug!("the test stopped listening");
@@ -4496,6 +4602,7 @@ mod tests {
         fn entries(&mut self, _change: crate::present::EntriesChange) {}
         fn prompt(&mut self, _prompt: &crate::present::model::Prompt) {}
         fn peek(&mut self, _peek: &crate::present::model::Peek) {}
+        fn changes(&mut self, _changes: &crate::present::model::Changes) {}
         fn side(&mut self, _side: &crate::present::model::Side) {}
         fn preferences(&mut self, _preferences: &crate::present::model::Preferences) {}
         fn usage(&mut self, _usage: &crate::present::model::Usage) {}
@@ -4881,5 +4988,87 @@ mod tests {
             result: Err(ipc::Unread::Failed("Permission denied".to_owned())),
         });
         assert_eq!(test.app.chat.entries.len(), 1);
+    }
+
+    /// The Changes view reads the session's changes, then the first file's diff; a comment on
+    /// a line is kept, and sending the comments closes the view, which marks it looked at.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_changes_view_reads_shows_and_sends_comments() {
+        use crate::changes::{
+            ChangeSet, Diff, DiffLine, FileChange, Hunk, Kind, LineKind, Review, Scope, Who,
+        };
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        let session = SessionId::try_from("8e1c72c8-83ea-4639-a986-1ad80b839271".to_owned())
+            .expect("a session id");
+        test.app.status.session_id = Some(session.clone());
+        drop(test.drain_daemon());
+
+        test.send(Event::Action(Action::ShowChanges));
+        assert!(test.drain_daemon().iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Read {
+                read: Read::Changes {
+                    scope: Scope::Turn,
+                    ..
+                },
+                ..
+            }
+        )));
+        let root = PathBuf::from("/code/beep");
+        test.send(Event::ChangesRead {
+            session: session.clone(),
+            scope: Scope::Turn,
+            result: Ok(ChangeSet {
+                files: vec![FileChange {
+                    root: root.clone(),
+                    path: PathBuf::from("calc.py"),
+                    kind: Kind::Changed,
+                    who: Who::Claude,
+                    added: 1,
+                    removed: 0,
+                    review: Review::NotReviewed,
+                    now: None,
+                }],
+                left_out: crate::changes::LeftOut::default(),
+            }),
+        });
+        assert!(test.drain_daemon().iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Read { read: Read::Diff { path, .. }, .. } if path == Path::new("calc.py")
+        )));
+        test.send(Event::DiffRead {
+            session: session.clone(),
+            root,
+            path: PathBuf::from("calc.py"),
+            result: Ok(Diff {
+                hunks: vec![Hunk {
+                    lines: vec![DiffLine {
+                        kind: LineKind::Added,
+                        old: None,
+                        new: Some(3),
+                        text: "    return x * x".to_owned(),
+                    }],
+                }],
+                cut: false,
+            }),
+        });
+        test.send(Event::Action(Action::SetLineComment(
+            0,
+            "Use a docstring.".to_owned(),
+        )));
+        assert_eq!(test.app.line_comments.len(), 1);
+        // The row of the gap between hunks, or past the end, takes no comment.
+        test.send(Event::Action(Action::SetLineComment(5, "Lost.".to_owned())));
+        assert_eq!(test.app.line_comments.len(), 1);
+
+        test.send(Event::Action(Action::SendLineComments));
+        assert!(test.app.line_comments.is_empty());
+        assert!(test.app.changes.is_none());
+        assert!(test.drain_daemon().iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Act { act: Act::ChangesLooked { session: looked }, .. } if *looked == session
+        )));
     }
 }

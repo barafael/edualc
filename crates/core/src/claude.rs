@@ -41,6 +41,8 @@ pub enum Output {
     },
     /// A line of stderr, or of stdout that isn't a message.
     Log(String),
+    /// A turn of its ended, having changed this in its folder.
+    TurnChanged(crate::changes::Summary),
     /// It ended, with its exit code if it exited on its own.
     Ended(Option<i32>),
 }
@@ -442,6 +444,7 @@ mod tests {
             other @ (Output::Started { .. }
             | Output::Failed(_)
             | Output::Message(_)
+            | Output::TurnChanged(_)
             | Output::Ended(_)) => panic!("{line} read as {other:?}"),
         };
         assert_eq!(

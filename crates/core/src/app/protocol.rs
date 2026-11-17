@@ -77,6 +77,11 @@ impl<F: Frontend> App<F> {
                 self.forget_process();
                 self.chat.error(failure.to_string());
             }
+            Output::TurnChanged(summary) => {
+                self.status.turn_changed = Some(summary);
+                self.chat.turn_changed(summary);
+                self.turn_changed();
+            }
             Output::Ended(code) => self.ended(code),
         }
     }
@@ -371,6 +376,17 @@ impl<F: Frontend> App<F> {
             }
         } else if result.reached_a_model() {
             self.status.sign_in = SignIn::SignedIn;
+        }
+        // Under a turn a model answered (not a command Claude Code answers itself): its facts,
+        // and later what it changed.
+        if self.status.turns == 0 && !result.model_usage.is_empty() {
+            let usage = &result.usage;
+            let tokens_in = usage
+                .input_tokens
+                .saturating_add(usage.cache_creation_input_tokens)
+                .saturating_add(usage.cache_read_input_tokens);
+            self.chat
+                .turn_ended(result.duration_ms, tokens_in, usage.output_tokens);
         }
         // A new session gets its file and its title as it goes, and maybe a worktree.
         self.load_sessions();
