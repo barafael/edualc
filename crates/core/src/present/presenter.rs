@@ -631,10 +631,12 @@ impl<F: Frontend> Presenter<F> {
     }
 
     /// `asking`: the user is asked to trust the folder, which would run this.
+    /// `asks_claude_trust`: whether to trust the folder, trusted here, for Claude Code too.
     pub fn render_status(
         &mut self,
         status: &Status,
         asking: Option<&[Runs]>,
+        asks_claude_trust: bool,
         cwd: &Path,
         watch: Option<&Watch>,
         worktree: Option<&Worktree>,
@@ -672,6 +674,7 @@ impl<F: Frontend> Presenter<F> {
         help.clone_into(&mut session.sign_in_help);
         command.clone_into(&mut session.sign_in_command);
         session.needs_trust = asking.is_some();
+        session.asks_claude_trust = asks_claude_trust;
         session.trust_runs = asking.unwrap_or_default().iter().map(run_line).collect();
         status.backend.agent().clone_into(&mut session.agent);
         status.backend.program().clone_into(&mut session.program);

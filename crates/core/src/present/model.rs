@@ -558,6 +558,7 @@ pub struct Session {
     pub sign_in_command: String,
     pub needs_trust: bool,
     pub trust_runs: Vec<String>,
+    pub asks_claude_trust: bool,
     pub watching: bool,
     pub watch_text: String,
     pub can_go_to_window: bool,

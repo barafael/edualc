@@ -108,6 +108,8 @@ pub fn spawn(launch: &Launch, runtime: &tokio::runtime::Handle) -> Result<Spawne
         command.arg(format!("--model={}", model_name(model)?));
     }
     match launch.folder_configuration {
+        // Whether Claude Code also applies the folder's permission rules is its own record's
+        // (`~/.claude.json`), which the window asks you about (`Act::TrustForClaudeCode`).
         FolderConfiguration::Read => {}
         FolderConfiguration::Skipped => {
             command.args(["--setting-sources=user", "--strict-mcp-config"]);

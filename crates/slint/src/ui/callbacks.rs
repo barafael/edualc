@@ -133,6 +133,8 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
     session.on_dismiss_sign_in(actions.on(|| Action::DismissSignIn));
     session.on_trust_folder(actions.on(|| Action::TrustFolder));
     session.on_start_without_folder_settings(actions.on(|| Action::StartWithoutFolderSettings));
+    session.on_trust_for_claude_code(actions.on(|| Action::TrustForClaudeCode));
+    session.on_not_for_claude_code(actions.on(|| Action::NotForClaudeCode));
     session.on_show_usage(actions.on(|| Action::ShowUsage));
 
     let usage = window.global::<Usage>();

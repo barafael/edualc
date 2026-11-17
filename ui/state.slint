@@ -76,6 +76,11 @@ export global Session {
     callback trust-folder;
     // Starts it this once with the user's own settings alone (see `FolderConfiguration`).
     callback start-without-folder-settings;
+    // The folder is trusted here but not for Claude Code, which so ignores its permission
+    // rules: whether to trust it for Claude Code too, or not and not be asked again.
+    in property <bool> asks-claude-trust;
+    callback trust-for-claude-code;
+    callback not-for-claude-code;
     // A session another process runs is shown here, not driven: what runs it, and what
     // can be done about it.
     in property <bool> watching;

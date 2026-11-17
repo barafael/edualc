@@ -94,6 +94,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Pasted { .. }
         | FromDaemon::Created { .. }
         | FromDaemon::TurnChanged { .. }
+        | FromDaemon::ClaudeTrust { .. }
         | FromDaemon::ApiKeyStored { .. }
         | FromDaemon::SettingsNotKept(_) => return Err(Error::Version),
     };
@@ -115,6 +116,7 @@ pub(crate) fn connect() -> Result<Connected, Error> {
         | FromDaemon::Pasted { .. }
         | FromDaemon::Created { .. }
         | FromDaemon::TurnChanged { .. }
+        | FromDaemon::ClaudeTrust { .. }
         | FromDaemon::ApiKeyStored { .. }
         | FromDaemon::SettingsNotKept(_) => return Err(Error::OutOfTurn),
     };

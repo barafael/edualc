@@ -431,6 +431,12 @@ pub enum FromDaemon {
     },
     /// Whether the terminal's trust dialog was accepted for the folder asked about.
     Trusted { request: ActId, trust: FolderTrust },
+    /// Whether Claude Code counts the folder as trusted, as asked by `Act::CheckClaudeTrust`,
+    /// or why that wasn't read.
+    ClaudeTrust {
+        request: ActId,
+        trusted: Result<bool, ActFailure>,
+    },
     /// The sessions the daemon runs, anew whenever that changes.
     Hosted(Vec<Hosted>),
     /// A window asked the daemon to shut down: its sessions end, and then it.
@@ -724,6 +730,11 @@ pub enum ActFailure {
     Crashed,
     #[error("the keyring: {0}")]
     Keyring(String),
+    #[error("Claude Code was saving its settings the whole while; try again in a moment")]
+    ClaudeCodeBusy,
+    /// Claude Code's settings couldn't be read or written: the daemon's words.
+    #[error("couldn't record the folder as trusted for Claude Code: {0}")]
+    ClaudeCodeTrust(String),
 }
 
 impl From<crate::desktop::Error> for ActFailure {
@@ -811,6 +822,16 @@ pub enum Act {
     /// Whether the terminal's trust dialog was accepted for the folder, or one it is in, which
     /// the window can't read (see [`crate::trust`]); answered by [`FromDaemon::Trusted`].
     CheckTrust {
+        folder: PathBuf,
+    },
+    /// Whether Claude Code applies the folder's own permission rules: whether its record in
+    /// `~/.claude.json` says it is trusted; answered by [`FromDaemon::ClaudeTrust`].
+    CheckClaudeTrust {
+        folder: PathBuf,
+    },
+    /// Records the folder as trusted for Claude Code too, in `~/.claude.json`, as its trust
+    /// dialog would; answered by `Done`.
+    TrustForClaudeCode {
         folder: PathBuf,
     },
     Notify {

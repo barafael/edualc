@@ -25,6 +25,9 @@ pub struct Settings {
     /// Where new projects are placed when created; defaults to `~/code` if it exists, else `~`.
     #[serde(default)]
     pub new_projects_in: Option<PathBuf>,
+    /// Folders trusted here that you chose not to trust for Claude Code too: not asked again.
+    #[serde(default)]
+    pub not_for_claude_code: Vec<PathBuf>,
     /// The window's colours (dark or light as the desktop asks).
     #[serde(default)]
     pub look: Look,
@@ -89,6 +92,7 @@ impl Default for Settings {
             composer_height_px: None,
             sidebar_width_px: None,
             new_projects_in: None,
+            not_for_claude_code: Vec::new(),
             look: Look::default(),
             send_with: SendKey::default(),
             han_text: None,
@@ -228,6 +232,8 @@ pub enum Change {
     NewProjectsIn(Option<PathBuf>),
     /// A folder trusted here, with what is under it.
     Trust(PathBuf),
+    /// A folder trusted here that isn't to be trusted for Claude Code too, nor asked about.
+    NotForClaudeCode(PathBuf),
     PeerMessages(PeerMessages),
 }
 
@@ -245,6 +251,11 @@ impl Settings {
             Change::Trust(folder) => {
                 if !self.trusted_folders.contains(&folder) {
                     self.trusted_folders.push(folder);
+                }
+            }
+            Change::NotForClaudeCode(folder) => {
+                if !self.not_for_claude_code.contains(&folder) {
+                    self.not_for_claude_code.push(folder);
                 }
             }
             Change::PeerMessages(peer_messages) => self.peer_messages = peer_messages,

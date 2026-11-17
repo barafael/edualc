@@ -252,6 +252,11 @@ pub enum Event {
         request: ActId,
         trust: crate::ipc::FolderTrust,
     },
+    /// Whether Claude Code trusts the folder, as asked by `Act::CheckClaudeTrust`.
+    ClaudeTrustRead {
+        request: ActId,
+        trusted: Result<bool, ActFailure>,
+    },
     /// The clipboard's image, decoded in the confined helper, or why there is none.
     Pasted {
         request: ActId,
@@ -426,6 +431,19 @@ enum TrustGate {
         resume: Option<Resume>,
         runs: Vec<Runs>,
     },
+}
+
+/// Whether a folder trusted here is trusted for Claude Code too, which applies the folder's own
+/// permission rules only then (see `Act::TrustForClaudeCode`). Asked once, of a folder trusted
+/// before trusting it here also trusted it for Claude Code.
+#[derive(Debug, Default)]
+enum ClaudeTrustAsk {
+    #[default]
+    Not,
+    /// The daemon reads whether Claude Code trusts the folder.
+    Checking { request: ActId, folder: PathBuf },
+    /// It doesn't: a bar asks.
+    Asking(PathBuf),
 }
 
 /// Where the daemon's answer on the folder's trust leaves a start held back.
@@ -694,8 +712,12 @@ pub enum Action {
     TrySignInAgain,
     /// Puts away how to sign in.
     DismissSignIn,
-    /// Trusts the folder shown, to start Claude Code in it.
+    /// Trusts the folder shown, to start Claude Code in it, and for Claude Code too.
     TrustFolder,
+    /// The folder shown, trusted here, is to be trusted for Claude Code too; or not, and not
+    /// asked about again.
+    TrustForClaudeCode,
+    NotForClaudeCode,
     /// Starts Claude Code in the folder shown this once, without its configuration.
     StartWithoutFolderSettings,
     /// Ends every session the daemon runs, in every window, and then the daemon (asked in the
@@ -1279,6 +1301,7 @@ pub struct App<F: Frontend> {
     usage: UsagePanel,
     /// A start held back until the folder is trusted.
     trust_gate: TrustGate,
+    claude_trust_ask: ClaudeTrustAsk,
     /// Folders the daemon found trusted in the terminal: starting there again asks nothing.
     accepted_in_terminal: HashSet<PathBuf>,
     /// The command line's prompt for a session continued: sent once its transcript is shown,
@@ -1410,6 +1433,7 @@ impl<F: Frontend> App<F> {
             open_runs: HashSet::new(),
             usage: UsagePanel::default(),
             trust_gate: TrustGate::Open,
+            claude_trust_ask: ClaudeTrustAsk::Not,
             accepted_in_terminal: HashSet::new(),
             held_prompt: None,
             daemon: Daemon::Running,
@@ -1579,6 +1603,7 @@ impl<F: Frontend> App<F> {
                 }
             }
             Event::Trusted { request, trust } => self.trust_read(request, trust),
+            Event::ClaudeTrustRead { request, trusted } => self.claude_trust_read(request, trusted),
             Event::CodeColoured(coloured) => self.view.code_coloured(coloured),
             Event::ImageShown { key, shown } => {
                 if self.images.wanted(key) {
@@ -1747,6 +1772,8 @@ impl<F: Frontend> App<F> {
                 }
             }
             Action::TrustFolder => self.trust_folder(),
+            Action::TrustForClaudeCode => self.trust_for_claude_code(),
+            Action::NotForClaudeCode => self.not_for_claude_code(),
             Action::StartWithoutFolderSettings => self.start_without_folder_settings(),
             Action::ToggleRun(index) => {
                 if !self.open_runs.remove(&index) {
@@ -1891,6 +1918,7 @@ impl<F: Frontend> App<F> {
         self.view.render_status(
             &self.status,
             asking,
+            matches!(self.claude_trust_ask, ClaudeTrustAsk::Asking(_)),
             cwd,
             self.watch.as_ref(),
             worktree.as_ref(),
@@ -2087,6 +2115,13 @@ impl<F: Frontend> App<F> {
             || trust::trusted_in_edualc(&cwd, &self.settings)
             || self.accepted_in_terminal.contains(&cwd)
         {
+            // Trusted here: is it for Claude Code too, unless you said not to?
+            if !self.status.backend.is_acp()
+                && trust::trusted_in_edualc(&cwd, &self.settings)
+                && !self.settings.not_for_claude_code.contains(&cwd)
+            {
+                self.check_claude_trust(cwd);
+            }
             self.launch(resume, FolderConfiguration::Read);
             return;
         }
@@ -2219,9 +2254,70 @@ impl<F: Frontend> App<F> {
                 return;
             }
         };
+        // As the card says: trusted for Claude Code too, so its permission rules apply.
+        self.ask_desktop(
+            Act::TrustForClaudeCode {
+                folder: cwd.clone(),
+            },
+            Acting::Desktop,
+        );
         self.change_settings(settings::Change::Trust(cwd));
         self.launch(resume, FolderConfiguration::Read);
         self.view.focus_composer();
+    }
+
+    /// Asks the daemon whether Claude Code trusts `folder`, to ask you if it doesn't.
+    fn check_claude_trust(&mut self, folder: PathBuf) {
+        self.last_act = self.last_act.next();
+        let request = self.last_act;
+        let check = ToDaemon::Act {
+            request,
+            act: Act::CheckClaudeTrust {
+                folder: folder.clone(),
+            },
+        };
+        self.claude_trust_ask = if link::send(&self.link, check).is_ok() {
+            ClaudeTrustAsk::Checking { request, folder }
+        } else {
+            ClaudeTrustAsk::Not
+        };
+    }
+
+    /// The daemon's answer: a folder Claude Code doesn't trust is asked about, if it is still
+    /// the one shown. One whose trust couldn't be read isn't: the bar would ask on every start.
+    fn claude_trust_read(&mut self, request: ActId, trusted: Result<bool, ActFailure>) {
+        let ClaudeTrustAsk::Checking {
+            request: asked,
+            folder,
+        } = std::mem::take(&mut self.claude_trust_ask)
+        else {
+            return;
+        };
+        if asked != request {
+            return;
+        }
+        self.claude_trust_ask = match trusted {
+            Ok(false) if self.location.cwd() == Some(folder.as_path()) => {
+                ClaudeTrustAsk::Asking(folder)
+            }
+            Ok(_) => ClaudeTrustAsk::Not,
+            Err(failure) => {
+                tracing::warn!(%failure, "couldn't tell whether Claude Code trusts the folder");
+                ClaudeTrustAsk::Not
+            }
+        };
+    }
+
+    fn trust_for_claude_code(&mut self) {
+        if let ClaudeTrustAsk::Asking(folder) = std::mem::take(&mut self.claude_trust_ask) {
+            self.ask_desktop(Act::TrustForClaudeCode { folder }, Acting::Desktop);
+        }
+    }
+
+    fn not_for_claude_code(&mut self) {
+        if let ClaudeTrustAsk::Asking(folder) = std::mem::take(&mut self.claude_trust_ask) {
+            self.change_settings(settings::Change::NotForClaudeCode(folder));
+        }
     }
 
     /// Starts what waited for the folder's trust without its configuration, this once: the
@@ -2444,9 +2540,11 @@ impl<F: Frontend> App<F> {
         self.status.context_window = 0;
         self.status.cost_usd = 0.0;
         self.status.worktree = None;
-        // What it changed, and comments on that, belong to the session shown before.
+        // What it changed, and comments on that, belong to the session shown before; so does a
+        // question about its folder's trust.
         self.status.turn_changed = None;
         self.changes = None;
+        self.claude_trust_ask = ClaudeTrustAsk::Not;
         self.line_comments.clear();
         self.open_runs.clear();
         self.shell_rows.clear();
@@ -4006,12 +4104,76 @@ mod tests {
             message,
             ToDaemon::ChangeSettings(settings::Change::Trust(folder)) if *folder == driven.cwd
         )));
+        // As the card says, for Claude Code too.
+        assert!(sent.iter().any(|message| matches!(
+            message,
+            ToDaemon::Act { act: Act::TrustForClaudeCode { folder }, .. } if *folder == driven.cwd
+        )));
         assert!(
             sent.iter()
                 .any(|message| matches!(message, ToDaemon::Start { .. }))
         );
         assert!(!driven.session().needs_trust);
         assert!(driven.commands().contains(&present::Command::FocusComposer));
+    }
+
+    /// A folder trusted here before that trusted it for Claude Code too: asked once whether to
+    /// trust it for Claude Code, nothing recorded without that; "not for this folder" is kept,
+    /// and then nothing is asked.
+    #[test]
+    fn a_folder_trusted_before_is_asked_about_once_for_claude_code() {
+        let mut driven = Driven::new();
+        driven
+            .app
+            .settings
+            .apply(settings::Change::Trust(driven.cwd.clone()));
+        driven.app.begin(Vec::new(), Vec::new(), None, None, None);
+        let sent = driven.sent();
+        let check = sent
+            .iter()
+            .find_map(|message| {
+                if let ToDaemon::Act {
+                    request,
+                    act: Act::CheckClaudeTrust { folder },
+                } = message
+                    && *folder == driven.cwd
+                {
+                    Some(*request)
+                } else {
+                    None
+                }
+            })
+            .expect("the daemon is asked whether Claude Code trusts it");
+        assert!(
+            !sent.iter().any(|message| matches!(
+                message,
+                ToDaemon::Act {
+                    act: Act::TrustForClaudeCode { .. },
+                    ..
+                }
+            )),
+            "nothing is recorded unasked"
+        );
+        driven.take(Event::ClaudeTrustRead {
+            request: check,
+            trusted: Ok(false),
+        });
+        assert!(driven.session().asks_claude_trust);
+
+        driven.take(Event::Action(Action::NotForClaudeCode));
+        assert!(!driven.session().asks_claude_trust);
+        assert!(driven.sent().iter().any(|message| matches!(
+            message,
+            ToDaemon::ChangeSettings(settings::Change::NotForClaudeCode(folder))
+                if *folder == driven.cwd
+        )));
+        assert!(
+            driven
+                .app
+                .settings
+                .not_for_claude_code
+                .contains(&driven.cwd)
+        );
     }
 
     /// A session started in a folder trusted here, with the generation its process runs as.

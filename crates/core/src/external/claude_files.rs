@@ -1,7 +1,7 @@
 //! The files Claude Code keeps that edualc reads, in the fields read: `~/.claude.json` (the
-//! folders whose trust dialog was accepted), a folder's own settings and `.mcp.json` (what they
-//! would run, asked about before trusting it), and the records of running sessions
-//! (`~/.claude/sessions/<pid>.json`).
+//! folders whose trust dialog was accepted, and, to record a folder trusted in edualc, the
+//! whole file), a folder's own settings and `.mcp.json` (what they would run, asked about before
+//! trusting it), and the records of running sessions (`~/.claude/sessions/<pid>.json`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -74,6 +74,59 @@ pub struct ClaudeJson {
 pub struct Project {
     #[serde(default, rename = "hasTrustDialogAccepted")]
     pub accepted: bool,
+}
+
+/// `~/.claude.json` whole, to record a folder's trust and write the file back: its folders, and
+/// everything else in it kept as it is.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ClaudeJsonWhole {
+    #[serde(default)]
+    pub projects: std::collections::BTreeMap<PathBuf, ProjectWhole>,
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A folder in `~/.claude.json` whole: its trust, if it says, and everything else it holds.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ProjectWhole {
+    #[serde(
+        default,
+        rename = "hasTrustDialogAccepted",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub accepted: Option<bool>,
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ProjectWhole {
+    /// A new folder's record, trusted, with what Claude Code (2.1.323) puts in one as its trust
+    /// dialog makes it.
+    pub fn trusted() -> serde_json::Result<Self> {
+        let defaults = serde_json::to_value(NewProject::default())?;
+        let serde_json::Value::Object(rest) = defaults else {
+            return Err(serde::ser::Error::custom(
+                "a project's record isn't an object",
+            ));
+        };
+        Ok(Self {
+            accepted: Some(true),
+            rest,
+        })
+    }
+}
+
+/// Claude Code's defaults for a folder's record in `~/.claude.json`, but for its trust.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NewProject {
+    allowed_tools: Vec<String>,
+    mcp_context_uris: Vec<String>,
+    mcp_servers: serde_json::Map<String, serde_json::Value>,
+    enabled_mcpjson_servers: Vec<String>,
+    disabled_mcpjson_servers: Vec<String>,
+    has_claude_md_external_includes_approved: bool,
+    has_claude_md_external_includes_warning_shown: bool,
 }
 
 /// A folder's `.claude/settings.json` or `settings.local.json`, in what it has Claude Code run

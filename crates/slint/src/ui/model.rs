@@ -905,6 +905,9 @@ pub(super) fn apply_session(
         Some(_) => {}
         None => global.set_trust_runs(new.trust_runs.to_slint(images)),
     }
+    if old.is_none_or(|old| old.asks_claude_trust != new.asks_claude_trust) {
+        global.set_asks_claude_trust(new.asks_claude_trust.to_slint(images));
+    }
     if old.is_none_or(|old| old.watching != new.watching) {
         global.set_watching(new.watching.to_slint(images));
     }

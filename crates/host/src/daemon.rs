@@ -548,6 +548,35 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
             tell(&outbox, FromDaemon::ApiKeyStored { request, stored }).await;
             return;
         }
+        Act::CheckClaudeTrust { folder } => {
+            let read =
+                tokio::task::spawn_blocking(move || files::trusted_for_claude_code(&folder)).await;
+            let trusted = match read {
+                Ok(read) => read.map_err(|error| claude_trust_failure(&error)),
+                Err(error) => {
+                    tracing::error!(%error, "reading Claude Code's trust failed");
+                    Err(ActFailure::Crashed)
+                }
+            };
+            tell(&outbox, FromDaemon::ClaudeTrust { request, trusted }).await;
+            return;
+        }
+        // It may wait a moment for Claude Code's lock (see `files::trust_for_claude_code`).
+        Act::TrustForClaudeCode { folder } => {
+            let recorded =
+                tokio::task::spawn_blocking(move || files::trust_for_claude_code(&folder)).await;
+            let result = match recorded {
+                Ok(recorded) => recorded
+                    .map(|_| ())
+                    .map_err(|error| claude_trust_failure(&error)),
+                Err(error) => {
+                    tracing::error!(%error, "recording Claude Code's trust failed");
+                    Err(ActFailure::Crashed)
+                }
+            };
+            tell(&outbox, FromDaemon::Done { request, result }).await;
+            return;
+        }
         act @ (Act::OpenIn { .. }
         | Act::OpenUrl(_)
         | Act::PickFolder
@@ -758,9 +787,27 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         | Act::CheckApiKey
         | Act::ChangesLooked { .. }
         | Act::MarkReviewed { .. }
-        | Act::UnmarkReviewed { .. } => {}
+        | Act::UnmarkReviewed { .. }
+        | Act::CheckClaudeTrust { .. }
+        | Act::TrustForClaudeCode { .. } => {}
     }
     Ok(())
+}
+
+/// Why Claude Code's trust wasn't read or recorded, as the window is told: its lock held
+/// throughout, or the error with what caused it.
+fn claude_trust_failure(error: &files::ClaudeTrustError) -> ActFailure {
+    if let files::ClaudeTrustError::Busy(_) = error {
+        return ActFailure::ClaudeCodeBusy;
+    }
+    let mut words = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        words.push_str(": ");
+        words.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    ActFailure::ClaudeCodeTrust(words)
 }
 
 /// Makes a new project folder inside `parent`, running `git init` when `git` is set. A folder

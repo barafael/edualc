@@ -1206,6 +1206,10 @@ component TrustBar inherits Rectangle {
             text: "Without its settings, Claude Code starts with only your own: none of this runs, and neither do any MCP servers or claude.ai connectors, yours included. You're asked again next time.";
             wrap: word-wrap;
         }
+        Small {
+            text: "Trusting it here trusts it for Claude Code in the terminal too (in ~/.claude.json), so its permission rules apply.";
+            wrap: word-wrap;
+        }
         HorizontalLayout {
             spacing: Theme.space-s;
             alignment: end;
@@ -1224,6 +1228,49 @@ component TrustBar inherits Rectangle {
                 text: "Trust this folder";
                 primary: true;
                 clicked => { Session.trust-folder(); }
+            }
+        }
+    }
+}
+
+// A folder trusted here before that trusted it for Claude Code too: Claude Code ignores its
+// permission rules until it does. Asked once.
+component ClaudeTrustBar inherits Rectangle {
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+    background: Theme.card;
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            Icon {
+                source: @image-url("@lucide/shield-check.svg");
+                tint: Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "Claude Code doesn't count " + Session.project + " as trusted, so it ignores the folder's own permission rules. Trust it for Claude Code too (in ~/.claude.json)?";
+                color: Theme.text;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        FlexboxLayout {
+            flex-direction: FlexboxLayoutDirection.row;
+            flex-wrap: FlexboxLayoutWrap.wrap;
+            alignment: LayoutAlignment.end;
+            spacing: Theme.space-s;
+            TextButton {
+                text: "Not for this folder";
+                clicked => { Session.not-for-claude-code(); }
+            }
+            TextButton {
+                text: "Trust for Claude Code";
+                primary: true;
+                clicked => { Session.trust-for-claude-code(); }
             }
         }
     }
@@ -2156,7 +2203,7 @@ export component AppWindow inherits Window {
                 // What Claude asks and the commands matching the draft, in the transcript's
                 // column above the composer. Placed (`x`), so that their width, taken from the
                 // space there is, doesn't size that space in turn.
-                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust || Session.shows-sign-in || Sessions.choosing-sign-in != "": Rectangle {
+                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust || Session.asks-claude-trust || Session.shows-sign-in || Sessions.choosing-sign-in != "": Rectangle {
                     height: dock.preferred-height;
                     // Centred, as wide as the conversation's column; Claude's questions take the
                     // whole width, where their options have room.
@@ -2177,6 +2224,7 @@ export component AppWindow inherits Window {
                         if Composer.commands.length > 0: CommandList { }
                         if Session.watching: WatchBar { }
                         if Session.needs-trust && !Session.watching: TrustBar { }
+                        if Session.asks-claude-trust && !Session.watching: ClaudeTrustBar { }
                         if Session.shows-sign-in && !Session.watching: SignInBar { }
                         if Sessions.choosing-sign-in != "": SignInChoiceBar { }
                     }

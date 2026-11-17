@@ -17,7 +17,11 @@ process (see [Images](#images)).
 A folder's hooks and settings take effect the moment Claude Code starts there. In a terminal,
 Claude Code asks first whether you trust the folder, but the mode edualc runs it in (`claude -p`)
 skips that question. So the window asks instead, for any folder that neither you in a terminal
-nor this window has trusted.
+nor this window has trusted. Trusting it here trusts it for Claude Code in the terminal too, as
+the card says: edualc records it in `~/.claude.json`, as the terminal's question would, since
+Claude Code applies a folder's own permission rules only in a folder it counts as trusted. For a
+folder you trusted here before, a bar asks once whether to trust it for Claude Code too; "Not for
+this folder" is kept.
 
 It lists what the folder's `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json`
 would run or set:

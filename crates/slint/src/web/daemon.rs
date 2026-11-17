@@ -147,6 +147,11 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
                 None => crate::ipc::FolderTrust::Accepted,
             },
         },
+        // The page has no Claude Code to trust anything: it never asks.
+        Act::CheckClaudeTrust { .. } => Event::ClaudeTrustRead {
+            request,
+            trusted: Ok(true),
+        },
         Act::PickFolder => Event::Picked {
             request,
             folder: None,
@@ -175,7 +180,8 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
         | Act::OpenUrl(_)
         | Act::Notify { .. }
         | Act::FocusWindowOf { .. }
-        | Act::StopSession(_) => Event::Acted {
+        | Act::StopSession(_)
+        | Act::TrustForClaudeCode { .. } => Event::Acted {
             request,
             result: Ok(()),
         },

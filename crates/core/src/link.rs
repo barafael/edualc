@@ -141,6 +141,9 @@ impl Inbox {
             FromDaemon::Picked { request, folder } => Some(Event::Picked { request, folder }),
             FromDaemon::Trusted { request, trust } => Some(Event::Trusted { request, trust }),
             FromDaemon::Hosted(sessions) => Some(Event::Hosted(sessions)),
+            FromDaemon::ClaudeTrust { request, trusted } => {
+                Some(Event::ClaudeTrustRead { request, trusted })
+            }
             FromDaemon::TurnChanged { key, summary } => {
                 Some(claude(key, Output::TurnChanged(summary)))
             }
