@@ -19,8 +19,6 @@ use crate::external::wire::SessionId;
 use crate::process;
 use crate::sessions::MessagingName;
 
-use super::outbox;
-
 /// The most a peer may post on one connection.
 const POSTED_BYTES: u64 = 1024 * 1024;
 /// Random bytes in a token, as Claude Code makes them (hex-encoded, 32 characters).
@@ -69,7 +67,7 @@ struct Published {
 impl Drop for Published {
     fn drop(&mut self) {
         for path in [&self.record, &self.key, &self.socket] {
-            outbox::remove(path);
+            crate::files::remove(path);
         }
     }
 }
@@ -90,7 +88,7 @@ impl Inbox {
             .map_err(Error::Socket)?;
         let socket = folder.join(format!("{pid}.sock"));
         // A socket left by an earlier process with this pid.
-        outbox::remove(&socket);
+        crate::files::remove(&socket);
         let listener = UnixListener::bind(&socket).map_err(Error::Socket)?;
         let mut random = [0u8; TOKEN_BYTES];
         getrandom::fill(&mut random).map_err(Error::Random)?;
@@ -145,9 +143,9 @@ impl Inbox {
             record: sessions.join(format!("{pid}.json")),
             key: sessions.join(&key_name),
         };
-        outbox::write_atomically(&sessions, key_name.as_ref(), key_text.as_bytes())
+        crate::files::write_atomically(&sessions, key_name.as_ref(), key_text.as_bytes())
             .map_err(Error::Publish)?;
-        outbox::write_atomically(&sessions, format!("{pid}.json").as_ref(), &record_text)
+        crate::files::write_atomically(&sessions, format!("{pid}.json").as_ref(), &record_text)
             .map_err(Error::Publish)?;
         Ok(Self {
             listener,

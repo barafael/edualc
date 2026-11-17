@@ -196,6 +196,7 @@ pub(crate) struct SlintFrontend {
     entries: ModelRc<slint_ui::Entry>,
     shown: Vec<present::Entry>,
     /// What each global was set to last.
+    nav: Option<present::Nav>,
     session: Option<present::Session>,
     composer: Option<present::Composer>,
     sessions: Option<present::Sessions>,
@@ -240,6 +241,7 @@ impl SlintFrontend {
             code: Vec::new(),
             entries,
             shown: Vec::new(),
+            nav: None,
             session: None,
             composer: None,
             sessions: None,
@@ -386,6 +388,11 @@ impl SlintFrontend {
 }
 
 impl Frontend for SlintFrontend {
+    fn nav(&mut self, nav: &present::Nav) {
+        model::apply_nav(&self.window, self.nav.as_ref(), nav, &self.drawing);
+        self.nav = Some(nav.clone());
+    }
+
     fn session(&mut self, session: &present::Session) {
         model::apply_session(&self.window, self.session.as_ref(), session, &self.drawing);
         self.session = Some(session.clone());
@@ -590,6 +597,26 @@ impl Frontend for SlintFrontend {
                 let sessions = window.global::<slint_ui::Sessions>();
                 sessions.set_opened_serial(sessions.get_opened_serial().wrapping_add(1));
             }
+            Command::NewProjectCreated => {
+                let nav = window.global::<slint_ui::Nav>();
+                nav.set_created_serial(nav.get_created_serial().wrapping_add(1));
+            }
+            Command::FocusPage => {
+                let nav = window.global::<slint_ui::Nav>();
+                nav.set_page_focus_serial(nav.get_page_focus_serial().wrapping_add(1));
+                let focus = window.global::<slint_ui::Focus>();
+                focus.set_wanted(slint_ui::FocusArea::Page);
+                focus.set_wanted_serial(focus.get_wanted_serial().wrapping_add(1));
+                focus.set_pending(true);
+            }
+            Command::ToggleSwitcher => {
+                let nav = window.global::<slint_ui::Nav>();
+                nav.set_switcher_serial(nav.get_switcher_serial().wrapping_add(1));
+            }
+            Command::OpenNewProject => {
+                let nav = window.global::<slint_ui::Nav>();
+                nav.set_new_project_serial(nav.get_new_project_serial().wrapping_add(1));
+            }
             Command::ModelIndex(index) => {
                 window.global::<slint_ui::Session>().set_model_index(index);
             }
@@ -609,9 +636,6 @@ impl Frontend for SlintFrontend {
                     None => composer.set_size(slint_ui::ComposerSize::Fit),
                 }
             }
-            Command::SidebarWidth(width_px) => window
-                .global::<slint_ui::Sessions>()
-                .set_chosen_width(width_px.map_or(0.0, f32::from)),
             Command::TextSize(pixels) => window.global::<slint_ui::Theme>().set_base_size(pixels),
             Command::Look(look) => window.global::<slint_ui::Theme>().set_look(match look {
                 Look::Gruvbox => slint_ui::Look::Gruvbox,

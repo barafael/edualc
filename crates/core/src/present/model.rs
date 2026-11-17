@@ -198,7 +198,8 @@ pub enum SignInWith {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum FocusArea {
     #[default]
-    Sidebar,
+    Topbar,
+    Page,
     Conversation,
     Writing,
     Side,
@@ -220,6 +221,14 @@ pub enum TaskKind {
     Workflow,
     Monitor,
     Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PlaceView {
+    #[default]
+    Start,
+    Project,
+    Session,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -402,6 +411,51 @@ pub struct LineBreak {
     pub caret: i32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WaitingItem {
+    pub project_name: String,
+    pub project_folder: String,
+    pub session_id: String,
+    pub hosted_id: String,
+    pub session_title: String,
+    pub question: String,
+    pub waited: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CardSessionItem {
+    pub id: String,
+    pub hosted_id: String,
+    pub title: String,
+    pub state: LiveState,
+    pub age: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectCard {
+    pub path: String,
+    pub shown: String,
+    pub name: String,
+    pub age: String,
+    pub needs_you: i32,
+    pub running: i32,
+    pub last_said: String,
+    pub has_sessions: bool,
+    pub sessions: Vec<CardSessionItem>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SwitcherItem {
+    pub project_name: String,
+    pub project_folder: String,
+    pub id: String,
+    pub hosted_id: String,
+    pub title: String,
+    pub detail: String,
+    pub state: LiveState,
+    pub selected: bool,
+}
+
 /// The `Session` global's state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
@@ -519,6 +573,22 @@ pub struct Side {
     pub pending: bool,
 }
 
+/// The `Nav` global's state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Nav {
+    pub view: PlaceView,
+    pub project_name: String,
+    pub project_folder: String,
+    pub session_title: String,
+    pub can_back: bool,
+    pub waiting: Vec<WaitingItem>,
+    pub needs_you: i32,
+    pub cards: Vec<ProjectCard>,
+    pub all_sessions: Vec<SwitcherItem>,
+    pub new_project_parent: String,
+    pub new_project_error: String,
+}
+
 /// The `Preferences` global's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preferences {
@@ -528,6 +598,7 @@ pub struct Preferences {
     pub running_sessions: i32,
     pub api_key_kept: bool,
     pub api_key_note: String,
+    pub new_projects_in: String,
 }
 
 /// The `Usage` global's state.

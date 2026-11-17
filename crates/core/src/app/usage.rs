@@ -119,7 +119,7 @@ impl<F: Frontend> App<F> {
         }
         self.watch = None;
         self.live.retain(|running| running.pid != session.pid);
-        self.cwd.clone_from(&session.cwd);
+        self.location = super::Location::Session(session.cwd.clone());
         self.status.session_id = Some(session.id.clone());
         self.status.title = Some(session.name.clone());
         self.status.worktree.clone_from(&session.worktree);

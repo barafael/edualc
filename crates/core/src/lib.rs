@@ -18,6 +18,7 @@ pub mod grouping;
 pub mod ipc;
 pub mod link;
 pub mod markdown;
+pub mod overview;
 pub mod plan;
 pub mod present;
 pub mod process;

@@ -64,7 +64,7 @@ fn manual() -> String {
     entry(
         &mut roff,
         "NIRI_SOCKET",
-        "Under niri, the sidebar can focus the window of a session running elsewhere.",
+        "Under niri, the start and project pages can focus the window of a session running elsewhere.",
     );
     entry(
         &mut roff,
@@ -91,7 +91,7 @@ fn manual() -> String {
     entry(
         &mut roff,
         "$CLAUDE_CONFIG_DIR/projects/",
-        "Claude Code's transcripts, read for the sidebar and to continue sessions.",
+        "Claude Code's transcripts, read for the start page, project lists and to continue sessions.",
     );
 
     roff.control("SH", ["SEE ALSO"]);

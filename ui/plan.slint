@@ -192,7 +192,10 @@ export component PlanReview inherits Rectangle {
                 padding-top: index == 0 ? Theme.space-xl : Theme.space-xs;
                 padding-bottom: index == Prompt.plan.length - 1 ? Theme.space-xl : Theme.space-xs;
                 SectionRow {
-                    width: min(sections.visible-width - 2 * Theme.column-margin, Theme.wide-measure);
+                    // As wide as the conversation's column at least, wider for a plan's code.
+                    width: max(
+                        Theme.column(sections.visible-width),
+                        min(sections.visible-width - 2 * Theme.column-margin, Theme.wide-measure));
                     section: section;
                     index: index;
                 }

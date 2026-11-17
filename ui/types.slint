@@ -263,9 +263,9 @@ export enum HanLanguage { japanese, simplified-chinese, traditional-chinese, kor
 export enum SignInWith { account, api-key }
 
 
-// The window's areas for the keyboard, in F6's order: the sidebar, the conversation (its header
-// and transcript), what Claude asks with the composer, and the side panel.
-export enum FocusArea { sidebar, conversation, writing, side }
+// The window's areas for the keyboard, in F6's order: the top bar, the page (start or project)
+// or conversation, what Claude asks with the composer, and the side panel.
+export enum FocusArea { topbar, page, conversation, writing, side }
 
 // What a running turn is doing, for the line that sweeps the composer's edge: the model at
 // work (thinking, writing), or a tool.
@@ -301,4 +301,52 @@ export struct ImageChip {
 export struct LineBreak {
     text: string,
     caret: int,
+}
+
+// Which shell level the window currently shows.
+export enum PlaceView { start, project, session }
+
+// A session across any project waiting for your answer or tool approval.
+export struct WaitingItem {
+    project-name: string,
+    project-folder: string,
+    session-id: string,
+    hosted-id: string,
+    session-title: string,
+    question: string,
+    waited: string,
+}
+
+// One recent or running session listed inside a start-page project card.
+export struct CardSessionItem {
+    id: string,
+    hosted-id: string,
+    title: string,
+    state: LiveState,
+    age: string,
+}
+
+// A project folder shown as a card on the start page.
+export struct ProjectCard {
+    path: string,
+    shown: string,
+    name: string,
+    age: string,
+    needs-you: int,
+    running: int,
+    last-said: string,
+    has-sessions: bool,
+    sessions: [CardSessionItem],
+}
+
+// A session shown in the quick session switcher (Ctrl+K inside a session).
+export struct SwitcherItem {
+    project-name: string,
+    project-folder: string,
+    id: string,
+    hosted-id: string,
+    title: string,
+    detail: string,
+    state: LiveState,
+    selected: bool,
 }

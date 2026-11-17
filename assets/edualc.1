@@ -66,7 +66,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 [\fIDIR\fR]
-The folder to work in. Without one, the folder edualc was started in
+The folder to work in. Without one or `\-\-resume`, opens the start page
 .TP
 [\fIPROMPT\fR]
 A first prompt
@@ -97,7 +97,7 @@ Which messages are logged to standard error, as a tracing\-subscriber filter; ed
 The first of these that is set to a Chinese, Japanese or Korean locale decides how text in Han characters alone is set, until you choose in the settings.
 .TP
 \fBNIRI_SOCKET\fR
-Under niri, the sidebar can focus the window of a session running elsewhere.
+Under niri, the start and project pages can focus the window of a session running elsewhere.
 .TP
 \fBXDG_CONFIG_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR\fR
 Where the files below are kept.
@@ -113,7 +113,7 @@ The daemon\*(Aqs socket.
 Transcripts of agy sessions (agy/), and folders left by the sandbox and agy\*(Aqs data folders (agy\-homes/) of earlier versions (~/.local/state if unset).
 .TP
 \fB$CLAUDE_CONFIG_DIR/projects/\fR
-Claude Code\*(Aqs transcripts, read for the sidebar and to continue sessions.
+Claude Code\*(Aqs transcripts, read for the start page, project lists and to continue sessions.
 .SH "SEE ALSO"
 Claude Code: https://code.claude.com/docs/
 .br

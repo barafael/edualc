@@ -78,6 +78,14 @@ pub enum Command {
     ShowTasks,
     /// The folder typed in the list of folders opened: the list closes.
     ProjectsOpened,
+    /// A new project folder was created: close the New project dialog.
+    NewProjectCreated,
+    /// Focus the active start or project page.
+    FocusPage,
+    /// Open or toggle the quick session switcher inside a session.
+    ToggleSwitcher,
+    /// Open the New project dialog from the start page.
+    OpenNewProject,
     /// Which model and mode the menus have chosen.
     ModelIndex(i32),
     ModeIndex(i32),
@@ -86,8 +94,6 @@ pub enum Command {
     /// The composer's kept height in logical pixels, if it was dragged to one; fitted to its
     /// text if not.
     ComposerHeight(Option<u16>),
-    /// The sidebar's kept width in logical pixels; the default if none.
-    SidebarWidth(Option<u16>),
     /// The base text size, in logical pixels; everything else is sized from it.
     TextSize(f32),
     Look(Look),
@@ -100,6 +106,7 @@ pub enum Command {
 
 /// What draws the window: told the state of each of its parts as it changes, and what to do.
 pub trait Frontend {
+    fn nav(&mut self, nav: &model::Nav);
     fn session(&mut self, session: &model::Session);
     fn composer(&mut self, composer: &model::Composer);
     fn sessions(&mut self, sessions: &model::Sessions);

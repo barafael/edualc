@@ -527,12 +527,14 @@ component Thinking inherits VerticalLayout {
 export component EntryView inherits VerticalLayout {
     in property <Entry> entry;
     in property <int> index;
-    // The column: `Theme.measure` wide at most, centred in the row (whose width is the caller's,
-    // not what the entry holds), after a nested entry's indent. Everything in it takes its width.
+    // The column: `Theme.column()` of the row (whose width is the caller's, the conversation's
+    // whole width, not what the entry holds), centred, less a nested entry's indent at its start.
+    // Everything in it takes its width.
     property <length> indent: root.entry.nested ? Theme.space-xl : 0;
-    property <length> column: min(root.width - self.indent, Theme.measure);
-    padding-left: self.indent + (root.width - self.indent - self.column) / 2;
-    padding-right: (root.width - self.indent - self.column) / 2;
+    property <length> outer: Theme.column(root.width);
+    property <length> column: self.outer - self.indent;
+    padding-left: (root.width - self.outer) / 2 + self.indent;
+    padding-right: (root.width - self.outer) / 2;
     if root.entry.kind == EntryKind.user: UserBubble {
         entry: root.entry;
         index: root.index;

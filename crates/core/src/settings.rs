@@ -19,10 +19,12 @@ pub struct Settings {
     /// The composer's height as dragged, in logical pixels; fitted to its text if none.
     #[serde(default)]
     pub composer_height_px: Option<u16>,
-    /// The sidebar's width as dragged, in logical pixels; the default (from the text size) if
-    /// none.
+    /// Kept so older settings files continue to load; no longer used.
     #[serde(default)]
     pub sidebar_width_px: Option<u16>,
+    /// Where new projects are placed when created; defaults to `~/code` if it exists, else `~`.
+    #[serde(default)]
+    pub new_projects_in: Option<PathBuf>,
     /// The window's colours (dark or light as the desktop asks).
     #[serde(default)]
     pub look: Look,
@@ -86,6 +88,7 @@ impl Default for Settings {
             trusted_folders: Vec::new(),
             composer_height_px: None,
             sidebar_width_px: None,
+            new_projects_in: None,
             look: Look::default(),
             send_with: SendKey::default(),
             han_text: None,
@@ -121,6 +124,16 @@ impl Settings {
 
     pub fn scale(&self) -> f32 {
         f32::from(self.zoom_percent) / 100.0
+    }
+
+    /// The default folder for new projects: what you set, else `~/code` if it exists, else `~`.
+    pub fn effective_projects_dir(&self) -> Option<PathBuf> {
+        if let Some(dir) = &self.new_projects_in {
+            return Some(dir.clone());
+        }
+        let home = dirs::home_dir()?;
+        let code = home.join("code");
+        Some(if code.is_dir() { code } else { home })
     }
 
     /// The language text with Han characters alone is taken to be in: the one chosen, else
@@ -211,7 +224,8 @@ pub enum Change {
     SendWith(SendKey),
     HanText(CjkLanguage),
     ComposerHeight(Option<u16>),
-    SidebarWidth(Option<u16>),
+    /// The folder New project makes projects in; the default if none.
+    NewProjectsIn(Option<PathBuf>),
     /// A folder trusted here, with what is under it.
     Trust(PathBuf),
     PeerMessages(PeerMessages),
@@ -227,7 +241,7 @@ impl Settings {
             Change::SendWith(key) => self.send_with = key,
             Change::HanText(language) => self.han_text = Some(language),
             Change::ComposerHeight(height) => self.composer_height_px = height,
-            Change::SidebarWidth(width) => self.sidebar_width_px = width,
+            Change::NewProjectsIn(folder) => self.new_projects_in = folder,
             Change::Trust(folder) => {
                 if !self.trusted_folders.contains(&folder) {
                     self.trusted_folders.push(folder);

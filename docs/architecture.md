@@ -87,7 +87,7 @@ In `crates/core/src`:
 | `ipc.rs`, `ipc/socket.rs` | the messages between the window and the daemon, and the daemon's socket |
 | `link.rs` | the window's connection, whatever carries it: the channel its messages go on, the daemon's greeting, and the `Inbox` that turns the daemon's messages into `Event`s |
 | `claude.rs` | a session's process as the window sees it: what it is started with, what its output means, and the handle that writes to it |
-| `chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `sidebar.rs` | the conversation as entries; how tool calls, Markdown and plan comments are shown; runs of tool calls folded into one line; the sidebar's list |
+| `chat.rs`, `tools.rs`, `markdown.rs`, `plan.rs`, `grouping.rs`, `overview.rs`, `sidebar.rs` | the conversation as entries; how tool calls, Markdown and plan comments are shown; runs of tool calls folded into one line; project cards for the start page and session lists |
 | `sessions.rs`, `trust.rs`, `settings.rs`, `folder.rs`, `process.rs`, `desktop.rs` | Claude Code's files, which folders are trusted, the settings, checking a folder you name, what `/proc` says about a process, notifications, other programs' windows and what a folder opens in. The daemon does the reading and writing. |
 | `decode.rs`, `decode/` | making images safe to show and send, and the locked-down process that decodes them |
 | `external/` | formats other programs write, as types: Claude Code's stream-json, transcripts and files, the inputs of its tools, the Agent Client Protocol, what agy keeps of its conversations, MCP as edualc's messaging tool reads it, and niri's IPC. These accept keys they don't know, since each release adds some. |
@@ -118,7 +118,7 @@ Elsewhere:
 
 | | |
 |---|---|
-| `ui/*.slint` | the window |
+| `ui/*.slint` | the window: top bar (`topbar.slint`), start page and open-folder dialog (`start.slint`), new-project dialog (`newproject.slint`), project session list (`project.slint`), conversation (`app.slint`), settings and panels |
 | `web/` | the browser demo's page, with its fonts |
 | `assets/` | the heron (standing, its idle poses, and its wing beats), the app's icon, desktop entry, metainfo and manual page |
 | `dist/` | packaging: one description in Nickel (`package.ncl`) that the deb, rpm and Arch files are written from |

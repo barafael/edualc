@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and takes
 // the callbacks; the components read them where they're shown.
 
-import { Activity, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PermissionKind, PlanSection, ProjectItem, Program, PromptKind, Question, PeerMessages, SendKey, SessionRow, SignInWith, SideExchange, SideView, SignInState, StatSection, TaskItem, TaskKind } from "types.slint";
+import { Activity, CardSessionItem, CommandItem, ComposerSize, Entry, FocusArea, HanLanguage, ImageChip, LineBreak, MenuItem, PeekStep, PeerMessages, PermissionKind, PlaceView, PlanSection, Program, ProjectCard, ProjectItem, PromptKind, Question, SendKey, SessionRow, SideExchange, SideView, SignInState, SignInWith, StatSection, SwitcherItem, TaskItem, TaskKind, WaitingItem } from "types.slint";
 
 // The CLI process and the conversation it holds.
 export global Session {
@@ -145,17 +145,12 @@ export global Composer {
     pure callback break-line(string, int, int) -> LineBreak;
 }
 
-// The sidebar: the sessions running now and this directory's earlier ones, and the
-// directories to switch to.
+// The project's sessions and the folders and launch options to switch to.
 export global Sessions {
     in property <[SessionRow]> rows;
     // Said where the list is empty: none yet, or none matching the filter.
     in property <string> empty;
     in property <[ProjectItem]> projects;
-    // The sidebar's width as dragged, kept between runs; zero for the default.
-    in-out property <length> chosen-width;
-    // Dragged to a width, in logical pixels; zero gives the default back.
-    callback width-chosen(int);
     // What the list is narrowed to.
     callback filter-edited(string);
     // The current session's program: Ctrl+N starts a new session with it.
@@ -287,7 +282,44 @@ export global Side {
     callback branch;
 }
 
-// The settings page, over the conversation as the usage details are (Ctrl+,).
+// Where the shell is (Projects / project / session) and the data for the start and project pages.
+export global Nav {
+    in property <PlaceView> view: PlaceView.start;
+    in property <string> project-name;
+    in property <string> project-folder;
+    in property <string> session-title;
+    in property <bool> can-back;
+    in property <[WaitingItem]> waiting;
+    in property <int> needs-you;
+    in property <[ProjectCard]> cards;
+    in property <[SwitcherItem]> all-sessions;
+    in property <string> new-project-parent;
+    in property <string> new-project-error;
+    // Bumped when New project creates the folder so the dialog closes.
+    in property <int> created-serial;
+    // Hidden in the browser demo, where there is no native window frame.
+    in property <bool> show-window-controls: true;
+    // Bumped to focus the current start or project page.
+    in property <int> page-focus-serial;
+    // Bumped to toggle the session switcher (Ctrl+K inside a session).
+    in property <int> switcher-serial;
+    // Bumped to open the New project dialog (Ctrl+N on the start page).
+    in property <int> new-project-serial;
+
+    callback open-start;
+    callback open-project-page(string);
+    callback jump-to(string, string, string);
+    callback next-waiting;
+    callback back;
+    callback browse-new-project-parent;
+    // In the parent folder, by the name, starting a git repository or not.
+    callback create-project(string, string, bool);
+    callback clear-new-project-error;
+    pure callback filter-cards([ProjectCard], string) -> [ProjectCard];
+    pure callback filter-switcher([SwitcherItem], string) -> [SwitcherItem];
+}
+
+// The settings page, over the conversation or page (Ctrl+,).
 export global Preferences {
     in-out property <bool> open;
     in property <SendKey> send-key;
@@ -307,6 +339,10 @@ export global Preferences {
     in property <string> api-key-note;
     callback store-api-key(string);
     callback remove-api-key;
+    // The folder new projects are made in.
+    in property <string> new-projects-in;
+    callback set-new-projects-in(string);
+    callback browse-new-projects-in;
 }
 
 // Where the keyboard is. Tab and Shift+Tab go round within an area (see `AreaFence`); F6 and

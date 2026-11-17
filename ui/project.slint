@@ -1,0 +1,344 @@
+// A project's sessions: what runs now, what ran earlier, and starting a new one here.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { FocusArea, LiveState, Program, SessionRow, SessionRowKind } from "types.slint";
+import { Focus, Nav, Preferences, Session, Sessions } from "state.slint";
+import { AgentCount, AreaFence, Caption, Field, Icon, IconButton, LiveDot, Pressable, ProgramMark, Small, TextButton, Title } from "widgets.slint";
+
+component SessionHeading inherits Rectangle {
+    in property <SessionRow> entry;
+    accessible-role: text;
+    accessible-label: root.entry.detail == "" ? root.entry.title : root.entry.title + ", " + root.entry.detail;
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        padding-top: Theme.space-m;
+        padding-bottom: Theme.space-xs;
+        spacing: Theme.space-s;
+        Caption {
+            text: root.entry.title;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.entry.detail != "": HorizontalLayout {
+            spacing: Theme.space-xs;
+            Icon {
+                source: @image-url("@lucide/hand.svg");
+                width: Theme.icon-small;
+                tint: Theme.warning-text;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: root.entry.detail;
+                font-size: 1rem * Theme.caption;
+                color: Theme.warning-text;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
+component RunningRow inherits Pressable {
+    in property <SessionRow> entry;
+    property <string> program-said: root.entry.program == Program.agy ? ", agy"
+        : root.entry.program == Program.opencode ? ", opencode"
+        : root.entry.program == Program.claude-api-key ? ", with the API key" : "";
+    height: Theme.row-tall;
+    selected: root.entry.selected;
+    accessible-label: root.entry.title + root.program-said + ", " + root.entry.detail
+        + (root.entry.agents == 1 ? ", 1 agent running" : root.entry.agents > 1 ? ", \{root.entry.agents} agents running" : "");
+    clicked => { Sessions.open(root.entry.id); }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        LiveDot {
+            state: root.entry.state;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            title := Text {
+                text: root.entry.title;
+                color: Theme.text;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Text {
+                text: root.entry.detail;
+                font-size: 1rem * Theme.caption;
+                color: root.entry.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+        ProgramMark {
+            program: root.entry.program;
+        }
+        if root.entry.agents > 0 && root.entry.selected: Pressable {
+            accessible-label: root.entry.agents == 1 ? "1 agent running, show it"
+                : "\{root.entry.agents} agents running, show them";
+            clicked => { Session.tasks-wanted += 1; }
+            AgentCount {
+                agents: root.entry.agents;
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-xs;
+            }
+        }
+        if root.entry.agents > 0 && !root.entry.selected: AgentCount {
+            agents: root.entry.agents;
+        }
+    }
+    if title.preferred-width > title.width: Tooltip {
+        text: @markdown("\{root.entry.title}");
+    }
+}
+
+component EarlierRow inherits Pressable {
+    in property <SessionRow> entry;
+    height: Theme.row;
+    selected: root.entry.selected;
+    accessible-label: root.entry.title + (root.entry.program == Program.agy ? ", agy" : root.entry.program == Program.opencode ? ", opencode" : "") + ", " + root.entry.age + (root.entry.worktree != "" ? ", in the worktree " + root.entry.worktree : "");
+    clicked => { Sessions.open(root.entry.id); }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        if root.entry.worktree != "": Icon {
+            source: @image-url("@lucide/git-branch.svg");
+            width: Theme.icon-small;
+            tint: Theme.text-tertiary;
+            y: (parent.height - self.height) / 2;
+        }
+        title := Text {
+            text: root.entry.title;
+            color: Theme.text-secondary;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            accessible-role: none;
+        }
+        ProgramMark {
+            program: root.entry.program;
+        }
+        Text {
+            text: root.entry.age;
+            font-size: 1rem * Theme.caption;
+            color: Theme.text-tertiary;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if title.preferred-width > title.width: Tooltip {
+        text: @markdown("\{root.entry.title}");
+    }
+}
+
+export component ProjectPage inherits Rectangle {
+    property <[{program: Program, title: string}]> programs: Sessions.api-key-kept ? [
+        { program: Program.claude, title: "Claude Code" },
+        { program: Program.claude-api-key, title: "Claude Code with the API key…" },
+        { program: Program.agy, title: "agy" },
+        { program: Program.opencode, title: "opencode" },
+    ] : [
+        { program: Program.claude, title: "Claude Code" },
+        { program: Program.agy, title: "agy" },
+        { program: Program.opencode, title: "opencode" },
+    ];
+    property <int> new-highlighted;
+    property <int> wanted: Focus.wanted-serial;
+    property <int> focus-page: Nav.page-focus-serial;
+    changed wanted => { self.take-wanted(); }
+    changed focus-page => { filter.focus(); }
+    // As on the start page: nothing else has the focus when the page comes.
+    init => { filter.focus(); }
+
+    function take-wanted() {
+        if Focus.pending && Focus.wanted == FocusArea.page {
+            Focus.pending = false;
+            filter.focus();
+        }
+    }
+
+    function start(program: Program) {
+        if program == Program.claude-api-key {
+            Sessions.api-key-dialog = true;
+        } else {
+            Sessions.new-session(program);
+        }
+    }
+
+    background: Theme.surface;
+
+    VerticalLayout {
+        page-start := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    page-end.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                width: min(parent.width - 2 * Theme.space-xl, 860px);
+                padding-top: Theme.space-xl;
+                padding-bottom: Theme.space-l;
+                spacing: Theme.space-m;
+
+                HorizontalLayout {
+                    spacing: Theme.space-m;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Theme.space-xs;
+                        Title {
+                            text: Nav.project-name;
+                        }
+                        Caption {
+                            text: Session.cwd != "" ? Session.cwd : Nav.project-folder;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.space-xs;
+                        height: self.preferred-height;
+                        y: (parent.height - self.height) / 2;
+                        TextButton {
+                            text: "New session here";
+                            primary: true;
+                            has-icon: true;
+                            icon: @image-url("@lucide/square-pen.svg");
+                            clicked => { root.start(Sessions.program); }
+                        }
+                        program-button := IconButton {
+                            icon: @image-url("@lucide/chevron-down.svg");
+                            label: "Choose program for a new session";
+                            clicked => {
+                                root.new-highlighted = 0;
+                                new-menu.show();
+                            }
+                        }
+                    }
+                }
+
+                filter := Field {
+                    placeholder: "Filter sessions (Ctrl+K)";
+                    edited(text) => { Sessions.filter-edited(text); }
+                    init => { root.take-wanted(); }
+                    changed has-focus => {
+                        if self.has-focus {
+                            Focus.area = FocusArea.page;
+                        }
+                    }
+                }
+
+                if Sessions.empty != "": Small {
+                    text: Sessions.empty;
+                    wrap: word-wrap;
+                }
+
+                ListView {
+                    vertical-stretch: 1;
+                    for row in Sessions.rows: VerticalLayout {
+                        if row.kind == SessionRowKind.heading: SessionHeading {
+                            entry: row;
+                        }
+                        if row.kind == SessionRowKind.running: RunningRow {
+                            entry: row;
+                        }
+                        if row.kind == SessionRowKind.earlier: EarlierRow {
+                            entry: row;
+                        }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        page-end := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    page-start.focus();
+                    Focus.step(true);
+                }
+            }
+        }
+    }
+
+    new-menu := PopupWindow {
+        x: program-button.x + program-button.width - self.width;
+        y: program-button.y + program-button.height + Theme.space-xs;
+        width: 280px;
+        height: new-items.preferred-height;
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    root.new-highlighted = max(0, root.new-highlighted - 1);
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    root.new-highlighted = min(root.programs.length - 1, root.new-highlighted + 1);
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == " " {
+                    new-menu.close();
+                    root.start(root.programs[root.new-highlighted].program);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.control-border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #0006;
+            new-items := VerticalLayout {
+                padding: Theme.space-xs;
+                spacing: 2px;
+                Caption {
+                    text: "New session";
+                    horizontal-alignment: left;
+                }
+                for item[index] in root.programs: Pressable {
+                    highlighted: index == root.new-highlighted;
+                    tab-stop: false;
+                    accessible-label: "New \{item.title} session";
+                    clicked => {
+                        new-menu.close();
+                        root.start(item.program);
+                    }
+                    HorizontalLayout {
+                        padding: Theme.space-s;
+                        padding-left: Theme.space-m;
+                        spacing: Theme.space-s;
+                        Text {
+                            text: item.title;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        if item.program == Sessions.program: Caption {
+                            text: "Ctrl+N";
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

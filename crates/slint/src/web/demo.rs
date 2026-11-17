@@ -213,6 +213,31 @@ fn title(transcript: &str) -> Option<String> {
         })
 }
 
+/// The last readable sentence the assistant wrote in `transcript`, for card previews.
+fn last_said(transcript: &str) -> Option<String> {
+    transcript
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<TranscriptLine>(line).ok())
+        .find_map(|line| match line {
+            TranscriptLine::Assistant {
+                message,
+                is_sidechain: false,
+            } => crate::sessions::assistant_sentence(&message.content),
+            TranscriptLine::User { .. }
+            | TranscriptLine::Assistant {
+                is_sidechain: true, ..
+            }
+            | TranscriptLine::System(_)
+            | TranscriptLine::CustomTitle { .. }
+            | TranscriptLine::AiTitle { .. }
+            | TranscriptLine::Summary { .. }
+            | TranscriptLine::WorktreeState { .. }
+            | TranscriptLine::AgySession { .. }
+            | TranscriptLine::Other => None,
+        })
+}
+
 /// The sessions saved in `cwd`, newest first.
 pub(crate) fn saved(cwd: &Path) -> Vec<SessionInfo> {
     SAVED
@@ -225,6 +250,7 @@ pub(crate) fn saved(cwd: &Path) -> Vec<SessionInfo> {
                 title: title(&saved.transcript)?,
                 modified: ago(saved.age),
                 worktree: None,
+                last_said: last_said(&saved.transcript),
             })
         })
         .collect()
@@ -264,6 +290,24 @@ pub(crate) fn projects() -> Vec<ProjectInfo> {
         .map(|&(folder, age)| ProjectInfo {
             path: folder.path().to_path_buf(),
             modified: ago(age),
+        })
+        .collect();
+    projects.sort_by_key(|project| std::cmp::Reverse(project.modified));
+    projects
+}
+
+/// Every demo folder with its recent saved sessions, most recent first.
+pub(crate) fn overview() -> Vec<crate::ipc::ProjectOverview> {
+    let mut projects: Vec<crate::ipc::ProjectOverview> = FOLDERS
+        .iter()
+        .map(|&(folder, age)| {
+            let path = folder.path().to_path_buf();
+            let sessions = saved(&path);
+            crate::ipc::ProjectOverview {
+                path,
+                modified: ago(age),
+                sessions,
+            }
         })
         .collect();
     projects.sort_by_key(|project| std::cmp::Reverse(project.modified));

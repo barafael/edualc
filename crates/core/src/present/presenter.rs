@@ -8,11 +8,12 @@ use std::path::Path;
 use strum::IntoEnumIterator;
 
 use super::model::{
-    self, Activity, BlockKind, Cjk, CjkChars, CommandItem, DiffKind, DiffLine, Entry, EntryKind,
-    GroupRole, HanLanguage, ImageChip, ImageState, LiveState, MdBlock, MenuItem, PeekStep,
-    PeerMessages, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption,
-    SendKey, SessionRow, SessionRowKind, ShownImage, SideExchange, SideState, SignInState, StatRow,
-    StatSection, StepKind, TableRow, TaskItem, TaskKind, ToolState,
+    self, Activity, BlockKind, CardSessionItem, Cjk, CjkChars, CommandItem, DiffKind, DiffLine,
+    Entry, EntryKind, GroupRole, HanLanguage, ImageChip, ImageState, LiveState, MdBlock, MenuItem,
+    PeekStep, PeerMessages, PermissionKind, PlaceView, PlanSection, ProjectCard, ProjectItem,
+    PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, ShownImage,
+    SideExchange, SideState, SignInState, StatRow, StatSection, StepKind, SwitcherItem, TableRow,
+    TaskItem, TaskKind, ToolState, WaitingItem,
 };
 use super::{Command, EntriesChange, Frontend, Image, Look, Styled};
 use crate::app::{
@@ -26,10 +27,13 @@ use crate::colour::Coloured;
 use crate::decode::{Picture, Pixels};
 use crate::desktop::Opener;
 use crate::external::tool_input::{BashInput, IncomingMessageInput, WebFetchInput};
-use crate::external::wire::{self, ContextKind, LimitKind, RequestId, ToolKind, ToolName};
+use crate::external::wire::{
+    self, ContextKind, LimitKind, RequestId, SessionId, ToolKind, ToolName,
+};
 use crate::grouping::{self, Grouping, RunState};
 use crate::ipc::Runs;
 use crate::markdown::{self, Block};
+use crate::overview;
 use crate::sessions::{self, LiveStatus, ProjectInfo, Worktree};
 use crate::settings;
 use crate::sidebar;
@@ -42,6 +46,7 @@ const OUTPUT_CHARS: usize = 20_000;
 /// The state of each of the window's parts, as shown last or to be shown.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Parts {
+    nav: model::Nav,
     session: model::Session,
     composer: model::Composer,
     sessions: model::Sessions,
@@ -55,6 +60,7 @@ struct Parts {
 
 pub struct Presenter<F: Frontend> {
     frontend: F,
+    nav: model::Nav,
     session: model::Session,
     composer: model::Composer,
     sessions: model::Sessions,
@@ -100,6 +106,7 @@ impl<F: Frontend> Presenter<F> {
         };
         Self {
             frontend,
+            nav: model::Nav::default(),
             session,
             composer: model::Composer::default(),
             sessions: model::Sessions::default(),
@@ -129,6 +136,7 @@ impl<F: Frontend> Presenter<F> {
     /// Tells the frontend what changed since it was told last.
     pub fn flush(&mut self) {
         let parts = Parts {
+            nav: self.nav.clone(),
             session: self.session.clone(),
             composer: self.composer.clone(),
             sessions: self.sessions.clone(),
@@ -141,6 +149,9 @@ impl<F: Frontend> Presenter<F> {
         };
         let shown = self.shown.as_ref();
         let frontend = &mut self.frontend;
+        if shown.is_none_or(|shown| shown.nav != parts.nav) {
+            frontend.nav(&parts.nav);
+        }
         if shown.is_none_or(|shown| shown.session != parts.session) {
             frontend.session(&parts.session);
         }
@@ -981,9 +992,132 @@ impl<F: Frontend> Presenter<F> {
         sessions.rows = items;
     }
 
-    /// The sidebar's width as dragged and kept; the default if none.
-    pub fn set_sidebar_width(&mut self, width_px: Option<u16>) {
-        self.command(Command::SidebarWidth(width_px));
+    pub fn render_nav(
+        &mut self,
+        view: PlaceView,
+        project_name: &str,
+        project_folder: &str,
+        session_title: &str,
+        can_back: bool,
+    ) {
+        self.nav.view = view;
+        self.nav.project_name = project_name.into();
+        self.nav.project_folder = project_folder.into();
+        self.nav.session_title = session_title.into();
+        self.nav.can_back = can_back;
+    }
+
+    pub fn render_overview(&mut self, built: &overview::Built, shown: Option<&SessionId>) {
+        self.nav.needs_you = index_for_slint(built.waiting.len());
+        self.nav.waiting = built
+            .waiting
+            .iter()
+            .map(|item| {
+                let waited = item
+                    .since
+                    .map(sessions::age)
+                    .filter(|age| !age.is_empty())
+                    .map_or_else(|| "waiting".to_owned(), |age| format!("waiting {age}"));
+                WaitingItem {
+                    project_name: item.project_name.clone(),
+                    project_folder: item.project_path.to_string_lossy().into_owned(),
+                    session_id: item.opens.session().as_str().to_owned(),
+                    hosted_id: item
+                        .opens
+                        .hosted()
+                        .map_or_else(String::new, |id| id.to_string()),
+                    session_title: item.session_title.clone(),
+                    question: item.question.clone(),
+                    waited,
+                }
+            })
+            .collect();
+        let mut switcher = Vec::new();
+        self.nav.cards = built
+            .cards
+            .iter()
+            .map(|card| {
+                let project_folder = card.path.to_string_lossy().into_owned();
+                let sessions = card
+                    .sessions
+                    .iter()
+                    .map(|session| {
+                        let age = sessions::age(session.modified);
+                        let id = session.opens.session().as_str().to_owned();
+                        let hosted_id = session
+                            .opens
+                            .hosted()
+                            .map_or_else(String::new, |id| id.to_string());
+                        let detail = match session.worktree.as_deref() {
+                            Some(worktree) if !worktree.is_empty() => {
+                                format!("{worktree} · {age}")
+                            }
+                            _ => age.clone(),
+                        };
+                        switcher.push(SwitcherItem {
+                            project_name: card.name.clone(),
+                            project_folder: project_folder.clone(),
+                            id: id.clone(),
+                            hosted_id: hosted_id.clone(),
+                            title: session.title.clone(),
+                            detail,
+                            state: live_state(session.state),
+                            selected: shown
+                                .is_some_and(|current| session.opens.session() == current),
+                        });
+                        CardSessionItem {
+                            id,
+                            hosted_id,
+                            title: session.title.clone(),
+                            state: live_state(session.state),
+                            age,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                ProjectCard {
+                    path: project_folder,
+                    shown: shortened_path(&card.path, 56),
+                    name: card.name.clone(),
+                    age: sessions::age(card.modified),
+                    needs_you: index_for_slint(card.needs_you),
+                    running: index_for_slint(card.running),
+                    last_said: card.last_said.clone().unwrap_or_default(),
+                    has_sessions: !sessions.is_empty(),
+                    sessions,
+                }
+            })
+            .collect();
+        self.nav.all_sessions = switcher;
+    }
+
+    pub fn set_new_projects_in(&mut self, folder: &str) {
+        self.preferences.new_projects_in = folder.into();
+    }
+
+    pub fn set_new_project_parent(&mut self, folder: &str) {
+        self.nav.new_project_parent = folder.into();
+    }
+
+    pub fn set_new_project_error(&mut self, error: &str) {
+        self.nav.new_project_error = error.into();
+    }
+
+    pub fn new_project_created(&mut self) {
+        self.nav.new_project_error.clear();
+        self.command(Command::NewProjectCreated);
+    }
+
+    pub fn focus_page(&mut self) {
+        self.command(Command::FocusPage);
+    }
+
+    pub fn toggle_switcher(&mut self) {
+        self.command(Command::ToggleSwitcher);
+    }
+
+    pub fn open_new_project(&mut self) {
+        self.nav.new_project_error.clear();
+        self.command(Command::OpenNewProject);
     }
 
     /// Why the folder typed in the list of folders didn't open; empty for nothing to say.
@@ -1385,6 +1519,15 @@ fn program_shown(program: crate::claude::Program) -> model::Program {
     }
 }
 
+fn live_state(state: Option<LiveStatus>) -> LiveState {
+    match state {
+        Some(LiveStatus::Idle) => LiveState::Idle,
+        Some(LiveStatus::Busy) => LiveState::Busy,
+        Some(LiveStatus::Waiting) => LiveState::Waiting,
+        Some(LiveStatus::Other) | None => LiveState::Other,
+    }
+}
+
 /// A row of the session list as the sidebar shows it.
 fn session_row(row: &sidebar::Row) -> SessionRow {
     match row {
@@ -1408,12 +1551,7 @@ fn session_row(row: &sidebar::Row) -> SessionRow {
             id: running.id.as_str().into(),
             title: running.title.as_str().into(),
             detail: running_detail(running),
-            state: match running.state {
-                LiveStatus::Idle => LiveState::Idle,
-                LiveStatus::Busy => LiveState::Busy,
-                LiveStatus::Waiting => LiveState::Waiting,
-                LiveStatus::Other => LiveState::Other,
-            },
+            state: live_state(Some(running.state)),
             selected: running.shown,
             worktree: running.worktree.as_deref().unwrap_or_default().into(),
             agents: index_for_slint(running.agents),
@@ -1437,7 +1575,7 @@ fn session_row(row: &sidebar::Row) -> SessionRow {
 }
 
 /// A running session's second line: what it does, the name to message it by unless its title
-/// is that name, the folder it runs in when another, its worktree.
+/// is that name, its worktree.
 fn running_detail(running: &sidebar::Running) -> String {
     let doing = match running.state {
         LiveStatus::Waiting => "Needs you",
@@ -1452,7 +1590,6 @@ fn running_detail(running: &sidebar::Running) -> String {
     [
         Some(doing),
         running.name_beside_title(),
-        running.elsewhere.as_deref(),
         worktree.as_deref(),
     ]
     .into_iter()
@@ -2178,5 +2315,87 @@ mod tests {
         assert_eq!(short_count(45_300), "45k");
         assert_eq!(short_count(1_000_000), "1M");
         assert_eq!(short_count(1_250_000), "1.2M");
+    }
+
+    #[derive(Default)]
+    struct NavSpy {
+        nav: Option<model::Nav>,
+        nav_pushes: usize,
+        commands: Vec<Command>,
+    }
+
+    impl Frontend for NavSpy {
+        fn nav(&mut self, nav: &model::Nav) {
+            self.nav = Some(nav.clone());
+            self.nav_pushes += 1;
+        }
+        fn session(&mut self, _: &model::Session) {}
+        fn composer(&mut self, _: &model::Composer) {}
+        fn sessions(&mut self, _: &model::Sessions) {}
+        fn entries(&mut self, _: EntriesChange) {}
+        fn prompt(&mut self, _: &model::Prompt) {}
+        fn peek(&mut self, _: &model::Peek) {}
+        fn side(&mut self, _: &model::Side) {}
+        fn preferences(&mut self, _: &model::Preferences) {}
+        fn usage(&mut self, _: &model::Usage) {}
+        fn transcript(&mut self, _: &model::Transcript) {}
+        fn show_image(&mut self, _: ImageKey, _: Result<&Pixels, String>) {}
+        fn keep_images(&mut self, _: &HashSet<ImageKey>) {}
+        fn command(&mut self, command: Command) {
+            self.commands.push(command);
+        }
+        fn draft(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn nav_and_overview_push_only_when_changed() {
+        let mut presenter = Presenter::new(NavSpy::default(), &[], false);
+        let id = SessionId::try_from("ee79c043-bfa7-44c0-82b6-509839a05c22".to_owned())
+            .expect("session id");
+        let built = overview::Built {
+            cards: vec![overview::Card {
+                path: std::path::PathBuf::from("/code/edualc"),
+                name: "edualc".to_owned(),
+                modified: web_time::SystemTime::UNIX_EPOCH,
+                needs_you: 1,
+                running: 1,
+                last_said: Some("Checked the tests.".to_owned()),
+                sessions: vec![overview::CardSession {
+                    opens: overview::SessionRef::Session(id.clone()),
+                    title: "Fix shell".to_owned(),
+                    state: Some(LiveStatus::Waiting),
+                    modified: web_time::SystemTime::UNIX_EPOCH,
+                    last_said: Some("Checked the tests.".to_owned()),
+                    program: crate::claude::Program::Claude,
+                    worktree: Some("rework".to_owned()),
+                }],
+            }],
+            waiting: vec![overview::WaitingItem {
+                opens: overview::SessionRef::Session(id.clone()),
+                project_path: std::path::PathBuf::from("/code/edualc"),
+                project_name: "edualc".to_owned(),
+                session_title: "Fix shell".to_owned(),
+                question: "Run tests?".to_owned(),
+                since: None,
+                program: crate::claude::Program::Claude,
+            }],
+        };
+
+        presenter.render_nav(PlaceView::Project, "edualc", "/code/edualc", "", true);
+        presenter.render_overview(&built, Some(&id));
+        presenter.flush();
+        presenter.flush();
+
+        assert_eq!(presenter.frontend.nav_pushes, 1);
+        let nav = presenter.frontend.nav.as_ref().expect("nav sent");
+        assert_eq!(nav.view, PlaceView::Project);
+        assert_eq!(nav.needs_you, 1);
+        assert_eq!(nav.waiting.len(), 1);
+        assert_eq!(nav.waiting.first().expect("item").waited, "waiting");
+        assert_eq!(nav.cards.len(), 1);
+        assert_eq!(nav.all_sessions.len(), 1);
+        assert!(nav.all_sessions.first().expect("item").selected);
     }
 }

@@ -73,8 +73,9 @@ impl<F: Frontend> App<F> {
     /// Where subagent `task` of the session shown keeps its transcript: beside the session's.
     fn subagent_transcript(&self, task: &TaskId) -> Option<Place> {
         let id = self.status.session_id.clone()?;
+        let cwd = self.location.cwd()?.to_path_buf();
         Some(Place::Subagent {
-            cwd: self.cwd.clone(),
+            cwd,
             id,
             task: task.clone(),
         })
@@ -186,9 +187,11 @@ impl<F: Frontend> App<F> {
     pub(super) fn peek_grew(
         &mut self,
         task: &TaskId,
-        result: Result<(Vec<TranscriptLine>, u64), String>,
+        result: Result<(Vec<TranscriptLine>, u64), crate::ipc::Unread>,
     ) {
-        let cwd = self.cwd.clone();
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         if self.peek.as_ref().is_none_or(|peek| &peek.task != task) {
             return;
         }

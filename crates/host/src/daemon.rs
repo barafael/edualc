@@ -20,8 +20,8 @@
 //! its input closing. When no window and no session are left for [`IDLE`], the daemon ends.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::ChildStdin;
@@ -29,15 +29,17 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::claude::{Conversation, Launch, SignInWith};
+use crate::claude::{Launch, SignInWith};
 use crate::decode::{self, Refusal};
 use crate::desktop;
-use crate::external::wire::{ControlPeek, PeekedKind, PeekedSubtype, SessionId, TaskId};
-use crate::ipc::{
-    self, Act, ActFailure, ActId, Deframer, FromDaemon, Generation, Hosted, HostedId, LineSplitter,
-    PasteFailure, StartFailure, Stream, ToDaemon,
+use crate::external::wire::{
+    self, ControlPeek, IncomingRequest, PeekedKind, PeekedSubtype, SessionId, TaskId,
 };
-use crate::{files, sessions, settings, spawn, trust};
+use crate::ipc::{
+    self, Act, ActFailure, ActId, CreateProjectError, Deframer, FromDaemon, Generation, Hosted,
+    HostedId, HostedState, LineSplitter, PasteFailure, ProjectName, StartFailure, Stream, ToDaemon,
+};
+use crate::{files, sessions, settings, spawn, tools, trust};
 
 /// How long the daemon waits, with no window and no session, before it ends.
 const IDLE: Duration = Duration::from_secs(5);
@@ -112,7 +114,7 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
         running,
         tokio::runtime::Handle::current(),
     ));
-    let (keeper, settings_changes) = mpsc::channel(QUEUE);
+    let (settings_keeper, settings_changes) = mpsc::channel(QUEUE);
     tokio::spawn(files::keep_settings(settings_changes));
     let mut windows = JoinSet::new();
     let mut last_window = WindowId::default();
@@ -128,7 +130,12 @@ async fn serve(listener: ipc::Listener) -> Result<(), ipc::Error> {
             accepted = ipc::AsyncChannel::accept(&listener) => match accepted {
                 Ok(channel) => {
                     last_window = last_window.next();
-                    windows.spawn(window(channel, last_window, hub.clone(), keeper.clone()));
+                    windows.spawn(window(
+                        channel,
+                        last_window,
+                        hub.clone(),
+                        settings_keeper.clone(),
+                    ));
                     quiet_since = None;
                 }
                 Err(error) => tracing::warn!(%error, "refused a connection"),
@@ -171,7 +178,7 @@ async fn window(
     channel: ipc::AsyncChannel,
     id: WindowId,
     hub: mpsc::Sender<ToHub>,
-    keeper: mpsc::Sender<files::SettingsChange>,
+    settings_keeper: mpsc::Sender<files::SettingsChange>,
 ) {
     let (mut reading, mut writing) = channel.split();
     let mut deframer = Deframer::default();
@@ -228,7 +235,7 @@ async fn window(
     });
     let writer = tokio::spawn(write(writing, answers));
     let connection = Connection::new(id)
-        .event_loop(received, outbox, hub, keeper)
+        .event_loop(received, outbox, hub, settings_keeper)
         .await;
     tracing::info!(window = ?connection.id, "a window's connection ended");
     reader.abort();
@@ -326,7 +333,7 @@ impl Connection {
         mut requests: mpsc::Receiver<ToDaemon>,
         outbox: mpsc::Sender<FromDaemon>,
         hub: mpsc::Sender<ToHub>,
-        keeper: mpsc::Sender<files::SettingsChange>,
+        settings_keeper: mpsc::Sender<files::SettingsChange>,
     ) -> Self {
         let window = self.id;
         if hub
@@ -352,7 +359,7 @@ impl Connection {
                             change,
                             outbox: outbox.clone(),
                         };
-                        if keeper.send(change).await.is_err() {
+                        if settings_keeper.send(change).await.is_err() {
                             tell(
                                 &outbox,
                                 FromDaemon::SettingsNotKept(
@@ -486,10 +493,21 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         | Act::PickFolder
         | Act::PasteImage
         | Act::CheckTrust { .. }
+        | Act::CreateProject { .. }
         | Act::Notify { .. }
         | Act::FocusWindowOf { .. }
         | Act::StopSession(_)) => act,
     };
+    if let Act::CreateProject { parent, name, git } = act {
+        let created =
+            tokio::task::spawn_blocking(move || create_project(&parent, &name, git)).await;
+        let result = created.unwrap_or_else(|error| {
+            tracing::error!(%error, "making the project folder failed");
+            Err(CreateProjectError::Crashed)
+        });
+        tell(&outbox, FromDaemon::Created { request, result }).await;
+        return;
+    }
     if act == Act::PickFolder {
         let picked = tokio::task::spawn_blocking(move || {
             rfd::FileDialog::new()
@@ -665,16 +683,67 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         }
         Act::FocusWindowOf { pid } => desktop::focus_window_of(pid)?,
         Act::StopSession(running) => desktop::stop_session(&running)?,
-        // Answered in `act_for`: as `Picked`, `Pasted`, `Trusted` and `ApiKeyStored`, or done
-        // with the keyring there.
+        // Answered in `act_for`: as `Picked`, `Pasted`, `Trusted`, `Created` and `ApiKeyStored`,
+        // or done with the keyring there.
         Act::PickFolder
         | Act::PasteImage
         | Act::CheckTrust { .. }
+        | Act::CreateProject { .. }
         | Act::StoreApiKey(_)
         | Act::RemoveApiKey
         | Act::CheckApiKey => {}
     }
     Ok(())
+}
+
+/// Makes a new project folder inside `parent`, running `git init` when `git` is set. A folder
+/// whose `git init` failed is removed again if it is still empty.
+fn create_project(
+    parent: &Path,
+    name: &ProjectName,
+    git: bool,
+) -> Result<PathBuf, CreateProjectError> {
+    if !parent.is_dir() {
+        return Err(CreateProjectError::NoParent(parent.to_path_buf()));
+    }
+    let target = parent.join(name.as_str());
+    std::fs::create_dir(&target).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            CreateProjectError::AlreadyExists(target.clone())
+        } else {
+            CreateProjectError::Create {
+                folder: target.clone(),
+                reason: error.to_string(),
+            }
+        }
+    })?;
+    if !git {
+        return Ok(target);
+    }
+    let failed = match std::process::Command::new("git")
+        .arg("init")
+        .current_dir(&target)
+        .output()
+    {
+        Ok(output) if output.status.success() => return Ok(target),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            CreateProjectError::GitFailed {
+                stderr: if stderr.is_empty() {
+                    output.status.to_string()
+                } else {
+                    stderr
+                },
+            }
+        }
+        Err(error) => CreateProjectError::GitNotRun {
+            reason: error.to_string(),
+        },
+    };
+    if let Err(cleanup) = std::fs::remove_dir(&target) {
+        tracing::debug!(%cleanup, folder = %target.display(), "the folder stays after git init failed");
+    }
+    Err(failed)
 }
 
 /// What the hub is told.
@@ -698,11 +767,12 @@ enum ToHub {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Kept {
     cwd: PathBuf,
-    session: Option<SessionId>,
+    session: SessionId,
     /// What it was started signed in with: a window attaching to it is told.
     sign_in: SignInWith,
     /// The window and key it is shown under.
     shown: Option<(WindowId, Generation)>,
+    state: HostedState,
 }
 
 /// The sessions the daemon runs, and which window shows each.
@@ -745,6 +815,7 @@ impl Hub {
     ) -> Self {
         let mut windows: BTreeMap<WindowId, mpsc::Sender<FromDaemon>> = BTreeMap::new();
         let mut orders: BTreeMap<HostedId, mpsc::Sender<Command>> = BTreeMap::new();
+        let (states_tx, mut state_updates) = mpsc::unbounded_channel::<(HostedId, HostedState)>();
         let mut tasks = JoinSet::new();
         // A window asked to shut down: the loop ends, and below, every session with it.
         let mut shutting_down = false;
@@ -767,7 +838,14 @@ impl Hub {
                                     orders.insert(id, order);
                                     let key = self.key_of(id);
                                     let shown = key.map(|key| (key, outbox.clone()));
-                                    tasks.spawn(host(id, launch, runtime.clone(), commands, shown));
+                                    tasks.spawn(host(
+                                        id,
+                                        launch,
+                                        runtime.clone(),
+                                        commands,
+                                        shown,
+                                        Some(states_tx.clone()),
+                                    ));
                                 }
                                 Step::Tell { id, command: Order::Attach { key } } => {
                                     send(&orders, id, Command::Attach { key, outbox: outbox.clone() }).await;
@@ -785,6 +863,7 @@ impl Hub {
                     // The daemon ends: the sessions' orders close, and each ends.
                     None => break,
                 },
+                Some((id, state)) = state_updates.recv() => self.set_state(id, state),
                 Some(ended) = tasks.join_next() => {
                     match ended {
                         Ok(session) => {
@@ -867,14 +946,10 @@ impl Hub {
                     id,
                     Kept {
                         cwd: launch.cwd.clone(),
-                        // A new session or a copy is listed once it has a transcript to
-                        // open, as its window identifies it (`Identify`).
-                        session: match &launch.conversation {
-                            Conversation::Continue(session) => Some(session.clone()),
-                            Conversation::New(_) | Conversation::Fork { .. } => None,
-                        },
+                        session: launch.conversation.id().clone(),
                         sign_in: launch.sign_in,
                         shown: Some((window, key)),
+                        state: HostedState::Idle,
                     },
                 );
                 vec![Step::Start { id, launch }, Step::Changed]
@@ -928,7 +1003,7 @@ impl Hub {
             Ask::Identify { key, session } => match self.shown_as(window, key) {
                 Some(id) => {
                     if let Some(kept) = self.sessions.get_mut(&id) {
-                        kept.session = Some(session);
+                        kept.session = session;
                     }
                     vec![Step::Changed]
                 }
@@ -963,6 +1038,17 @@ impl Hub {
         }
     }
 
+    fn set_state(&mut self, id: HostedId, state: HostedState) -> Vec<Step> {
+        let Some(kept) = self.sessions.get_mut(&id) else {
+            return Vec::new();
+        };
+        if kept.state == state {
+            return Vec::new();
+        }
+        kept.state = state;
+        vec![Step::Changed]
+    }
+
     fn list(&self) -> Vec<Hosted> {
         self.sessions
             .iter()
@@ -972,6 +1058,7 @@ impl Hub {
                 cwd: kept.cwd.clone(),
                 sign_in: kept.sign_in,
                 attached: kept.shown.is_some(),
+                state: kept.state.clone(),
             })
             .collect()
     }
@@ -992,11 +1079,17 @@ async fn host(
     runtime: tokio::runtime::Handle,
     commands: mpsc::Receiver<Command>,
     shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+    states: Option<mpsc::UnboundedSender<(HostedId, HostedState)>>,
 ) -> Session {
     let session = Session::new(id);
+    let cwd = launch.cwd.clone();
     let spawned = tokio::task::spawn_blocking(move || spawn::spawn(&launch, &runtime)).await;
     let failure = match spawned {
-        Ok(Ok(spawned)) => return session.event_loop(spawned, commands, shown).await,
+        Ok(Ok(spawned)) => {
+            return session
+                .event_loop(&cwd, spawned, commands, shown, states)
+                .await;
+        }
         Ok(Err(error)) => StartFailure::from(error),
         Err(error) => {
             tracing::error!(%error, "starting a session failed");
@@ -1102,15 +1195,18 @@ impl Session {
     /// it ends.
     async fn event_loop(
         mut self,
+        cwd: &Path,
         spawned: spawn::Spawned,
         mut commands: mpsc::Receiver<Command>,
         shown: Option<(Generation, mpsc::Sender<FromDaemon>)>,
+        states: Option<mpsc::UnboundedSender<(HostedId, HostedState)>>,
     ) -> Self {
         let spawn::Spawned { mut child } = spawned;
         let Some(pid) = child.id() else {
             return self;
         };
         let mut shown = shown;
+        let mut last_state = HostedState::Idle;
         if shown.is_none() {
             self.alone_since = Some(Instant::now());
         }
@@ -1157,6 +1253,7 @@ impl Session {
                         self.lines_in += 1;
                         self.active = Instant::now();
                         self.pending.answered(&line);
+                        self.publish_state(cwd, &mut last_state, states.as_ref());
                         self.write(&mut stdin, line);
                     }
                     Some(Command::Attach { key, outbox }) => {
@@ -1185,6 +1282,7 @@ impl Session {
 
                         if stream == Stream::Out {
                             self.pending.said(&line);
+                            self.publish_state(cwd, &mut last_state, states.as_ref());
                         }
                         if let Some((key, outbox)) = &shown {
                             send_line(outbox, *key, stream, &line).await;
@@ -1223,6 +1321,30 @@ impl Session {
         }
         self
     }
+
+    fn publish_state(
+        &self,
+        cwd: &Path,
+        last: &mut HostedState,
+        states: Option<&mpsc::UnboundedSender<(HostedId, HostedState)>>,
+    ) {
+        let next = self.pending.state(cwd);
+        if next == *last {
+            return;
+        }
+        *last = next.clone();
+        if let Some(tx) = states
+            && tx.send((self.id, next)).is_err()
+        {
+            tracing::debug!(id = ?self.id, "hub ended before state update");
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Asked {
+    line: String,
+    since: SystemTime,
 }
 
 /// What a window attaching is told again (sans-io): how many turns are under way, the
@@ -1239,7 +1361,7 @@ struct Pending {
     open_tasks: BTreeMap<TaskId, Vec<String>>,
     /// How far each running task got, as last said; a background one runs on after its turn.
     progress: BTreeMap<TaskId, String>,
-    asked: BTreeMap<String, String>,
+    asked: BTreeMap<String, Asked>,
     /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
     /// counts them, for one that attaches meanwhile.
     turns: usize,
@@ -1286,7 +1408,11 @@ impl Pending {
                 }
             }
             (PeekedKind::ControlRequest, _, Some(id)) if self.asked.len() < MAX_PENDING => {
-                self.asked.insert(id, line.to_owned());
+                let asked = Asked {
+                    since: SystemTime::now(),
+                    line: line.to_owned(),
+                };
+                self.asked.insert(id, asked);
             }
             (PeekedKind::ControlCancelRequest, _, Some(id)) => {
                 self.asked.remove(&id);
@@ -1320,13 +1446,92 @@ impl Pending {
         }
     }
 
+    /// What it does now; a question is put in words for a session working in `cwd`.
+    fn state(&self, cwd: &Path) -> HostedState {
+        if let Some(asked) = self.asked.values().min_by_key(|asked| asked.since) {
+            HostedState::Waiting {
+                question: question_summary(&asked.line, cwd),
+                since: asked.since,
+            }
+        } else if self.turns > 0 {
+            HostedState::Busy
+        } else {
+            HostedState::Idle
+        }
+    }
+
     fn lines(&self) -> impl Iterator<Item = &String> {
         self.init
             .iter()
             .chain(self.tasks.iter())
             .chain(self.open_tasks.values().flatten())
             .chain(self.progress.values())
-            .chain(self.asked.values())
+            .chain(self.asked.values().map(|asked| &asked.line))
+    }
+}
+
+fn question_summary(line: &str, cwd: &Path) -> String {
+    let Ok(wire::Message::ControlRequest {
+        request:
+            IncomingRequest::CanUseTool {
+                tool_name,
+                input,
+                description,
+                ..
+            },
+        ..
+    }) = serde_json::from_str::<wire::Message>(line)
+    else {
+        return "Waiting for you".to_owned();
+    };
+    let view = tools::describe(&tool_name, &input, cwd, tools::Depth::Headline);
+    let summary = match tool_name {
+        wire::ToolName::AskUserQuestion => {
+            if view.summary.trim().is_empty() {
+                "Question for you".to_owned()
+            } else {
+                view.summary
+            }
+        }
+        wire::ToolName::ExitPlanMode => "Plan ready for review".to_owned(),
+        wire::ToolName::Bash
+        | wire::ToolName::BashOutput
+        | wire::ToolName::KillShell
+        | wire::ToolName::Monitor
+        | wire::ToolName::Read
+        | wire::ToolName::Write
+        | wire::ToolName::Edit
+        | wire::ToolName::MultiEdit
+        | wire::ToolName::NotebookRead
+        | wire::ToolName::NotebookEdit
+        | wire::ToolName::Glob
+        | wire::ToolName::Grep
+        | wire::ToolName::Ls
+        | wire::ToolName::WebFetch
+        | wire::ToolName::WebSearch
+        | wire::ToolName::Task
+        | wire::ToolName::Agent
+        | wire::ToolName::TodoWrite
+        | wire::ToolName::Skill
+        | wire::ToolName::SendMessage
+        | wire::ToolName::EdualcSendMessage
+        | wire::ToolName::EdualcListSessions
+        | wire::ToolName::EdualcIncomingMessage
+        | wire::ToolName::Other(_) => {
+            if !description.trim().is_empty() {
+                description
+            } else if !view.summary.trim().is_empty() {
+                format!("{}: {}", view.title, view.summary)
+            } else {
+                view.title
+            }
+        }
+    };
+    let first = summary.lines().next().unwrap_or(&summary).trim();
+    if first.is_empty() {
+        "Waiting for you".to_owned()
+    } else {
+        tools::truncate_chars(first, 120)
     }
 }
 
@@ -1450,7 +1655,7 @@ async fn send_line(outbox: &mpsc::Sender<FromDaemon>, key: Generation, stream: S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::FolderConfiguration;
+    use crate::claude::{Conversation, FolderConfiguration};
 
     fn launch() -> Launch {
         Launch {
@@ -1540,6 +1745,12 @@ mod tests {
         let Some(&Step::Start { id: hosted, .. }) = started.first() else {
             panic!("no session started: {started:?}");
         };
+        // Listed under the id it was started with, before it has a transcript, so the record
+        // Claude Code writes for the same process is known as this one.
+        assert_eq!(
+            hub.list().first().map(|listed| &listed.session),
+            Some(launch().conversation.id())
+        );
         assert_eq!(hub.shown_as(first_window, first_key), Some(hosted));
         assert_eq!(
             hub.handle(
@@ -1595,7 +1806,7 @@ mod tests {
             vec![Step::Changed]
         );
         assert_eq!(
-            hub.list().first().and_then(|listed| listed.session.clone()),
+            hub.list().first().map(|listed| listed.session.clone()),
             Some(session)
         );
         assert_eq!(
@@ -1902,7 +2113,7 @@ mod tests {
                 .expect("queued");
         });
         let session = Session::new(HostedId::default().next())
-            .event_loop(cat(), commands, None)
+            .event_loop(Path::new(""), cat(), commands, None, None)
             .await;
         attach.await.expect("the attaching task");
         assert_eq!(session.lines_in, 2);
@@ -1932,8 +2143,10 @@ mod tests {
         let (outbox, mut answers) = mpsc::channel(QUEUE);
         let key = Generation::default().next();
         let session = tokio::spawn(Session::new(HostedId::default().next()).event_loop(
+            Path::new(""),
             running("sleep", &["30"]),
             commands,
+            None,
             None,
         ));
         // More than a pipe holds: its writing waits on the process for good.
@@ -1971,5 +2184,61 @@ mod tests {
         }
         tokio::task::yield_now().await;
         assert_eq!(input.queue("one more".to_owned()), Err(Unqueued::Full));
+    }
+
+    #[test]
+    fn pending_state_follows_turns_and_questions() {
+        let mut pending = Pending::default();
+        let here = Path::new("/code/beep");
+        assert_eq!(pending.state(here), HostedState::Idle);
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Hi"},"parent_tool_use_id":null,"session_id":"default"}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false}"#;
+        let ask = r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which colour?","header":"Pick","options":[{"label":"Red","description":""}],"multiSelect":false}]}}}"#;
+        let answer =
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"r1"}}"#;
+
+        pending.answered(prompt);
+        assert_eq!(pending.state(here), HostedState::Busy);
+
+        pending.said(ask);
+        assert!(matches!(
+            pending.state(here),
+            HostedState::Waiting { ref question, .. } if question == "Which colour?"
+        ));
+
+        pending.answered(answer);
+        assert_eq!(pending.state(here), HostedState::Busy);
+
+        pending.said(result);
+        assert_eq!(pending.state(here), HostedState::Idle);
+    }
+
+    #[test]
+    fn create_project_refuses_bad_inputs_and_initialises_when_asked() {
+        let root = std::env::temp_dir().join(format!("edualc-create-proj-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).expect("clean stale temp dir");
+        }
+        std::fs::create_dir_all(&root).expect("temp root");
+        let name = |typed: &str| ProjectName::try_from(typed.to_owned()).expect("a project name");
+
+        let missing = root.join("missing-parent");
+        assert_eq!(
+            create_project(&missing, &name("ok"), false),
+            Err(CreateProjectError::NoParent(missing))
+        );
+
+        let plain = create_project(&root, &name("plain-proj"), false).expect("creates folder");
+        assert!(plain.is_dir());
+        assert!(!plain.join(".git").exists());
+        assert_eq!(
+            create_project(&root, &name("plain-proj"), false),
+            Err(CreateProjectError::AlreadyExists(plain))
+        );
+
+        let repo = create_project(&root, &name("git-proj"), true).expect("creates git repo");
+        assert!(repo.join(".git").is_dir());
+
+        std::fs::remove_dir_all(&root).expect("clean temp dir");
     }
 }

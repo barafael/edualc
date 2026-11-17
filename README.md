@@ -25,9 +25,10 @@ WebAssembly, with a demo project. A script plays Claude, so nothing you type lea
   each answer goes to the request it was meant for.
 - **Plans you review like a document.** Comment on any heading, paragraph or list item. Then send
   Claude back to planning, or approve the plan with your comments attached.
-- **All your sessions in one list.** The sidebar shows the sessions running in any terminal or
-  folder and what each is doing, and you get a notification when one needs you. A session you've
-  prompted keeps running when you switch away or close the window.
+- **All your sessions across projects.** The start page highlights what needs you and your recent
+  projects, the quick switcher (**Ctrl+K**) jumps to any running session across terminals and
+  folders, and you get a notification when one needs you. A session you've prompted keeps running
+  when you switch away or close the window.
 - **Side questions on the side.** `/btw` answers in a panel next to the conversation, which carries
   on meanwhile.
 - **A native app.** It's built with Rust and Slint, with no browser engine, and it does almost
@@ -69,7 +70,7 @@ edualc --resume SESSION
 edualc --backend agy DIR
 ```
 
-`edualc --help` lists every option. Your settings are in `~/.config/edualc/settings.json`.
+`edualc` with no folder opens the start page. `edualc --help` lists every option. Your settings are in `~/.config/edualc/settings.json`.
 
 `--backend agy` runs Google's Antigravity CLI instead of Claude Code. It needs `agy` on your PATH.
 In the window, the New session button asks which of the two to start.

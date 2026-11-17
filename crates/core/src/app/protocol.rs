@@ -41,6 +41,8 @@ impl<F: Frontend> App<F> {
                 total_cost_usd: None,
                 model_usage: std::collections::HashMap::new(),
                 api_error_status: None,
+                duration_ms: None,
+                usage: wire::Usage::default(),
             }),
             Output::Unreadable {
                 lost: Lost::Request(request),

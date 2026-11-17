@@ -21,11 +21,13 @@ use crate::external::wire::{
 };
 use crate::folder::Folder;
 use crate::ipc::{
-    self, Act, ActFailure, ActId, Generation, Hosted, PasteFailure, Pasted, Read, Runs, Target,
-    ToDaemon, Watched,
+    self, Act, ActFailure, ActId, CreateProjectError, Generation, Hosted, PasteFailure, Pasted,
+    ProjectName, ProjectOverview, Read, Runs, Target, ToDaemon, Watched,
 };
 use crate::link::{self, Link};
+use crate::overview;
 use crate::plan;
+use crate::present::model::PlaceView;
 use crate::present::{Command, Frontend, Presenter};
 use crate::repeat::Repeat;
 use crate::sessions::{
@@ -201,17 +203,17 @@ pub enum Event {
     SessionLoaded {
         id: SessionId,
         path: PathBuf,
-        result: Result<(Chat, u64), String>,
+        result: Result<(Chat, u64), ipc::Unread>,
     },
     /// What a watched session's transcript says after what is shown.
     TranscriptGrew {
         id: SessionId,
-        result: Result<(Vec<TranscriptLine>, u64), String>,
+        result: Result<(Vec<TranscriptLine>, u64), ipc::Unread>,
     },
     /// What the transcript of the subagent peeked into says after what is shown.
     PeekGrew {
         task: wire::TaskId,
-        result: Result<(Vec<TranscriptLine>, u64), String>,
+        result: Result<(Vec<TranscriptLine>, u64), ipc::Unread>,
     },
     /// What the daemon read, as asked (`App::read`), with a transcript's lines, read.
     Answered {
@@ -285,6 +287,13 @@ pub enum Event {
     LimitReset,
     /// Whether the keyring keeps an Anthropic API key, or why that couldn't be told.
     ApiKeyStored(Result<bool, ActFailure>),
+    /// Known projects and their recent sessions, for the start page and switcher.
+    OverviewListed(Vec<ProjectOverview>),
+    /// Answer to creating a new project folder via the daemon.
+    ProjectCreated {
+        request: ActId,
+        result: Result<PathBuf, CreateProjectError>,
+    },
     /// A change to the settings wasn't kept, and why.
     SettingsNotKept(String),
 }
@@ -449,6 +458,47 @@ impl TrustGate {
     }
 }
 
+/// Where the window is in the shell: the start page (no folder), one project's session list, or
+/// one session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Location {
+    Start,
+    Project(PathBuf),
+    Session(PathBuf),
+}
+
+impl Location {
+    fn cwd(&self) -> Option<&Path> {
+        match self {
+            Self::Start => None,
+            Self::Project(path) | Self::Session(path) => Some(path.as_path()),
+        }
+    }
+
+    fn view(&self) -> PlaceView {
+        match self {
+            Self::Start => PlaceView::Start,
+            Self::Project(_) => PlaceView::Project,
+            Self::Session(_) => PlaceView::Session,
+        }
+    }
+}
+
+/// Which field a folder picker answer updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickingTarget {
+    OpenFolder,
+    NewProjectParent,
+    DefaultProjectsDir,
+}
+
+/// A session to open from the start page or quick switcher, with its project's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTarget {
+    pub folder: PathBuf,
+    pub opens: overview::SessionRef,
+}
+
 /// What a request to the daemon was for.
 #[derive(Debug)]
 enum Acting {
@@ -462,8 +512,10 @@ enum Acting {
     Bringing(SessionId),
     /// Reading the clipboard's image, for the next message.
     Pasting,
-    /// The folder picker, for a folder to open.
-    Picking,
+    /// The folder picker, for opening a folder or choosing a projects directory.
+    Picking(PickingTarget),
+    /// Creating a new project folder.
+    CreatingProject,
     /// Storing or removing the Anthropic API key in the keyring.
     ApiKey,
 }
@@ -500,6 +552,25 @@ pub enum Action {
     StoreApiKey(PastedKey),
     RemoveApiKey,
     OpenSession(SessionId),
+    /// Return to the start page (Projects grid and Needs you).
+    OpenStart,
+    /// Open a project's session list page without starting a session yet.
+    EnterProject(PathBuf),
+    /// Open or attach to a session across any project.
+    JumpTo(SessionTarget),
+    /// Go to the next waiting session from the top-bar badge.
+    NextWaiting,
+    /// Go up one navigation level (session -> project, project -> start).
+    Back,
+    /// Browse for a parent folder in the New project dialog.
+    BrowseNewProjectParent,
+    /// Create a new project folder, add it to trusted folders, and open a session in it.
+    CreateProject {
+        parent: String,
+        name: String,
+        git: bool,
+    },
+    ClearNewProjectError,
     /// A folder typed into the list of folders, to open.
     OpenProject(String),
     BrowseProject,
@@ -577,8 +648,9 @@ pub enum Action {
     HanLanguage(crate::cjk::CjkLanguage),
     /// The composer's height as dragged, in logical pixels; none to fit it to its text again.
     ComposerHeight(Option<u16>),
-    /// The sidebar's width as dragged, in logical pixels; none for the default again.
-    SidebarWidth(Option<u16>),
+    /// The folder new projects are made in, as typed in the settings.
+    SetNewProjectsIn(String),
+    BrowseNewProjectsIn,
     /// Ctrl+V in the composer: the clipboard's image, if it holds one, goes with the message.
     PasteImage,
     /// An image taken off the next message, by its place.
@@ -928,6 +1000,8 @@ struct Redraw {
     prompt: bool,
     /// Both lists: this folder's sessions mark those running elsewhere.
     sessions: bool,
+    /// Start-page cards and waiting list.
+    overview: bool,
     side: bool,
     usage: bool,
     tasks: bool,
@@ -942,6 +1016,7 @@ impl Redraw {
             menus: true,
             prompt: true,
             sessions: true,
+            overview: true,
             side: true,
             usage: true,
             tasks: true,
@@ -981,6 +1056,8 @@ const QUIET: Duration = Duration::from_secs(30);
 enum Reading {
     /// The folders Claude Code worked in, listed.
     Projects,
+    /// Known projects and their recent sessions, for the start page and switcher.
+    Overview,
     /// A folder typed or picked, made whole.
     Folder { typed: bool },
     /// Whether the working folder is a linked git worktree.
@@ -1008,6 +1085,12 @@ impl Reading {
                     return None;
                 };
                 Some(Event::ProjectsListed(projects))
+            }
+            Self::Overview => {
+                let ipc::Answer::Overview(projects) = answer else {
+                    return None;
+                };
+                Some(Event::OverviewListed(projects))
             }
             Self::Folder { typed } => {
                 let ipc::Answer::Folder(result) = answer else {
@@ -1077,8 +1160,10 @@ pub struct App<F: Frontend> {
     requests: HashMap<RequestId, Request>,
     process: Option<Claude>,
     generation: Generation,
-    cwd: PathBuf,
+    location: Location,
     sessions: Vec<SessionInfo>,
+    overview: Vec<ProjectOverview>,
+    built_overview: overview::Built,
     /// The slash commands the draft could become, by their place in `status.commands`.
     command_matches: Vec<usize>,
     recall: Recall,
@@ -1095,6 +1180,7 @@ pub struct App<F: Frontend> {
     /// The conversation's images, decoded for showing.
     images: images::Images,
     listing_live: Refresh,
+    listing_overview: Refresh,
     /// When each session running elsewhere was last notified about.
     notified: HashMap<SessionId, web_time::Instant>,
     watch: Option<Watch>,
@@ -1189,13 +1275,22 @@ impl<F: Frontend> App<F> {
                 (Settings::default(), Some(problem))
             }
         };
+        let projects_dir = settings
+            .effective_projects_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default();
         view.set_text_size(desktop_text_size * settings.scale());
         view.set_composer_height(settings.composer_height_px);
-        view.set_sidebar_width(settings.sidebar_width_px);
+        view.set_new_projects_in(&projects_dir);
+        view.set_new_project_parent(&projects_dir);
         view.set_look(settings.look);
         view.set_send_key(settings.send_with);
         view.set_peer_messages(settings.peer_messages);
         view.set_han_language(settings.han_language());
+        let location = match cwd {
+            Some(cwd) => Location::Session(cwd),
+            None => Location::Start,
+        };
         Self {
             view,
             images: images::Images::start(events.clone()),
@@ -1210,8 +1305,13 @@ impl<F: Frontend> App<F> {
             requests: HashMap::new(),
             process: None,
             generation: Generation::default(),
-            cwd,
+            location,
             sessions: Vec::new(),
+            overview: Vec::new(),
+            built_overview: overview::Built {
+                cards: Vec::new(),
+                waiting: Vec::new(),
+            },
             command_matches: Vec::new(),
             recall: Recall::Writing,
             log: VecDeque::new(),
@@ -1220,6 +1320,7 @@ impl<F: Frontend> App<F> {
             attached: Vec::new(),
             shell_rows: Vec::new(),
             listing_live: Refresh::Idle,
+            listing_overview: Refresh::Idle,
             notified: HashMap::new(),
             watch: None,
             peek: None,
@@ -1257,8 +1358,7 @@ impl<F: Frontend> App<F> {
         }
     }
 
-    /// Opens the first session (`resume`, or a new one), sends the first prompt, and starts
-    /// looking at running sessions.
+    /// Opens the first session when given a folder or `--resume`, or starts on the start page.
     pub fn begin(
         &mut self,
         hosted: Vec<Hosted>,
@@ -1267,20 +1367,26 @@ impl<F: Frontend> App<F> {
         mode: Option<PermissionMode>,
         prompt: Option<&str>,
     ) {
-        self.load_sessions();
+        let starting_in_session = matches!(&self.location, Location::Session(_));
+        if starting_in_session {
+            self.load_sessions();
+        }
         // Known before resuming: a session the daemon runs is attached to, one running
         // elsewhere watched, neither resumed by a second process writing the same transcript.
         self.view.set_running_sessions(hosted.len());
         self.hosted = hosted;
         let resuming = resume.is_some();
-        if resuming {
+        if resuming || !starting_in_session {
             self.live = live;
         }
         // A Claude Code session to continue asks what it signs in with when an API key is
         // kept: it waits for the keyring's answer.
         match resume {
             Some(id) => self.resume_after_key_check = Some(id),
-            None => self.new_session(self.status.backend, self.status.sign_in_with),
+            None if starting_in_session => {
+                self.new_session(self.status.backend, self.status.sign_in_with);
+            }
+            None => {}
         }
         self.check_api_key();
         // Said in the window, not only the log: what is changed now isn't kept.
@@ -1296,9 +1402,10 @@ impl<F: Frontend> App<F> {
         match prompt {
             // Sent once the transcript is shown (see `session_loaded`).
             Some(prompt) if resuming => self.held_prompt = Some(prompt.to_owned()),
-            Some(prompt) => self.send(prompt),
-            None => {}
+            Some(prompt) if starting_in_session => self.send(prompt),
+            Some(_) | None => {}
         }
+        self.refresh_overview();
         self.records = self.watch(Target::Records);
         self.tick.start(TICK, self.events.clone(), || Event::Tick);
         self.tick();
@@ -1353,7 +1460,9 @@ impl<F: Frontend> App<F> {
                 replace,
             } => {
                 if worktree.is_some()
-                    && (replace || (self.status.worktree.is_none() && self.cwd == cwd))
+                    && (replace
+                        || (self.status.worktree.is_none()
+                            && self.location.cwd() == Some(cwd.as_path())))
                 {
                     self.status.worktree = worktree;
                 }
@@ -1363,17 +1472,25 @@ impl<F: Frontend> App<F> {
                     if typed {
                         self.view.projects_opened();
                     }
-                    self.open_project(Folder::checked(path));
+                    self.enter_project(Folder::checked(path).into_path());
                 }
                 Err(problem) if typed => self.view.set_project_problem(&problem),
                 Err(problem) => self.chat.error(problem),
             },
             Event::Picked { request, folder } => {
-                // Nothing picked, or for a request since forgotten: nothing opens.
-                if let (Some(Acting::Picking), Some(folder)) =
+                // Nothing picked, or for a request since forgotten: nothing updates.
+                if let (Some(Acting::Picking(target)), Some(folder)) =
                     (self.acting.remove(&request), folder)
                 {
-                    self.read_folder(Read::Folder(folder), false);
+                    match target {
+                        PickingTarget::OpenFolder => {
+                            self.read_folder(Read::Folder(folder), false);
+                        }
+                        PickingTarget::NewProjectParent => {
+                            self.view.set_new_project_parent(&folder.to_string_lossy());
+                        }
+                        PickingTarget::DefaultProjectsDir => self.set_new_projects_in(Some(folder)),
+                    }
                 }
             }
             Event::Trusted { request, trust } => self.trust_read(request, trust),
@@ -1412,12 +1529,13 @@ impl<F: Frontend> App<F> {
                 self.daemon = Daemon::ShuttingDown;
                 self.chat.info(
                     "edualc is shutting down, as asked in a window: every session ends. Open \
-                     edualc again to go on; the sidebar continues this session.",
+                     edualc again to go on and continue this session from its project.",
                 );
             }
             Event::Hosted(hosted) => {
                 self.view.set_running_sessions(hosted.len());
                 self.hosted = hosted;
+                self.refresh_overview();
                 self.redraw.sessions = true;
             }
             Event::Changed(watched) => self.changed(watched),
@@ -1426,6 +1544,14 @@ impl<F: Frontend> App<F> {
             Event::PollOutput => self.poll_output(),
             Event::LimitReset => self.limit_reset(),
             Event::ApiKeyStored(stored) => self.api_key_stored(stored),
+            Event::OverviewListed(projects) => {
+                if self.listing_overview.done() {
+                    self.load_overview();
+                }
+                self.overview = projects;
+                self.refresh_overview();
+            }
+            Event::ProjectCreated { request, result } => self.project_created(request, result),
             Event::SettingsNotKept(why) => {
                 self.chat
                     .error(format!("A change to your settings wasn't kept: {why}"));
@@ -1452,8 +1578,21 @@ impl<F: Frontend> App<F> {
             Action::StoreApiKey(pasted) => self.store_api_key(&pasted.0),
             Action::RemoveApiKey => self.ask_desktop(Act::RemoveApiKey, Acting::ApiKey),
             Action::OpenSession(id) => self.open_session(id),
+            Action::OpenStart => self.open_start(),
+            Action::EnterProject(folder) => self.enter_project(folder),
+            Action::JumpTo(target) => self.jump_to(target),
+            Action::NextWaiting => self.next_waiting(),
+            Action::Back => self.back(),
+            Action::BrowseNewProjectParent => self.ask_desktop(
+                Act::PickFolder,
+                Acting::Picking(PickingTarget::NewProjectParent),
+            ),
+            Action::CreateProject { parent, name, git } => self.create_project(&parent, name, git),
+            Action::ClearNewProjectError => self.view.set_new_project_error(""),
             Action::OpenProject(typed) => self.read_folder(Read::TypedFolder(typed), true),
-            Action::BrowseProject => self.ask_desktop(Act::PickFolder, Acting::Picking),
+            Action::BrowseProject => {
+                self.ask_desktop(Act::PickFolder, Acting::Picking(PickingTarget::OpenFolder));
+            }
             Action::ListProjects => {
                 self.view.set_project_problem("");
                 self.read(Read::Projects, Reading::Projects);
@@ -1559,9 +1698,15 @@ impl<F: Frontend> App<F> {
             Action::ComposerHeight(height_px) => {
                 self.change_settings(settings::Change::ComposerHeight(height_px));
             }
-            Action::SidebarWidth(width_px) => {
-                self.change_settings(settings::Change::SidebarWidth(width_px));
+            Action::SetNewProjectsIn(dir) => {
+                let trimmed = dir.trim();
+                let next = (!trimmed.is_empty()).then(|| PathBuf::from(trimmed));
+                self.set_new_projects_in(next);
             }
+            Action::BrowseNewProjectsIn => self.ask_desktop(
+                Act::PickFolder,
+                Acting::Picking(PickingTarget::DefaultProjectsDir),
+            ),
             Action::PasteImage => self.ask_desktop(Act::PasteImage, Acting::Pasting),
             Action::RemoveImage(index) => {
                 if index < self.attached.len() {
@@ -1585,6 +1730,38 @@ impl<F: Frontend> App<F> {
 
     fn render(&mut self) {
         let redraw = std::mem::take(&mut self.redraw);
+        let cwd_buf = self
+            .location
+            .cwd()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let cwd = cwd_buf.as_path();
+        let (project_name, project_folder, session_title, can_back) = match &self.location {
+            Location::Start => (String::new(), String::new(), String::new(), false),
+            Location::Project(folder) => (
+                sessions::folder_name(folder),
+                folder.to_string_lossy().into_owned(),
+                String::new(),
+                true,
+            ),
+            Location::Session(folder) => (
+                sessions::folder_name(folder),
+                folder.to_string_lossy().into_owned(),
+                self.status
+                    .title
+                    .as_deref()
+                    .unwrap_or("New session")
+                    .to_owned(),
+                true,
+            ),
+        };
+        self.view.render_nav(
+            self.location.view(),
+            &project_name,
+            &project_folder,
+            &session_title,
+            can_back,
+        );
         let changes = self.chat.take_changes();
         if changes.contains(&Change::Reset) {
             let shown = self.chat.image_keys();
@@ -1603,7 +1780,7 @@ impl<F: Frontend> App<F> {
                 .iter()
                 .any(|change| !matches!(change, Change::Grew(_)));
         self.view
-            .render_transcript(&self.chat, changes, &self.cwd, &self.open_runs, redraw.runs);
+            .render_transcript(&self.chat, changes, cwd, &self.open_runs, redraw.runs);
         if restructured {
             self.view.render_pinned(&self.chat);
         }
@@ -1620,7 +1797,7 @@ impl<F: Frontend> App<F> {
         self.view.render_status(
             &self.status,
             asking,
-            &self.cwd,
+            cwd,
             self.watch.as_ref(),
             worktree.as_ref(),
         );
@@ -1637,7 +1814,7 @@ impl<F: Frontend> App<F> {
         }
         if redraw.prompt {
             self.view
-                .render_prompt(&self.asks, &self.cwd, self.status.backend);
+                .render_prompt(&self.asks, cwd, self.status.backend);
         }
         if redraw.usage {
             self.view.render_usage(&self.usage, &self.status);
@@ -1658,27 +1835,39 @@ impl<F: Frontend> App<F> {
                 && !self.side.pending();
             self.view.render_side(&self.side, can_ask, can_branch);
         }
-        // The own session's row changes with its turns, questions and agents, which no list
-        // update says.
-        let own = self.own_mark();
-        if redraw.sessions || own != self.own_listed {
-            self.own_listed = own;
+        if redraw.overview || redraw.sessions {
             let shown = self
                 .watch
                 .as_ref()
                 .map(|watch| &watch.session.id)
                 .or(self.status.session_id.as_ref());
-            let rows = sidebar::rows(&sidebar::Listing {
-                own: own.and_then(|mark| self.own_session(mark)),
-                live: &self.live,
-                hosted: &self.hosted,
-                saved: &self.sessions,
-                shown,
-                folder: &self.cwd,
-                filter: &self.session_filter,
-            });
-            self.view
-                .render_sidebar(&rows, !self.session_filter.trim().is_empty());
+            self.view.render_overview(&self.built_overview, shown);
+        }
+        // The own session's row changes with its turns, questions and agents, which no list
+        // update says.
+        let own = self.own_mark();
+        if redraw.sessions || own != self.own_listed {
+            self.own_listed = own;
+            if let Some(folder) = self.location.cwd() {
+                let shown = self
+                    .watch
+                    .as_ref()
+                    .map(|watch| &watch.session.id)
+                    .or(self.status.session_id.as_ref());
+                let rows = sidebar::rows(&sidebar::Listing {
+                    own: own.and_then(|mark| self.own_session(mark)),
+                    live: &self.live,
+                    hosted: &self.hosted,
+                    saved: &self.sessions,
+                    shown,
+                    folder,
+                    filter: &self.session_filter,
+                });
+                self.view
+                    .render_sidebar(&rows, !self.session_filter.trim().is_empty());
+            } else {
+                self.view.render_sidebar(&[], false);
+            }
         }
         self.view.flush();
     }
@@ -1704,8 +1893,9 @@ impl<F: Frontend> App<F> {
         Some(OwnMark { state, agents })
     }
 
-    /// This window's own session as the sidebar lists it.
+    /// This window's own session as the session list shows it.
     fn own_session(&self, mark: OwnMark) -> Option<sidebar::Own<'_>> {
+        let cwd = self.location.cwd()?;
         let id = self.status.session_id.as_ref()?;
         let title = self
             .status
@@ -1721,7 +1911,7 @@ impl<F: Frontend> App<F> {
         Some(sidebar::Own {
             id,
             title,
-            name: MessagingName::of(id, &self.cwd).to_string(),
+            name: MessagingName::of(id, cwd).to_string(),
             state: mark.state,
             worktree: self
                 .status
@@ -1787,10 +1977,14 @@ impl<F: Frontend> App<F> {
     /// Starts a process in the working directory once it is trusted: here, or in the terminal,
     /// which the daemon is asked about.
     fn start(&mut self, resume: Option<Resume>) {
+        let Location::Session(cwd) = &self.location else {
+            return;
+        };
+        let cwd = cwd.clone();
         // What a folder configures is Claude Code's; the ACP agents read none of it.
         if self.status.backend.is_acp()
-            || trust::trusted_in_edualc(&self.cwd, &self.settings)
-            || self.accepted_in_terminal.contains(&self.cwd)
+            || trust::trusted_in_edualc(&cwd, &self.settings)
+            || self.accepted_in_terminal.contains(&cwd)
         {
             self.launch(resume, FolderConfiguration::Read);
             return;
@@ -1799,9 +1993,7 @@ impl<F: Frontend> App<F> {
         let request = self.last_act;
         let check = ToDaemon::Act {
             request,
-            act: Act::CheckTrust {
-                folder: self.cwd.clone(),
-            },
+            act: Act::CheckTrust { folder: cwd },
         };
         self.trust_gate = if link::send(&self.link, check).is_ok() {
             TrustGate::Checking {
@@ -1826,7 +2018,9 @@ impl<F: Frontend> App<F> {
     fn trust_read(&mut self, request: ActId, trust: crate::ipc::FolderTrust) {
         match self.trust_gate.answered(request, trust) {
             TrustAnswer::Trusted { resume, held } => {
-                self.accepted_in_terminal.insert(self.cwd.clone());
+                if let Some(cwd) = self.location.cwd() {
+                    self.accepted_in_terminal.insert(cwd.to_path_buf());
+                }
                 self.launch(resume, FolderConfiguration::Read);
                 if let Some(prompt) = held {
                     self.send(&prompt);
@@ -1838,15 +2032,19 @@ impl<F: Frontend> App<F> {
 
     /// Starts a process in the working directory: trusted, or without the folder's configuration.
     fn launch(&mut self, resume: Option<Resume>, folder_configuration: FolderConfiguration) {
+        let Location::Session(cwd) = &self.location else {
+            return;
+        };
+        let cwd = cwd.clone();
         self.trust_gate = TrustGate::Open;
         self.generation = self.generation.next();
         self.log.clear();
         if self.status.worktree.is_none() {
-            self.read_linked_worktree(self.cwd.clone(), false);
+            self.read_linked_worktree(cwd.clone(), false);
         }
         let launch = Launch {
             backend: self.status.backend,
-            cwd: self.cwd.clone(),
+            cwd,
             conversation: Resume::conversation(resume),
             model: self.status.chosen_model().map(str::to_owned),
             folder_configuration,
@@ -1887,20 +2085,32 @@ impl<F: Frontend> App<F> {
             (Some(Acting::Notifying), Err(failure)) => {
                 tracing::warn!(%failure, "couldn't notify");
             }
-            // A paste is answered as `Pasted`, a folder picked as `Picked`.
+            // A paste is answered as `Pasted`, a folder picked as `Picked`, a project as `Created`.
             (
-                Some(Acting::Desktop | Acting::Notifying | Acting::Pasting | Acting::Picking),
+                Some(
+                    Acting::Desktop
+                    | Acting::Notifying
+                    | Acting::Pasting
+                    | Acting::Picking(_)
+                    | Acting::CreatingProject,
+                ),
                 Ok(()),
             )
             | (None, _) => {}
-            (Some(Acting::Pasting | Acting::Picking), Err(failure)) => {
+            (Some(Acting::Pasting | Acting::Picking(_)), Err(failure)) => {
                 self.chat.error(failure.to_string());
+            }
+            (Some(Acting::CreatingProject), Err(failure)) => {
+                self.view.set_new_project_error(&failure.to_string());
             }
         }
     }
 
     /// Trusts the folder shown and starts what waited for it.
     fn trust_folder(&mut self) {
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         let resume = match std::mem::take(&mut self.trust_gate) {
             TrustGate::Asking { resume, .. } => resume,
             kept @ (TrustGate::Open | TrustGate::Checking { .. }) => {
@@ -1908,7 +2118,7 @@ impl<F: Frontend> App<F> {
                 return;
             }
         };
-        self.change_settings(settings::Change::Trust(self.cwd.clone()));
+        self.change_settings(settings::Change::Trust(cwd));
         self.launch(resume, FolderConfiguration::Read);
         self.view.focus_composer();
     }
@@ -2091,9 +2301,13 @@ impl<F: Frontend> App<F> {
     }
 
     fn new_session(&mut self, backend: claude::Backend, sign_in: claude::SignInWith) {
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         self.leave();
         self.watch = None;
         self.chat.clear();
+        self.location = Location::Session(cwd);
         self.reset_session(None, None, backend);
         // agy and opencode sign in themselves.
         self.status.sign_in_with = if backend.is_acp() {
@@ -2145,16 +2359,19 @@ impl<F: Frontend> App<F> {
 
     /// Shows a saved session and continues it; one running elsewhere is only watched.
     fn open_session(&mut self, id: SessionId) {
-        if self.status.session_id.as_ref() == Some(&id) && self.watch.is_none() {
+        if matches!(&self.location, Location::Session(_))
+            && self.status.session_id.as_ref() == Some(&id)
+            && self.watch.is_none()
+        {
             return;
         }
         if let Some(hosted) = self
             .hosted
             .iter()
-            .find(|hosted| hosted.session.as_ref() == Some(&id) && !hosted.attached)
+            .find(|hosted| hosted.session == id && !hosted.attached)
             .cloned()
         {
-            self.attach(id, &hosted);
+            self.attach(&hosted);
             return;
         }
         if self.live.iter().any(|session| session.id == id) {
@@ -2170,13 +2387,17 @@ impl<F: Frontend> App<F> {
         self.continue_session(id, backend, claude::SignInWith::Account);
     }
 
-    /// The program session `id` ran, as the sidebar or its transcript says.
+    /// The program session `id` ran, as the list or its transcript says.
     fn backend_of(&self, id: &SessionId) -> claude::Backend {
         self.sessions
             .iter()
             .find(|session| &session.id == id)
             .map_or_else(
-                || sessions::backend_of(&sessions::locate(&self.cwd, id)),
+                || {
+                    self.location.cwd().map_or(self.status.backend, |cwd| {
+                        sessions::backend_of(&sessions::locate(cwd, id))
+                    })
+                },
                 |session| session.backend,
             )
     }
@@ -2199,41 +2420,48 @@ impl<F: Frontend> App<F> {
         backend: claude::Backend,
         sign_in: claude::SignInWith,
     ) {
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         self.leave();
         self.watch = None;
         self.chat.clear();
+        self.location = Location::Session(cwd.clone());
         let known = self.sessions.iter().find(|session| session.id == id);
         let title = known.map(|session| session.title.clone());
         let worktree = known.and_then(|session| session.worktree.clone());
         self.reset_session(Some(id.clone()), title, backend);
         self.status.worktree = worktree;
         self.status.sign_in_with = sign_in;
-        self.load_session(id.clone(), self.cwd.clone());
+        self.load_session(id.clone(), cwd);
         self.start(Some(Resume::Continue(id)));
         self.redraw = Redraw::everything();
         self.view.focus_composer();
     }
 
-    /// Shows a session the daemon runs, which no window shows: its transcript as saved, then
-    /// what it asked meanwhile and what it says.
-    fn attach(&mut self, id: SessionId, hosted: &Hosted) {
+    /// Shows a session the daemon runs, which no window shows: its transcript as saved, if it
+    /// has one yet, then what it asked meanwhile and what it says.
+    fn attach(&mut self, hosted: &Hosted) {
+        let id = &hosted.session;
         self.leave();
         self.watch = None;
         self.chat.clear();
-        if self.cwd != hosted.cwd {
-            self.cwd.clone_from(&hosted.cwd);
+        if self.location.cwd() != Some(hosted.cwd.as_path()) {
+            self.location = Location::Session(hosted.cwd.clone());
             self.sessions.clear();
             self.load_sessions();
+        } else {
+            self.location = Location::Session(hosted.cwd.clone());
         }
         let title = self
             .sessions
             .iter()
-            .find(|session| session.id == id)
+            .find(|session| &session.id == id)
             .map(|session| session.title.clone());
-        let backend = sessions::backend_of(&sessions::locate(&self.cwd, &id));
+        let backend = sessions::backend_of(&sessions::locate(&hosted.cwd, id));
         self.reset_session(Some(id.clone()), title, backend);
         self.status.sign_in_with = hosted.sign_in;
-        self.load_session(id, self.cwd.clone());
+        self.load_session(id.clone(), hosted.cwd.clone());
         self.generation = self.generation.next();
         match Claude::attach(&self.link, self.generation, hosted.id) {
             Ok(process) => self.process = Some(process),
@@ -2262,7 +2490,7 @@ impl<F: Frontend> App<F> {
         &mut self,
         id: &SessionId,
         path: PathBuf,
-        result: Result<(Chat, u64), String>,
+        result: Result<(Chat, u64), ipc::Unread>,
     ) {
         // Another session may have been opened meanwhile.
         if self.status.session_id.as_ref() != Some(id) {
@@ -2292,15 +2520,20 @@ impl<F: Frontend> App<F> {
                     }
                 }
             }
-            Err(error) => {
-                // Not written yet, perhaps: it is watched for, and read once it is.
+            Err(unread) => {
+                // One not written yet is watched for, and read once it is.
                 if let Some(watch) = watching {
                     watch.watched = watched;
                     watch.place = ipc::Place::Path(path);
                     watch.reading = Refresh::Idle;
                 }
-                self.chat
-                    .error(format!("Couldn't read the session: {error}"));
+                match unread {
+                    ipc::Unread::NotWritten => {}
+                    ipc::Unread::Failed(error) => {
+                        self.chat
+                            .error(format!("Couldn't read the session: {error}"));
+                    }
+                }
             }
         }
         self.show_recall();
@@ -2312,7 +2545,7 @@ impl<F: Frontend> App<F> {
     fn transcript_grew(
         &mut self,
         id: &SessionId,
-        result: Result<(Vec<TranscriptLine>, u64), String>,
+        result: Result<(Vec<TranscriptLine>, u64), ipc::Unread>,
     ) {
         let Some(watch) = self.watch.as_mut().filter(|watch| &watch.session.id == id) else {
             return;
@@ -2337,10 +2570,12 @@ impl<F: Frontend> App<F> {
         };
         self.leave();
         self.chat.clear();
-        if self.cwd != session.cwd {
-            self.cwd.clone_from(&session.cwd);
+        if self.location.cwd() != Some(session.cwd.as_path()) {
+            self.location = Location::Session(session.cwd.clone());
             self.sessions.clear();
             self.load_sessions();
+        } else {
+            self.location = Location::Session(session.cwd.clone());
         }
         // Its title, as the sidebar lists it; its name to message it by until it has one.
         let title = session
@@ -2392,6 +2627,7 @@ impl<F: Frontend> App<F> {
 
     fn tick(&mut self) {
         self.list_live();
+        self.load_overview();
         self.read_on();
     }
 
@@ -2426,6 +2662,7 @@ impl<F: Frontend> App<F> {
     fn changed(&mut self, watched: Watched) {
         if self.records == Some(watched) {
             self.list_live();
+            self.load_overview();
         } else if self
             .watch
             .as_ref()
@@ -2502,22 +2739,182 @@ impl<F: Frontend> App<F> {
         }
         if live != self.live {
             self.live = live;
+            self.refresh_overview();
             self.redraw.sessions = true;
         }
     }
 
-    /// Switches to another working directory, with a fresh session in it running the same
-    /// program.
-    fn open_project(&mut self, folder: Folder) {
-        self.cwd = folder.into_path();
+    fn refresh_overview(&mut self) {
+        let home = dirs::home_dir();
+        self.built_overview =
+            overview::build(&self.overview, &self.live, &self.hosted, home.as_deref());
+        self.redraw.overview = true;
+    }
+
+    fn load_overview(&mut self) {
+        if self.listing_overview.wanted() {
+            self.read(Read::Overview, Reading::Overview);
+        }
+    }
+
+    fn open_start(&mut self) {
+        if matches!(&self.location, Location::Session(_)) {
+            self.leave();
+            self.watch = None;
+            self.chat.clear();
+            self.reset_session(None, None, self.status.backend);
+        }
+        self.location = Location::Start;
+        self.session_filter.clear();
+        self.sessions.clear();
+        self.load_overview();
+        self.list_live();
+        self.redraw = Redraw::everything();
+        self.view.focus_page();
+    }
+
+    fn enter_project(&mut self, path: PathBuf) {
+        if matches!(&self.location, Location::Session(_)) {
+            self.leave();
+            self.watch = None;
+            self.chat.clear();
+            self.reset_session(None, None, self.status.backend);
+        }
+        self.location = Location::Project(path);
+        self.session_filter.clear();
         self.sessions.clear();
         self.load_sessions();
-        self.new_session(self.status.backend, self.status.sign_in_with);
+        self.list_live();
+        self.redraw = Redraw::everything();
+        self.view.focus_page();
+    }
+
+    fn back(&mut self) {
+        match &self.location {
+            Location::Start => {}
+            Location::Project(_) => self.open_start(),
+            Location::Session(cwd) => self.enter_project(cwd.clone()),
+        }
+    }
+
+    fn jump_to(&mut self, SessionTarget { folder, opens }: SessionTarget) {
+        let session = match opens {
+            overview::SessionRef::Hosted {
+                hosted: hosted_id,
+                session,
+            } => {
+                if let Some(hosted) = self
+                    .hosted
+                    .iter()
+                    .find(|hosted| hosted.id == hosted_id)
+                    .cloned()
+                {
+                    if !hosted.attached {
+                        self.attach(&hosted);
+                        return;
+                    }
+                    if self.status.session_id.as_ref() == Some(&hosted.session)
+                        && self.watch.is_none()
+                    {
+                        self.location = Location::Session(hosted.cwd);
+                        self.redraw.overview = true;
+                        self.view.focus_composer();
+                        return;
+                    }
+                }
+                // Ended since, or shown in another window.
+                session
+            }
+            overview::SessionRef::Session(session) => session,
+        };
+        if self.location.cwd() != Some(folder.as_path()) {
+            self.sessions.clear();
+            self.location = Location::Session(folder);
+            self.load_sessions();
+        } else {
+            self.location = Location::Session(folder);
+        }
+        self.open_session(session);
+    }
+
+    fn next_waiting(&mut self) {
+        let Some(first) = self.built_overview.waiting.first() else {
+            return;
+        };
+        let current = self.status.session_id.as_ref();
+        let chosen = self
+            .built_overview
+            .waiting
+            .iter()
+            .find(|item| Some(item.opens.session()) != current)
+            .unwrap_or(first)
+            .clone();
+        self.jump_to(SessionTarget {
+            folder: chosen.project_path,
+            opens: chosen.opens,
+        });
+    }
+
+    fn create_project(&mut self, parent: &str, typed: String, git: bool) {
+        let name = match ProjectName::try_from(typed) {
+            Ok(name) => name,
+            Err(refused) => {
+                self.view.set_new_project_error(&refused.to_string());
+                return;
+            }
+        };
+        self.view.set_new_project_error("");
+        let parent_path = if parent.trim().is_empty() {
+            self.settings.effective_projects_dir().unwrap_or_default()
+        } else {
+            PathBuf::from(parent.trim())
+        };
+        self.ask_desktop(
+            Act::CreateProject {
+                parent: parent_path,
+                name,
+                git,
+            },
+            Acting::CreatingProject,
+        );
+    }
+
+    fn project_created(&mut self, request: ActId, result: Result<PathBuf, CreateProjectError>) {
+        if !matches!(self.acting.remove(&request), Some(Acting::CreatingProject)) {
+            return;
+        }
+        match result {
+            Ok(path) => {
+                if !trust::trusted_in_edualc(&path, &self.settings) {
+                    self.change_settings(settings::Change::Trust(path.clone()));
+                }
+                self.view.new_project_created();
+                self.location = Location::Session(path);
+                self.sessions.clear();
+                self.load_sessions();
+                self.load_overview();
+                self.new_session(self.status.backend, self.status.sign_in_with);
+            }
+            Err(error) => self.view.set_new_project_error(&error.to_string()),
+        }
+    }
+
+    fn set_new_projects_in(&mut self, folder: Option<PathBuf>) {
+        self.change_settings(settings::Change::NewProjectsIn(folder));
+        let shown = self
+            .settings
+            .effective_projects_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.view.set_new_projects_in(&shown);
+        self.view.set_new_project_parent(&shown);
     }
 
     /// Lists the working directory's sessions anew, e.g. once a new one has its title.
     fn load_sessions(&mut self) {
-        let cwd = self.cwd.clone();
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         // Those listed already are summed up again only if their transcript changed.
         let read = Read::Sessions {
             cwd: cwd.clone(),
@@ -2528,7 +2925,7 @@ impl<F: Frontend> App<F> {
     }
 
     fn sessions_listed(&mut self, cwd: &Path, sessions: Vec<SessionInfo>) {
-        if self.cwd != cwd {
+        if self.location.cwd() != Some(cwd) {
             return;
         }
         if let Some(id) = &self.status.session_id
@@ -3282,11 +3679,11 @@ fn plan_offered(input: &Value) -> Option<AskKind> {
     }
 }
 
-/// What the window was started for: the folder to work in, the program to work with, and the
-/// model, or the program's default if none.
+/// What the window was started for: the folder to work in (if any), the program to work with,
+/// and the model, or the program's default if none.
 #[derive(Debug)]
 pub struct Start {
-    pub cwd: PathBuf,
+    pub cwd: Option<PathBuf>,
     pub backend: claude::Backend,
     pub model: Option<String>,
 }
@@ -3357,6 +3754,7 @@ mod tests {
     }
 
     impl Frontend for Recorder {
+        fn nav(&mut self, _nav: &present::model::Nav) {}
         fn session(&mut self, session: &present::model::Session) {
             if self.sessions.send(session.clone()).is_err() {
                 tracing::debug!("the test stopped listening");
@@ -3414,7 +3812,7 @@ mod tests {
                 },
                 Ok(Settings::default()),
                 Start {
-                    cwd: cwd.clone(),
+                    cwd: Some(cwd.clone()),
                     backend: claude::Backend::Claude,
                     model: None,
                 },
@@ -4077,5 +4475,411 @@ mod tests {
         assert!(refresh.wanted(), "and asking again starts a read");
         assert!(!refresh.done(), "this one wasn't stale");
         assert!(refresh.wanted(), "a later change starts a read again");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct RecordingFrontend {
+        navs: std::sync::mpsc::Sender<crate::present::model::Nav>,
+        commands: std::sync::mpsc::Sender<Command>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Frontend for RecordingFrontend {
+        fn nav(&mut self, nav: &crate::present::model::Nav) {
+            if self.navs.send(nav.clone()).is_err() {
+                // Tests stop reading updates when the harness drops.
+            }
+        }
+        fn session(&mut self, _session: &crate::present::model::Session) {}
+        fn composer(&mut self, _composer: &crate::present::model::Composer) {}
+        fn sessions(&mut self, _sessions: &crate::present::model::Sessions) {}
+        fn entries(&mut self, _change: crate::present::EntriesChange) {}
+        fn prompt(&mut self, _prompt: &crate::present::model::Prompt) {}
+        fn peek(&mut self, _peek: &crate::present::model::Peek) {}
+        fn side(&mut self, _side: &crate::present::model::Side) {}
+        fn preferences(&mut self, _preferences: &crate::present::model::Preferences) {}
+        fn usage(&mut self, _usage: &crate::present::model::Usage) {}
+        fn transcript(&mut self, _transcript: &crate::present::model::Transcript) {}
+        fn show_image(&mut self, _key: ImageKey, _shown: Result<&Pixels, String>) {}
+        fn keep_images(&mut self, _shown: &HashSet<ImageKey>) {}
+        fn command(&mut self, command: Command) {
+            if self.commands.send(command).is_err() {
+                // Tests stop reading commands when the harness drops.
+            }
+        }
+        fn draft(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct TestApp {
+        app: App<RecordingFrontend>,
+        to_daemon: std::sync::mpsc::Receiver<ToDaemon>,
+        navs: std::sync::mpsc::Receiver<crate::present::model::Nav>,
+        last_nav: crate::present::model::Nav,
+        commands: std::sync::mpsc::Receiver<Command>,
+        _events_rx: Receiver<Event>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl TestApp {
+        fn start(cwd: Option<PathBuf>, settings: Settings) -> Self {
+            let (events_tx, events_rx) = async_channel::bounded(64);
+            let (link_tx, link_rx) = std::sync::mpsc::sync_channel(link::QUEUE);
+            let (nav_tx, nav_rx) = std::sync::mpsc::channel();
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+            let app = App::new(
+                RecordingFrontend {
+                    navs: nav_tx,
+                    commands: cmd_tx,
+                },
+                events_tx,
+                link_tx,
+                Desktop {
+                    openers: Vec::new(),
+                    finds_windows: false,
+                    text_size: 14.0,
+                },
+                Ok(settings),
+                Start {
+                    cwd,
+                    backend: claude::Backend::Claude,
+                    model: None,
+                },
+            );
+            Self {
+                app,
+                to_daemon: link_rx,
+                navs: nav_rx,
+                last_nav: crate::present::model::Nav::default(),
+                commands: cmd_rx,
+                _events_rx: events_rx,
+            }
+        }
+
+        fn send(&mut self, event: Event) {
+            let flow = self.app.handle(event);
+            assert!(flow.is_continue());
+            self.app.render();
+        }
+
+        fn drain_daemon(&self) -> Vec<ToDaemon> {
+            self.to_daemon.try_iter().collect()
+        }
+
+        fn drain_commands(&self) -> Vec<Command> {
+            self.commands.try_iter().collect()
+        }
+
+        fn latest_nav(&mut self) -> &crate::present::model::Nav {
+            for next in self.navs.try_iter() {
+                self.last_nav = next;
+            }
+            &self.last_nav
+        }
+    }
+
+    /// Opening without a folder stays on the start page and asks for an overview without trusting
+    /// or launching any folder yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn starts_on_start_page_when_no_folder_is_given() {
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+
+        assert!(matches!(&test.app.location, Location::Start));
+        let nav = test.latest_nav();
+        assert_eq!(nav.view, PlaceView::Start);
+        assert!(!nav.can_back);
+
+        let sent = test.drain_daemon();
+        assert!(sent.iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Read {
+                read: Read::Overview,
+                ..
+            }
+        )));
+        assert!(!sent.iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Start { .. }
+                | ToDaemon::Act {
+                    act: Act::CheckTrust { .. },
+                    ..
+                }
+        )));
+    }
+
+    /// Opening a project shows its sessions without checking folder trust until you actually start
+    /// a session there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn entering_a_project_loads_its_sessions_before_checking_trust() {
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        drop(test.drain_daemon());
+        drop(test.drain_commands());
+
+        let proj = PathBuf::from("/tmp/proj-a");
+        test.send(Event::Action(Action::EnterProject(proj.clone())));
+        assert!(matches!(&test.app.location, Location::Project(path) if path == &proj));
+        let nav = test.latest_nav();
+        assert_eq!(nav.view, PlaceView::Project);
+        assert_eq!(nav.project_name, "proj-a");
+        assert_eq!(nav.project_folder, "/tmp/proj-a");
+        assert!(nav.can_back);
+        assert!(
+            test.drain_commands()
+                .iter()
+                .any(|cmd| matches!(cmd, Command::FocusPage))
+        );
+
+        let sent = test.drain_daemon();
+        assert!(sent.iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Read {
+                read: Read::Sessions { cwd, .. },
+                ..
+            } if cwd == &proj
+        )));
+        assert!(!sent.iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Start { .. }
+                | ToDaemon::Act {
+                    act: Act::CheckTrust { .. },
+                    ..
+                }
+        )));
+
+        test.send(Event::Action(Action::NewSession(
+            claude::Backend::Claude,
+            claude::SignInWith::Account,
+        )));
+        assert!(matches!(&test.app.location, Location::Session(path) if path == &proj));
+        assert_eq!(test.latest_nav().view, PlaceView::Session);
+        assert!(test.drain_daemon().iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Act {
+                act: Act::CheckTrust { folder },
+                ..
+            } if folder == &proj
+        )));
+    }
+
+    /// Stepping back leaves a session for its project page and leaves the project page for start.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn back_steps_from_session_to_project_to_start() {
+        let proj = PathBuf::from("/tmp/proj-b");
+        let settings = Settings {
+            trusted_folders: vec![proj.clone()],
+            ..Settings::default()
+        };
+        let mut test = TestApp::start(Some(proj.clone()), settings);
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+
+        assert!(matches!(&test.app.location, Location::Session(path) if path == &proj));
+        assert_eq!(test.latest_nav().view, PlaceView::Session);
+        assert!(test.latest_nav().can_back);
+
+        test.send(Event::Action(Action::Back));
+        assert!(matches!(&test.app.location, Location::Project(path) if path == &proj));
+        assert_eq!(test.latest_nav().view, PlaceView::Project);
+        assert!(test.latest_nav().can_back);
+
+        test.send(Event::Action(Action::Back));
+        assert!(matches!(&test.app.location, Location::Start));
+        assert_eq!(test.latest_nav().view, PlaceView::Start);
+        assert!(!test.latest_nav().can_back);
+    }
+
+    /// Creating a project reports validation errors inline and, once created, trusts the folder
+    /// and starts a session there immediately.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn creating_a_project_trusts_it_and_starts_a_session() {
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        drop(test.drain_daemon());
+        drop(test.drain_commands());
+
+        // A name that isn't one folder is refused here, under the field, without the daemon.
+        test.send(Event::Action(Action::CreateProject {
+            parent: "/tmp".to_owned(),
+            name: " .. ".to_owned(),
+            git: true,
+        }));
+        assert!(
+            !test
+                .drain_daemon()
+                .iter()
+                .any(|msg| matches!(msg, ToDaemon::Act { .. }))
+        );
+        assert_eq!(
+            test.latest_nav().new_project_error,
+            crate::ipc::NotAProjectName::Dots.to_string()
+        );
+
+        test.send(Event::Action(Action::CreateProject {
+            parent: "/tmp".to_owned(),
+            name: " fresh-app ".to_owned(),
+            git: true,
+        }));
+        assert_eq!(test.latest_nav().new_project_error, "");
+        let first_request = test
+            .drain_daemon()
+            .into_iter()
+            .find_map(|msg| {
+                if let ToDaemon::Act {
+                    request,
+                    act: Act::CreateProject { parent, name, git },
+                } = msg
+                {
+                    assert_eq!(parent, Path::new("/tmp"));
+                    assert_eq!(name.as_str(), "fresh-app");
+                    assert!(git);
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .expect("Act::CreateProject");
+
+        let created_path = PathBuf::from("/tmp/fresh-app");
+        test.send(Event::ProjectCreated {
+            request: first_request,
+            result: Err(CreateProjectError::AlreadyExists(created_path.clone())),
+        });
+        assert!(matches!(&test.app.location, Location::Start));
+        assert!(!test.latest_nav().new_project_error.is_empty());
+
+        test.send(Event::Action(Action::CreateProject {
+            parent: "/tmp".to_owned(),
+            name: "fresh-app".to_owned(),
+            git: true,
+        }));
+        let second_request = test
+            .drain_daemon()
+            .into_iter()
+            .find_map(|msg| {
+                if let ToDaemon::Act {
+                    request,
+                    act: Act::CreateProject { .. },
+                } = msg
+                {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .expect("second Act::CreateProject");
+
+        test.send(Event::ProjectCreated {
+            request: second_request,
+            result: Ok(created_path.clone()),
+        });
+        assert!(test.app.settings.trusted_folders.contains(&created_path));
+        assert!(matches!(&test.app.location, Location::Session(path) if path == &created_path));
+        assert_eq!(test.latest_nav().view, PlaceView::Session);
+        assert!(
+            test.drain_commands()
+                .iter()
+                .any(|cmd| matches!(cmd, Command::NewProjectCreated))
+        );
+        assert!(
+            test.drain_daemon()
+                .iter()
+                .any(|msg| matches!(msg, ToDaemon::Start { .. }))
+        );
+    }
+
+    /// Clicking "N need you" jumps straight into the waiting session across projects.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn next_waiting_jumps_to_the_waiting_session() {
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        drop(test.drain_daemon());
+
+        let wait_id = SessionId::new_random();
+        let proj = PathBuf::from("/tmp/proj-wait");
+        test.send(Event::OverviewListed(vec![ProjectOverview {
+            path: proj.clone(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            sessions: vec![SessionInfo {
+                backend: claude::Backend::Claude,
+                id: wait_id.clone(),
+                title: "Fix parser".to_owned(),
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                worktree: None,
+                last_said: Some("Ready for review.".to_owned()),
+            }],
+        }]));
+        test.send(Event::LiveListed(vec![LiveSession {
+            pid: 42_001,
+            started: "100".to_owned(),
+            id: wait_id.clone(),
+            cwd: proj.clone(),
+            name: "brave-owl-proj-wait-12".to_owned(),
+            title: Some("Fix parser".to_owned()),
+            kind: sessions::LiveKind::Interactive,
+            status: LiveStatus::Waiting,
+            worktree: None,
+            agents: 0,
+            backend: claude::Backend::Claude,
+        }]));
+        assert_eq!(test.latest_nav().needs_you, 1);
+
+        test.send(Event::Action(Action::NextWaiting));
+        assert!(matches!(&test.app.location, Location::Session(path) if path == &proj));
+        assert_eq!(test.latest_nav().view, PlaceView::Session);
+        assert_eq!(
+            test.app.watch.as_ref().map(|watch| &watch.session.id),
+            Some(&wait_id)
+        );
+    }
+
+    /// The review's finding: a new session the daemon ran, opened from Claude Code's record of
+    /// it, was followed as another program's and said "Couldn't read the session". By its id
+    /// it is attached, and a transcript not written yet is no error; one that can't be read is.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_new_session_the_daemon_runs_is_attached_without_an_error() {
+        let mut test = TestApp::start(None, Settings::default());
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        let id = SessionId::try_from("8e1c72c8-83ea-4639-a986-1ad80b839271".to_owned())
+            .expect("a session id");
+        let hosted = Hosted {
+            id: ipc::HostedId::default().next(),
+            session: id.clone(),
+            cwd: PathBuf::from("/code/beep"),
+            sign_in: claude::SignInWith::Account,
+            attached: false,
+            state: ipc::HostedState::Idle,
+        };
+        test.send(Event::Hosted(vec![hosted.clone()]));
+        drop(test.drain_daemon());
+
+        test.send(Event::Action(Action::OpenSession(id.clone())));
+        assert!(test.drain_daemon().iter().any(|msg| matches!(
+            msg,
+            ToDaemon::Attach { hosted: attached, .. } if *attached == hosted.id
+        )));
+        assert!(test.app.watch.is_none());
+
+        let path = PathBuf::from("/nowhere/8e1c72c8-83ea-4639-a986-1ad80b839271.jsonl");
+        test.send(Event::SessionLoaded {
+            id: id.clone(),
+            path: path.clone(),
+            result: Err(ipc::Unread::NotWritten),
+        });
+        assert!(test.app.chat.entries.is_empty());
+        test.send(Event::SessionLoaded {
+            id,
+            path,
+            result: Err(ipc::Unread::Failed("Permission denied".to_owned())),
+        });
+        assert_eq!(test.app.chat.entries.len(), 1);
     }
 }

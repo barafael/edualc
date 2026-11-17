@@ -76,7 +76,7 @@ export global Theme {
         surface-raised: #1d2021, // bg0_h
         card: #32302f, // bg0_s
         shadow: #0009,
-        dim: #0004,
+        dim: #0008,
         bubble: #3c3836, // bg1
         code: #1d2021, // bg0_h
         field: #32302f,
@@ -115,7 +115,7 @@ export global Theme {
         surface-raised: #f2e5bc, // bg0_s
         card: #f9f5d7, // bg0_h
         shadow: #0005,
-        dim: #0002,
+        dim: #0004,
         bubble: #ebdbb2, // bg1
         code: #f2e5bc, // bg0_s
         field: #f9f5d7,
@@ -155,7 +155,7 @@ export global Theme {
         surface-raised: #181818,
         card: #262626,
         shadow: #0009,
-        dim: #0004,
+        dim: #0008,
         bubble: #2f2f2f,
         code: #181818,
         field: #262626,
@@ -195,7 +195,7 @@ export global Theme {
         surface-raised: #f3f3f3,
         card: #fafafa,
         shadow: #0005,
-        dim: #0002,
+        dim: #0004,
         bubble: #ececec,
         code: #f5f5f5,
         field: #ffffff,
@@ -366,6 +366,13 @@ export global Theme {
         return cjk.main ? 1.5 / 1.448 : 1.3 / 1.2;
     }
     out property <float> code-line-factor: 1.4 / 1.231;
+    // The conversation's column in `available` width (the whole width it is centred in): 70% of
+    // it, leaving 15% on each side, or `measure` where that is wider, within margins of
+    // `column-margin`. Prose, code, tables and tool calls all take it; longer code lines and
+    // wider tables scroll sideways.
+    public pure function column(available: length) -> length {
+        return max(available * 0.7, min(available - 2 * self.column-margin, self.measure));
+    }
 
     // Corners.
     out property <length> radius-s: 6px;
@@ -393,10 +400,9 @@ export global Theme {
     out property <length> header: max(46px, self.base-size * 3.1);
     out property <length> sidebar: max(272px, self.base-size * 18);
     out property <length> side-panel: max(400px, self.base-size * 26);
-    // The conversation's column, in ems of its messages (`message`): at most 42 em (about 92
-    // characters of Fira Sans, 42 of CJK), for prose, code, tables and tool calls alike; longer
-    // code lines and wider tables scroll sideways. Only in ems, so a line holds as many
-    // characters at any zoom; with margins of `column-margin` at least.
+    // The conversation's column at its narrowest, in ems of its messages (`message`): 42 em
+    // (about 92 characters of Fira Sans, 42 of CJK), so a narrow window keeps that line length.
+    // `column()` gives the width actually used.
     out property <length> measure: self.base-size * self.message * 42;
     // A plan's column, whose code and tables have more room (100 to 120 columns of code).
     out property <length> wide-measure: self.base-size * self.message * 70;

@@ -14,7 +14,8 @@ use crate::desktop::Opener;
 use crate::ipc::{self, Generation, ToDaemon};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ipc::{
-    ActId, Assembler, FromDaemon, Hosted, LineSplitter, PasteFailure, Pasted, Stream,
+    ActId, Assembler, FromDaemon, Hosted, LineSplitter, PasteFailure, Pasted, ProjectOverview,
+    Stream,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sessions::{self, LiveSession};
@@ -99,6 +100,8 @@ pub struct Inbox {
     pasting: BTreeMap<ActId, Joining>,
     /// A transcript's text, made lines as it comes, kept for the answer it belongs to.
     transcripts: HashMap<ActId, (LineSplitter, Vec<String>)>,
+    /// Pieces of an `Overview` answer before its final chunk arrives.
+    overviews: HashMap<ActId, Vec<ProjectOverview>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -146,6 +149,13 @@ impl Inbox {
                 .map(|pasted| Event::Pasted { request, pasted }),
             FromDaemon::ShuttingDown => Some(Event::DaemonShuttingDown),
             FromDaemon::ApiKeyStored { stored, .. } => Some(Event::ApiKeyStored(stored)),
+            FromDaemon::Created { request, result } => {
+                Some(Event::ProjectCreated { request, result })
+            }
+            FromDaemon::OverviewChunk { request, projects } => {
+                self.overviews.entry(request).or_default().extend(projects);
+                None
+            }
             FromDaemon::Lines { request, text } => {
                 let (splitter, lines) = self.transcripts.entry(request).or_default();
                 lines.extend(splitter.push(text.as_bytes()));
@@ -153,6 +163,19 @@ impl Inbox {
             }
             FromDaemon::Answer { request, answer } => {
                 let (_unfinished, lines) = self.transcripts.remove(&request).unwrap_or_default();
+                let answer = match answer {
+                    ipc::Answer::Overview(tail) => {
+                        let mut projects = self.overviews.remove(&request).unwrap_or_default();
+                        projects.extend(tail);
+                        ipc::Answer::Overview(projects)
+                    }
+                    other @ (ipc::Answer::Live(_)
+                    | ipc::Answer::Projects(_)
+                    | ipc::Answer::Sessions(_)
+                    | ipc::Answer::Transcript { .. }
+                    | ipc::Answer::Worktree(_)
+                    | ipc::Answer::Folder(_)) => other,
+                };
                 Some(Event::Answered {
                     request,
                     answer,

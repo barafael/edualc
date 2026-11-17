@@ -1,0 +1,446 @@
+// The start page: sessions waiting for you across projects, project cards to pick up from,
+// and ways to open a folder or start a new project.
+
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { CardSessionItem, FocusArea, LiveState, ProjectCard, WaitingItem } from "types.slint";
+import { Focus, Nav, Sessions } from "state.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, LiveDot, Pressable, Small, TextButton, Title } from "widgets.slint";
+
+// Modal dialog to open any recent project or type / browse to any folder path.
+export component OpenFolderDialog inherits Rectangle {
+    callback close;
+    property <int> opened: Sessions.opened-serial;
+    changed opened => { root.close(); }
+
+    background: Theme.surface;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.shadow;
+    clip: true;
+
+    VerticalLayout {
+        first-fence := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    last-fence.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        HorizontalLayout {
+            height: Theme.header;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/folder.svg");
+                tint: Theme.claude;
+                width: 20px;
+                y: (parent.height - self.height) / 2;
+            }
+            Title {
+                text: "Open a folder";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Cancel (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        VerticalLayout {
+            vertical-stretch: 1;
+            padding: Theme.space-l;
+            spacing: Theme.space-s;
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                path := Field {
+                    init => { self.focus(); }
+                    horizontal-stretch: 1;
+                    placeholder: "Path to a folder";
+                    accepted(text) => { Sessions.open-project(text); }
+                }
+                TextButton {
+                    text: "Browse…";
+                    clicked => {
+                        Sessions.browse-project();
+                        root.close();
+                    }
+                }
+                TextButton {
+                    text: "Open";
+                    primary: true;
+                    enabled: path.text != "";
+                    clicked => { Sessions.open-project(path.text); }
+                }
+            }
+            if Sessions.problem != "": Text {
+                text: Sessions.problem;
+                color: Theme.danger-text;
+                font-size: 1rem * Theme.small;
+                wrap: word-wrap;
+            }
+            Caption {
+                text: "Recent";
+            }
+            ListView {
+                vertical-stretch: 1;
+                for project in Sessions.projects: Pressable {
+                    height: Theme.row-tall;
+                    accessible-label: project.name;
+                    accessible-description: "\{project.path}, \{project.age}";
+                    clicked => { Sessions.open-project(project.path); }
+                    HorizontalLayout {
+                        padding-left: Theme.space-s;
+                        padding-right: Theme.space-s;
+                        spacing: Theme.space-s;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            Text {
+                                text: project.name;
+                                color: Theme.text;
+                                overflow: elide;
+                            }
+                            Caption {
+                                text: project.shown;
+                                overflow: elide;
+                            }
+                        }
+                        Caption {
+                            text: project.age;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        last-fence := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    first-fence.focus();
+                    Focus.step(true);
+                }
+            }
+        }
+    }
+}
+
+component ProjectCardView inherits Rectangle {
+    in property <ProjectCard> card;
+
+    background: Theme.card;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+
+    // A card is as tall as the tallest in its row; what it shows stays at its top.
+    VerticalLayout {
+        padding: Theme.space-m;
+        spacing: Theme.space-s;
+        alignment: start;
+
+        Pressable {
+            accessible-label: "Open project " + root.card.name;
+            accessible-description: root.card.shown;
+            clicked => { Nav.open-project-page(root.card.path); }
+            HorizontalLayout {
+                padding: Theme.space-xs;
+                spacing: Theme.space-s;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    spacing: 2px;
+                    Text {
+                        text: root.card.name;
+                        color: Theme.text;
+                        font-weight: 600;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                    Caption {
+                        text: root.card.shown;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    spacing: Theme.space-xs;
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Theme.space-xs;
+                        if root.card.needs-you > 0: Rectangle {
+                            border-radius: Theme.radius-s;
+                            border-width: 1px;
+                            border-color: Theme.warning-text;
+                            HorizontalLayout {
+                                padding-left: Theme.space-xs;
+                                padding-right: Theme.space-xs;
+                                Text {
+                                    text: "\{root.card.needs-you} waiting";
+                                    font-size: 1rem * Theme.caption;
+                                    color: Theme.warning-text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if root.card.running > 0: Rectangle {
+                            border-radius: Theme.radius-s;
+                            border-width: 1px;
+                            border-color: Theme.claude;
+                            HorizontalLayout {
+                                padding-left: Theme.space-xs;
+                                padding-right: Theme.space-xs;
+                                Text {
+                                    text: "\{root.card.running} running";
+                                    font-size: 1rem * Theme.caption;
+                                    color: Theme.claude;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if root.card.age != "": Caption {
+                            text: root.card.age;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.card.last-said != "": Small {
+            text: root.card.last-said;
+            color: Theme.text-secondary;
+            overflow: elide;
+        }
+
+        if root.card.has-sessions: Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+
+        if root.card.has-sessions: VerticalLayout {
+            spacing: 2px;
+            for session in root.card.sessions: Pressable {
+                height: Theme.row;
+                accessible-label: session.title + ", " + session.age;
+                clicked => { Nav.jump-to(root.card.path, session.id, session.hosted-id); }
+                HorizontalLayout {
+                    padding-left: Theme.space-xs;
+                    padding-right: Theme.space-xs;
+                    spacing: Theme.space-s;
+                    LiveDot {
+                        state: session.state;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: session.title;
+                        color: session.state == LiveState.waiting ? Theme.warning-text : Theme.text;
+                        font-size: 1rem * Theme.small;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        accessible-role: none;
+                    }
+                    Caption {
+                        text: session.age;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+
+        if !root.card.has-sessions: Caption {
+            text: "No sessions yet — open to start one";
+        }
+    }
+}
+
+export component StartPage inherits Rectangle {
+    callback open-new-project;
+    callback open-folder-dialog;
+
+    property <string> filter;
+    property <[ProjectCard]> shown-cards: Nav.filter-cards(Nav.cards, root.filter);
+    property <int> wanted: Focus.wanted-serial;
+    property <int> focus-page: Nav.page-focus-serial;
+    changed wanted => { self.take-wanted(); }
+    changed focus-page => { filter-field.focus(); }
+    // The page comes with the change that asks for it, so `focus-page` doesn't change for it;
+    // and what had the focus went with the page before, which leaves the window's shortcuts
+    // nothing to hear them.
+    init => { filter-field.focus(); }
+
+    function take-wanted() {
+        if Focus.pending && Focus.wanted == FocusArea.page {
+            Focus.pending = false;
+            filter-field.focus();
+        }
+    }
+
+    background: Theme.surface;
+
+    VerticalLayout {
+        page-start := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    page-end.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                padding: Theme.space-xl;
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    width: min(root.width - 2 * Theme.space-xl, 1080px);
+                    spacing: Theme.space-l;
+                    alignment: start;
+
+                    HorizontalLayout {
+                        spacing: Theme.space-s;
+                        Title {
+                            text: "Projects";
+                            vertical-alignment: center;
+                        }
+                        filter-field := Field {
+                            horizontal-stretch: 1;
+                            placeholder: "Filter projects (Ctrl+K)";
+                            edited(text) => { root.filter = text; }
+                            init => { root.take-wanted(); }
+                            changed has-focus => {
+                                if self.has-focus {
+                                    Focus.area = FocusArea.page;
+                                }
+                            }
+                        }
+                        TextButton {
+                            text: "New project…";
+                            primary: true;
+                            has-icon: true;
+                            icon: @image-url("@lucide/folder-plus.svg");
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.open-new-project(); }
+                        }
+                        TextButton {
+                            text: "Open a folder…";
+                            has-icon: true;
+                            icon: @image-url("@lucide/folder.svg");
+                            y: (parent.height - self.height) / 2;
+                            clicked => {
+                                Sessions.refresh-projects();
+                                root.open-folder-dialog();
+                            }
+                        }
+                    }
+
+                    if Nav.waiting.length > 0 && root.filter == "": VerticalLayout {
+                        spacing: Theme.space-s;
+                        Text {
+                            text: "Needs you";
+                            color: Theme.warning-text;
+                            font-weight: 600;
+                        }
+                        for item in Nav.waiting: Pressable {
+                            background: Theme.card;
+                            border-radius: Theme.radius-m;
+                            border-width: 1px;
+                            border-color: Theme.warning-text;
+                            accessible-label: item.project-name + ", " + item.session-title + ": " + item.question;
+                            clicked => { Nav.jump-to(item.project-folder, item.session-id, item.hosted-id); }
+                            HorizontalLayout {
+                                padding: Theme.space-m;
+                                spacing: Theme.space-m;
+                                LiveDot {
+                                    state: LiveState.waiting;
+                                    y: Theme.space-xs;
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: Theme.space-xs;
+                                    HorizontalLayout {
+                                        spacing: Theme.space-s;
+                                        Text {
+                                            text: item.project-name + " — " + item.session-title;
+                                            color: Theme.text;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            min-width: 0px;
+                                        }
+                                        Caption {
+                                            text: item.waited;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Text {
+                                        text: item.question;
+                                        color: Theme.text-secondary;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                TextButton {
+                                    text: "Open session";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { Nav.jump-to(item.project-folder, item.session-id, item.hosted-id); }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.shown-cards.length > 0: grid := FlexboxLayout {
+                        flex-direction: FlexboxLayoutDirection.row;
+                        flex-wrap: FlexboxLayoutWrap.wrap;
+                        alignment: LayoutAlignment.start;
+                        spacing: Theme.space-m;
+                        property <int> cols: grid.width >= 980px ? 3 : grid.width >= 640px ? 2 : 1;
+                        property <length> card-width: (grid.width - (self.cols - 1) * Theme.space-m) / self.cols;
+                        for card in root.shown-cards: ProjectCardView {
+                            card: card;
+                            width: grid.card-width;
+                        }
+                    }
+
+                    if root.shown-cards.length == 0: Small {
+                        text: root.filter != ""
+                            ? "No project matches the filter."
+                            : "No recent projects yet. Create a new project or open a folder to begin.";
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        page-end := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    page-start.focus();
+                    Focus.step(true);
+                }
+            }
+        }
+    }
+}

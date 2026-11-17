@@ -1,16 +1,20 @@
 //! The window's callbacks: each sends what was done to the app as an [`Action`], and holds
 //! nothing but the way there.
 
-use async_channel::Sender;
-use slint::ComponentHandle;
+use std::path::PathBuf;
 
-use crate::app::{Action, Event, PermissionMode};
+use async_channel::Sender;
+use slint::{ComponentHandle, Model as _};
+
+use crate::app::{Action, Event, PermissionMode, SessionTarget};
 use crate::cjk::CjkLanguage;
 use crate::external::wire::{RequestId, SessionId};
 use crate::generated::{
-    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Peek, PeerMessages, Preferences,
-    Program, Prompt, SendKey, Session, Sessions, Side, SignInWith, Transcript, Usage,
+    AppWindow, Clipboard, Composer, Focus, HanLanguage, LineBreak, Nav, Peek, PeerMessages,
+    Preferences, Program, Prompt, SendKey, Session, Sessions, Side, SignInWith, Transcript, Usage,
 };
+use crate::ipc::HostedId;
+use crate::overview::SessionRef;
 use crate::settings::{self, Zoom};
 
 /// A way to the app, for a callback to keep.
@@ -232,17 +236,74 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         }
     });
     preferences.on_remove_api_key(actions.on(|| Action::RemoveApiKey));
-    sessions.on_width_chosen({
+    preferences.on_set_new_projects_in(actions.on_text(Action::SetNewProjectsIn));
+    preferences.on_browse_new_projects_in(actions.on(|| Action::BrowseNewProjectsIn));
+
+    let nav = window.global::<Nav>();
+    nav.on_open_start(actions.on(|| Action::OpenStart));
+    nav.on_open_project_page(actions.on_text(|folder| Action::EnterProject(PathBuf::from(folder))));
+    nav.on_jump_to({
         let actions = actions.clone();
-        // Zero (or what doesn't fit a `u16`) goes back to the default width.
-        move |width_px| {
-            let kept = u16::try_from(width_px)
-                .ok()
-                .filter(|width_px| *width_px > 0);
-            actions.send(Action::SidebarWidth(kept));
+        // The presenter gave each item its folder, its session's id, and the daemon's id for
+        // it if the daemon runs it; one whose session id doesn't read opens its project.
+        move |folder, session, hosted| {
+            let folder = PathBuf::from(String::from(folder));
+            let Ok(session) = SessionId::try_from(String::from(session)) else {
+                actions.send(Action::EnterProject(folder));
+                return;
+            };
+            let opens = match hosted.parse::<HostedId>() {
+                Ok(hosted) => SessionRef::Hosted { hosted, session },
+                Err(_) => SessionRef::Session(session),
+            };
+            actions.send(Action::JumpTo(SessionTarget { folder, opens }));
         }
     });
-    // Checked by the daemon, while the list stays open: what is wrong is said there, with the
+    nav.on_next_waiting(actions.on(|| Action::NextWaiting));
+    nav.on_back(actions.on(|| Action::Back));
+    nav.on_browse_new_project_parent(actions.on(|| Action::BrowseNewProjectParent));
+    nav.on_create_project({
+        let actions = actions.clone();
+        move |parent, name, git| {
+            actions.send(Action::CreateProject {
+                parent: parent.into(),
+                name: name.into(),
+                git,
+            });
+        }
+    });
+    nav.on_clear_new_project_error(actions.on(|| Action::ClearNewProjectError));
+    nav.on_filter_cards(|cards, query| {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return cards;
+        }
+        let filtered: Vec<_> = cards
+            .iter()
+            .filter(|card| {
+                card.name.to_lowercase().contains(&needle)
+                    || card.shown.to_lowercase().contains(&needle)
+                    || card.last_said.to_lowercase().contains(&needle)
+            })
+            .collect();
+        slint::ModelRc::new(slint::VecModel::from(filtered))
+    });
+    nav.on_filter_switcher(|items, query| {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return items;
+        }
+        let filtered: Vec<_> = items
+            .iter()
+            .filter(|item| {
+                item.title.to_lowercase().contains(&needle)
+                    || item.project_name.to_lowercase().contains(&needle)
+                    || item.detail.to_lowercase().contains(&needle)
+            })
+            .collect();
+        slint::ModelRc::new(slint::VecModel::from(filtered))
+    });
+    // Checked by the daemon, while the dialog stays open: what is wrong is said there, with the
     // path still in its field to correct (`View::set_project_problem`).
     sessions.on_open_project(actions.on_text(Action::OpenProject));
     sessions.on_browse_project(actions.on(|| Action::BrowseProject));

@@ -3,8 +3,8 @@
 // keyring keeps.
 
 import { Theme } from "theme.slint";
-import { FocusArea, HanLanguage, PeerMessages, SendKey } from "types.slint";
-import { Focus, Preferences } from "state.slint";
+import { FocusArea, HanLanguage, PeerMessages, SendKey, SignInState } from "types.slint";
+import { Focus, Preferences, Session } from "state.slint";
 import { AreaFence, Caption, Field, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
 
 // One of a setting's choices: its name, what it means, and whether it is the one in use.
@@ -89,7 +89,7 @@ export component SettingsPanel inherits Rectangle {
             }
             IconButton {
                 icon: @image-url("@lucide/x.svg");
-                label: "Back to the conversation (Esc)";
+                label: "Close settings (Esc)";
                 y: (parent.height - self.height) / 2;
                 clicked => { root.close(); }
             }
@@ -134,7 +134,7 @@ export component SettingsPanel inherits Rectangle {
                     color: Theme.text;
                 }
                 Small {
-                    text: "For messages edualc carries: those to agy and opencode sessions, and those agy and opencode sessions send to sessions edualc runs. Other messages to Claude Code follow its crossSessionInbound setting.";
+                    text: "For messages to agy and opencode sessions. Messages to Claude Code follow its crossSessionInbound setting.";
                     wrap: word-wrap;
                 }
                 Choice {
@@ -190,6 +190,38 @@ export component SettingsPanel inherits Rectangle {
                     height: Theme.space-m;
                 }
                 Text {
+                    text: "New projects";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: "The folder New project makes new projects in, unless you choose another.";
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-s;
+                    projects-dir := Field {
+                        property <string> saved: Preferences.new-projects-in;
+                        changed saved => { self.text = self.saved; }
+                        init => { self.text = Preferences.new-projects-in; }
+                        horizontal-stretch: 1;
+                        placeholder: "Folder for new projects";
+                        accepted(text) => { Preferences.set-new-projects-in(text); }
+                        changed has-focus => {
+                            if !self.has-focus && self.text != Preferences.new-projects-in {
+                                Preferences.set-new-projects-in(self.text);
+                            }
+                        }
+                    }
+                    TextButton {
+                        text: "Browse…";
+                        clicked => { Preferences.browse-new-projects-in(); }
+                    }
+                }
+                Rectangle {
+                    height: Theme.space-m;
+                }
+                Text {
                     text: "Anthropic API key";
                     font-weight: 600;
                     color: Theme.text;
@@ -230,6 +262,41 @@ export component SettingsPanel inherits Rectangle {
                     color: Theme.danger-text;
                     wrap: word-wrap;
                 }
+                if Session.email != "" || Session.organization != "" || Session.provider != "" || Session.version != "" || Session.cost != "": Rectangle {
+                    height: Theme.space-m;
+                }
+                if Session.email != "" || Session.organization != "" || Session.provider != "" || Session.version != "" || Session.cost != "": Text {
+                    text: Session.sign-in == SignInState.signed-in ? "Signed in"
+                        : Session.sign-in == SignInState.signed-out ? "Account (not signed in)" : "Account";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                if Session.email != "" || Session.organization != "" || Session.provider != "" || Session.version != "" || Session.cost != "": VerticalLayout {
+                    spacing: Theme.space-xs;
+                    for line in [
+                        { label: "Email", value: Session.email },
+                        { label: "Organization", value: Session.organization },
+                        { label: "Provider", value: Session.provider },
+                        { label: Session.program, value: Session.version },
+                        { label: "This session", value: Session.cost },
+                    ]: HorizontalLayout {
+                        spacing: Theme.space-s;
+                        visible: line.value != "";
+                        height: line.value != "" ? self.preferred-height : 0;
+                        Small {
+                            text: line.label;
+                            width: 110px;
+                        }
+                        Text {
+                            text: line.value;
+                            color: Theme.text;
+                            font-size: 1rem * Theme.small;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                        }
+                    }
+                }
                 Rectangle {
                     height: Theme.space-m;
                 }
@@ -239,7 +306,7 @@ export component SettingsPanel inherits Rectangle {
                     color: Theme.text;
                 }
                 Small {
-                    text: "It runs the sessions of every window, and goes on while one runs, so a newly installed edualc takes over only once it is shut down. Shutting down ends every session, in every window; the sidebar continues them in the next window you open.";
+                    text: "It runs the sessions of every window, and goes on while one runs, so a newly installed edualc takes over only once it is shut down. Shutting down ends every session, in every window; the start page lets you continue them in the next window you open.";
                     wrap: word-wrap;
                 }
                 HorizontalLayout {

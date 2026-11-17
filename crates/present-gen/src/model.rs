@@ -9,13 +9,14 @@ use i_slint_compiler::source_path::SourcePath;
 
 /// The globals whose state the presenter owns, in no particular order: the others are the
 /// window's own.
-const PRESENTED: [&str; 9] = [
+const PRESENTED: [&str; 10] = [
     "Session",
     "Composer",
     "Sessions",
     "Prompt",
     "Peek",
     "Side",
+    "Nav",
     "Preferences",
     "Usage",
     "Transcript",
@@ -23,13 +24,18 @@ const PRESENTED: [&str; 9] = [
 
 /// Properties of those globals that aren't state: the transcript's rows, which change one by one
 /// (`TranscriptChange`), and the window's own counters, bumped through `Command`s.
-const SKIPPED: [(&str, &str); 6] = [
+const SKIPPED: [(&str, &str); 11] = [
     ("Transcript", "entries"),
     ("Transcript", "scroll-to-end-serial"),
     ("Transcript", "opened-serial"),
     ("Composer", "focus-serial"),
     ("Side", "focus-serial"),
     ("Sessions", "opened-serial"),
+    ("Nav", "created-serial"),
+    ("Nav", "show-window-controls"),
+    ("Nav", "page-focus-serial"),
+    ("Nav", "switcher-serial"),
+    ("Nav", "new-project-serial"),
 ];
 
 /// Why the model couldn't be read.

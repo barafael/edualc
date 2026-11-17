@@ -27,6 +27,9 @@ pub(crate) fn main() {
     let (events, received) = async_channel::unbounded();
     let (link, requests) = async_channel::bounded(QUEUE);
     ui::wire(&window, &events);
+    window
+        .global::<generated::Nav>()
+        .set_show_window_controls(false);
     let frontend = ui::SlintFrontend::new(
         window.clone_strong(),
         crate::appearance::Fonts {
@@ -42,7 +45,7 @@ pub(crate) fn main() {
         Desktop::in_the_browser(crate::appearance::DEFAULT_TEXT_SIZE),
         Ok(Settings::default()),
         app::Start {
-            cwd: demo::Folder::Trailhead.path().to_path_buf(),
+            cwd: Some(demo::Folder::Trailhead.path().to_path_buf()),
             backend: crate::claude::Backend::Claude,
             model: None,
         },

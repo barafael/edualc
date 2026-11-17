@@ -1,0 +1,549 @@
+// The top bar: breadcrumbs, a jump to any waiting session, the current session's status and
+// controls, utilities, and the window's frame controls on desktop.
+
+import { Look, Theme } from "theme.slint";
+import { FocusArea, PermissionKind, PlaceView, SideView, TaskKind } from "types.slint";
+import { Focus, Nav, Peek, Preferences, Session, Side, Usage } from "state.slint";
+import { AreaFence, Caption, Icon, IconButton, MenuButton, Meter, Pressable, Small, TextButton } from "widgets.slint";
+import { HeronMark } from "heron.slint";
+
+// What runs besides the turn's own steps, and how much ("2 agents, 1 command"); a click lists
+// it. The list opens downward below the top bar.
+component TasksChip inherits Pressable {
+    in property <length> window-height;
+    height: Theme.chip;
+    min-width: 0px;
+    border-radius: Theme.radius-m;
+    accessible-label: "Running now: " + Session.tasks-summary;
+    clicked => { tasks-menu.show(); }
+    property <int> wanted: Session.tasks-wanted;
+    changed wanted => { tasks-menu.show(); }
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-xs;
+        Icon {
+            source: @image-url("@lucide/layers.svg");
+            tint: Theme.claude;
+            width: Theme.icon-small;
+            y: (parent.height - self.height) / 2;
+        }
+        Small {
+            text: Session.tasks-summary;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+            min-width: 0px;
+        }
+    }
+    tasks-menu := PopupWindow {
+        x: min(0px, root.width - self.width);
+        y: root.height + Theme.space-xs;
+        width: 380px;
+        height: max(0px, root.window-height - root.absolute-position.y - root.height - Theme.space-m);
+        close-policy: close-on-click-outside;
+        TouchArea {
+            clicked => { tasks-menu.close(); }
+        }
+        Rectangle {
+            y: 0;
+            height: min(tasks-body.preferred-height, parent.height);
+            clip: true;
+            background: Theme.surface;
+            border-radius: Theme.radius-m;
+            border-width: 1px;
+            border-color: Theme.divider;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.shadow;
+            tasks-body := VerticalLayout {
+                padding: Theme.space-m;
+                spacing: Theme.space-s;
+                HorizontalLayout {
+                    spacing: Theme.space-s;
+                    Text {
+                        text: Session.tasks-left-running ? "Still running" : "Running now";
+                        color: Theme.text;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    if Session.tasks.length > 1: TextButton {
+                        text: "Stop all";
+                        clicked => { Session.stop-all-tasks(); }
+                    }
+                }
+                if Session.tasks-left-running: Small {
+                    text: "The turn stopped; these go on. Stop them here, or leave them running.";
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+                for task in Session.tasks: Pressable {
+                    enabled: task.peekable;
+                    tab-stop: task.peekable;
+                    accessible-label: task.peekable ? "Follow " + task.title : task.title;
+                    clicked => {
+                        tasks-menu.close();
+                        Peek.follow(task.id);
+                    }
+                    HorizontalLayout {
+                        padding: Theme.space-xs;
+                        spacing: Theme.space-s;
+                        Icon {
+                            source: task.kind == TaskKind.agent ? @image-url("@lucide/bot.svg")
+                                : task.kind == TaskKind.command ? @image-url("@lucide/square-terminal.svg")
+                                : task.kind == TaskKind.workflow ? @image-url("@lucide/workflow.svg")
+                                : task.kind == TaskKind.monitor ? @image-url("@lucide/radar.svg")
+                                : @image-url("@lucide/circle-dashed.svg");
+                            tint: Theme.text-secondary;
+                            width: Theme.icon-small;
+                            y: Theme.space-xs / 2;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: task.title;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            Caption {
+                                text: task.detail;
+                            }
+                            if task.used != "": Caption {
+                                text: task.used;
+                            }
+                            if task.now != "": Caption {
+                                text: task.now;
+                                wrap: word-wrap;
+                            }
+                        }
+                        IconButton {
+                            icon: @image-url("@lucide/circle-stop.svg");
+                            icon-size: Theme.icon-small;
+                            label: "Stop " + task.title;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { Session.stop-task(task.id); }
+                        }
+                        if task.peekable: Icon {
+                            source: @image-url("@lucide/chevron-right.svg");
+                            tint: Theme.text-tertiary;
+                            width: Theme.icon-small;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        if !task.peekable: Rectangle {
+                            width: Theme.icon-small;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// How full the context is: a short bar that warms as it fills, and the count.
+component ContextMeter inherits HorizontalLayout {
+    height: Theme.chip;
+    spacing: Theme.space-xs;
+    Meter {
+        width: 28px;
+        y: (parent.height - self.height) / 2;
+        fraction: Session.context-fraction;
+    }
+    Caption {
+        text: Session.context;
+        vertical-alignment: center;
+    }
+}
+
+export component TopBar inherits Rectangle {
+    in property <length> window-height;
+    in property <bool> maximized;
+    // Too narrow for the menus' names: set as the width changes, not bound to it, so the
+    // menus' min-width doesn't feed back into the window's own width.
+    property <bool> narrow;
+    // Narrower still, as in a third of a screen: the breadcrumb keeps the session's title, the
+    // chips their icons, and the window only its Close.
+    property <bool> tight;
+    changed width => {
+        self.narrow = self.width < 920px;
+        self.tight = self.width < 640px;
+    }
+    callback minimize;
+    callback toggle-maximize;
+    callback close;
+
+    property <PermissionKind> mode: Session.mode;
+    property <int> wanted: Focus.wanted-serial;
+    changed wanted => { self.take-wanted(); }
+
+    function take-wanted() {
+        if Focus.pending && Focus.wanted == FocusArea.topbar {
+            Focus.pending = false;
+            top-start.focus();
+            Focus.step(true);
+        }
+    }
+
+    height: Theme.header;
+    background: Theme.surface-raised;
+
+    VerticalLayout {
+        top-start := AreaFence {
+            area: FocusArea.topbar;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    top-end.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding-left: Theme.space-m;
+            padding-right: Nav.show-window-controls ? Theme.space-s : Theme.space-m;
+            spacing: root.tight ? Theme.space-xs : Theme.space-s;
+
+            if Nav.can-back: IconButton {
+                icon: @image-url("@lucide/arrow-left.svg");
+                label: "Back (Alt+Left)";
+                y: (parent.height - self.height) / 2;
+                clicked => { Nav.back(); }
+            }
+            if !root.tight: HeronMark {
+                width: 20px;
+                y: (parent.height - self.height) / 2;
+            }
+            if Nav.view == PlaceView.start: Text {
+                text: "Projects";
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            if Nav.view != PlaceView.start && !root.tight: Pressable {
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                accessible-label: "Projects";
+                clicked => { Nav.open-start(); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    Text {
+                        text: "Projects";
+                        color: Theme.text-secondary;
+                        font-size: 1rem * Theme.small;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            if Nav.view != PlaceView.start && !root.tight: Caption {
+                text: "/";
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            if Nav.view == PlaceView.project: Text {
+                text: Nav.project-name;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+                min-width: 0px;
+                max-width: 260px;
+            }
+            if Nav.view == PlaceView.session && !root.tight: Pressable {
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                accessible-label: "Project " + Nav.project-name;
+                clicked => { Nav.open-project-page(Nav.project-folder); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    Text {
+                        text: Nav.project-name;
+                        color: Theme.text-secondary;
+                        font-size: 1rem * Theme.small;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 180px;
+                        accessible-role: none;
+                    }
+                }
+            }
+            if Nav.view == PlaceView.session && !root.tight: Caption {
+                text: "/";
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            if Nav.view == PlaceView.session: Text {
+                text: Nav.session-title != "" ? Nav.session-title : Session.title;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+                min-width: 0px;
+                max-width: 260px;
+            }
+            if Nav.needs-you > 0: Pressable {
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                border-radius: Theme.radius-m;
+                border-width: 1px;
+                border-color: Theme.warning-text;
+                accessible-label: Nav.needs-you == 1 ? "1 session needs you" : "\{Nav.needs-you} sessions need you";
+                clicked => { Nav.next-waiting(); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    Icon {
+                        source: @image-url("@lucide/hand.svg");
+                        tint: Theme.warning-text;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: Nav.needs-you == 1 ? "1 needs you" : "\{Nav.needs-you} need you";
+                        color: Theme.warning-text;
+                        font-size: 1rem * Theme.small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            // Fills the empty bar space so dragging moves the window and double-click maximises it,
+            // without bounding the layout under tiling window managers.
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 16px;
+                WindowMoveArea {
+                    width: 100%;
+                    height: 100%;
+                    TouchArea {
+                        double-clicked => { root.toggle-maximize(); }
+                    }
+                }
+            }
+            if Nav.view == PlaceView.session && Session.worktree-name != "": worktree := Pressable {
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                border-radius: Theme.radius-m;
+                border-width: 1px;
+                border-color: Theme.divider;
+                accessible-label: "Worktree " + Session.worktree-name;
+                clicked => { openers.show(); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    Icon {
+                        source: @image-url("@lucide/git-branch.svg");
+                        tint: Theme.claude;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: Session.worktree-name;
+                        color: Theme.text;
+                        font-size: 1rem * Theme.small;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 140px;
+                    }
+                    if Session.worktree-branch != "" && Session.worktree-branch != Session.worktree-name: Caption {
+                        text: Session.worktree-branch;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 120px;
+                    }
+                    Icon {
+                        source: @image-url("@lucide/chevron-down.svg");
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+                openers := PopupWindow {
+                    x: parent.width - self.width;
+                    y: parent.height + Theme.space-xs;
+                    width: 220px;
+                    height: menu.preferred-height;
+                    close-policy: close-on-click-outside;
+                    Rectangle {
+                        background: Theme.surface;
+                        border-radius: Theme.radius-m;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+                        drop-shadow-blur: 12px;
+                        drop-shadow-color: #0004;
+                        menu := VerticalLayout {
+                            padding: Theme.space-xs;
+                            Caption {
+                                text: "Open the worktree in";
+                            }
+                            for opener[index] in Session.openers: Pressable {
+                                height: Theme.control;
+                                clicked => {
+                                    Session.open-worktree(index);
+                                    openers.close();
+                                }
+                                Text {
+                                    x: Theme.space-s;
+                                    text: opener;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if Nav.view == PlaceView.session: MenuButton {
+                below: true;
+                heading: "Permission mode";
+                model: Session.modes;
+                current-index <=> Session.mode-index;
+                max-width: 200px;
+                compact: root.narrow;
+                y: (parent.height - self.height) / 2;
+                icon: root.mode == PermissionKind.accept-edits ? @image-url("@lucide/file-pen-line.svg")
+                    : root.mode == PermissionKind.plan ? @image-url("@lucide/map.svg")
+                    : root.mode == PermissionKind.auto ? @image-url("@lucide/zap.svg")
+                    : root.mode == PermissionKind.bypass ? @image-url("@lucide/shield-exclamation-point.svg")
+                    : root.mode == PermissionKind.unknown ? @image-url("@lucide/shield-question-mark.svg")
+                    : @image-url("@lucide/shield-check.svg");
+                tint: root.mode == PermissionKind.accept-edits ? Theme.warning-text
+                    : root.mode == PermissionKind.plan ? Theme.link
+                    : root.mode == PermissionKind.auto ? Theme.info
+                    : root.mode == PermissionKind.bypass ? Theme.danger-text
+                    : Theme.text-secondary;
+                selected(index) => { Session.choose-mode(index); }
+            }
+            if Nav.view == PlaceView.session: MenuButton {
+                below: true;
+                heading: "Model";
+                model: Session.models;
+                current-index <=> Session.model-index;
+                max-width: 220px;
+                compact: root.narrow;
+                y: (parent.height - self.height) / 2;
+                icon: @image-url("@lucide/sparkle.svg");
+                selected(index) => { Session.choose-model(index); }
+            }
+            if Nav.view == PlaceView.session && Session.tasks.length > 0: TasksChip {
+                window-height: root.window-height;
+                y: (parent.height - self.height) / 2;
+            }
+            if Nav.view == PlaceView.session && Session.context != "": ContextMeter {
+                y: (parent.height - self.height) / 2;
+            }
+            if Nav.view == PlaceView.session: Pressable {
+                selected: Side.view == SideView.shown;
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                accessible-label: Side.view == SideView.shown ? "Fold the side questions away" : "Side questions (/btw)";
+                clicked => { Side.toggle(); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    Icon {
+                        source: @image-url("@lucide/message-circle-dashed.svg");
+                        tint: Side.view != SideView.hidden ? Theme.claude : Theme.text-secondary;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if !root.tight: Text {
+                        text: "btw";
+                        color: Side.view != SideView.hidden ? Theme.text : Theme.text-secondary;
+                        font-size: 1rem * Theme.small;
+                        vertical-alignment: center;
+                    }
+                    if Side.unseen: Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: Theme.claude;
+                    }
+                }
+            }
+            if Nav.view == PlaceView.session || Session.limit-five-hour >= 0: Pressable {
+                height: Theme.chip;
+                y: (parent.height - self.height) / 2;
+                border-radius: Theme.radius-m;
+                accessible-label: "Usage details";
+                clicked => { Session.show-usage(); }
+                HorizontalLayout {
+                    padding-left: Theme.space-s;
+                    padding-right: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    Icon {
+                        source: @image-url("@lucide/gauge.svg");
+                        tint: Theme.text-secondary;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if !root.tight: Small {
+                        text: Session.limit-five-hour >= 0 ? "5h \{round(clamp(Session.limit-five-hour, 0, 1) * 100)}%" : "Usage";
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/palette.svg");
+                label: Theme.look == Look.gruvbox ? "Plain colours" : "Gruvbox colours";
+                y: (parent.height - self.height) / 2;
+                clicked => { Session.switch-look(); }
+            }
+            IconButton {
+                icon: @image-url("@lucide/settings.svg");
+                label: "Settings (Ctrl+,)";
+                y: (parent.height - self.height) / 2;
+                clicked => {
+                    Usage.close();
+                    Preferences.open = true;
+                }
+            }
+            if Nav.show-window-controls: Rectangle {
+                width: 1px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                background: Theme.divider;
+            }
+            if Nav.show-window-controls && !root.tight: IconButton {
+                icon: @image-url("@lucide/minus.svg");
+                label: "Minimize";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.minimize(); }
+            }
+            if Nav.show-window-controls && !root.tight: IconButton {
+                icon: root.maximized ? @image-url("@lucide/copy.svg") : @image-url("@lucide/square.svg");
+                label: root.maximized ? "Restore window" : "Maximize window";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.toggle-maximize(); }
+            }
+            if Nav.show-window-controls: IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Close window";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
+            }
+        }
+        top-end := AreaFence {
+            area: FocusArea.topbar;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    top-start.focus();
+                    Focus.step(true);
+                }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+    }
+}

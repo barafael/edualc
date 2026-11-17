@@ -265,7 +265,8 @@ impl ToSlint for present::FocusArea {
     type Slint = slint_ui::FocusArea;
     fn to_slint(&self, _: &Drawing) -> Self::Slint {
         match self {
-            Self::Sidebar => slint_ui::FocusArea::Sidebar,
+            Self::Topbar => slint_ui::FocusArea::Topbar,
+            Self::Page => slint_ui::FocusArea::Page,
             Self::Conversation => slint_ui::FocusArea::Conversation,
             Self::Writing => slint_ui::FocusArea::Writing,
             Self::Side => slint_ui::FocusArea::Side,
@@ -293,6 +294,17 @@ impl ToSlint for present::TaskKind {
             Self::Workflow => slint_ui::TaskKind::Workflow,
             Self::Monitor => slint_ui::TaskKind::Monitor,
             Self::Other => slint_ui::TaskKind::Other,
+        }
+    }
+}
+
+impl ToSlint for present::PlaceView {
+    type Slint = slint_ui::PlaceView;
+    fn to_slint(&self, _: &Drawing) -> Self::Slint {
+        match self {
+            Self::Start => slint_ui::PlaceView::Start,
+            Self::Project => slint_ui::PlaceView::Project,
+            Self::Session => slint_ui::PlaceView::Session,
         }
     }
 }
@@ -596,6 +608,73 @@ impl ToSlint for present::LineBreak {
         slint_ui::LineBreak {
             text: self.text.to_slint(images),
             caret: self.caret.to_slint(images),
+        }
+    }
+}
+
+impl ToSlint for present::WaitingItem {
+    type Slint = slint_ui::WaitingItem;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::WaitingItem {
+            project_name: self.project_name.to_slint(images),
+            project_folder: self.project_folder.to_slint(images),
+            session_id: self.session_id.to_slint(images),
+            hosted_id: self.hosted_id.to_slint(images),
+            session_title: self.session_title.to_slint(images),
+            question: self.question.to_slint(images),
+            waited: self.waited.to_slint(images),
+        }
+    }
+}
+
+impl ToSlint for present::CardSessionItem {
+    type Slint = slint_ui::CardSessionItem;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::CardSessionItem {
+            id: self.id.to_slint(images),
+            hosted_id: self.hosted_id.to_slint(images),
+            title: self.title.to_slint(images),
+            state: self.state.to_slint(images),
+            age: self.age.to_slint(images),
+        }
+    }
+}
+
+impl ToSlint for present::ProjectCard {
+    type Slint = slint_ui::ProjectCard;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::ProjectCard {
+            path: self.path.to_slint(images),
+            shown: self.shown.to_slint(images),
+            name: self.name.to_slint(images),
+            age: self.age.to_slint(images),
+            needs_you: self.needs_you.to_slint(images),
+            running: self.running.to_slint(images),
+            last_said: self.last_said.to_slint(images),
+            has_sessions: self.has_sessions.to_slint(images),
+            sessions: self.sessions.to_slint(images),
+        }
+    }
+    fn sync(&self, old: &Self, shown: Self::Slint, images: &Drawing) -> Self::Slint {
+        let mut row = self.to_slint(images);
+        row.sessions = resync(&shown.sessions, &old.sessions, &self.sessions, images)
+            .unwrap_or(shown.sessions);
+        row
+    }
+}
+
+impl ToSlint for present::SwitcherItem {
+    type Slint = slint_ui::SwitcherItem;
+    fn to_slint(&self, images: &Drawing) -> Self::Slint {
+        slint_ui::SwitcherItem {
+            project_name: self.project_name.to_slint(images),
+            project_folder: self.project_folder.to_slint(images),
+            id: self.id.to_slint(images),
+            hosted_id: self.hosted_id.to_slint(images),
+            title: self.title.to_slint(images),
+            detail: self.detail.to_slint(images),
+            state: self.state.to_slint(images),
+            selected: self.selected.to_slint(images),
         }
     }
 }
@@ -1026,6 +1105,73 @@ pub(super) fn apply_side(
     }
 }
 
+/// Brings the `Nav` global in line with `new`, setting what differs from `old` (all,
+/// for none).
+pub(super) fn apply_nav(
+    window: &AppWindow,
+    old: Option<&present::Nav>,
+    new: &present::Nav,
+    images: &Drawing,
+) {
+    let global = window.global::<slint_ui::Nav>();
+    if old.is_none_or(|old| old.view != new.view) {
+        global.set_view(new.view.to_slint(images));
+    }
+    if old.is_none_or(|old| old.project_name != new.project_name) {
+        global.set_project_name(new.project_name.to_slint(images));
+    }
+    if old.is_none_or(|old| old.project_folder != new.project_folder) {
+        global.set_project_folder(new.project_folder.to_slint(images));
+    }
+    if old.is_none_or(|old| old.session_title != new.session_title) {
+        global.set_session_title(new.session_title.to_slint(images));
+    }
+    if old.is_none_or(|old| old.can_back != new.can_back) {
+        global.set_can_back(new.can_back.to_slint(images));
+    }
+    match old {
+        Some(old) if old.waiting != new.waiting => {
+            if let Some(model) = resync(&global.get_waiting(), &old.waiting, &new.waiting, images) {
+                global.set_waiting(model);
+            }
+        }
+        Some(_) => {}
+        None => global.set_waiting(new.waiting.to_slint(images)),
+    }
+    if old.is_none_or(|old| old.needs_you != new.needs_you) {
+        global.set_needs_you(new.needs_you.to_slint(images));
+    }
+    match old {
+        Some(old) if old.cards != new.cards => {
+            if let Some(model) = resync(&global.get_cards(), &old.cards, &new.cards, images) {
+                global.set_cards(model);
+            }
+        }
+        Some(_) => {}
+        None => global.set_cards(new.cards.to_slint(images)),
+    }
+    match old {
+        Some(old) if old.all_sessions != new.all_sessions => {
+            if let Some(model) = resync(
+                &global.get_all_sessions(),
+                &old.all_sessions,
+                &new.all_sessions,
+                images,
+            ) {
+                global.set_all_sessions(model);
+            }
+        }
+        Some(_) => {}
+        None => global.set_all_sessions(new.all_sessions.to_slint(images)),
+    }
+    if old.is_none_or(|old| old.new_project_parent != new.new_project_parent) {
+        global.set_new_project_parent(new.new_project_parent.to_slint(images));
+    }
+    if old.is_none_or(|old| old.new_project_error != new.new_project_error) {
+        global.set_new_project_error(new.new_project_error.to_slint(images));
+    }
+}
+
 /// Brings the `Preferences` global in line with `new`, setting what differs from `old` (all,
 /// for none).
 pub(super) fn apply_preferences(
@@ -1052,6 +1198,9 @@ pub(super) fn apply_preferences(
     }
     if old.is_none_or(|old| old.api_key_note != new.api_key_note) {
         global.set_api_key_note(new.api_key_note.to_slint(images));
+    }
+    if old.is_none_or(|old| old.new_projects_in != new.new_projects_in) {
+        global.set_new_projects_in(new.new_projects_in.to_slint(images));
     }
 }
 

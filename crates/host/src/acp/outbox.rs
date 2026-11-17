@@ -7,7 +7,7 @@
 use std::ffi::OsStr;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -471,32 +471,6 @@ fn read_regular(folder: &OwnedFd, name: &OsStr, limit: u64) -> Option<String> {
         .read_to_string(&mut text)
         .ok()?;
     Some(text)
-}
-
-/// Writes `name` in `folder` whole or not at all, readable by this user alone, as Claude Code
-/// writes its own.
-pub(super) fn write_atomically(folder: &Path, name: &OsStr, bytes: &[u8]) -> std::io::Result<()> {
-    let staged = folder.join(format!(".edualc-{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&staged)?;
-    let written = file
-        .write_all(bytes)
-        .and_then(|()| std::fs::rename(&staged, folder.join(name)));
-    if written.is_err() {
-        remove(&staged);
-    }
-    written
-}
-
-pub(super) fn remove(path: &Path) {
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::debug!(%error, path = %path.display(), "a session's file stays");
-    }
 }
 
 /// Posts one message into an inbox as Claude Code's own sessions do: the token, then the

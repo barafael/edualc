@@ -16,7 +16,9 @@ use crate::app::{Mode, PermissionMode};
 /// UUID. Ids come from file names and records other processes write, and end up on `claude`'s
 /// command line and in paths, so anything else (a file named `--settings=….jsonl`, a `../`) is
 /// refused where it enters.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize, derive_more::Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, derive_more::Display,
+)]
 #[serde(try_from = "String")]
 pub struct SessionId(String);
 
@@ -846,6 +848,12 @@ pub struct TurnResult {
     /// [`TurnResult::sign_in_refused`].
     #[serde(default)]
     pub api_error_status: Option<u16>,
+    /// How long the turn took, from the prompt to this.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// What the turn's requests took and gave, over all of them.
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 impl TurnResult {

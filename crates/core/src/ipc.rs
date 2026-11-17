@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use web_time::SystemTime;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod socket;
@@ -148,7 +149,7 @@ pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
 
 /// Bumped with any change to the messages below, or to their framing: postcard isn't
 /// self-describing, so both ends must agree on every type.
-pub const PROTOCOL: u32 = 24;
+pub const PROTOCOL: u32 = 25;
 
 /// A window's key for a process it shows, new for each one: what an earlier one still says is
 /// dropped.
@@ -172,6 +173,21 @@ pub struct HostedId(u64);
 impl HostedId {
     pub fn next(self) -> Self {
         Self(self.0 + 1)
+    }
+}
+
+impl std::fmt::Display for HostedId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for HostedId {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let id = text.parse::<u64>()?;
+        Ok(Self(id))
     }
 }
 
@@ -300,6 +316,8 @@ pub enum Read {
     Live,
     /// The folders Claude Code worked in: `Answer::Projects`.
     Projects,
+    /// Every project with its recent sessions, for the start page: `Answer::Overview`.
+    Overview,
     /// A folder's sessions, newest first, those `known` summed up again only if their
     /// transcript changed: `Answer::Sessions`.
     Sessions {
@@ -321,18 +339,28 @@ pub enum Read {
     Folder(PathBuf),
 }
 
+/// A project with its recent sessions, for the start page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectOverview {
+    pub path: PathBuf,
+    pub modified: SystemTime,
+    pub sessions: Vec<SessionInfo>,
+}
+
 /// What the daemon read for a window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Answer {
     Live(Vec<LiveSession>),
     Projects(Vec<ProjectInfo>),
+    Overview(Vec<ProjectOverview>),
     Sessions(Vec<SessionInfo>),
     /// The end of a transcript's lines: where it was found, and the offset after its last
     /// whole line, or why it couldn't be read.
     Transcript {
         path: PathBuf,
-        read: Result<u64, String>,
+        read: Result<u64, Unread>,
     },
     Worktree(Option<Worktree>),
     Folder(Result<PathBuf, String>),
@@ -397,6 +425,11 @@ pub enum FromDaemon {
     },
     /// What was read, as asked by `Read`.
     Answer { request: ActId, answer: Answer },
+    /// Part of a large `Overview` answer, sent before `Answer::Overview`.
+    OverviewChunk {
+        request: ActId,
+        projects: Vec<ProjectOverview>,
+    },
     /// A transcript's lines, as asked by `Read::Transcript`: its text, a piece at a time that
     /// fits a message (a piece ends where it ends, not at a line); its `Answer` follows the
     /// last.
@@ -409,6 +442,11 @@ pub enum FromDaemon {
     ApiKeyStored {
         request: ActId,
         stored: Result<bool, ActFailure>,
+    },
+    /// Whether creating a new project folder succeeded, answered to `Act::CreateProject`.
+    Created {
+        request: ActId,
+        result: Result<PathBuf, CreateProjectError>,
     },
 }
 
@@ -497,17 +535,114 @@ pub enum PasteFailure {
 }
 
 /// A session the daemon runs.
+/// What a session the daemon hosts is doing right now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum HostedState {
+    #[default]
+    Idle,
+    Busy,
+    Waiting {
+        question: String,
+        since: SystemTime,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hosted {
     pub id: HostedId,
-    /// Claude Code's, once known.
-    pub session: Option<SessionId>,
+    /// Claude Code's: chosen when it started (`--session-id`), or the one it continues; its
+    /// window tells a new one Claude Code moves it to. Its transcript may not be written yet.
+    pub session: SessionId,
     pub cwd: PathBuf,
     /// What it was started signed in with.
     pub sign_in: crate::claude::SignInWith,
     /// Shown in a window now.
     pub attached: bool,
+    pub state: HostedState,
+}
+
+/// Why a transcript wasn't read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(deny_unknown_fields)]
+pub enum Unread {
+    /// No file there yet: a session's first turn writes it.
+    #[error("it isn't written yet")]
+    NotWritten,
+    /// The system's words.
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<std::io::Error> for Unread {
+    fn from(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::NotWritten
+        } else {
+            Self::Failed(error.to_string())
+        }
+    }
+}
+
+/// The name of a new project's folder: one folder, not a path, without the spaces around it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[serde(try_from = "String")]
+pub struct ProjectName(String);
+
+/// Why a name can't be a new project's folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NotAProjectName {
+    #[error("Enter a folder name.")]
+    Empty,
+    #[error("Use a folder name without slashes.")]
+    Slash,
+    #[error("“.” and “..” name folders that are there already. Choose another name.")]
+    Dots,
+}
+
+impl TryFrom<String> for ProjectName {
+    type Error = NotAProjectName;
+
+    fn try_from(typed: String) -> Result<Self, Self::Error> {
+        let name = typed.trim();
+        if name.is_empty() {
+            Err(NotAProjectName::Empty)
+        } else if name.contains('/') {
+            Err(NotAProjectName::Slash)
+        } else if name == "." || name == ".." {
+            Err(NotAProjectName::Dots)
+        } else {
+            Ok(Self(name.to_owned()))
+        }
+    }
+}
+
+impl ProjectName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Why the daemon didn't make a new project's folder. The reasons are the system's or git's
+/// own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(deny_unknown_fields)]
+pub enum CreateProjectError {
+    #[error("{0} isn't an existing folder.")]
+    NoParent(PathBuf),
+    #[error("There is already a folder named {0}.")]
+    AlreadyExists(PathBuf),
+    #[error("Couldn't make {folder}: {reason}")]
+    Create { folder: PathBuf, reason: String },
+    #[error("Couldn't run git: {reason}")]
+    GitNotRun { reason: String },
+    #[error("git init failed: {stderr}")]
+    GitFailed { stderr: String },
+    #[error("The daemon failed making the folder.")]
+    Crashed,
+    #[error("The browser demo makes no folders.")]
+    InBrowser,
 }
 
 /// Why a session's process didn't start, or its input was refused, as the window is told.
@@ -667,11 +802,37 @@ pub enum Act {
     RemoveApiKey,
     /// Whether the keyring holds a key; answered by `ApiKeyStored`.
     CheckApiKey,
+    /// Creates a new project folder inside `parent` and optionally runs `git init`; answered by
+    /// `FromDaemon::Created`.
+    CreateProject {
+        parent: PathBuf,
+        name: ProjectName,
+        git: bool,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project name is one folder: what a window that skipped the check sends is refused
+    /// as it arrives, so the daemon never makes `..` or a path.
+    #[test]
+    fn a_project_name_is_one_folder() {
+        let name = |typed: &str| ProjectName::try_from(typed.to_owned());
+        assert_eq!(
+            name("  my app ").map(|name| name.to_string()),
+            Ok("my app".to_owned())
+        );
+        assert_eq!(name(" \t"), Err(NotAProjectName::Empty));
+        assert_eq!(name("a/b"), Err(NotAProjectName::Slash));
+        assert_eq!(name("/"), Err(NotAProjectName::Slash));
+        assert_eq!(name(".."), Err(NotAProjectName::Dots));
+        assert_eq!(name("."), Err(NotAProjectName::Dots));
+        assert_eq!(name("..."), Ok(ProjectName("...".to_owned())));
+        let arrived: Result<ProjectName, _> = serde_json::from_str("\"..\"");
+        assert!(arrived.is_err());
+    }
 
     /// A pasted key loses the spaces around it; one with spaces inside, or nothing, isn't
     /// taken. What `Debug` writes (the logs) never holds the key.

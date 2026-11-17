@@ -57,8 +57,8 @@ Things to try:
 - `/btw why 3 m?`: a side question, answered beside the conversation
 - `! git log --oneline`: a shell command
 
-The sessions in the sidebar open too, the ones running elsewhere among them, and the palette \
-button at the top switches the look.";
+Click **Projects** in the top bar for the start page and other projects, or press **Ctrl+K** to \
+switch sessions; the palette button at the top switches the look.";
 
 async fn guide(turn: &Turn) -> Result<&'static str, Interrupted> {
     turn.say(GUIDE).await?;

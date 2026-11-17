@@ -2,7 +2,7 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
-import { CjkChars, FocusArea, MenuItem } from "types.slint";
+import { CjkChars, FocusArea, LiveState, MenuItem, Program } from "types.slint";
 import { Focus, Session, TextSelection } from "state.slint";
 
 // A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`).
@@ -422,7 +422,7 @@ export component Field inherits Rectangle {
 }
 
 // A compact choice in a toolbar: an icon and the current choice's name, no frame until
-// hovered. Its menu opens upwards and says what each choice means.
+// hovered. Its menu opens above (or below when `below` is set) and says what each choice means.
 export component MenuButton inherits Rectangle {
     in property <[MenuItem]> model;
     in-out property <int> current-index;
@@ -432,6 +432,8 @@ export component MenuButton inherits Rectangle {
     in property <string> heading;
     // Only its icon, the choice told on hover: where a narrow window would cut its name.
     in property <bool> compact;
+    // Open downward from a top toolbar instead of upward from the bottom.
+    in property <bool> below;
     callback selected(int);
     property <string> current: root.current-index >= 0 && root.current-index < root.model.length
         ? root.model[root.current-index].title : "";
@@ -469,7 +471,7 @@ export component MenuButton inherits Rectangle {
             accessible-role: none;
         }
         Icon {
-            source: @image-url("@lucide/chevron-up.svg");
+            source: root.below ? @image-url("@lucide/chevron-down.svg") : @image-url("@lucide/chevron-up.svg");
             tint: Theme.text-faint;
             width: Theme.icon-small;
             y: (parent.height - self.height) / 2;
@@ -491,8 +493,8 @@ export component MenuButton inherits Rectangle {
         pressed => { root.open(); }
     }
     menu := PopupWindow {
-        x: 0;
-        y: -self.height - Theme.space-xs;
+        x: root.below ? min(0px, root.width - self.width) : 0;
+        y: root.below ? root.height + Theme.space-xs : -self.height - Theme.space-xs;
         width: max(root.width, 320px);
         height: items.preferred-height;
         // Up and Down move through the choices, Enter or Space takes one; Esc closes the menu.
@@ -607,5 +609,75 @@ export component UsageBar inherits HorizontalLayout {
         width: 2.4rem;
         horizontal-alignment: right;
         vertical-alignment: center;
+    }
+}
+
+// How a session running elsewhere is doing: working, waiting for you, or idle.
+// Told by shape as well as colour: a hand while it waits, a dot while it works, a ring while idle.
+export component LiveDot inherits Rectangle {
+    in property <LiveState> state;
+    width: Theme.icon-small;
+    height: Theme.icon-small;
+    if root.state == LiveState.waiting: Icon {
+        source: @image-url("@lucide/hand.svg");
+        width: root.width;
+        tint: Theme.warning-text;
+    }
+    if root.state != LiveState.waiting: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: root.state == LiveState.busy ? Theme.claude : transparent;
+        border-width: root.state == LiveState.busy ? 0 : 1.5px;
+        border-color: Theme.text-faint;
+    }
+}
+
+// How many subagents a running session has: a bot and the number.
+export component AgentCount inherits HorizontalLayout {
+    in property <int> agents;
+    spacing: Theme.space-xs;
+    Icon {
+        source: @image-url("@lucide/bot.svg");
+        width: Theme.icon-small;
+        tint: Theme.text-tertiary;
+        y: (parent.height - self.height) / 2;
+    }
+    Text {
+        text: root.agents;
+        font-size: 1rem * Theme.caption;
+        color: Theme.text-tertiary;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
+// What a session runs, beside its title: agy, opencode, or Claude Code with the API key;
+// nothing for Claude Code on your own sign-in. Drawn only: the enclosing row's label speaks it.
+export component ProgramMark inherits VerticalLayout {
+    in property <Program> program;
+    alignment: center;
+    if root.program == Program.agy || root.program == Program.opencode: Rectangle {
+        border-radius: Theme.radius-s;
+        border-width: 1px;
+        border-color: Theme.control-border;
+        HorizontalLayout {
+            padding-left: Theme.space-xs;
+            padding-right: Theme.space-xs;
+            Text {
+                text: root.program == Program.agy ? "agy" : "opencode";
+                font-size: 1rem * Theme.caption;
+                color: Theme.text-tertiary;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+    if root.program == Program.claude-api-key: Icon {
+        source: @image-url("@lucide/key-round.svg");
+        width: Theme.icon-small;
+        tint: Theme.text-tertiary;
     }
 }

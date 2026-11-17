@@ -1,873 +1,157 @@
-// The window: the sessions on the left; the conversation, what Claude asks and the composer in
-// the middle; side questions on the right.
+// The window: a shared top bar over the start page, a project's sessions, or a live
+// conversation (transcript, prompt/composer, and optional side questions or peek panel).
 
 import { ListView } from "std-widgets.slint";
 import { Look, Motion, SyntaxColours, Theme } from "theme.slint";
-import { Activity, ComposerSize, FocusArea, LiveState, PermissionKind, Program, PromptKind, SendKey, SessionRow, SessionRowKind, SideView, SignInState, SignInWith, TaskKind } from "types.slint";
-import { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
-import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, Meter, MenuButton, Pressable, Small, TextButton, Title, UsageBar } from "widgets.slint";
+import { Activity, ComposerSize, FocusArea, LiveState, PlaceView, PromptKind, SendKey, SideView, SignInWith, SwitcherItem } from "types.slint";
+import { Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, LiveDot, Pressable, Small, TextButton, Title } from "widgets.slint";
 import { EntryView } from "transcript.slint";
-import { Heron, HeronMark } from "heron.slint";
+import { Heron } from "heron.slint";
+import { NewProjectDialog } from "newproject.slint";
 import { PeekPanel } from "peek.slint";
 import { PlanReview } from "plan.slint";
+import { ProjectPage } from "project.slint";
 import { Choice, SettingsPanel } from "settings.slint";
 import { SidePanel } from "side.slint";
+import { OpenFolderDialog, StartPage } from "start.slint";
+import { TopBar } from "topbar.slint";
 import { UsagePanel } from "usage.slint";
 
 export { Look, Motion, SyntaxColours, Theme } from "theme.slint";
-export { Activity, BlockKind, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveState, MdBlock, PeekStep, PermissionKind, PlanSection, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, TaskItem, TaskKind, ToolState } from "types.slint";
-export { Clipboard, Composer, Focus, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
+export { Activity, BlockKind, CardSessionItem, Cjk, CjkChars, CommandItem, ComposerSize, DiffKind, DiffLine, HanLanguage, ImageChip, Entry, EntryKind, LiveState, MdBlock, PeekStep, PermissionKind, PlaceView, PlanSection, ProjectCard, ProjectItem, PromptKind, Question, QuestionOption, SendKey, SessionRow, SessionRowKind, SideExchange, SideState, SideView, SignInState, StatRow, StatSection, StepKind, SwitcherItem, TaskItem, TaskKind, ToolState, WaitingItem } from "types.slint";
+export { Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Session, Sessions, Side, TextSelection, Transcript, Usage } from "state.slint";
 
-// How a session running elsewhere is doing: working, waiting for its user, idle. Still: its
-// work is another window's to show, and a moving dot here would keep this one drawing.
-// Told by shape, not colour alone (Gruvbox's orange and yellow are close): a hand while it
-// waits for its user, as on a tool's card; a dot while it works; a ring while idle.
-component LiveDot inherits Rectangle {
-    in property <LiveState> state;
-    width: Theme.icon-small;
-    height: Theme.icon-small;
-    if root.state == LiveState.waiting: Icon {
-        source: @image-url("@lucide/hand.svg");
-        width: root.width;
-        tint: Theme.warning-text;
-    }
-    if root.state != LiveState.waiting: Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 8px;
-        height: 8px;
-        border-radius: 4px;
-        background: root.state == LiveState.busy ? Theme.claude : transparent;
-        border-width: root.state == LiveState.busy ? 0 : 1.5px;
-        border-color: Theme.text-faint;
-    }
-}
+// Quick switcher opened with Ctrl+K inside a session to jump to another session across projects.
+component SessionSwitcher inherits Rectangle {
+    callback close;
+    property <string> query;
+    property <[SwitcherItem]> shown: Nav.filter-switcher(Nav.all-sessions, root.query);
+    property <int> highlighted;
 
-// What runs besides the turn's own steps, and how much ("2 agents, 1 command"); a click lists
-// it. A background agent's or command's card shows it done as soon as it started, and it runs
-// on after the turn; agents the turn waits for are nested out of sight under their call. So
-// nothing else tells how many run.
-component TasksChip inherits Pressable {
-    height: Theme.chip;
-    min-width: 0px;
-    border-radius: Theme.radius-m;
-    accessible-label: "Running now: " + Session.tasks-summary;
-    clicked => { tasks-menu.show(); }
-    property <int> wanted: Session.tasks-wanted;
-    changed wanted => { tasks-menu.show(); }
-    HorizontalLayout {
-        padding-left: Theme.space-s;
-        padding-right: Theme.space-s;
-        spacing: Theme.space-xs;
-        Icon {
-            source: @image-url("@lucide/layers.svg");
-            tint: Theme.claude;
-            width: Theme.icon-small;
-            y: (parent.height - self.height) / 2;
-        }
-        Small {
-            text: Session.tasks-summary;
-            color: Theme.text-secondary;
-            vertical-alignment: center;
-            overflow: elide;
-            min-width: 0px;
+    function open-selected() {
+        if root.shown.length > 0 {
+            let picked = root.shown[clamp(root.highlighted, 0, root.shown.length - 1)];
+            Nav.jump-to(picked.project-folder, picked.id, picked.hosted-id);
+            root.close();
         }
     }
-    // A popup keeps the size it opened with, and tasks end or start while it is open: it takes
-    // the height above the chip, and the card in it fits what is listed now, at its foot by the
-    // chip. A click on the rest closes it, as one outside does.
-    tasks-menu := PopupWindow {
-        x: 0;
-        y: -self.height - Theme.space-xs;
-        width: 380px;
-        height: max(0px, root.absolute-position.y - Theme.space-m);
-        close-policy: close-on-click-outside;
-        TouchArea {
-            clicked => { tasks-menu.close(); }
-        }
-        Rectangle {
-            y: parent.height - self.height;
-            height: min(tasks-body.preferred-height, parent.height);
-            clip: true;
-            background: Theme.surface;
-            border-radius: Theme.radius-m;
-            border-width: 1px;
-            border-color: Theme.divider;
-            drop-shadow-blur: 12px;
-            drop-shadow-color: Theme.shadow;
-            tasks-body := VerticalLayout {
-                padding: Theme.space-m;
-                spacing: Theme.space-s;
-                HorizontalLayout {
-                    spacing: Theme.space-s;
-                    Text {
-                        text: Session.tasks-left-running ? "Still running" : "Running now";
-                        color: Theme.text;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    if Session.tasks.length > 1: TextButton {
-                        text: "Stop all";
-                        clicked => { Session.stop-all-tasks(); }
-                    }
-                }
-                // Stopping a turn leaves what runs beside it running, as the user wanted:
-                // they decide here.
-                if Session.tasks-left-running: Small {
-                    text: "The turn stopped; these go on. Stop them here, or leave them running.";
-                    color: Theme.text-secondary;
-                    wrap: word-wrap;
-                }
-                // A subagent's row opens what it does beside the conversation.
-                for task in Session.tasks: Pressable {
-                    enabled: task.peekable;
-                    tab-stop: task.peekable;
-                    accessible-label: task.peekable ? "Follow " + task.title : task.title;
-                    clicked => {
-                        tasks-menu.close();
-                        Peek.follow(task.id);
-                    }
-                    HorizontalLayout {
-                        padding: Theme.space-xs;
-                        spacing: Theme.space-s;
-                        Icon {
-                            source: task.kind == TaskKind.agent ? @image-url("@lucide/bot.svg")
-                                : task.kind == TaskKind.command ? @image-url("@lucide/square-terminal.svg")
-                                : task.kind == TaskKind.workflow ? @image-url("@lucide/workflow.svg")
-                                : task.kind == TaskKind.monitor ? @image-url("@lucide/radar.svg")
-                                : @image-url("@lucide/circle-dashed.svg");
-                            tint: Theme.text-secondary;
-                            width: Theme.icon-small;
-                            y: Theme.space-xs / 2;
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            Text {
-                                text: task.title;
-                                color: Theme.text;
-                                wrap: word-wrap;
-                            }
-                            Caption {
-                                text: task.detail;
-                            }
-                            if task.used != "": Caption {
-                                text: task.used;
-                            }
-                            if task.now != "": Caption {
-                                text: task.now;
-                                wrap: word-wrap;
-                            }
-                        }
-                        // Not a bare square, which reads as a checkbox in a list.
-                        IconButton {
-                            icon: @image-url("@lucide/circle-stop.svg");
-                            icon-size: Theme.icon-small;
-                            label: "Stop " + task.title;
-                            y: (parent.height - self.height) / 2;
-                            clicked => { Session.stop-task(task.id); }
-                        }
-                        if task.peekable: Icon {
-                            source: @image-url("@lucide/chevron-right.svg");
-                            tint: Theme.text-tertiary;
-                            width: Theme.icon-small;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        // The chevron's room, so that every row's stop button lines up.
-                        if !task.peekable: Rectangle {
-                            width: Theme.icon-small;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
-// A heading over a part of the session list: the sessions running now, or this folder's
-// earlier ones, with how many need their user.
-component SessionHeading inherits Rectangle {
-    in property <SessionRow> entry;
-    accessible-role: text;
-    accessible-label: root.entry.detail == "" ? root.entry.title : root.entry.title + ", " + root.entry.detail;
-    HorizontalLayout {
-        padding-left: Theme.space-s;
-        padding-right: Theme.space-s;
-        padding-top: Theme.space-m;
-        padding-bottom: Theme.space-xs;
-        spacing: Theme.space-s;
-        Text {
-            text: root.entry.title;
-            font-size: 1rem * Theme.small;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            overflow: elide;
-            horizontal-stretch: 1;
-            min-width: 0px;
-            accessible-role: none;
-        }
-        if root.entry.detail != "": Text {
-            text: root.entry.detail;
-            font-size: 1rem * Theme.small;
-            color: Theme.warning-text;
-            accessible-role: none;
-        }
-    }
-}
-
-// A session running now (this window's, another's, a terminal's), on two lines: its title,
-// then what it does, its name to message it by and where it runs; its subagents counted.
-// How many subagents a running session has: a bot and the number.
-component AgentCount inherits HorizontalLayout {
-    in property <int> agents;
-    spacing: Theme.space-xs;
-    Icon {
-        source: @image-url("@lucide/bot.svg");
-        width: Theme.icon-small;
-        tint: Theme.text-tertiary;
-        y: (parent.height - self.height) / 2;
-    }
-    Text {
-        text: root.agents;
-        font-size: 1rem * Theme.caption;
-        color: Theme.text-tertiary;
-        vertical-alignment: center;
-        accessible-role: none;
-    }
-}
-
-// What a session runs, beside its title in the sidebar: agy, opencode, or Claude Code with the
-// API key; nothing for Claude Code on the user's own sign-in, which most sessions are. Only
-// drawn: the row's label says it.
-component ProgramMark inherits VerticalLayout {
-    in property <Program> program;
-    alignment: center;
-    if root.program == Program.agy || root.program == Program.opencode: Rectangle {
-        border-radius: Theme.radius-s;
-        border-width: 1px;
-        border-color: Theme.control-border;
-        HorizontalLayout {
-            padding-left: Theme.space-xs;
-            padding-right: Theme.space-xs;
-            Text {
-                text: root.program == Program.agy ? "agy" : "opencode";
-                font-size: 1rem * Theme.caption;
-                color: Theme.text-tertiary;
-                vertical-alignment: center;
-                accessible-role: none;
-            }
-        }
-    }
-    if root.program == Program.claude-api-key: Icon {
-        source: @image-url("@lucide/key-round.svg");
-        width: Theme.icon-small;
-        tint: Theme.text-tertiary;
-    }
-}
-
-component RunningRow inherits Pressable {
-    in property <SessionRow> entry;
-    // What it runs, for its label.
-    property <string> program-said: root.entry.program == Program.agy ? ", agy"
-        : root.entry.program == Program.opencode ? ", opencode"
-        : root.entry.program == Program.claude-api-key ? ", with the API key" : "";
-    height: Theme.row-tall;
-    selected: root.entry.selected;
-    accessible-label: root.entry.title + root.program-said + ", " + root.entry.detail
-        + (root.entry.agents == 1 ? ", 1 agent running" : root.entry.agents > 1 ? ", \{root.entry.agents} agents running" : "");
-    clicked => { Sessions.open(root.entry.id); }
-    HorizontalLayout {
-        padding-left: Theme.space-m;
-        padding-right: Theme.space-s;
-        spacing: Theme.space-s;
-        LiveDot {
-            state: root.entry.state;
-            y: (parent.height - self.height) / 2;
-        }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            min-width: 0px;
-            title := Text {
-                text: root.entry.title;
-                color: Theme.text;
-                overflow: elide;
-                accessible-role: none;
-            }
-            // A plain Text, as a Caption's look: `accessible-role: none` hides only built-in
-            // elements; on a component's use it makes an unnamed node instead.
-            Text {
-                text: root.entry.detail;
-                font-size: 1rem * Theme.caption;
-                color: root.entry.state == LiveState.waiting ? Theme.warning-text : Theme.text-tertiary;
-                overflow: elide;
-                accessible-role: none;
-            }
-        }
-        ProgramMark {
-            program: root.entry.program;
-        }
-        // The session shown here: its count opens the list of what runs, where an agent's
-        // work can be followed.
-        if root.entry.agents > 0 && root.entry.selected: Pressable {
-            accessible-label: root.entry.agents == 1 ? "1 agent running, show it"
-                : "\{root.entry.agents} agents running, show them";
-            clicked => { Session.tasks-wanted += 1; }
-            AgentCount {
-                agents: root.entry.agents;
-                padding-left: Theme.space-xs;
-                padding-right: Theme.space-xs;
-            }
-        }
-        if root.entry.agents > 0 && !root.entry.selected: AgentCount {
-            agents: root.entry.agents;
-        }
-    }
-    // The whole title, where the row cuts it off.
-    if title.preferred-width > title.width: Tooltip {
-        text: @markdown("\{root.entry.title}");
-    }
-}
-
-// One of this folder's earlier sessions: continued when opened.
-component EarlierRow inherits Pressable {
-    in property <SessionRow> entry;
-    height: Theme.row;
-    selected: root.entry.selected;
-    accessible-label: root.entry.title + (root.entry.program == Program.agy ? ", agy" : root.entry.program == Program.opencode ? ", opencode" : "") + ", " + root.entry.age + (root.entry.worktree != "" ? ", in the worktree " + root.entry.worktree : "");
-    clicked => { Sessions.open(root.entry.id); }
-    HorizontalLayout {
-        padding-left: Theme.space-m;
-        padding-right: Theme.space-s;
-        spacing: Theme.space-s;
-        if root.entry.worktree != "": Icon {
-            source: @image-url("@lucide/git-branch.svg");
-            width: Theme.icon-small;
-            tint: Theme.text-tertiary;
-            y: (parent.height - self.height) / 2;
-        }
-        title := Text {
-            text: root.entry.title;
-            color: Theme.text-secondary;
-            overflow: elide;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            min-width: 0px;
-            accessible-role: none;
-        }
-        ProgramMark {
-            program: root.entry.program;
-        }
-        Text {
-            text: root.entry.age;
-            font-size: 1rem * Theme.caption;
-            color: Theme.text-tertiary;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-    }
-    if title.preferred-width > title.width: Tooltip {
-        text: @markdown("\{root.entry.title}");
-    }
-}
-
-// Narrow windows give up the sidebar's width first, then the side panel's; the conversation
-// keeps the rest. Its right edge sets its width: dragged, or with the arrow keys.
-component Sidebar inherits Rectangle {
-    // The widest it is dragged to.
-    property <length> widest: 720px;
-    // The programs a new session can run, in the order the New session menu lists them;
-    // Claude Code with the API key while the keyring keeps one.
-    property <[{program: Program, title: string}]> programs: Sessions.api-key-kept ? [
-        { program: Program.claude, title: "Claude Code" },
-        { program: Program.claude-api-key, title: "Claude Code with the API key…" },
-        { program: Program.agy, title: "agy" },
-        { program: Program.opencode, title: "opencode" },
-    ] : [
-        { program: Program.claude, title: "Claude Code" },
-        { program: Program.agy, title: "agy" },
-        { program: Program.opencode, title: "opencode" },
-    ];
-    // The program the arrow keys are on while the New session menu is open.
-    property <int> new-highlighted;
-    // A program picked in the menu: Claude Code with the API key asks first, in its dialog.
-    function start(program: Program) {
-        if program == Program.claude-api-key {
-            Sessions.api-key-dialog = true;
-        } else {
-            Sessions.new-session(program);
-        }
-    }
-    callback hide;
-    // No narrower than its header's buttons (their size grows with the zoom): a narrow window
-    // took it below them, and they spilled over the conversation's title.
-    min-width: max(200px, head.min-width + 2 * Theme.space-m);
-    preferred-width: Sessions.chosen-width > 0 ? Sessions.chosen-width : Theme.sidebar;
-    max-width: self.preferred-width;
-    horizontal-stretch: 0;
-    background: Theme.surface-raised;
-    // Nothing of it draws over the conversation, however narrow it is made.
+    background: Theme.surface;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.shadow;
     clip: true;
-    // Tab goes round within the sidebar.
-    sidebar-start := AreaFence {
-        area: FocusArea.sidebar;
-        crossed => {
-            if !Focus.going-round {
-                Focus.going-round = true;
-                sidebar-end.focus();
-                Focus.step(false);
-            }
-        }
-    }
+
     VerticalLayout {
-        padding: Theme.space-m;
-        spacing: Theme.space-s;
-        head := HorizontalLayout {
+        first-fence := AreaFence {
+            area: FocusArea.conversation;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    last-fence.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        HorizontalLayout {
+            height: Theme.header;
+            padding-left: Theme.space-l;
+            padding-right: Theme.space-m;
             spacing: Theme.space-s;
-            padding-left: Theme.space-xs;
-            // edualc's heron, at the size of the grid it is drawn on.
-            HeronMark {
-                width: 24px;
-                y: (parent.height - self.height) / 2;
-            }
-            // Gives way first: the buttons beside it keep their size.
-            Title {
-                text: "edualc";
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-                min-width: 0px;
-            }
-            IconButton {
-                icon: @image-url("@lucide/palette.svg");
-                label: Theme.look == Look.gruvbox ? "Plain colours" : "Gruvbox colours";
-                clicked => { Session.switch-look(); }
-            }
-            IconButton {
-                icon: @image-url("@lucide/settings.svg");
-                label: "Settings (Ctrl+,)";
-                clicked => {
-                    Usage.close();
-                    Preferences.open = true;
-                }
-            }
-            new-button := IconButton {
-                icon: @image-url("@lucide/square-pen.svg");
-                label: "New session";
-                clicked => {
-                    root.new-highlighted = 0;
-                    new-menu.show();
-                }
-            }
-            // Where the header's button to show it again then appears.
-            IconButton {
-                icon: @image-url("@lucide/panel-left-close.svg");
-                label: "Hide the sessions (Ctrl+B)";
-                clicked => { root.hide(); }
-            }
-        }
-        // The working directory; a click offers the others Claude Code was used in.
-        project-button := Pressable {
-            accessible-label: "Folder \{Session.project}";
-            accessible-description: "\{Session.cwd}. Opens the folders to work in instead.";
-            clicked => {
-                Sessions.refresh-projects();
-                projects.show();
-            }
-            HorizontalLayout {
-                padding: Theme.space-s;
-                spacing: Theme.space-s;
-                Icon {
-                    source: @image-url("@lucide/folder.svg");
-                    y: (parent.height - self.height) / 2;
-                }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    Text {
-                        text: Session.project;
-                        font-weight: 600;
-                        color: Theme.text;
-                        overflow: elide;
-                    }
-                    Caption {
-                        text: Session.cwd;
-                        overflow: elide;
-                    }
-                }
-                Icon {
-                    source: @image-url("@lucide/chevrons-up-down.svg");
-                    width: Theme.icon-small;
-                    y: (parent.height - self.height) / 2;
-                }
-            }
-        }
-        // Opens below the New session button, its right edge on the button's.
-        new-menu := PopupWindow {
-            x: head.x + new-button.x + new-button.width - self.width;
-            y: head.y + new-button.y + new-button.height + Theme.space-xs;
-            width: 300px;
-            height: new-items.preferred-height;
-            // Up and Down move through the programs, Enter or Space starts one; Esc closes.
             FocusScope {
-                init => { self.focus(); }
-                key-pressed(event) => {
-                    if event.text == Key.UpArrow {
-                        root.new-highlighted = max(0, root.new-highlighted - 1);
+                horizontal-stretch: 1;
+                capture-key-pressed(event) => {
+                    if event.text == Key.UpArrow && root.shown.length > 0 {
+                        root.highlighted = max(0, root.highlighted - 1);
                         return accept;
                     }
-                    if event.text == Key.DownArrow {
-                        root.new-highlighted = min(root.programs.length - 1, root.new-highlighted + 1);
-                        return accept;
-                    }
-                    if event.text == Key.Return || event.text == " " {
-                        new-menu.close();
-                        root.start(root.programs[root.new-highlighted].program);
+                    if event.text == Key.DownArrow && root.shown.length > 0 {
+                        root.highlighted = min(root.shown.length - 1, root.highlighted + 1);
                         return accept;
                     }
                     return reject;
                 }
-            }
-            Rectangle {
-                background: Theme.surface-raised;
-                border-radius: Theme.radius-m;
-                border-width: 1px;
-                border-color: Theme.control-border;
-                drop-shadow-blur: 12px;
-                drop-shadow-color: #0006;
-                new-items := VerticalLayout {
-                    padding: Theme.space-xs;
-                    spacing: 2px;
-                    Caption {
-                        text: "New session";
-                        horizontal-alignment: left;
+                query-field := Field {
+                    width: 100%;
+                    placeholder: "Switch session… (type project or title)";
+                    init => { self.focus(); }
+                    edited(text) => {
+                        root.query = text;
+                        root.highlighted = 0;
                     }
-                    for item[index] in root.programs: Pressable {
-                        highlighted: index == root.new-highlighted;
-                        tab-stop: false;
-                        accessible-label: "New \{item.title} session";
-                        clicked => { root.start(item.program); }
-                        HorizontalLayout {
-                            padding: Theme.space-s;
-                            padding-left: Theme.space-m;
-                            spacing: Theme.space-s;
-                            Text {
-                                text: item.title;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            if item.program == Sessions.program: Caption {
-                                text: "Ctrl+N";
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
+                    accepted => { root.open-selected(); }
                 }
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Close (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
             }
         }
-        // The folder typed was opened: the list closes.
-        property <int> project-opened: Sessions.opened-serial;
-        changed project-opened => {
-            projects.close();
-        }
-        projects := PopupWindow {
-            x: project-button.x;
-            y: project-button.y + project-button.height + Theme.space-xs;
-            width: 440px;
-            height: 460px;
-            close-policy: close-on-click-outside;
-            folders := Rectangle {
-                // Why the folder last asked for didn't open (emptied each time the list opens):
-                // the list stays open, the path still in its field to correct.
-                property <string> problem: Sessions.problem;
-                function open(path: string) {
-                    Sessions.open-project(path);
-                }
-                background: Theme.surface;
-                border-radius: Theme.radius-l;
-                border-width: 1px;
-                border-color: Theme.divider;
-                drop-shadow-blur: 12px;
-                drop-shadow-color: #0004;
-                VerticalLayout {
-                    padding: Theme.space-s;
-                    spacing: Theme.space-s;
-                    HorizontalLayout {
-                        spacing: Theme.space-s;
-                        // The keys go here as the list opens: a path typed at once is taken,
-                        // and Tab leads on to the recent folders.
-                        path := Field {
-                            init => { self.focus(); }
-                            horizontal-stretch: 1;
-                            placeholder: "Path to a folder";
-                            accepted(text) => { folders.open(text); }
-                        }
-                        TextButton {
-                            text: "Browse…";
-                            clicked => {
-                                Sessions.browse-project();
-                                projects.close();
-                            }
-                        }
-                    }
-                    if folders.problem != "": Text {
-                        text: folders.problem;
-                        color: Theme.danger-text;
-                        font-size: 1rem * Theme.small;
-                        wrap: word-wrap;
-                    }
-                    Caption {
-                        text: "Recent";
-                    }
-                    ListView {
-                        for project in Sessions.projects: Pressable {
-                            height: Theme.row-tall;
-                            accessible-label: project.name;
-                            accessible-description: "\{project.path}, \{project.age}";
-                            // A recent folder may be gone since: said as for a typed one.
-                            clicked => { folders.open(project.path); }
-                            HorizontalLayout {
-                                padding-left: Theme.space-s;
-                                padding-right: Theme.space-s;
-                                spacing: Theme.space-s;
-                                VerticalLayout {
-                                    alignment: center;
-                                    horizontal-stretch: 1;
-                                    Text {
-                                        text: project.name;
-                                        color: Theme.text;
-                                        overflow: elide;
-                                    }
-                                    Caption {
-                                        text: project.shown;
-                                        overflow: elide;
-                                    }
-                                }
-                                Caption {
-                                    text: project.age;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // One list: the sessions running now, in any folder (this window's among them; opened,
-        // one is followed, or shown here if this window's daemon runs it), then this folder's
-        // earlier ones (opened, one is continued).
-        // The sidebar's home for the keyboard (Ctrl+K, F6).
-        Field {
-            property <int> wanted: Focus.wanted-serial;
-            placeholder: "Filter sessions";
-            edited(text) => { Sessions.filter-edited(text); }
-            init => { self.take-wanted(); }
-            changed wanted => { self.take-wanted(); }
-            changed has-focus => {
-                if self.has-focus {
-                    Focus.area = FocusArea.sidebar;
-                }
-            }
-            function take-wanted() {
-                if Focus.pending && Focus.wanted == FocusArea.sidebar {
-                    Focus.pending = false;
-                    self.focus();
-                }
-            }
-        }
-        if Sessions.empty != "": Small {
-            text: Sessions.empty;
-            wrap: word-wrap;
-        }
-        ListView {
-            vertical-stretch: 1;
-            for row in Sessions.rows: VerticalLayout {
-                if row.kind == SessionRowKind.heading: SessionHeading {
-                    entry: row;
-                }
-                if row.kind == SessionRowKind.running: RunningRow {
-                    entry: row;
-                }
-                if row.kind == SessionRowKind.earlier: EarlierRow {
-                    entry: row;
-                }
-            }
-        }
-        // The plan and how much of it is used (a click shows the details); who is signed in
-        // waits behind the info button.
-        VerticalLayout {
-            vertical-stretch: 0;
-            padding-top: Theme.space-s;
-            spacing: Theme.space-xs;
-            Rectangle {
-                height: 1px;
-                background: Theme.divider;
-            }
-            HorizontalLayout {
-                padding-top: Theme.space-xs;
-                spacing: Theme.space-s;
-                // The plan is in the usage details.
-                Text {
-                    text: Session.program;
-                    color: Theme.text;
-                    font-weight: 600;
-                    font-size: 1rem * Theme.small;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                    min-width: 0px;
-                }
-                info-button := IconButton {
-                    icon: @image-url("@lucide/info.svg");
-                    label: "Account";
-                    width: Theme.chip;
-                    height: Theme.chip;
-                    icon-size: Theme.icon-small;
-                    clicked => { account.show(); }
-                }
-            }
-            usage := Pressable {
-                height: bars.preferred-height + Theme.space-s;
-                accessible-label: "Usage details";
-                clicked => { Session.show-usage(); }
-                bars := VerticalLayout {
-                    padding-left: Theme.space-xs;
-                    padding-right: Theme.space-xs;
-                    if Session.limit-five-hour >= 0: UsageBar {
-                        label: "5h";
-                        used: Session.limit-five-hour;
-                    }
-                    if Session.limit-five-hour-resets != "": Caption {
-                        text: Session.limit-five-hour-resets;
-                        horizontal-alignment: right;
-                    }
-                    if Session.limit-seven-day >= 0: UsageBar {
-                        label: "7d";
-                        used: Session.limit-seven-day;
-                    }
-                    if Session.limit-five-hour < 0 && Session.limit-seven-day < 0: Caption {
-                        text: Session.limits-note;
-                        wrap: word-wrap;
-                    }
-                }
-            }
-        }
-    }
-    // Above the row its button is on, from the sidebar's left margin.
-    account := PopupWindow {
-        x: Theme.space-m;
-        y: info-button.absolute-position.y - root.absolute-position.y - self.height - Theme.space-xs;
-        width: 300px;
-        height: details.preferred-height;
-        close-policy: close-on-click-outside;
         Rectangle {
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-m;
-            border-width: 1px;
-            border-color: Theme.control-border;
-            drop-shadow-blur: 12px;
-            drop-shadow-color: #0006;
-            details := VerticalLayout {
-                padding: Theme.space-m;
-                spacing: Theme.space-xs;
-                Caption {
-                    text: Session.sign-in == SignInState.signed-in ? "Signed in"
-                        : Session.sign-in == SignInState.signed-out ? "Not signed in" : "Account";
+            height: 1px;
+            background: Theme.divider;
+        }
+        if root.shown.length == 0: HorizontalLayout {
+            padding: Theme.space-l;
+            Small {
+                text: root.query != "" ? "No sessions match the filter." : "No sessions available yet.";
+                wrap: word-wrap;
+            }
+        }
+        if root.shown.length > 0: ListView {
+            vertical-stretch: 1;
+            for item[index] in root.shown: Pressable {
+                height: Theme.row-tall;
+                selected: item.selected;
+                highlighted: index == root.highlighted;
+                tab-stop: false;
+                accessible-label: item.project-name + ", " + item.title + ", " + item.detail;
+                clicked => {
+                    Nav.jump-to(item.project-folder, item.id, item.hosted-id);
+                    root.close();
                 }
-                for line in [
-                    { label: "Email", value: Session.email },
-                    { label: "Organization", value: Session.organization },
-                    { label: "Provider", value: Session.provider },
-                    { label: Session.program, value: Session.version },
-                    { label: "This session", value: Session.cost },
-                ]: HorizontalLayout {
+                HorizontalLayout {
+                    padding-left: Theme.space-l;
+                    padding-right: Theme.space-l;
                     spacing: Theme.space-s;
-                    visible: line.value != "";
-                    height: line.value != "" ? self.preferred-height : 0;
-                    Small {
-                        text: line.label;
-                        width: 90px;
+                    LiveDot {
+                        state: item.state;
+                        y: (parent.height - self.height) / 2;
                     }
-                    Text {
-                        text: line.value;
-                        color: Theme.text;
-                        font-size: 1rem * Theme.small;
-                        overflow: elide;
+                    VerticalLayout {
+                        alignment: center;
                         horizontal-stretch: 1;
                         min-width: 0px;
+                        Text {
+                            text: item.title;
+                            color: item.state == LiveState.waiting ? Theme.warning-text : Theme.text;
+                            overflow: elide;
+                            accessible-role: none;
+                        }
+                        Caption {
+                            text: item.project-name + (item.detail != "" ? " · " + item.detail : "");
+                            overflow: elide;
+                            accessible-role: none;
+                        }
                     }
                 }
             }
         }
-    }
-    // The right edge: dragged, it sets the sidebar's width, kept between runs; a double click
-    // gives the default back. Reached with Tab, the arrow keys widen and narrow it.
-    edge := FocusScope {
-        x: root.width - self.width;
-        width: 8px;
-        height: root.height;
-        focus-on-click: false;
-        accessible-role: slider;
-        accessible-label: "Width of the session list";
-        accessible-value: round(root.width / 1px);
-        accessible-value-minimum: round(root.min-width / 1px);
-        accessible-value-maximum: round(root.widest / 1px);
-        accessible-value-step: 32;
-        accessible-action-increment => { root.keep-width(root.width + 32px); }
-        accessible-action-decrement => { root.keep-width(root.width - 32px); }
-        key-pressed(event) => {
-            if event.text == Key.RightArrow {
-                root.keep-width(root.width + 32px);
-                return accept;
-            }
-            if event.text == Key.LeftArrow {
-                root.keep-width(root.width - 32px);
-                return accept;
-            }
-            return reject;
-        }
-        drag := TouchArea {
-            mouse-cursor: ew-resize;
-            moved => {
-                if self.pressed {
-                    root.drag-width(root.width + self.mouse-x - self.pressed-x);
+        last-fence := AreaFence {
+            area: FocusArea.conversation;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    first-fence.focus();
+                    Focus.step(true);
                 }
             }
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                    Sessions.width-chosen(round(Sessions.chosen-width / 1px));
-                }
-            }
-            double-clicked => {
-                Sessions.chosen-width = 0;
-                Sessions.width-chosen(0);
-            }
         }
-        // A line in the accent while it is hovered, dragged or has the focus.
-        Rectangle {
-            x: parent.width - self.width;
-            width: drag.has-hover || drag.pressed || edge.has-focus ? 3px : 0px;
-            background: Theme.accent;
-        }
-    }
-    sidebar-end := AreaFence {
-        area: FocusArea.sidebar;
-        crossed => {
-            if !Focus.going-round {
-                Focus.going-round = true;
-                sidebar-start.focus();
-                Focus.step(true);
-            }
-        }
-    }
-
-    function drag-width(width: length) {
-        Sessions.chosen-width = max(root.min-width, min(root.widest, width));
-    }
-
-    function keep-width(width: length) {
-        root.drag-width(width);
-        Sessions.width-chosen(round(Sessions.chosen-width / 1px));
     }
 }
 
@@ -1407,20 +691,6 @@ component CommandList inherits Rectangle {
     }
 }
 
-// How full the context is: a short bar that warms as it fills, and the count.
-component ContextMeter inherits HorizontalLayout {
-    spacing: Theme.space-xs;
-    Meter {
-        width: 28px;
-        y: (parent.height - self.height) / 2;
-        fraction: Session.context-fraction;
-    }
-    Caption {
-        text: Session.context;
-        vertical-alignment: center;
-    }
-}
-
 // Send, or stop while Claude works and nothing new is written (a message written meanwhile is
 // sent and waits its turn).
 component SendButton inherits Rectangle {
@@ -1483,10 +753,6 @@ component EditArea inherits Rectangle {
     // The most a drag makes it.
     in property <length> tallest-dragged: 600px;
     property <length> line: one-line.preferred-height;
-    // Too narrow for the menus' names: set as the width changes, not bound to it, as the
-    // menus' widths make that width.
-    property <bool> narrow;
-    changed width => { self.narrow = self.width < 720px; }
     // How it was before it was made taller.
     function back() {
         Composer.size = Composer.chosen-height > 0 ? ComposerSize.chosen : ComposerSize.fit;
@@ -1511,9 +777,6 @@ component EditArea inherits Rectangle {
         Composer.draft = "";
         root.sent();
     }
-    // The permission modes in `PermissionMode`'s order (src/app.rs): ask, edits, plan, auto,
-    // bypass. Each its own colour, by how much is let through.
-    property <PermissionKind> mode: Session.mode;
     // Focuses the input with the caret at the end.
     public function focus-end() {
         input.focus();
@@ -1805,37 +1068,6 @@ component EditArea inherits Rectangle {
         }
         HorizontalLayout {
             spacing: Theme.space-xs;
-            MenuButton {
-                heading: "Permission mode";
-                model: Session.modes;
-                current-index <=> Session.mode-index;
-                max-width: 220px;
-                // Its icon and colour tell the mode; the model's name needs the room more.
-                compact: root.narrow;
-                icon: root.mode == PermissionKind.accept-edits ? @image-url("@lucide/file-pen-line.svg")
-                    : root.mode == PermissionKind.plan ? @image-url("@lucide/map.svg")
-                    : root.mode == PermissionKind.auto ? @image-url("@lucide/zap.svg")
-                    : root.mode == PermissionKind.bypass ? @image-url("@lucide/shield-exclamation-point.svg")
-                    : root.mode == PermissionKind.unknown ? @image-url("@lucide/shield-question-mark.svg")
-                    : @image-url("@lucide/shield-check.svg");
-                tint: root.mode == PermissionKind.accept-edits ? Theme.warning-text
-                    : root.mode == PermissionKind.plan ? Theme.link
-                    : root.mode == PermissionKind.auto ? Theme.info
-                    : root.mode == PermissionKind.bypass ? Theme.danger-text
-                    : Theme.text-secondary;
-                selected(index) => { Session.choose-mode(index); }
-            }
-            MenuButton {
-                heading: "Model";
-                model: Session.models;
-                current-index <=> Session.model-index;
-                max-width: 240px;
-                icon: @image-url("@lucide/sparkle.svg");
-                selected(index) => { Session.choose-model(index); }
-            }
-            if Session.tasks.length > 0: TasksChip { }
-            // As the sidebar shows a session: a hand while Claude waits for the user, a dot
-            // while it works.
             if Session.busy: LiveDot {
                 state: Prompt.kind != PromptKind.none ? LiveState.waiting : LiveState.busy;
                 y: (parent.height - self.height) / 2;
@@ -1853,7 +1085,6 @@ component EditArea inherits Rectangle {
             Rectangle {
                 horizontal-stretch: 1;
             }
-            if Session.context != "": ContextMeter { }
             IconButton {
                 icon: @image-url("@lucide/square-terminal.svg");
                 label: Composer.shell ? "Make it a message again" : "Run a shell command (start with !)";
@@ -1914,137 +1145,6 @@ component EditArea inherits Rectangle {
             Composer.size = ComposerSize.fit;
             Composer.height-chosen(0);
         }
-    }
-}
-
-// Above the conversation: its title, the worktree it works in, and the side questions.
-component Header inherits Rectangle {
-    in property <bool> sidebar-shown;
-    callback toggle-sidebar;
-    height: Theme.header;
-    HorizontalLayout {
-        padding-left: root.sidebar-shown ? Theme.space-m : Theme.space-s;
-        padding-right: Theme.space-m;
-        spacing: Theme.space-s;
-        // Hidden, the sidebar is brought back from here; shown, it has its own button.
-        if !root.sidebar-shown: IconButton {
-            icon: @image-url("@lucide/panel-left-open.svg");
-            label: "Show the sessions (Ctrl+B)";
-            y: (parent.height - self.height) / 2;
-            clicked => { root.toggle-sidebar(); }
-        }
-        Text {
-            text: Session.title;
-            font-weight: 600;
-            color: Theme.text;
-            overflow: elide;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-        }
-        if Session.worktree-name != "": worktree := Pressable {
-            border-radius: Theme.radius-m;
-            border-width: 1px;
-            border-color: Theme.divider;
-            clicked => { openers.show(); }
-            HorizontalLayout {
-                padding-left: Theme.space-s;
-                padding-right: Theme.space-s;
-                spacing: Theme.space-xs;
-                Icon {
-                    source: @image-url("@lucide/git-branch.svg");
-                    tint: Theme.claude;
-                    width: Theme.icon-small;
-                    y: (parent.height - self.height) / 2;
-                }
-                Text {
-                    text: Session.worktree-name;
-                    color: Theme.text;
-                    vertical-alignment: center;
-                }
-                if Session.worktree-branch != "" && Session.worktree-branch != Session.worktree-name: Caption {
-                    text: Session.worktree-branch;
-                    vertical-alignment: center;
-                }
-                Icon {
-                    source: @image-url("@lucide/chevron-down.svg");
-                    width: Theme.icon-small;
-                    y: (parent.height - self.height) / 2;
-                }
-            }
-            openers := PopupWindow {
-                x: parent.width - self.width;
-                y: parent.height + Theme.space-xs;
-                width: 220px;
-                height: menu.preferred-height;
-                close-policy: close-on-click-outside;
-                Rectangle {
-                    background: Theme.surface;
-                    border-radius: Theme.radius-m;
-                    border-width: 1px;
-                    border-color: Theme.divider;
-                    drop-shadow-blur: 12px;
-                    drop-shadow-color: #0004;
-                    menu := VerticalLayout {
-                        padding: Theme.space-xs;
-                        Caption {
-                            text: "Open the worktree in";
-                        }
-                        for opener[index] in Session.openers: Pressable {
-                            height: Theme.control;
-                            clicked => {
-                                Session.open-worktree(index);
-                                openers.close();
-                            }
-                            Text {
-                                x: Theme.space-s;
-                                text: opener;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Side questions: labelled, as a bare question mark reads as help.
-        Pressable {
-            selected: Side.view == SideView.shown;
-            width: btw.preferred-width;
-            height: Theme.chip;
-            y: (parent.height - self.height) / 2;
-            accessible-label: Side.view == SideView.shown ? "Fold the side questions away" : "Side questions (/btw)";
-            clicked => { Side.toggle(); }
-            btw := HorizontalLayout {
-                padding-left: Theme.space-s;
-                padding-right: Theme.space-s;
-                spacing: Theme.space-xs;
-                Icon {
-                    source: @image-url("@lucide/message-circle-dashed.svg");
-                    tint: Side.view != SideView.hidden ? Theme.claude : Theme.text-secondary;
-                    width: Theme.icon-small;
-                    y: (parent.height - self.height) / 2;
-                }
-                Text {
-                    text: "btw";
-                    color: Side.view != SideView.hidden ? Theme.text : Theme.text-secondary;
-                    font-size: 1rem * Theme.small;
-                    vertical-alignment: center;
-                }
-                // An answer came while folded away.
-                if Side.unseen: Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 4px;
-                    background: Theme.claude;
-                }
-            }
-        }
-    }
-    Rectangle {
-        y: parent.height - 1px;
-        height: 1px;
-        background: Theme.divider;
     }
 }
 
@@ -2409,12 +1509,16 @@ component WatchBar inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: Session.title + " — " + Session.project + " — edualc";
+    title: Nav.view == PlaceView.start ? "Projects — edualc"
+        : Nav.view == PlaceView.project ? Nav.project-name + " — edualc"
+        : (Nav.session-title != "" ? Nav.session-title : Session.title) + " — " + Nav.project-name + " — edualc";
+    no-frame: true;
+    resize-border-width: root.maximized ? 0px : 6px;
     // Where windows show their own icon (X11); Wayland's come from the desktop entry.
     icon: @image-url("../assets/io.github.felintusun.edualc.svg");
     preferred-width: 1280px;
     preferred-height: 880px;
-    min-width: 760px;
+    min-width: 480px;
     min-height: 480px;
     background: Theme.surface;
     default-font-family: Theme.sans;
@@ -2435,6 +1539,23 @@ export component AppWindow inherits Window {
     property <int> focus-serial: Composer.focus-serial;
     changed focus-serial => { composer.focus-end(); }
 
+    property <bool> switcher-open;
+    property <bool> new-project-open;
+    property <bool> open-folder-open;
+    property <int> switcher-serial: Nav.switcher-serial;
+    property <int> new-project-serial: Nav.new-project-serial;
+    property <PlaceView> current-view: Nav.view;
+    changed switcher-serial => {
+        if Nav.view == PlaceView.session {
+            root.switcher-open = !root.switcher-open;
+        }
+    }
+    changed new-project-serial => { root.new-project-open = true; }
+    changed current-view => {
+        root.switcher-open = false;
+        root.open-folder-open = false;
+    }
+
     // Rust colours code with these, into the text it builds: told when they change.
     property <SyntaxColours> syntax-colours: Theme.syntax;
     changed syntax-colours => { Session.syntax-colours-changed(); }
@@ -2451,8 +1572,11 @@ export component AppWindow inherits Window {
 
     // The area after the one with the focus (or before it), of those shown.
     function next-area(forward: bool) -> FocusArea {
+        if Nav.view != PlaceView.session {
+            return Focus.area == FocusArea.topbar ? FocusArea.page : FocusArea.topbar;
+        }
         if forward {
-            if Focus.area == FocusArea.sidebar {
+            if Focus.area == FocusArea.topbar {
                 return FocusArea.conversation;
             }
             if Focus.area == FocusArea.conversation {
@@ -2461,7 +1585,7 @@ export component AppWindow inherits Window {
             if Focus.area == FocusArea.writing && Side.view == SideView.shown {
                 return FocusArea.side;
             }
-            return root.sidebar-shown ? FocusArea.sidebar : FocusArea.conversation;
+            return FocusArea.topbar;
         }
         if Focus.area == FocusArea.side {
             return FocusArea.writing;
@@ -2469,8 +1593,8 @@ export component AppWindow inherits Window {
         if Focus.area == FocusArea.writing {
             return FocusArea.conversation;
         }
-        if Focus.area == FocusArea.conversation && root.sidebar-shown {
-            return FocusArea.sidebar;
+        if Focus.area == FocusArea.conversation {
+            return FocusArea.topbar;
         }
         return Side.view == SideView.shown ? FocusArea.side : FocusArea.writing;
     }
@@ -2486,14 +1610,11 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Closes the settings, the focus going back to the writing (it was in the settings).
+    // Closes the settings, returning focus to the page or the writing box.
     function close-settings() {
         Preferences.open = false;
-        root.go-to(FocusArea.writing);
+        root.go-to(Nav.view == PlaceView.session ? FocusArea.writing : FocusArea.page);
     }
-
-    // Hidden for room in a narrow window (Ctrl+B).
-    in-out property <bool> sidebar-shown: true;
 
     // Shortcuts that work wherever the focus is.
     keys := FocusScope {
@@ -2510,43 +1631,68 @@ export component AppWindow inherits Window {
                     return accept;
                 }
             }
-            if event.text == Key.Escape && Usage.open {
-                Usage.close();
-                return accept;
-            }
-            if event.text == Key.Escape && Preferences.open {
-                root.close-settings();
-                return accept;
+            if event.text == Key.Escape {
+                if root.switcher-open {
+                    root.switcher-open = false;
+                    return accept;
+                }
+                if root.new-project-open {
+                    root.new-project-open = false;
+                    return accept;
+                }
+                if root.open-folder-open {
+                    root.open-folder-open = false;
+                    return accept;
+                }
+                if Sessions.api-key-dialog {
+                    Sessions.api-key-dialog = false;
+                    return accept;
+                }
+                if Usage.open {
+                    Usage.close();
+                    return accept;
+                }
+                if Preferences.open {
+                    root.close-settings();
+                    return accept;
+                }
             }
             if event.modifiers.control && event.text == "," {
                 Usage.close();
                 Preferences.open = true;
                 return accept;
             }
+            if event.modifiers.alt && (event.text == Key.LeftArrow || event.text == Key.UpArrow) && Nav.can-back {
+                Nav.back();
+                return accept;
+            }
             // While Claude waits for an answer, Esc belongs to what asks (a comment being written).
             // With a draft written, it stops nothing: an Esc meant for the writing (one more
             // after an input method's conversion was cancelled, say) mustn't stop a turn; Stop
             // is beside the draft then.
-            if event.text == Key.Escape && Session.busy && Prompt.kind == PromptKind.none && Composer.draft == "" {
+            if Nav.view == PlaceView.session && event.text == Key.Escape && Session.busy && Prompt.kind == PromptKind.none && Composer.draft == "" {
                 Session.interrupt();
                 return accept;
             }
             if event.modifiers.control && (event.text == "n" || event.text == "N") {
-                Sessions.new-session(Sessions.program);
+                if Nav.view == PlaceView.start {
+                    root.new-project-open = true;
+                } else {
+                    Sessions.new-session(Sessions.program);
+                }
                 return accept;
             }
-            if event.modifiers.control && (event.text == "b" || event.text == "B") {
-                root.sidebar-shown = !root.sidebar-shown;
-                return accept;
-            }
-            // F6 and Shift+F6 go from area to area; Ctrl+K to the sessions' filter.
+            // F6 and Shift+F6 go from area to area; Ctrl+K filters the page or opens the session switcher.
             if event.text == Key.F6 {
                 root.go-to(root.next-area(!event.modifiers.shift));
                 return accept;
             }
             if event.modifiers.control && (event.text == "k" || event.text == "K") {
-                root.sidebar-shown = true;
-                root.go-to(FocusArea.sidebar);
+                if Nav.view == PlaceView.session {
+                    root.switcher-open = !root.switcher-open;
+                } else {
+                    root.go-to(FocusArea.page);
+                }
                 return accept;
             }
             // Text size: Ctrl and +/= (both, for layouts where + needs Shift), -, 0. Also the
@@ -2566,33 +1712,45 @@ export component AppWindow inherits Window {
             }
             return reject;
         }
-        HorizontalLayout {
-            if root.sidebar-shown: Sidebar {
-                hide => { root.sidebar-shown = false; }
+        VerticalLayout {
+            topbar := TopBar {
+                window-height: root.height;
+                maximized: root.maximized;
+                minimize => { root.minimized = true; }
+                toggle-maximize => { root.maximized = !root.maximized; }
+                close => { root.close(); }
             }
-            if root.sidebar-shown: Rectangle {
-                width: 1px;
-                background: Theme.divider;
-            }
-            column := VerticalLayout {
-                horizontal-stretch: 1;
-                min-width: 360px;
-                // Tab goes round within the conversation (the header and the transcript), and
-                // within what Claude asks together with the composer.
-                conversation-start := AreaFence {
-                    area: FocusArea.conversation;
-                    crossed => {
-                        if !Focus.going-round {
-                            Focus.going-round = true;
-                            conversation-end.focus();
-                            Focus.step(false);
+            workspace := Rectangle {
+                vertical-stretch: 1;
+                if Nav.view == PlaceView.start: StartPage {
+                    width: parent.width;
+                    height: parent.height;
+                    open-new-project => { root.new-project-open = true; }
+                    open-folder-dialog => { root.open-folder-open = true; }
+                }
+                if Nav.view == PlaceView.project: ProjectPage {
+                    width: parent.width;
+                    height: parent.height;
+                }
+                session-area := HorizontalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: Nav.view == PlaceView.session;
+                    column := VerticalLayout {
+                        horizontal-stretch: 1;
+                        min-width: 360px;
+                        // Tab goes round within the conversation (the transcript), and
+                        // within what Claude asks together with the composer.
+                        conversation-start := AreaFence {
+                            area: FocusArea.conversation;
+                            crossed => {
+                                if !Focus.going-round {
+                                    Focus.going-round = true;
+                                    conversation-end.focus();
+                                    Focus.step(false);
+                                }
+                            }
                         }
-                    }
-                }
-                header := Header {
-                    sidebar-shown: root.sidebar-shown;
-                    toggle-sidebar => { root.sidebar-shown = !root.sidebar-shown; }
-                }
                 Rectangle {
                     vertical-stretch: 1;
                     // The conversation's home for the keyboard (F6): the arrow keys, Page Up and
@@ -2769,7 +1927,7 @@ export component AppWindow inherits Window {
                             padding-top: position == 0 ? Theme.space-xl : Theme.space-s;
                             padding-bottom: position == Transcript.entries.length - 1 ? Theme.space-xl : Theme.space-s;
                             EntryView {
-                                width: transcript.visible-width - 2 * Theme.column-margin;
+                                width: transcript.visible-width;
                                 entry: entry;
                                 index: entry.index;
                             }
@@ -2817,7 +1975,7 @@ export component AppWindow inherits Window {
                                 padding-top: Theme.space-xs;
                                 padding-bottom: Theme.space-xs;
                                 HorizontalLayout {
-                                    width: transcript.visible-width - 2 * Theme.column-margin;
+                                    width: Theme.column(transcript.visible-width);
                                     alignment: end;
                                     Rectangle {
                                         max-width: parent.width * 0.85;
@@ -2944,95 +2102,6 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                     }
-                    // Over the conversation, which stays in sight around it: a click beside the
-                    // panel, or Esc, closes it.
-                    if Usage.open: Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width;
-                        height: parent.height;
-                        background: Theme.dim;
-                        // The wheel stops here too: a TouchArea passes it on, and over the dimmed
-                        // conversation or the panel's heading the conversation behind scrolled.
-                        TouchArea {
-                            clicked => { Usage.close(); }
-                            scroll-event(event) => { return accept; }
-                        }
-                        // Three quarters of the area's height, not sized from its list: a list
-                        // sizing what sizes it is measured again and again.
-                        Rectangle {
-                            property <length> room: parent.height - 2 * Theme.space-xl;
-                            width: min(parent.width - 2 * Theme.space-xl, 680px);
-                            height: max(min(360px, self.room), self.room * 75%);
-                            x: (parent.width - self.width) / 2;
-                            y: Theme.space-xl;
-                            background: Theme.surface;
-                            border-radius: Theme.radius-l;
-                            border-width: 1px;
-                            border-color: Theme.divider;
-                            drop-shadow-blur: 24px;
-                            drop-shadow-color: Theme.shadow;
-                            clip: true;
-                            // Clicks on the panel stay with it.
-                            TouchArea { }
-                            UsagePanel {
-                                width: parent.width;
-                                height: parent.height;
-                            }
-                        }
-                    }
-                    // The settings, over the conversation as the usage details are.
-                    if Preferences.open: Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width;
-                        height: parent.height;
-                        background: Theme.dim;
-                        // The wheel stops here too, as over the usage details.
-                        TouchArea {
-                            clicked => { root.close-settings(); }
-                            scroll-event(event) => { return accept; }
-                        }
-                        Rectangle {
-                            width: min(parent.width - 2 * Theme.space-xl, 680px);
-                            height: min(parent.height - 2 * Theme.space-xl, settings.preferred-height);
-                            x: (parent.width - self.width) / 2;
-                            y: Theme.space-xl;
-                            background: Theme.surface;
-                            border-radius: Theme.radius-l;
-                            border-width: 1px;
-                            border-color: Theme.divider;
-                            drop-shadow-blur: 24px;
-                            drop-shadow-color: Theme.shadow;
-                            clip: true;
-                            // Clicks on the panel stay with it.
-                            TouchArea { }
-                            settings := SettingsPanel {
-                                width: parent.width;
-                                height: parent.height;
-                                close => { root.close-settings(); }
-                            }
-                        }
-                    }
-                    // Starting a session with the API key, over the conversation as the settings
-                    // are.
-                    if Sessions.api-key-dialog: Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width;
-                        height: parent.height;
-                        background: Theme.dim;
-                        TouchArea {
-                            clicked => { Sessions.api-key-dialog = false; }
-                            scroll-event(event) => { return accept; }
-                        }
-                        dialog := ApiKeySessionDialog {
-                            width: min(parent.width - 2 * Theme.space-xl, 560px);
-                            height: self.preferred-height;
-                            x: (parent.width - self.width) / 2;
-                            y: max(Theme.space-xl, (parent.height - self.height) / 3);
-                        }
-                    }
                     if !transcript.follow && !(Prompt.kind == PromptKind.plan && Prompt.reviewing): IconButton {
                         x: parent.width - self.width - Theme.space-xl;
                         y: parent.height - self.height - Theme.space-m;
@@ -3081,7 +2150,7 @@ export component AppWindow inherits Window {
                         y: 0;
                         width: Prompt.kind == PromptKind.question
                             ? parent.width - 2 * Theme.space-m
-                            : min(parent.width - 2 * Theme.column-margin, Theme.measure);
+                            : Theme.column(parent.width);
                         height: self.preferred-height;
                         padding-bottom: Theme.space-s;
                         spacing: Theme.space-s;
@@ -3142,9 +2211,9 @@ export component AppWindow inherits Window {
         }
         // The text box made taller: over the conversation's column, outside its layout (the
         // column's height can't size what sizes the column), with the same draft. Two thirds of
-        // the column, or all of it below the header.
-        if (Composer.size == ComposerSize.tall || Composer.size == ComposerSize.full) && !Session.watching && !Session.needs-trust: Rectangle {
-            property <length> top: Composer.size == ComposerSize.full ? header.y + header.height : column.y + column.height / 3;
+        // the column, or all of it below the top bar.
+        if Nav.view == PlaceView.session && (Composer.size == ComposerSize.tall || Composer.size == ComposerSize.full) && !Session.watching && !Session.needs-trust: Rectangle {
+            property <length> top: Composer.size == ComposerSize.full ? 0px : column.y + column.height / 3;
             x: column.x;
             y: self.top;
             width: column.width;
@@ -3182,6 +2251,173 @@ export component AppWindow inherits Window {
                         Focus.step(true);
                     }
                 }
+            }
+        }
+        // The usage details, over whatever place the workspace shows so the chip in the top
+        // bar works from Start, Project, or Session.
+        if Usage.open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { Usage.close(); }
+                scroll-event(event) => { return accept; }
+            }
+            // Three quarters of the area's height, not sized from its list: a list sizing what
+            // sizes it is measured again and again.
+            Rectangle {
+                property <length> room: parent.height - 2 * Theme.space-xl;
+                width: min(parent.width - 2 * Theme.space-xl, 680px);
+                height: max(min(360px, self.room), self.room * 75%);
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                background: Theme.surface;
+                border-radius: Theme.radius-l;
+                border-width: 1px;
+                border-color: Theme.divider;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: Theme.shadow;
+                clip: true;
+                // Clicks on the panel stay with it.
+                TouchArea { }
+                UsagePanel {
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
+        }
+        // The settings, over the workspace so the gear in the top bar works from any page.
+        if Preferences.open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { root.close-settings(); }
+                scroll-event(event) => { return accept; }
+            }
+            Rectangle {
+                width: min(parent.width - 2 * Theme.space-xl, 680px);
+                height: min(parent.height - 2 * Theme.space-xl, settings.preferred-height);
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                background: Theme.surface;
+                border-radius: Theme.radius-l;
+                border-width: 1px;
+                border-color: Theme.divider;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: Theme.shadow;
+                clip: true;
+                // Clicks on the panel stay with it.
+                TouchArea { }
+                settings := SettingsPanel {
+                    width: parent.width;
+                    height: parent.height;
+                    close => { root.close-settings(); }
+                }
+            }
+        }
+        // Starting a session with the API key, over the workspace.
+        if Sessions.api-key-dialog: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { Sessions.api-key-dialog = false; }
+                scroll-event(event) => { return accept; }
+            }
+            dialog := ApiKeySessionDialog {
+                width: min(parent.width - 2 * Theme.space-xl, 560px);
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: max(Theme.space-xl, (parent.height - self.height) / 3);
+            }
+        }
+        // Quick switcher across every session in every project (Ctrl+K while in a session).
+        if root.switcher-open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { root.switcher-open = false; }
+                scroll-event(event) => { return accept; }
+            }
+            Rectangle {
+                property <length> room: parent.height - 2 * Theme.space-xl;
+                width: min(parent.width - 2 * Theme.space-xl, 560px);
+                height: min(self.room, max(260px, self.room * 65%));
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                border-radius: Theme.radius-l;
+                clip: true;
+                TouchArea { }
+                SessionSwitcher {
+                    width: parent.width;
+                    height: parent.height;
+                    close => { root.switcher-open = false; }
+                }
+            }
+        }
+        // Open folder dialog from the Start page.
+        if root.open-folder-open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { root.open-folder-open = false; }
+                scroll-event(event) => { return accept; }
+            }
+            Rectangle {
+                property <length> room: parent.height - 2 * Theme.space-xl;
+                width: min(parent.width - 2 * Theme.space-xl, 560px);
+                height: min(self.room, max(320px, self.room * 65%));
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                border-radius: Theme.radius-l;
+                clip: true;
+                TouchArea { }
+                OpenFolderDialog {
+                    width: parent.width;
+                    height: parent.height;
+                    close => { root.open-folder-open = false; }
+                }
+            }
+        }
+        // New project dialog from the Start page or Ctrl+N.
+        if root.new-project-open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.dim;
+            TouchArea {
+                clicked => { root.new-project-open = false; }
+                scroll-event(event) => { return accept; }
+            }
+            Rectangle {
+                width: min(parent.width - 2 * Theme.space-xl, 560px);
+                height: min(parent.height - 2 * Theme.space-xl, new-project.preferred-height);
+                x: (parent.width - self.width) / 2;
+                y: Theme.space-xl;
+                border-radius: Theme.radius-l;
+                clip: true;
+                TouchArea { }
+                new-project := NewProjectDialog {
+                    width: parent.width;
+                    height: parent.height;
+                    close => { root.new-project-open = false; }
+                }
+            }
+        }
             }
         }
     }

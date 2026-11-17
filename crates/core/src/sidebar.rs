@@ -1,13 +1,13 @@
-//! The sidebar's list of sessions: those running now, in any folder and this window's own
-//! among them, then this folder's earlier ones, each part under a heading. A running session is
-//! listed once, as running, however it runs; the filter narrows both parts.
+//! A project's list of sessions: those running now in it, this window's own among them, then its
+//! earlier ones, each part under a heading. A running session is listed once, as running,
+//! however it runs; the filter narrows both parts.
 
 use std::path::Path;
 use web_time::SystemTime;
 
 use crate::claude::{Backend, Program, SignInWith};
 use crate::external::wire::SessionId;
-use crate::ipc::Hosted;
+use crate::ipc::{Hosted, HostedState};
 use crate::sessions::{self, LiveSession, LiveStatus, SessionInfo};
 
 /// The session this window's own process runs.
@@ -30,12 +30,14 @@ pub struct Listing<'a> {
     pub own: Option<Own<'a>>,
     /// What other Claude Code processes run, in any folder.
     pub live: &'a [LiveSession],
-    /// What edualc's daemon runs: it alone knows what each signed in with.
+    /// What edualc's daemon runs: it alone knows what each signed in with. Claude Code's are
+    /// among `live` too; agy's adapter writes no record there.
     pub hosted: &'a [Hosted],
-    /// This folder's saved sessions, the newest first.
+    /// The project's saved sessions, the newest first.
     pub saved: &'a [SessionInfo],
     /// The session the window shows: its own, or one it follows.
     pub shown: Option<&'a SessionId>,
+    /// The project's folder.
     pub folder: &'a Path,
     pub filter: &'a str,
 }
@@ -48,7 +50,7 @@ pub enum Row {
         running: usize,
         waiting: usize,
     },
-    /// Over this folder's earlier sessions.
+    /// Over the project's earlier sessions.
     EarlierHeading {
         folder: String,
     },
@@ -56,17 +58,14 @@ pub enum Row {
     Earlier(Earlier),
 }
 
-/// A session some process runs now: this window's, another window's, a terminal's.
+/// A session some process runs now: this window's, another window's, a terminal's, or edualc's
+/// daemon's with no window showing it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Running {
     pub id: SessionId,
     pub title: String,
     /// The name other sessions message it by.
     pub name: String,
-    /// It runs in this folder.
-    pub here: bool,
-    /// The folder it runs in, when that is another and its name doesn't already say so.
-    pub elsewhere: Option<String>,
     pub state: LiveStatus,
     pub worktree: Option<String>,
     pub agents: usize,
@@ -82,7 +81,7 @@ impl Running {
     }
 }
 
-/// A session of this folder that no process runs: continued when opened.
+/// A session of the project that no process runs: continued when opened.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Earlier {
     pub id: SessionId,
@@ -94,11 +93,23 @@ pub struct Earlier {
     pub backend: Backend,
 }
 
-/// The rows, in order: the running sessions (those waiting for their user first, then the
-/// others, this folder's before others', by title), then the earlier ones as saved. A part with
-/// nothing to list has no heading.
+/// The rows, in order: the project's running sessions (those waiting for their user first, then
+/// the others, by title), then its earlier ones as saved. A part with nothing to list has no
+/// heading.
 pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
     let own_id = listing.own.as_ref().map(|own| own.id);
+    let saved_title = |id: &SessionId| {
+        listing
+            .saved
+            .iter()
+            .find(|saved| &saved.id == id)
+            .map(|saved| saved.title.clone())
+    };
+    // A session in one of the project's worktrees runs in a folder inside it, or in one its
+    // saved sessions say it moved to.
+    let in_project = |cwd: &Path, id: &SessionId| {
+        cwd.starts_with(listing.folder) || listing.saved.iter().any(|saved| &saved.id == id)
+    };
     let mut running: Vec<Running> = listing
         .own
         .iter()
@@ -106,8 +117,6 @@ pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
             id: own.id.clone(),
             title: own.title.to_owned(),
             name: own.name.clone(),
-            here: true,
-            elsewhere: None,
             state: own.state,
             worktree: own.worktree.map(str::to_owned),
             agents: own.agents,
@@ -119,23 +128,15 @@ pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
         listing
             .live
             .iter()
-            .filter(|session| Some(&session.id) != own_id)
+            .filter(|session| Some(&session.id) != own_id && in_project(&session.cwd, &session.id))
             .map(|session| Running {
                 id: session.id.clone(),
                 title: session
                     .title
                     .clone()
-                    .or_else(|| {
-                        listing
-                            .saved
-                            .iter()
-                            .find(|saved| saved.id == session.id)
-                            .map(|saved| saved.title.clone())
-                    })
+                    .or_else(|| saved_title(&session.id))
                     .unwrap_or_else(|| session.name.clone()),
                 name: session.name.clone(),
-                here: session.cwd == listing.folder,
-                elsewhere: elsewhere(&session.name, &session.cwd, listing.folder),
                 state: session.status,
                 worktree: session
                     .worktree
@@ -148,11 +149,46 @@ pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
                     listing
                         .hosted
                         .iter()
-                        .find(|hosted| hosted.session.as_ref() == Some(&session.id))
+                        .find(|hosted| hosted.session == session.id)
                         .map_or(SignInWith::Account, |hosted| hosted.sign_in),
                 ),
             }),
     );
+    // What the daemon runs that no record lists (agy's sessions), in another window or in none.
+    let unlisted: Vec<Running> = listing
+        .hosted
+        .iter()
+        .filter(|hosted| {
+            let id = &hosted.session;
+            let listed = Some(id) == own_id || running.iter().any(|row| &row.id == id);
+            !listed && in_project(&hosted.cwd, id)
+        })
+        .map(|hosted| {
+            let id = &hosted.session;
+            let saved = listing.saved.iter().find(|saved| &saved.id == id);
+            let name = sessions::MessagingName::of(id, &hosted.cwd).to_string();
+            Running {
+                id: id.clone(),
+                title: saved.map_or_else(|| name.clone(), |saved| saved.title.clone()),
+                name,
+                state: match hosted.state {
+                    HostedState::Idle => LiveStatus::Idle,
+                    HostedState::Busy => LiveStatus::Busy,
+                    HostedState::Waiting { .. } => LiveStatus::Waiting,
+                },
+                worktree: saved
+                    .and_then(|saved| saved.worktree.as_ref())
+                    .map(|worktree| worktree.name.clone()),
+                agents: 0,
+                shown: listing.shown == Some(id),
+                program: Program::of(
+                    saved.map_or(Backend::Claude, |saved| saved.backend),
+                    hosted.sign_in,
+                ),
+            }
+        })
+        .collect();
+    running.extend(unlisted);
     // Running, a session isn't among the earlier ones, whether or not the filter shows it.
     let earlier: Vec<Earlier> = listing
         .saved
@@ -171,25 +207,10 @@ pub fn rows(listing: &Listing<'_>) -> Vec<Row> {
             backend: saved.backend,
         })
         .collect();
-    running.retain(|row| {
-        matches(
-            listing.filter,
-            [
-                row.title.as_str(),
-                row.name.as_str(),
-                row.elsewhere.as_deref().unwrap_or_default(),
-            ],
-        )
-    });
+    running.retain(|row| matches(listing.filter, [row.title.as_str(), row.name.as_str()]));
     // Only waiting moves a session up: one that starts or ends a turn keeps its place, so the
     // rows don't move under the pointer every few seconds.
-    running.sort_by_key(|row| {
-        (
-            row.state != LiveStatus::Waiting,
-            !row.here,
-            row.title.to_lowercase(),
-        )
-    });
+    running.sort_by_key(|row| (row.state != LiveStatus::Waiting, row.title.to_lowercase()));
     let mut rows = Vec::with_capacity(running.len() + earlier.len() + 2);
     if !running.is_empty() {
         rows.push(Row::RunningHeading {
@@ -219,22 +240,6 @@ fn matches<'a>(filter: &str, texts: impl IntoIterator<Item = &'a str>) -> bool {
             .any(|text| text.to_lowercase().contains(&filter))
 }
 
-/// The folder a session runs in, to show beside its name: none for this folder, nor where its
-/// name starts with the folder's (as Claude Code names sessions: `claude-but-sane-6e`).
-fn elsewhere(name: &str, cwd: &Path, folder: &Path) -> Option<String> {
-    if cwd == folder {
-        return None;
-    }
-    let shown = sessions::folder_name(cwd);
-    let plain = |text: &str| -> String {
-        text.chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|character| character.to_ascii_lowercase())
-            .collect()
-    };
-    (!plain(name).starts_with(&plain(&shown))).then_some(shown)
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -256,6 +261,7 @@ mod tests {
             title: title.to_owned(),
             modified: SystemTime::UNIX_EPOCH + Duration::from_secs(u64::from(number)),
             worktree: None,
+            last_said: None,
         }
     }
 
@@ -362,22 +368,88 @@ mod tests {
         );
     }
 
+    /// The review's finding: the project page listed every project's running sessions.
     #[test]
-    fn those_waiting_for_their_user_come_first_then_this_folders() {
+    fn only_the_projects_running_sessions_are_listed() {
+        let saved = [saved(5, "Moved to a worktree")];
         let live = [
-            titled(live(1, "dotfiles-9c", "/code/dotfiles", Busy), "niri"),
+            titled(live(1, "dotfiles-9c", "/code/dotfiles", Waiting), "niri"),
             titled(live(2, "beep-2a", "/code/beep", Idle), "Threads"),
-            titled(live(3, "inneneinrichtung-4f", "/x/inn", Waiting), "Room"),
-            titled(live(4, "beep-7d", "/code/beep", Busy), "Attachments"),
+            titled(live(3, "beep-old-4f", "/code/beep-old", Busy), "Old"),
+            titled(
+                live(4, "beep-7d", "/code/beep/.claude/worktrees/w", Busy),
+                "Attachments",
+            ),
+            live(5, "beep-1e", "/elsewhere/w", Idle),
+        ];
+        assert_eq!(
+            titles(&rows(&listing(None, &live, &saved, ""))),
+            [
+                "# running 3, 0 waiting",
+                "> Attachments",
+                "> Moved to a worktree",
+                "> Threads",
+            ]
+        );
+    }
+
+    #[test]
+    fn those_waiting_for_their_user_come_first() {
+        let live = [
+            titled(live(1, "beep-1c", "/code/beep", Busy), "Attachments"),
+            titled(live(2, "beep-2a", "/code/beep", Waiting), "Threads"),
         ];
         assert_eq!(
             titles(&rows(&listing(None, &live, &[], ""))),
+            ["# running 2, 1 waiting", "> Threads", "> Attachments"]
+        );
+    }
+
+    /// A session edualc's daemon runs that no record lists, as agy's, is listed from what the
+    /// daemon says, in another window or in none.
+    #[test]
+    fn a_session_the_daemon_runs_is_running() {
+        let saved = [
+            saved(1, "Left running"),
+            saved(2, "In another window"),
+            saved(5, "Not running"),
+        ];
+        let hosted = |number: u8, cwd: &str, attached: bool, state| Hosted {
+            id: crate::ipc::HostedId::default(),
+            session: id(number),
+            cwd: PathBuf::from(cwd),
+            sign_in: SignInWith::Account,
+            attached,
+            state,
+        };
+        // A new one, with no transcript yet, that Claude Code's record lists too: once.
+        let live = [live(4, "keen-owl-beep-04", "/code/beep", Idle)];
+        let hosted = [
+            hosted(
+                1,
+                "/code/beep",
+                false,
+                crate::ipc::HostedState::Waiting {
+                    question: "Run cargo test?".to_owned(),
+                    since: SystemTime::UNIX_EPOCH,
+                },
+            ),
+            hosted(2, "/code/beep", true, crate::ipc::HostedState::Busy),
+            hosted(3, "/code/dotfiles", false, crate::ipc::HostedState::Idle),
+            hosted(4, "/code/beep", false, crate::ipc::HostedState::Idle),
+        ];
+        assert_eq!(
+            titles(&rows(&Listing {
+                hosted: &hosted,
+                ..listing(None, &live, &saved, "")
+            })),
             [
-                "# running 4, 1 waiting",
-                "> Room",
-                "> Attachments",
-                "> Threads",
-                "> niri"
+                "# running 3, 1 waiting",
+                "> Left running",
+                "> In another window",
+                "> keen-owl-beep-04",
+                "# earlier in beep",
+                "Not running"
             ]
         );
     }
@@ -429,10 +501,11 @@ mod tests {
         ];
         let hosted = [Hosted {
             id: crate::ipc::HostedId::default(),
-            session: Some(id(2)),
+            session: id(2),
             cwd: PathBuf::from("/code/beep"),
             sign_in: SignInWith::ApiKey,
             attached: false,
+            state: crate::ipc::HostedState::Idle,
         }];
         let rows = rows(&Listing {
             hosted: &hosted,
@@ -470,22 +543,11 @@ mod tests {
     }
 
     #[test]
-    fn another_folder_is_named_unless_the_session_name_says_it() {
-        let beep = Path::new("/code/beep");
-        let dotfiles = Path::new("/code/dotfiles");
-        let edualc = Path::new("/code/claude_but_sane");
-        let named = Some("dotfiles".to_owned());
-        assert_eq!(elsewhere("proud-moth-dotfiles-27", dotfiles, beep), named);
-        assert_eq!(elsewhere("claude-but-sane-6e", edualc, beep), None);
-        assert_eq!(elsewhere("proud-moth-beep-27", beep, beep), None);
-    }
-
-    #[test]
     fn the_filter_narrows_both_parts_and_drops_empty_headings() {
         let saved = [saved(1, "Attach"), saved(2, "Threads"), saved(3, "Running")];
         let live = [
             titled(live(3, "beep-2a", "/code/beep", Idle), "Running"),
-            titled(live(4, "proud-moth-27", "/x/dotfiles", Busy), "niri"),
+            titled(live(4, "proud-moth-beep-27", "/code/beep", Busy), "niri"),
         ];
         assert_eq!(
             titles(&rows(&listing(None, &live, &saved, "THREAD"))),
@@ -496,9 +558,9 @@ mod tests {
             titles(&rows(&listing(None, &live, &saved, "running"))),
             ["# running 1, 0 waiting", "> Running"]
         );
-        // Its folder's name finds a session elsewhere.
+        // The name to message it by finds a session.
         assert_eq!(
-            titles(&rows(&listing(None, &live, &saved, "dotfiles"))),
+            titles(&rows(&listing(None, &live, &saved, "moth"))),
             ["# running 1, 0 waiting", "> niri"]
         );
     }

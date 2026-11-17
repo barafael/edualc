@@ -21,15 +21,43 @@ use crate::acp::brain;
 use crate::external::agy::{self, AgyTask};
 use crate::external::wire::TranscriptLine;
 use crate::folder::Folder;
-use crate::ipc::{self, ActId, Answer, FromDaemon, Place, Read, Target, Watched};
-use crate::sessions;
-use crate::settings;
+use crate::ipc::{self, ActId, Answer, FromDaemon, Place, ProjectOverview, Read, Target, Watched};
+use crate::{sessions, settings};
 
 /// Where what is told to a window goes.
 type Outbox = mpsc::Sender<FromDaemon>;
 
 /// The most sessions listed at once.
 const MOST_SESSIONS: usize = 1000;
+
+/// Writes `name` in `folder` whole or not at all, readable by this user alone, as Claude Code
+/// writes its own.
+pub(crate) fn write_atomically(folder: &Path, name: &OsStr, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let staged = folder.join(format!(".edualc-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staged)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| std::fs::rename(&staged, folder.join(name)));
+    if written.is_err() {
+        remove(&staged);
+    }
+    written
+}
+
+/// Removes a file edualc wrote, if it is there; one that stays is logged.
+pub(crate) fn remove(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::debug!(%error, path = %path.display(), "a file of edualc's stays");
+    }
+}
 
 /// A transcript, by where it is and how it is written.
 #[derive(Debug)]
@@ -116,11 +144,28 @@ pub async fn answer(request: ActId, read: Read, outbox: Outbox) {
     }
 }
 
+/// The most sessions read per project for the start page.
+const OVERVIEW_SESSIONS: usize = 5;
+
 /// What `read` comes to; a transcript's lines go to `pieces` as they are read, before.
 fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
     match read {
         Read::Live => Answer::Live(sessions::live()),
         Read::Projects => Answer::Projects(sessions::projects()),
+        Read::Overview => {
+            let overviews: Vec<ProjectOverview> = sessions::projects()
+                .into_iter()
+                .map(|project| {
+                    let sessions = sessions::list(&project.path, OVERVIEW_SESSIONS, Vec::new());
+                    ProjectOverview {
+                        path: project.path,
+                        modified: project.modified,
+                        sessions,
+                    }
+                })
+                .collect();
+            Answer::Overview(chunk_overview(request, overviews, pieces))
+        }
         Read::Sessions { cwd, limit, known } => {
             Answer::Sessions(sessions::list(&cwd, limit.min(MOST_SESSIONS), known))
         }
@@ -133,7 +178,7 @@ fn read_for(request: ActId, read: Read, pieces: &Outbox) -> Answer {
                     send_lines(request, &lines, pieces);
                     Ok(offset)
                 }
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(ipc::Unread::from(error)),
             };
             Answer::Transcript {
                 path: source.path().to_owned(),
@@ -176,6 +221,39 @@ fn send_lines(request: ActId, lines: &[String], pieces: &mpsc::Sender<FromDaemon
             return;
         }
     }
+}
+
+/// Splits a large overview list across `FromDaemon::OverviewChunk` messages so each frame stays
+/// within `ipc::MAX_MESSAGE`, returning the trailing projects for `Answer::Overview`.
+fn chunk_overview(
+    request: ActId,
+    overviews: Vec<ProjectOverview>,
+    pieces: &Outbox,
+) -> Vec<ProjectOverview> {
+    let mut batch: Vec<ProjectOverview> = Vec::new();
+    for project in overviews {
+        batch.push(project);
+        let fits = ipc::frame(&FromDaemon::OverviewChunk {
+            request,
+            projects: batch.clone(),
+        })
+        .is_ok();
+        if !fits && batch.len() > 1 {
+            let overflowed = batch.pop();
+            let chunk = FromDaemon::OverviewChunk {
+                request,
+                projects: std::mem::take(&mut batch),
+            };
+            if pieces.blocking_send(chunk).is_err() {
+                tracing::debug!("a window gone as its overview was read");
+                return Vec::new();
+            }
+            if let Some(overflowed) = overflowed {
+                batch.push(overflowed);
+            }
+        }
+    }
+    batch
 }
 
 /// A window's change to the settings, and where to say if it wasn't kept.
@@ -681,12 +759,56 @@ mod tests {
             title: "x".repeat(300),
             modified: std::time::SystemTime::now(),
             worktree: None,
+            last_said: None,
         };
         let answer = FromDaemon::Answer {
             request: ActId::default(),
             answer: Answer::Sessions((0..MOST_SESSIONS).map(session).collect()),
         };
         assert!(crate::ipc::frame(&answer).is_ok());
+    }
+
+    #[test]
+    fn large_overviews_are_chunked_so_each_message_fits() {
+        let now = std::time::SystemTime::now();
+        let make_project = |idx: usize| ProjectOverview {
+            path: PathBuf::from(format!("/code/project-{idx}-{}", "x".repeat(400))),
+            modified: now,
+            sessions: (0..OVERVIEW_SESSIONS)
+                .map(|sub| sessions::SessionInfo {
+                    backend: crate::claude::Backend::Claude,
+                    id: crate::external::wire::SessionId::from(uuid::Uuid::from_u128(
+                        u128::try_from(idx * 10 + sub).unwrap_or(0),
+                    )),
+                    title: "title ".repeat(200),
+                    modified: now,
+                    worktree: None,
+                    last_said: Some("sentence ".repeat(200)),
+                })
+                .collect(),
+        };
+        let total = 150;
+        let all: Vec<ProjectOverview> = (0..total).map(make_project).collect();
+        let (pieces, mut received) = mpsc::channel(64);
+        let tail = chunk_overview(ActId::default(), all, &pieces);
+        drop(pieces);
+        let mut collected = Vec::new();
+        while let Ok(FromDaemon::OverviewChunk { projects, .. }) = received.try_recv() {
+            let framed = FromDaemon::OverviewChunk {
+                request: ActId::default(),
+                projects: projects.clone(),
+            };
+            assert!(ipc::frame(&framed).is_ok());
+            collected.extend(projects);
+        }
+        assert!(!collected.is_empty(), "expected chunking across messages");
+        let answer = FromDaemon::Answer {
+            request: ActId::default(),
+            answer: Answer::Overview(tail.clone()),
+        };
+        assert!(ipc::frame(&answer).is_ok());
+        collected.extend(tail);
+        assert_eq!(collected.len(), total);
     }
 
     /// A transcript is watched through its folder: its being made and written to are told,

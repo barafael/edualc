@@ -73,6 +73,7 @@ fn read_for(events: &Sender<Event>, request: ActId, read: Read) {
     let answer = match read {
         Read::Live => Answer::Live(demo::running()),
         Read::Projects => Answer::Projects(demo::projects()),
+        Read::Overview => Answer::Overview(demo::overview()),
         Read::Sessions { cwd, limit, .. } => {
             let mut sessions = demo::saved(&cwd);
             sessions.truncate(limit);
@@ -97,7 +98,7 @@ fn read_for(events: &Sender<Event>, request: ActId, read: Read) {
                     lines = rest.lines().map(str::to_owned).collect();
                     Ok(u64::try_from(text.len()).unwrap_or(u64::MAX))
                 }
-                None => Err("not in the demo".to_owned()),
+                None => Err(crate::ipc::Unread::NotWritten),
             };
             Answer::Transcript { path, read }
         }
@@ -158,6 +159,10 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
             result: Err(ActFailure::Keyring(
                 "the browser demo keeps no API key".to_owned(),
             )),
+        },
+        Act::CreateProject { .. } => Event::ProjectCreated {
+            request,
+            result: Err(crate::ipc::CreateProjectError::InBrowser),
         },
         Act::OpenIn { .. }
         | Act::OpenUrl(_)
@@ -533,6 +538,13 @@ impl Turn {
                 },
             )]),
             api_error_status: None,
+            duration_ms: Some(4200),
+            usage: Usage {
+                input_tokens: 2400,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                output_tokens: 350,
+            },
         }));
     }
 

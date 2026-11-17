@@ -74,12 +74,30 @@ paragraph or single list item. Then choose:
 - **Approve:** your comments go into the approved plan as notes under their parts. Claude receives
   it as an "Approved Plan (edited by user)".
 
+## Start page
+
+Opening `edualc` without a folder opens the start page:
+
+- **Needs you:** any running session across your projects waiting for permission, an answer, or
+  a plan review sits at the top, so you can jump straight to it.
+- **Projects:** each project folder shows its name, path, active state, recent sessions, and the
+  last sentence Claude wrote. Click a project to see all of its sessions, or click a recent
+  session on the card to open it directly.
+- **Filter:** type in the filter box, or press **Ctrl+K**, to narrow projects by name, path, or
+  recent output.
+- **New project…** (**Ctrl+N** on the start page) makes a new folder in your projects folder (you
+  set it in Settings), starts a git repository there if you like, and opens a new session in it.
+  **Open a folder…** lets you pick any recent folder, or type a path.
+
 ## Sessions
 
-### The list
+### The list and top bar
 
-The sidebar lists, first, the sessions running now, in any folder and in any terminal, under
-"Running · N" (with how many need you). Below them are this folder's earlier sessions.
+When you open a project, its **Project page** lists its sessions running now first, followed by
+its earlier saved sessions, with a filter box and **New session here**. Inside a session, the
+**top bar** shows where you are (**Projects** / project / session), any sessions waiting for you
+across projects (**N need you**), your active worktree and git branch, the mode and model menus,
+side-question and usage controls, look toggle, and Settings.
 
 A running session's row shows its title, then its state (needs you, working or idle), the name to
 message it by, and its folder if that's a different one. The number of its running subagents
@@ -90,9 +108,11 @@ appears beside it.
 - **A session that needs you moves to the top.** The others keep their place.
 - **Opening an earlier session** shows its transcript and continues it.
 - **A cut-off title** shows in full when you hover over it.
-- **To widen the sidebar,** drag its right edge or use the arrow keys. The width is kept, and a
-  double click restores the default. Ctrl+B hides the sidebar.
-- **Any folder you've used Claude Code in** is one click away.
+- **Ctrl+K inside a session** opens a quick switcher across every session in every project.
+  **Alt+Left** (or **Alt+Up**) steps back to the project page, and from there to the start page.
+- **New session** on a project page (or **Ctrl+N** inside a project or session) starts a new
+  session there; its dropdown lets you pick Claude Code, Claude Code with the API key (when one
+  is stored), or agy.
 
 ### Sessions running elsewhere
 
@@ -146,12 +166,12 @@ what it says, and each tool it calls. For a background command, it shows the end
 
 ## Side questions (`/btw`)
 
-Type `/btw …`, or use the header's button, to ask a side question. Claude answers with the
+Type `/btw …`, or use the top bar's button, to ask a side question. Claude answers with the
 conversation's context, without adding to the conversation or running tools.
 
 Answers wait in a side panel, so the composer stays free. You can ask follow-ups, copy an answer,
 put questions and answers into your draft, or branch them into a new session (titled
-`btw: <question>`). You can fold the panel away; the header's button brings it back and shows when
+`btw: <question>`). You can fold the panel away; the top bar's button brings it back and shows when
 an answer arrived meanwhile.
 
 ## Shell commands (`!`)
@@ -185,7 +205,7 @@ prompt, as in the terminal.
 
 ## Worktrees
 
-When a session works in a git worktree (`claude --worktree`, or the EnterWorktree tool), the header
+When a session works in a git worktree (`claude --worktree`, or the EnterWorktree tool), the top bar
 shows the worktree's name and branch, and the session lists mark it. **Open in** offers this
 window, Zed, VS Code, a terminal or the file manager, whichever you have installed.
 
@@ -223,9 +243,9 @@ Size:
 
 ## Usage
 
-The sidebar's foot shows your account, cost and plan limits. Click them to see the usage details
-(Claude Code's `/usage` and `/context`) over the conversation. The limits are asked for again
-when one resets, so they don't wait for your next prompt.
+The top bar's usage chip shows your plan limits. Click it to see the usage details
+(Claude Code's `/usage` and `/context`) over the workspace; account details live in Settings. The
+limits are asked for again when one resets, so they don't wait for your next prompt.
 
 When a turn stops because you've hit a usage limit, edualc continues it once the limit resets,
 as Claude Code does in a terminal: it sends Claude Code's own "the limit has reset, continue"
@@ -247,7 +267,7 @@ terminal and sign in when it asks.
 in your desktop's keyring (the Secret Service), not in a file. The New session menu then offers
 "Claude Code with the API key…", which opens a dialog that says what it costs and lets you pick
 the model before it starts. That session signs in with the key, billed by the token, and your
-other sessions keep your own sign-in. Its sidebar foot shows no plan limits, as it isn't on your
+other sessions keep your own sign-in. Its top bar shows no plan limits, as it isn't on your
 plan. Only edualc's daemon reads the key back, as it starts
 such a session, and hands it to that one Claude Code process (`ANTHROPIC_API_KEY`). When you
 continue a Claude Code session while a key is kept, edualc asks which of the two to use.
@@ -256,9 +276,11 @@ continue a Claude Code session while a key is kept, edualc asks which of the two
 
 - **Every control** can be reached with Tab and pressed with Enter or Space. A ring shows where the
   focus is.
-- **Tab and Shift+Tab** stay within the area you're in: the sidebar, the conversation, Claude's
-  question together with the composer, or the side panel.
-- **F6 and Shift+F6** move from one area to the next. **Ctrl+K** jumps to the sessions' filter.
+- **Tab and Shift+Tab** stay within the area you're in: the top bar, the page (on Start or
+  Project), the conversation, Claude's question together with the composer, or the side panel.
+- **F6 and Shift+F6** move from one area to the next. **Ctrl+K** focuses the filter on Start or
+  Project, and opens the session switcher inside a session. **Alt+Left** or **Alt+Up** navigates
+  back to the project or start page.
 - **In the conversation,** the arrow keys, Page Up, Page Down, Home and End scroll.
 - **When Claude asks something,** the focus moves into the question, never onto Allow, unless
   you're writing a draft. Up and Down move through the options, and Space picks one. Enter goes
@@ -268,30 +290,34 @@ continue a Claude Code session while a key is kept, edualc asks which of the two
 
 ## Settings
 
-The gear in the sidebar, or Ctrl+,, opens the settings over the conversation. Each change takes
+The gear in the top bar, or Ctrl+,, opens the settings over the workspace. Each change takes
 effect at once and is kept in `~/.config/edualc/settings.json`.
 
+- **New projects:** the folder **New project…** makes new projects in, unless you choose another.
 - **Sending:** Enter sends, or Ctrl+Enter does, if you'd rather Enter started a new line.
 - **Text in Han characters alone:** Chinese, Japanese and Korean draw many Han characters
   differently. A message with kana is set as Japanese and one with Hangul as Korean. Here you
   choose how a message in Han characters alone is set.
+- **Account & API key:** shows your Claude Code sign-in details and lets you store or remove an
+  Anthropic API key in your keyring.
 - **Messages from other sessions:** let every message in, as at first, or ask before letting each
   new sender in (see [Messages that wait to be let in](#messages-that-wait-to-be-let-in)).
 - **Shut down edualc's daemon:** the daemon runs the sessions of every window, and a newly
   installed edualc takes over only after it shuts down. Shutting it down ends every session in
-  every window; you can continue them from the sidebar in the next window you open.
+  every window; you can continue them from their project in the next window you open.
 
 ## agy (Google's Antigravity CLI)
 
-`edualc --backend agy DIR` runs agy instead of Claude Code. In the window, the New session button
-opens a menu with Claude Code and agy; Ctrl+N starts a new session with the program of the one
-you're in. The window shows an agy session like any other: streamed text and thinking, tool
-cards, permission requests, and the model menu from `agy models`. A model you pick stays with
-its program: a new session with the other program starts with that program's default.
+`edualc --backend agy DIR` runs agy instead of Claude Code. On a project page, the New session
+dropdown offers Claude Code, agy and opencode; Ctrl+N in a project or session starts a new session with the
+program of the one you're in (on the start page, Ctrl+N opens New project). The window shows an agy
+session like any other: streamed text and thinking, tool cards, permission requests, and the model
+menu from `agy models`. A model you pick stays with its program: a new session with the other
+program starts with that program's default.
 
 - **Messaging:** Claude Code sessions can message an agy session by its name. An agy session can
   message other sessions too; agy itself asks your permission before it sends.
-- **Continuing:** agy sessions are listed in the sidebar and continue like Claude Code's. Their
+- **Continuing:** agy sessions are listed on their project page and continue like Claude Code's. Their
   transcripts are kept in `~/.local/state/edualc/agy/`.
 - **Modes:** the mode menu lists agy's own modes, by agy's names, with the one agy is in ticked.
   agy takes a mode as a turn starts. Switch during a turn, and the window says that agy uses the
@@ -302,10 +328,10 @@ its program: a new session with the other program starts with that program's def
   records in `~/.gemini/antigravity-cli/brain/`. The list is brought up to date as agy's tool
   calls and turns end. A post to the board shows as a message to the board, and a member joining
   as an agent with its brief.
-- **Usage:** the sidebar foot shows agy's own quotas, apart from Claude Code's limits. agy shares
-  them among groups of models, and the bars are those of the group your model is in. The usage
-  details list every group's. edualc asks `agy -p /usage` when a session opens and as each turn
-  ends.
+- **Usage:** the top bar's usage chip shows agy's own quotas, apart from Claude Code's limits.
+  agy shares them among groups of models, and the chip shows those of the group your model is
+  in. The usage details list every group's. edualc asks `agy -p /usage` when a session opens and
+  as each turn ends.
 - **Context:** how full the model's context is, as agy and opencode tell it, shows as it does for
   Claude Code.
 - **Not available with agy:** shell commands (`!`) and the trust question.
@@ -315,7 +341,7 @@ its program: a new session with the other program starts with that program's def
 ## Look
 
 The window uses Gruvbox, dark or light as your desktop asks. A few colours are lifted to WCAG AA
-contrast where Gruvbox's fall short; `ui/theme.slint` says which and why. The sidebar's palette
+contrast where Gruvbox's fall short; `ui/theme.slint` says which and why. The top bar's palette
 button switches to a plain look instead: greys with a blue accent, also dark or light, at AA
 contrast on every surface. Your choice is kept.
 
@@ -324,14 +350,14 @@ monospace fonts are used. Text has the size your desktop sets (GNOME's interface
 scaling, or KDE's), scaled for the screen.
 
 - **Ctrl+=** and **Ctrl+-** zoom in 10% steps, and **Ctrl+0** resets. The zoom is kept.
-- Controls and rows grow with the text. In a narrow window, the sidebar and side panel give way
-  first.
+- Controls and rows grow with the text. In a narrow window, the top bar trims extra labels and the
+  side panel gives way first.
 
 ## The heron
 
-edualc's mascot is a heron (`assets/heron.svg`). It stands at the top of the sidebar and greets a
-new session. It flies off when the conversation begins, and flies in when you open a new session
-(`ui/heron.slint`, with the wing beats in `assets/heron-wings-*.svg`). About once a minute it looks
-over its shoulder, preens or flaps its wings, for a second or so (`assets/heron-looking-back.svg`,
+edualc's mascot is a heron (`assets/heron.svg`). It stands beside a new session and greets it. It
+flies off when the conversation begins, and flies in when you open a new session (`ui/heron.slint`,
+with the wing beats in `assets/heron-wings-*.svg`). About once a minute it looks over its shoulder,
+preens or flaps its wings, for a second or so (`assets/heron-looking-back.svg`,
 `heron-preening-*.svg`, `heron-flapping-*.svg`). It's also the app's icon
 (`assets/io.github.felintusun.edualc.svg`, on Gruvbox's light background).

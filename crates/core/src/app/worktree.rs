@@ -1,6 +1,8 @@
 //! The worktree a session works in, and opening it: in this window, an editor, a terminal or
 //! the file manager.
 
+use std::path::Path;
+
 use super::App;
 use crate::present::Frontend;
 use crate::sessions::Worktree;
@@ -45,8 +47,11 @@ impl<F: Frontend> App<F> {
         let Some(id) = self.status.session_id.clone() else {
             return;
         };
+        let Some(cwd) = self.location.cwd().map(Path::to_path_buf) else {
+            return;
+        };
         let read = crate::ipc::Read::WorktreeOf {
-            cwd: self.cwd.clone(),
+            cwd,
             id: id.clone(),
         };
         self.read(read, super::Reading::Worktree { id });

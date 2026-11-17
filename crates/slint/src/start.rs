@@ -32,7 +32,7 @@ struct Args {
     /// A session to continue, by its id.
     #[arg(short, long, value_name = "SESSION", value_parser = session_id)]
     resume: Option<SessionId>,
-    /// The folder to work in. Without one, the folder edualc was started in.
+    /// The folder to work in. Without one or `--resume`, opens the start page.
     #[arg(value_parser = folder)]
     dir: Option<Folder>,
     /// A first prompt.
@@ -106,15 +106,24 @@ enum WhereError {
 }
 
 /// The folder to work in: as named; else, continuing a session, the one it was started in
-/// (`claude --resume` goes on in whatever folder it is started from, its tools working there);
-/// else where edualc was started. A session to continue that no transcript has is refused.
-fn working_folder(dir: Option<Folder>, resume: Option<&SessionId>) -> Result<Folder, WhereError> {
+/// (`claude --resume` goes on in whatever folder it is started from, its tools working there),
+/// or where edualc was started when its transcript holds none; else, with a first prompt, where
+/// edualc was started; else none, opening the start page. A session to continue that no
+/// transcript has is refused.
+fn working_folder(
+    dir: Option<Folder>,
+    resume: Option<&SessionId>,
+    has_prompt: bool,
+) -> Result<Option<Folder>, WhereError> {
     let saved = resume.map(|id| (id, sessions::saved(id)));
-    Ok(match (dir, saved) {
-        (_, Some((id, sessions::Saved::Nowhere))) => return Err(WhereError::NoSession(id.clone())),
-        (Some(folder), _) => folder,
-        (None, Some((_, sessions::Saved::StartedIn(started)))) => Folder::at(started)?,
-        (None, Some((_, sessions::Saved::Unplaced)) | None) => here()?,
+    Ok(match (dir, saved, has_prompt) {
+        (_, Some((id, sessions::Saved::Nowhere)), _) => {
+            return Err(WhereError::NoSession(id.clone()));
+        }
+        (Some(folder), _, _) => Some(folder),
+        (None, Some((_, sessions::Saved::StartedIn(started))), _) => Some(Folder::at(started)?),
+        (None, Some((_, sessions::Saved::Unplaced)), _) | (None, None, true) => Some(here()?),
+        (None, None, false) => None,
     })
 }
 
@@ -151,8 +160,8 @@ pub(crate) fn main() -> Result<std::process::ExitCode, slint::PlatformError> {
         dir,
         prompt,
     } = clap::Parser::parse();
-    let cwd = match working_folder(dir, resume.as_ref()) {
-        Ok(folder) => folder.into_path(),
+    let cwd = match working_folder(dir, resume.as_ref(), prompt.is_some()) {
+        Ok(folder) => folder.map(Folder::into_path),
         Err(error) => {
             eprintln!("edualc: {error}");
             return Ok(std::process::ExitCode::from(2));
@@ -317,5 +326,29 @@ mod tests {
             });
             assert!(listed, "{name} in\n{help}");
         }
+    }
+
+    #[test]
+    fn no_folder_starts_without_cwd_unless_prompt_or_resume_needs_one() {
+        assert_eq!(
+            working_folder(None, None, false)
+                .expect("start page")
+                .map(Folder::into_path),
+            None
+        );
+        let here_path = here().expect("cwd exists").into_path();
+        assert_eq!(
+            working_folder(None, None, true)
+                .expect("prompt uses cwd")
+                .map(Folder::into_path),
+            Some(here_path)
+        );
+        let tmp = Folder::at(PathBuf::from("/tmp")).expect("/tmp exists");
+        assert_eq!(
+            working_folder(Some(tmp), None, false)
+                .expect("explicit dir")
+                .map(Folder::into_path),
+            PathBuf::from("/tmp").canonicalize().ok()
+        );
     }
 }

@@ -120,6 +120,9 @@ pub struct SessionInfo {
     pub modified: SystemTime,
     /// The worktree it last worked in, if that still exists.
     pub worktree: Option<Worktree>,
+    /// The first sentence of the last assistant reply, if one is in the tail.
+    #[serde(default)]
+    pub last_said: Option<String>,
 }
 
 /// A git worktree a session works in (`claude --worktree`, the EnterWorktree tool).
@@ -280,6 +283,26 @@ fn project_dirs(cwd: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The folders a project's sessions are in: its own (see [`project_dirs`]) and those of its
+/// worktrees, in each of `homes`. Claude Code keeps worktrees in `.claude/worktrees/` and moves
+/// the transcript of a session that enters one to the worktree's folder.
+fn session_dirs(homes: &[PathBuf], cwd: &Path) -> Vec<PathBuf> {
+    let name = project_name(cwd);
+    let worktrees = format!("{name}--claude-worktrees-");
+    homes
+        .iter()
+        .flat_map(|home| {
+            let in_worktrees = std::fs::read_dir(home)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&worktrees))
+                .map(|entry| entry.path());
+            std::iter::once(home.join(&name)).chain(in_worktrees)
+        })
+        .collect()
+}
+
 /// Every folder of transcripts' folders: the user's own home's, and agy's sessions'.
 fn all_projects_dirs() -> Vec<PathBuf> {
     std::iter::once(projects_dir())
@@ -425,17 +448,16 @@ fn transcripts(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
     files
 }
 
-/// The sessions started in `cwd`, newest first. Sessions without a prompt (started, never
-/// used) are left out.
-/// The working directory's sessions, newest first. Those in `known` whose transcript hasn't
-/// changed since are taken as they are, not read again.
+/// The sessions of the project in `cwd`, those in its worktrees among them, newest first.
+/// Sessions without a prompt (started, never used) are left out. Those in `known` whose
+/// transcript hasn't changed since are taken as they are, not read again.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<SessionInfo> {
     let mut known: HashMap<SessionId, SessionInfo> = known
         .into_iter()
         .map(|session| (session.id.clone(), session))
         .collect();
-    let mut files: Vec<(PathBuf, SystemTime)> = project_dirs(cwd)
+    let mut files: Vec<(PathBuf, SystemTime)> = session_dirs(&all_projects_dirs(), cwd)
         .iter()
         .flat_map(|dir| transcripts(dir))
         .collect();
@@ -453,13 +475,14 @@ pub fn list(cwd: &Path, limit: usize, known: Vec<SessionInfo>) -> Vec<SessionInf
             {
                 return Some(same);
             }
-            let (title, worktree) = summary(&path)?;
+            let found = summary(&path)?;
             Some(SessionInfo {
                 backend: backend_of(&path),
                 id,
-                title,
+                title: found.title,
                 modified,
-                worktree,
+                worktree: found.worktree,
+                last_said: found.last_said,
             })
         })
         .take(limit)
@@ -529,7 +552,7 @@ pub fn live() -> Vec<LiveSession> {
                     title: transcript
                         .as_deref()
                         .and_then(summary)
-                        .map(|(title, _)| title),
+                        .map(|found| found.title),
                     agents: transcript
                         .as_deref()
                         .map_or(0, |transcript| running_agents(transcript, SystemTime::now())),
@@ -670,14 +693,24 @@ fn parse_line(line: &str) -> Option<TranscriptLine> {
 /// whole file, which can be many megabytes.
 const PEEK_BYTES: u64 = 128 * 1024;
 
-/// A session's title and the worktree it last worked in.
-fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
+struct Summary {
+    title: String,
+    worktree: Option<Worktree>,
+    last_said: Option<String>,
+}
+
+/// A session's title, the worktree it last worked in, and the start of its last reply.
+fn summary(path: &Path) -> Option<Summary> {
     let mut file = File::open(path).ok()?;
     let length = file.metadata().ok()?.len();
     let tail = read_range(&mut file, length.saturating_sub(PEEK_BYTES), length)?;
-    let (mut custom, mut generated, mut summary, mut worktree) = (None, None, None, None);
+    let (mut custom, mut generated, mut summary, mut worktree, mut last_said) =
+        (None, None, None, None, None);
     let candidates = tail.lines().filter(|line| {
-        line.contains("itle\"") || line.contains("\"summary\"") || line.contains("worktree-state")
+        line.contains("itle\"")
+            || line.contains("\"summary\"")
+            || line.contains("worktree-state")
+            || line.contains("\"assistant\"")
     });
     for line in candidates {
         match serde_json::from_str(line) {
@@ -685,6 +718,14 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
             Ok(TranscriptLine::AiTitle { ai_title }) => generated = Some(ai_title),
             Ok(TranscriptLine::Summary { summary: text }) => summary = Some(text),
             Ok(TranscriptLine::WorktreeState { worktree: state }) => worktree = Some(state),
+            Ok(TranscriptLine::Assistant {
+                message,
+                is_sidechain: false,
+            }) => {
+                if let Some(said) = assistant_sentence(&message.content) {
+                    last_said = Some(said);
+                }
+            }
             // The first line of the tail may be cut; other lines aren't titles.
             Ok(_) | Err(_) => {}
         }
@@ -697,7 +738,11 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
         .map(|id| PetName::of(&id));
     let custom = custom.filter(|title| !own_name.as_ref().is_some_and(|name| name.is_in(title)));
     if let Some(title) = custom.or(generated).or(summary) {
-        return Some((title_line(&title).to_owned(), worktree));
+        return Some(Summary {
+            title: title_line(&title).to_owned(),
+            worktree,
+            last_said,
+        });
     }
     // The first prompt; or, for a session another one started by writing to it, that message,
     // whose turn can fill more than the head before the user writes anything.
@@ -717,12 +762,88 @@ fn summary(path: &Path) -> Option<(String, Option<Worktree>)> {
             }) => prompt_text(&message.content),
             Ok(_) | Err(_) => None,
         })
-        .map(|prompt| {
-            (
-                crate::tools::truncate_chars(title_line(&prompt), 80),
-                worktree,
-            )
+        .map(|prompt| Summary {
+            title: crate::tools::truncate_chars(title_line(&prompt), 80),
+            worktree,
+            last_said,
         })
+}
+
+/// The first readable sentence an assistant turn wrote, for card and row summaries.
+pub fn assistant_sentence(blocks: &[crate::external::wire::ContentBlock]) -> Option<String> {
+    let combined = blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::external::wire::ContentBlock::Text { text } => Some(text.as_str()),
+            crate::external::wire::ContentBlock::Thinking { .. }
+            | crate::external::wire::ContentBlock::ToolUse { .. }
+            | crate::external::wire::ContentBlock::ServerToolUse { .. }
+            | crate::external::wire::ContentBlock::ToolResult { .. }
+            | crate::external::wire::ContentBlock::Image { .. }
+            | crate::external::wire::ContentBlock::Other => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    first_sentence(&combined)
+}
+
+fn first_sentence(text: &str) -> Option<String> {
+    let mut line = String::new();
+    let mut heading_fallback: Option<&str> = None;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with("```") {
+            if line.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if trimmed.starts_with('#') {
+            if line.is_empty() && heading_fallback.is_none() {
+                let heading = trimmed.trim_start_matches('#').trim_start();
+                if !heading.is_empty() {
+                    heading_fallback = Some(heading);
+                }
+            }
+            continue;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(trimmed);
+        if ends_sentence(&line) {
+            break;
+        }
+    }
+    let chosen = if line.is_empty() {
+        heading_fallback?
+    } else {
+        split_first_sentence(&line)
+    };
+    Some(crate::tools::truncate_chars(chosen.trim(), 140))
+}
+
+fn ends_sentence(text: &str) -> bool {
+    text.ends_with(['.', '!', '?', '。', '！', '？'])
+}
+
+fn split_first_sentence(text: &str) -> &str {
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, ch)) = chars.next() {
+        if matches!(ch, '。' | '！' | '？') {
+            return text.get(..at + ch.len_utf8()).unwrap_or(text);
+        }
+        if matches!(ch, '.' | '!' | '?') {
+            match chars.peek() {
+                None => return text,
+                Some(&(_, next)) if next.is_whitespace() => {
+                    return text.get(..at + ch.len_utf8()).unwrap_or(text);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    text
 }
 
 /// The first line with text in it: a title is shown on one line, in a row of its height.
@@ -745,7 +866,7 @@ fn peer_title(name: Option<&str>, body: Option<&str>) -> String {
 
 /// The worktree a session works in now, as its transcript last said.
 pub fn worktree_of(transcript: &Path) -> Option<Worktree> {
-    summary(transcript).and_then(|(_, worktree)| worktree)
+    summary(transcript).and_then(|found| found.worktree)
 }
 
 fn recorded_cwd(path: &Path) -> Option<PathBuf> {
@@ -910,6 +1031,24 @@ mod tests {
         assert!(dir.ends_with("-home-someone-code-my-project-v2"));
     }
 
+    /// The review's finding: a project whose session moved into a worktree said it had no
+    /// sessions, as the transcript went to the worktree's folder.
+    #[test]
+    fn a_projects_sessions_include_its_worktrees() {
+        let home = std::env::temp_dir().join(format!("edualc-homes-{}", std::process::id()));
+        let cwd = Path::new("/code/beep");
+        let own = home.join("-code-beep");
+        let in_worktree = home.join("-code-beep--claude-worktrees-demo");
+        let other = home.join("-code-beep-old");
+        for dir in [&own, &in_worktree, &other] {
+            std::fs::create_dir_all(dir).expect("a scratch transcripts folder");
+        }
+        let mut found = session_dirs(std::slice::from_ref(&home), cwd);
+        found.sort();
+        assert_eq!(found, [own, in_worktree]);
+        std::fs::remove_dir_all(&home).expect("the scratch directory goes");
+    }
+
     #[test]
     fn a_linked_worktree_names_its_branch() {
         let dir = std::env::temp_dir().join(format!("edualc-worktree-{}", std::process::id()));
@@ -1063,7 +1202,7 @@ mod tests {
             ];
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             std::fs::write(&path, text).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary(&path).map(|found| found.title)
         };
         for name in [
             format!("edualc-{pet}"),
@@ -1093,7 +1232,7 @@ mod tests {
         let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490483.jsonl");
         let title_of = |line: serde_json::Value| {
             std::fs::write(&path, format!("{line}\n")).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary(&path).map(|found| found.title)
         };
         let prompt = json!({
             "type": "user",
@@ -1113,7 +1252,7 @@ mod tests {
         let title_of = |lines: &[serde_json::Value]| {
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             std::fs::write(&path, text).expect("a transcript");
-            summary(&path).map(|(title, _)| title)
+            summary(&path).map(|found| found.title)
         };
         let peer = json!({
             "type": "user",
@@ -1132,6 +1271,49 @@ mod tests {
         assert_eq!(
             title_of(&[prompt, peer]).as_deref(),
             Some("Send a second note")
+        );
+        std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
+    }
+
+    #[test]
+    fn last_said_reads_the_first_sentence_of_the_last_assistant_reply() {
+        let dir = std::env::temp_dir().join(format!("edualc-last-said-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("80bdeda4-8427-4be3-b815-ea82e7490489.jsonl");
+        let lines = [
+            json!({ "type": "user", "message": { "role": "user", "content": "Check tests" } }),
+            json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": "Looking at that." }] }
+            }),
+            json!({
+                "type": "assistant",
+                "isSidechain": true,
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": "Sidechain thought." }] }
+            }),
+            json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "## Summary\nAll three tests pass now. The cache stays untouched." }]
+                }
+            }),
+        ];
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(&path, text).expect("a transcript");
+        let found = summary(&path).expect("a summary");
+        assert_eq!(found.title, "Check tests");
+        assert_eq!(
+            found.last_said.as_deref(),
+            Some("All three tests pass now.")
+        );
+        assert_eq!(
+            first_sentence("All three tests pass now. The cache stays untouched.").as_deref(),
+            Some("All three tests pass now.")
+        );
+        assert_eq!(
+            first_sentence("日本語の文です。次の文。").as_deref(),
+            Some("日本語の文です。")
         );
         std::fs::remove_dir_all(&dir).expect("the scratch directory goes");
     }

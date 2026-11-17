@@ -1315,6 +1315,17 @@ impl Translator {
                 },
             )]),
             api_error_status: matches!(failure, Some(Failure::SignIn(_))).then_some(401),
+            // The agent says how many tokens the turn took, not how long it took.
+            duration_ms: None,
+            usage: prompted
+                .and_then(|prompted| prompted.usage.as_ref())
+                .map(|used| Usage {
+                    input_tokens: used.input_tokens,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: used.cached_read_tokens,
+                    output_tokens: used.output_tokens,
+                })
+                .unwrap_or_default(),
         })));
         self.busy = false;
         effects.extend(self.subagents());

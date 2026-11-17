@@ -1,0 +1,184 @@
+// Making a new project: a folder, with a git repository in it if you like.
+
+import { Theme } from "theme.slint";
+import { FocusArea } from "types.slint";
+import { Focus, Nav } from "state.slint";
+import { AreaFence, Caption, Field, Icon, IconButton, Pressable, Small, TextButton, Title } from "widgets.slint";
+
+export component NewProjectDialog inherits Rectangle {
+    callback close;
+
+    property <string> project-name;
+    property <string> saved-parent: Nav.new-project-parent;
+    property <bool> git-init: true;
+    property <int> created: Nav.created-serial;
+
+    changed saved-parent => { parent-field.text = self.saved-parent; }
+    changed created => { root.close(); }
+
+    function submit() {
+        if root.project-name != "" && parent-field.text != "" {
+            Nav.create-project(parent-field.text, root.project-name, root.git-init);
+        }
+    }
+
+    background: Theme.surface;
+    border-radius: Theme.radius-l;
+    border-width: 1px;
+    border-color: Theme.divider;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.shadow;
+    clip: true;
+
+    VerticalLayout {
+        first-fence := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    last-fence.focus();
+                    Focus.step(false);
+                }
+            }
+        }
+        HorizontalLayout {
+            height: Theme.header;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-m;
+            spacing: Theme.space-m;
+            Icon {
+                source: @image-url("@lucide/folder-plus.svg");
+                tint: Theme.claude;
+                width: 20px;
+                y: (parent.height - self.height) / 2;
+            }
+            Title {
+                text: "New project";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            IconButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Cancel (Esc)";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.divider;
+        }
+        VerticalLayout {
+            padding: Theme.space-l;
+            spacing: Theme.space-s;
+
+            Text {
+                text: "Name";
+                font-weight: 600;
+                color: Theme.text;
+            }
+            name-field := Field {
+                placeholder: "my-project";
+                init => { self.focus(); }
+                edited(text) => {
+                    root.project-name = text;
+                    Nav.clear-new-project-error();
+                }
+                accepted => { root.submit(); }
+            }
+            // Directly below Name so a validation error reads next to what caused it.
+            if Nav.new-project-error != "": Text {
+                text: Nav.new-project-error;
+                color: Theme.danger-text;
+                font-size: 1rem * Theme.small;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: Theme.space-xs; }
+
+            Text {
+                text: "Inside";
+                font-weight: 600;
+                color: Theme.text;
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                parent-field := Field {
+                    horizontal-stretch: 1;
+                    placeholder: "Parent folder";
+                    init => { self.text = Nav.new-project-parent; }
+                    edited => { Nav.clear-new-project-error(); }
+                    accepted => { root.submit(); }
+                }
+                TextButton {
+                    text: "Choose…";
+                    clicked => { Nav.browse-new-project-parent(); }
+                }
+            }
+            Caption {
+                text: "edualc creates " + parent-field.text
+                    + (parent-field.text == "" || parent-field.text == "/" ? "" : "/")
+                    + (root.project-name == "" ? "<name>" : root.project-name);
+                // Whole, over two lines if need be: cut at its end, it lost the new folder's
+                // name.
+                wrap: char-wrap;
+            }
+
+            Rectangle { height: Theme.space-xs; }
+
+            Pressable {
+                selected: root.git-init;
+                accessible-role: checkbox;
+                accessible-checkable: true;
+                accessible-checked: root.git-init;
+                accessible-label: "Start a git repository";
+                clicked => { root.git-init = !root.git-init; }
+                HorizontalLayout {
+                    padding: Theme.space-s;
+                    padding-left: Theme.space-m;
+                    spacing: Theme.space-s;
+                    Icon {
+                        source: root.git-init ? @image-url("@lucide/square-check.svg") : @image-url("@lucide/square.svg");
+                        tint: root.git-init ? Theme.accent : Theme.text-tertiary;
+                        width: Theme.icon-small;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: "Start a git repository";
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        accessible-role: none;
+                    }
+                }
+            }
+
+            Rectangle { height: Theme.space-xs; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.space-s;
+                TextButton {
+                    text: "Cancel";
+                    clicked => { root.close(); }
+                }
+                TextButton {
+                    text: "Create project";
+                    primary: true;
+                    enabled: root.project-name != "" && parent-field.text != "";
+                    clicked => { root.submit(); }
+                }
+            }
+        }
+        last-fence := AreaFence {
+            area: FocusArea.page;
+            crossed => {
+                if !Focus.going-round {
+                    Focus.going-round = true;
+                    first-fence.focus();
+                    Focus.step(true);
+                }
+            }
+        }
+    }
+}
