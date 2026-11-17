@@ -10,7 +10,7 @@ publish.workspace = true
 [dependencies]
 # Slint's own parser, at the fork's revision the window is built with, so the .slint files are
 # read as Slint reads them.
-i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "9d7cc772c0f48032e077637f1bed18191de5ad12", version = "1.20.0" }
+i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "d206fd1d88f7b8b818d0b73ec1356db2a9439173", version = "1.20.0" }
 clap.workspace = true
 thiserror.workspace = true
 
