@@ -44,9 +44,9 @@ pub struct Settings {
 #[serde(rename_all = "snake_case")]
 pub enum PeerMessages {
     /// You're asked before the first message from each sender, in each session.
-    #[default]
     AskEachSender,
-    /// Every message comes in without asking.
+    /// Every message comes in without asking, as between Claude Code's own sessions.
+    #[default]
     LetAllIn,
 }
 
