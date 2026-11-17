@@ -7,6 +7,46 @@ set shell := ["nu", "-c"]
 default:
     @just --list
 
+# Both are built first, as the window starts the daemon from its own folder:
+# `cargo run --bin edualc` alone builds only the window (`cargo build && cargo run --bin edualc`
+# builds both). Arguments go to edualc (`just run ~/code/app "fix the tests"`,
+# `just run --help`).
+[doc('The window from this checkout, as you use edualc: your settings, your running edualc.')]
+[group('run')]
+[positional-arguments]
+run *args:
+    #!/usr/bin/env nu
+    def --wrapped main [...args] { nu dev/run.nu window ...$args }
+
+[doc('The same, built optimised.')]
+[group('run')]
+[positional-arguments]
+run-release *args:
+    #!/usr/bin/env nu
+    def --wrapped main [...args] { nu dev/run.nu window --release ...$args }
+
+# Its settings are kept under target/apart. Claude Code's sessions are shown all the same, as
+# they are Claude Code's; messages between sessions reach only those started apart.
+[doc('The window from this checkout, apart: its own daemon and settings, not your running edualc.')]
+[group('run')]
+[positional-arguments]
+try *args:
+    #!/usr/bin/env nu
+    def --wrapped main [...args] { nu dev/run.nu window --apart ...$args }
+
+# Follows the daemon's log; `just log --apart` the daemon `just try` starts.
+[group('run')]
+[positional-arguments]
+log *args:
+    #!/usr/bin/env nu
+    def --wrapped main [...args] { nu dev/run.nu log ...$args }
+
+[doc('edualc and its daemon from this checkout into ~/.cargo/bin, side by side.')]
+[group('run')]
+install:
+    cargo install --locked --path crates/slint
+    cargo install --locked --path crates/host
+
 # Everything the CI workflow checks; `just in-image arch check` runs it in CI's image.
 [group('check')]
 check: fmt-check lint lint-wasm test deny audit workflows packaging-check images-check licences-check

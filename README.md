@@ -50,8 +50,14 @@ Every feature in detail: [docs/features.md](docs/features.md).
 You need Linux with Wayland, and Claude Code installed and signed in (`claude` on your PATH).
 
 There is no release yet. Until there is, build the main branch: on Arch with `makepkg -si` in
-[`dist/aur/edualc-git`](dist/aur/edualc-git), anywhere else as described under
-[Building](#building).
+[`dist/aur/edualc-git`](dist/aur/edualc-git), anywhere else with Cargo:
+
+```sh
+cargo install --locked --git https://github.com/felintusun/edualc edualc edualc-host
+```
+
+That puts `edualc` and its daemon `edualcd` side by side in `~/.cargo/bin`, as edualc needs
+them; it has no desktop entry or icon. Run it again to update.
 
 Releases will have packages for x86_64 and aarch64:
 
@@ -89,7 +95,9 @@ folder alone, so you can copy anything you still need from it. Their transcripts
 
 ## Building
 
-Run `cargo build --release`. [docs/architecture.md](docs/architecture.md) explains how the code
+Run `cargo build --release`. To try a change, `just run` builds edualc and its daemon and starts
+the window, as you use edualc. `just try` starts one apart, with a daemon and settings of its
+own. `just` lists the rest. [docs/architecture.md](docs/architecture.md) explains how the code
 is laid out and how a release is made.
 
 ## License
