@@ -667,7 +667,7 @@ mod tests {
                 },
             ),
         ];
-        let built = build(&projects, &[], &hosted, Some(Path::new("/home/shen")));
+        let built = build(&projects, &[], &hosted, Some(Path::new("/home/you")));
         let order: Vec<(&str, usize, usize)> = built
             .cards
             .iter()
@@ -709,7 +709,7 @@ mod tests {
     fn projects_without_sessions_stay_listed_and_home_is_left_out() {
         let projects = [
             project(
-                "/home/shen",
+                "/home/you",
                 999,
                 vec![saved(10, "Launched in home", 999, None)],
             ),
@@ -721,9 +721,9 @@ mod tests {
             ),
         ];
         let live = [live_session(12, "/code/home-sibling", LiveStatus::Busy)];
-        let cards = cards(&projects, &live, &[], Some(Path::new("/home/shen")));
+        let cards = cards(&projects, &live, &[], Some(Path::new("/home/you")));
         let names: Vec<&str> = cards.iter().map(|card| card.name.as_str()).collect();
-        assert!(!names.contains(&"shen"));
+        assert!(!names.contains(&"you"));
         assert!(names.contains(&"fresh"));
         assert!(names.contains(&"home-sibling"));
         let fresh = cards
@@ -737,9 +737,9 @@ mod tests {
     #[test]
     fn identical_folder_names_show_the_parent_that_tells_them_apart() {
         let names = distinct_names(&[
-            Path::new("/home/shen/ux/project"),
-            Path::new("/home/shen/work/project"),
-            Path::new("/home/shen/code/edualc"),
+            Path::new("/home/you/ux/project"),
+            Path::new("/home/you/work/project"),
+            Path::new("/home/you/code/edualc"),
         ]);
         assert_eq!(names, ["project (ux)", "project (work)", "edualc"]);
     }
@@ -749,13 +749,13 @@ mod tests {
     #[test]
     fn a_parent_named_by_a_uuid_shows_its_first_part() {
         let names = distinct_names(&[
-            Path::new("/tmp/d9469fb1-1248-4f2a-8e77-d042059022a0/scratchpad/ux/project"),
-            Path::new("/tmp/c82dcb2c-03e4-426e-974f-f916d0ae6278/scratchpad/ux/project"),
+            Path::new("/tmp/0a1b2c3d-1111-4222-8333-444455556666/scratchpad/ux/project"),
+            Path::new("/tmp/9f8e7d6c-1111-4222-8333-444455556666/scratchpad/ux/project"),
             Path::new("/project"),
         ]);
         assert_eq!(
             names,
-            ["project (d9469fb1)", "project (c82dcb2c)", "project"]
+            ["project (0a1b2c3d)", "project (9f8e7d6c)", "project"]
         );
     }
 }
