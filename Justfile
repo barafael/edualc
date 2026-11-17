@@ -45,7 +45,7 @@ log *args:
 [group('run')]
 install:
     cargo install --locked --path crates/slint
-    cargo install --locked --path crates/host
+    cargo install --locked --path crates/server --features server
 
 # Everything the CI workflow checks; `just in-image arch check` runs it in CI's image.
 [group('check')]

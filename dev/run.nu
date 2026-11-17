@@ -26,7 +26,7 @@ def --wrapped "main window" [--release, --apart, ...args: string]: nothing -> no
     cd $root
     let profile = if $release { "release" } else { "debug" }
     let built = if $release { [--release] } else { [] }
-    cargo build --locked --quiet ...$built -p edualc -p edualc-host
+    cargo build --locked --quiet ...$built -p edualc -p edualc-server --features edualc-server/server
     let programs = $env.CARGO_TARGET_DIR? | default "target" | path expand | path join $profile
     report-stale ($programs | path join edualcd)
     let window = $programs | path join edualc
