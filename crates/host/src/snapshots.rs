@@ -163,9 +163,16 @@ impl Store {
         self.save_index()
     }
 
-    /// You marked the file at `path` reviewed as it holds `now`.
-    pub fn mark_reviewed(&mut self, path: PathBuf, now: Option<ContentId>) -> Result<(), Error> {
-        self.index.reviewed.insert(path, now);
+    /// You marked the file at `path` reviewed, or took the mark off.
+    pub fn mark_reviewed(&mut self, path: PathBuf, mark: Mark) -> Result<(), Error> {
+        match mark {
+            Mark::On(now) => {
+                self.index.reviewed.insert(path, now);
+            }
+            Mark::Off => {
+                self.index.reviewed.remove(&path);
+            }
+        }
         self.save_index()
     }
 
@@ -595,8 +602,15 @@ pub enum Job {
     Reviewed {
         session: SessionId,
         path: PathBuf,
-        now: Option<ContentId>,
+        mark: Mark,
     },
+}
+
+/// A review mark: on, for the file as it holds `ContentId` (none: deleted), or taken off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    On(Option<ContentId>),
+    Off,
 }
 
 /// Writes the changes for every session, a job at a time, until the jobs end. First it forgets
@@ -638,7 +652,7 @@ fn apply(home: &Path, job: Job) {
                 }
             }),
             Job::Looked { .. } => store.looked(),
-            Job::Reviewed { path, now, .. } => store.mark_reviewed(path, now),
+            Job::Reviewed { path, mark, .. } => store.mark_reviewed(path, mark),
         },
         Err(error) => Err(error),
     };
@@ -877,13 +891,18 @@ mod tests {
             .files
             .first()
             .and_then(|file| file.now);
-        bench
-            .store()
-            .mark_reviewed(bench.root.join("a.txt"), now)
-            .expect("marked");
+        let mark = |mark| {
+            bench
+                .store()
+                .mark_reviewed(bench.root.join("a.txt"), mark)
+                .expect("marked");
+        };
+        mark(Mark::On(now));
         assert_eq!(review(), Some(Review::Reviewed));
         bench.turn(&["a.txt"], |bench| bench.write("a.txt", "three\n"));
         assert_eq!(review(), Some(Review::ChangedSinceReviewed));
+        mark(Mark::Off);
+        assert_eq!(review(), Some(Review::NotReviewed));
     }
 
     /// The whole session spans its turns; "since you last looked" only what came after; a

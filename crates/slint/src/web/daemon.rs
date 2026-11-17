@@ -168,7 +168,9 @@ fn acted(events: &Sender<Event>, request: ActId, act: Act) {
             result: Err(crate::ipc::CreateProjectError::InBrowser),
         },
         // Not answered.
-        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } => return,
+        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } | Act::UnmarkReviewed { .. } => {
+            return;
+        }
         Act::OpenIn { .. }
         | Act::OpenUrl(_)
         | Act::Notify { .. }

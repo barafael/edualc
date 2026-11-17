@@ -844,6 +844,11 @@ pub enum Act {
         path: PathBuf,
         now: Option<crate::changes::ContentId>,
     },
+    /// You took the mark off a file a session changed. Not answered.
+    UnmarkReviewed {
+        session: SessionId,
+        path: PathBuf,
+    },
 }
 
 #[cfg(test)]

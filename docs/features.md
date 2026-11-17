@@ -87,14 +87,14 @@ turn says its number, how long it took and the tokens it sent and got, then what
   it in that turn; "by a command" when it changed in a turn without them, as a formatter or a
   script would change it; "between turns" when it changed outside any turn.
 - **Mark reviewed:** the mark stays until the file changes again, then the file says "changed
-  since".
+  since". Press **Reviewed** again to take the mark off.
 - **Comments:** comment on any line of a diff. **Send to Claude** sends them together, each with
   its file, its line's number and the line.
 
 Files `.gitignore` names, `.git`, repositories and worktrees inside the folder, binary files and
 files over 1 MiB are left out, and the view says how many. Only sessions edualc runs are looked
-at, not those in a terminal. A turn Claude Code starts by itself, for another session's message,
-isn't seen as a turn yet, so its changes show as made between turns. The snapshots are kept in
+at, not those in a terminal. A turn the session starts by itself, for another session's message,
+counts as a turn from Claude's first words. The snapshots are kept in
 `~/.local/state/edualc/changes/`, and those of a session nobody looked at for 30 days are deleted.
 
 ## Start page

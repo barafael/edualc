@@ -286,7 +286,8 @@ export global Changes {
     callback close;
     callback choose-scope(ChangeScope);
     callback select(int);
-    callback mark-reviewed;
+    // Marks the file shown reviewed, or takes the mark off.
+    callback toggle-reviewed;
     callback edit-comment(int);
     callback set-comment(int, string);
     callback cancel-comment;

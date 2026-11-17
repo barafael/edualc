@@ -211,7 +211,7 @@ pub(crate) fn wire(window: &AppWindow, events: &Sender<Event>) {
         }
     });
     changes.on_select(actions.on_index(Action::SelectChangedFile));
-    changes.on_mark_reviewed(actions.on(|| Action::MarkReviewed));
+    changes.on_toggle_reviewed(actions.on(|| Action::ToggleReviewed));
     changes.on_edit_comment(actions.on_index(Action::EditLineComment));
     changes.on_set_comment(actions.on_index_text(Action::SetLineComment));
     changes.on_cancel_comment(actions.on(|| Action::CancelLineComment));

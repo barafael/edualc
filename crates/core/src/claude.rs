@@ -67,6 +67,8 @@ impl Output {
                     | PeekedKind::ControlCancelRequest
                     | PeekedKind::ControlResponse
                     | PeekedKind::User
+                    | PeekedKind::Assistant
+                    | PeekedKind::StreamEvent
                     | PeekedKind::Other,
                     _,
                 ) => None,

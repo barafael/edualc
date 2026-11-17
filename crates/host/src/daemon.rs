@@ -291,7 +291,7 @@ enum Effect {
     Reviewed {
         session: SessionId,
         path: PathBuf,
-        now: Option<crate::changes::ContentId>,
+        mark: snapshots::Mark,
     },
 }
 
@@ -420,8 +420,20 @@ impl Connection {
                     Effect::Looked { session } => {
                         keep(&keeper, snapshots::Job::Looked { session }).await;
                     }
-                    Effect::Reviewed { session, path, now } => {
-                        keep(&keeper, snapshots::Job::Reviewed { session, path, now }).await;
+                    Effect::Reviewed {
+                        session,
+                        path,
+                        mark,
+                    } => {
+                        keep(
+                            &keeper,
+                            snapshots::Job::Reviewed {
+                                session,
+                                path,
+                                mark,
+                            },
+                        )
+                        .await;
                     }
                 }
             }
@@ -491,7 +503,19 @@ impl Connection {
             ToDaemon::Act {
                 act: Act::MarkReviewed { session, path, now },
                 ..
-            } => vec![Effect::Reviewed { session, path, now }],
+            } => vec![Effect::Reviewed {
+                session,
+                path,
+                mark: snapshots::Mark::On(now),
+            }],
+            ToDaemon::Act {
+                act: Act::UnmarkReviewed { session, path },
+                ..
+            } => vec![Effect::Reviewed {
+                session,
+                path,
+                mark: snapshots::Mark::Off,
+            }],
             ToDaemon::Act { request, act } => vec![Effect::Act { request, act }],
             ToDaemon::ShutDown => vec![Effect::Hub(Ask::ShutDown)],
             ToDaemon::Read { request, read } => vec![Effect::Read { request, read }],
@@ -534,7 +558,9 @@ async fn act_for(request: ActId, act: Act, outbox: mpsc::Sender<FromDaemon>) {
         | Act::FocusWindowOf { .. }
         | Act::StopSession(_)) => act,
         // For the changes' keeper, which a window's connection hands them to.
-        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } => return,
+        Act::ChangesLooked { .. } | Act::MarkReviewed { .. } | Act::UnmarkReviewed { .. } => {
+            return;
+        }
     };
     if let Act::CreateProject { parent, name, git } = act {
         let created =
@@ -731,7 +757,8 @@ fn perform(act: Act) -> Result<(), ActFailure> {
         | Act::RemoveApiKey
         | Act::CheckApiKey
         | Act::ChangesLooked { .. }
-        | Act::MarkReviewed { .. } => {}
+        | Act::MarkReviewed { .. }
+        | Act::UnmarkReviewed { .. } => {}
     }
     Ok(())
 }
@@ -1376,7 +1403,7 @@ impl Session {
                         self.active = Instant::now();
                         self.pending.answered(&line);
                         self.publish_state(cwd, &mut last_state, states.as_ref());
-                        if let Some(job) = doing.follow(self.pending.turns > 0, place, &changed) {
+                        if let Some(job) = doing.follow(self.pending.in_turn(), place, &changed) {
                             keep(&keeper, job).await;
                         }
                         self.write(&mut stdin, line);
@@ -1409,7 +1436,7 @@ impl Session {
                             doing.saw(&line);
                             self.pending.said(&line);
                             self.publish_state(cwd, &mut last_state, states.as_ref());
-                            if let Some(job) = doing.follow(self.pending.turns > 0, place, &changed) {
+                            if let Some(job) = doing.follow(self.pending.in_turn(), place, &changed) {
                                 keep(&keeper, job).await;
                             }
                         }
@@ -1506,6 +1533,9 @@ struct Pending {
     /// Turns under way: prompts written, and not yet ended by a result. Counted as the window
     /// counts them, for one that attaches meanwhile.
     turns: usize,
+    /// A turn the session started itself, as for another session's message: no prompt was
+    /// written for it, so Claude's first words tell it, and its result ends it.
+    own_turn: bool,
 }
 
 impl Pending {
@@ -1560,8 +1590,12 @@ impl Pending {
             }
             (PeekedKind::Result, _, _) => {
                 self.turns = self.turns.saturating_sub(1);
+                self.own_turn = false;
                 // No foreground task outlives its turn, and the list names those that run on.
                 self.open_tasks.clear();
+            }
+            (PeekedKind::Assistant | PeekedKind::StreamEvent, _, _) if self.turns == 0 => {
+                self.own_turn = true;
             }
             _ => {}
         }
@@ -1583,6 +1617,8 @@ impl Pending {
             | PeekedKind::ControlRequest
             | PeekedKind::ControlCancelRequest
             | PeekedKind::Result
+            | PeekedKind::Assistant
+            | PeekedKind::StreamEvent
             | PeekedKind::Other => {}
         }
     }
@@ -1594,11 +1630,16 @@ impl Pending {
                 question: question_summary(&asked.line, cwd),
                 since: asked.since,
             }
-        } else if self.turns > 0 {
+        } else if self.in_turn() {
             HostedState::Busy
         } else {
             HostedState::Idle
         }
+    }
+
+    /// A turn is under way: one a prompt started, or one the session started itself.
+    fn in_turn(&self) -> bool {
+        self.turns > 0 || self.own_turn
     }
 
     fn lines(&self) -> impl Iterator<Item = &String> {
@@ -2401,6 +2442,29 @@ mod tests {
 
         pending.said(result);
         assert_eq!(pending.state(here), HostedState::Idle);
+    }
+
+    /// The gap the Changes view had: a turn the session starts itself, for another session's
+    /// message, has no prompt of the window's; Claude's first words start it, its result ends
+    /// it. Within a prompted turn they start nothing more.
+    #[test]
+    fn a_turn_the_session_starts_itself_is_a_turn() {
+        let mut pending = Pending::default();
+        let streamed = r#"{"type":"stream_event","event":{"type":"message_start"}}"#;
+        let said = r#"{"type":"assistant","message":{"content":[]},"parent_tool_use_id":null}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false}"#;
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"Hi"},"parent_tool_use_id":null,"session_id":"default"}"#;
+
+        pending.said(streamed);
+        assert!(pending.in_turn());
+        pending.said(said);
+        pending.said(result);
+        assert!(!pending.in_turn());
+
+        pending.answered(prompt);
+        pending.said(said);
+        pending.said(result);
+        assert!(!pending.in_turn(), "a prompted turn ends with its result");
     }
 
     #[test]

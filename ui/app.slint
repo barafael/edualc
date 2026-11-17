@@ -1467,9 +1467,12 @@ component WatchBar inherits Rectangle {
                 horizontal-stretch: 1;
             }
         }
-        if !root.confirming: HorizontalLayout {
+        // In a narrow window the buttons go onto more lines.
+        if !root.confirming: FlexboxLayout {
+            flex-direction: FlexboxLayoutDirection.row;
+            flex-wrap: FlexboxLayoutWrap.wrap;
+            alignment: LayoutAlignment.end;
             spacing: Theme.space-s;
-            alignment: end;
             if Session.can-go-to-window: TextButton {
                 text: "Go to its window";
                 has-icon: true;

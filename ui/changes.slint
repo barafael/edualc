@@ -221,10 +221,10 @@ component DiffPane inherits VerticalLayout {
             text: Changes.file-review == ChangeReview.reviewed ? "Reviewed"
                 : Changes.file-review == ChangeReview.changed-since ? "Changed since: mark again"
                 : "Mark reviewed";
-            enabled: Changes.file-review != ChangeReview.reviewed;
+            label: Changes.file-review == ChangeReview.reviewed ? "Reviewed: press to take the mark off" : self.text;
             has-icon: Changes.file-review == ChangeReview.reviewed;
             icon: @image-url("@lucide/check.svg");
-            clicked => { Changes.mark-reviewed(); }
+            clicked => { Changes.toggle-reviewed(); }
         }
     }
     if Changes.diff-note != "": HorizontalLayout {

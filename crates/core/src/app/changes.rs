@@ -247,8 +247,8 @@ impl<F: Frontend> App<F> {
         self.redraw.changes = true;
     }
 
-    /// Marks the file shown reviewed, as it is now.
-    pub(super) fn mark_reviewed(&mut self) {
+    /// Marks the file shown reviewed, as it is now; or, marked so, takes the mark off.
+    pub(super) fn toggle_reviewed(&mut self) {
         let Some(view) = self.changes.as_mut() else {
             return;
         };
@@ -262,11 +262,18 @@ impl<F: Frontend> App<F> {
         else {
             return;
         };
-        file.review = Review::Reviewed;
-        let act = Act::MarkReviewed {
-            session: view.session.clone(),
-            path: file.root.join(&file.path),
-            now: file.now,
+        let session = view.session.clone();
+        let path = file.root.join(&file.path);
+        let act = if file.review == Review::Reviewed {
+            file.review = Review::NotReviewed;
+            Act::UnmarkReviewed { session, path }
+        } else {
+            file.review = Review::Reviewed;
+            Act::MarkReviewed {
+                session,
+                path,
+                now: file.now,
+            }
         };
         self.ask_desktop(act, Acting::Desktop);
         self.redraw.changes = true;

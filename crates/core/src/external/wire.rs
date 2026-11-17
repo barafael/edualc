@@ -1463,6 +1463,10 @@ pub enum PeekedKind {
     User,
     /// From the process, a turn's end.
     Result,
+    /// From the process, what Claude says, whole or as it streams: with no prompt of the
+    /// window's under way, a turn it started itself (for another session's message).
+    Assistant,
+    StreamEvent,
     #[serde(other)]
     Other,
 }
