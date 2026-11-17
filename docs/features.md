@@ -349,6 +349,8 @@ program starts with that program's default.
 - **Modes:** the mode menu lists agy's own modes, by agy's names, with the one agy is in ticked.
   agy takes a mode as a turn starts. Switch during a turn, and the window says that agy uses the
   new mode from your next prompt. `--permission-mode` takes Claude Code's modes, so agy refuses it.
+- **Questions:** agy's questions appear as Claude's do, as choices with room for an answer in
+  your own words. Your answers go back as the form agy asked them in.
 - **Subagents and swarms:** the subagents an agy session starts, and its swarm's workers, show
   among the session's background tasks, with the swarm's board as one more. Click one to follow
   it in the side panel, as you follow a Claude Code subagent. edualc reads them from agy's own

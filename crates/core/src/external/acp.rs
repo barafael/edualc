@@ -42,8 +42,82 @@ pub enum AgentMethod {
     SessionUpdate,
     #[serde(rename = "session/request_permission")]
     RequestPermission,
+    /// A form for the user to fill in: agy asks its questions so (see [`Elicitation`]).
+    #[serde(rename = "elicitation/create")]
+    ElicitationCreate,
     #[serde(untagged)]
     Other(String),
+}
+
+/// An `elicitation/create` request's parameters, as agy 1.5.9 sends them for its
+/// `ask_question` tool: a form of one field per question (`q1`, `q2`, …), its options as
+/// `const` values with their labels as `title`, and a free-text field beside each
+/// (`q1_other`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Elicitation {
+    /// The tool call it asks for.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    pub mode: ElicitationMode,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub requested_schema: FormSchema,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ElicitationMode {
+    Form,
+    #[serde(other)]
+    Other,
+}
+
+/// The form's fields, in the order the agent gave them.
+#[derive(Debug, Default, Deserialize)]
+pub struct FormSchema {
+    #[serde(default)]
+    pub properties: indexmap::IndexMap<String, FormField>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    #[serde(rename = "type")]
+    pub kind: FieldKind,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The options of a field that takes one.
+    #[serde(default)]
+    pub one_of: Vec<FormOption>,
+    /// The options of a field that takes several.
+    #[serde(default)]
+    pub items: Option<FormItems>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKind {
+    String,
+    Array,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormItems {
+    #[serde(default)]
+    pub any_of: Vec<FormOption>,
+}
+
+/// An option: the value the form takes, and the label shown.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FormOption {
+    #[serde(rename = "const")]
+    pub value: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -394,13 +468,23 @@ pub struct InitializeParams {
     pub client_info: ClientInfo,
 }
 
-/// What edualc lets the agent ask of it: none of the file and terminal requests.
+/// What edualc lets the agent ask of it: forms, and none of the file and terminal requests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientCapabilities {
     pub fs: FileCapabilities,
     pub terminal: bool,
+    pub elicitation: ElicitationCapabilities,
 }
+
+/// The kinds of elicitation edualc answers: forms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ElicitationCapabilities {
+    pub form: FormCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FormCapabilities {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -511,6 +595,30 @@ pub struct PermissionAnswer {
     pub outcome: Outcome,
 }
 
+/// The answer to an elicitation: the form filled in, or turned down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum ElicitationAnswer {
+    Accept {
+        content: FormContent,
+    },
+    /// The user said no.
+    Decline,
+    /// Nobody answered.
+    Cancel,
+}
+
+/// A form filled in: each field's value, by the field's name.
+pub type FormContent = indexmap::IndexMap<String, FieldValue>;
+
+/// What a field was filled in with: text, or the options picked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FieldValue {
+    Text(String),
+    Picked(Vec<String>),
+}
+
 /// The `result` or the `error` of an answer to a request of the agent's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -544,11 +652,11 @@ pub struct Notice {
 
 /// An answer to a request of the agent's, under the `id` it came with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Answer {
+pub struct Answer<T> {
     pub jsonrpc: JsonRpc,
     pub id: Value,
     #[serde(flatten)]
-    pub reply: Reply<PermissionAnswer>,
+    pub reply: Reply<T>,
 }
 
 /// What edualc writes to the agent, one line each.
@@ -556,7 +664,8 @@ pub struct Answer {
 pub enum ToAgent {
     Request(Request),
     Notice(Notice),
-    Answer(Answer),
+    Answer(Answer<PermissionAnswer>),
+    Elicited(Answer<ElicitationAnswer>),
 }
 
 impl ToAgent {
@@ -567,6 +676,7 @@ impl ToAgent {
             Self::Request(request) => serde_json::to_string(request),
             Self::Notice(notice) => serde_json::to_string(notice),
             Self::Answer(answer) => serde_json::to_string(answer),
+            Self::Elicited(answer) => serde_json::to_string(answer),
         }
     }
 }

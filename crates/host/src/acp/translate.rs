@@ -213,6 +213,35 @@ pub struct Translator {
     waiting: HashMap<RequestId, String>,
     /// The senders the user let in for the session, by the names they gave.
     senders_let_in: BTreeSet<String>,
+    /// The agent's forms the window was asked as questions, by the request asking.
+    forms: HashMap<RequestId, Form>,
+}
+
+/// A form of the agent's, asked in the window as Claude Code's questions are.
+#[derive(Debug)]
+struct Form {
+    /// The agent's request, answered with the form filled in.
+    id: Value,
+    questions: Vec<FormQuestion>,
+}
+
+/// A question of a form, and the fields its answer goes to.
+#[derive(Debug, PartialEq, Eq)]
+struct FormQuestion {
+    question: String,
+    field: String,
+    takes: Takes,
+    options: Vec<acp::FormOption>,
+    /// The field for an answer in words, where the options don't hold it.
+    other: Option<String>,
+}
+
+/// What a question's field takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Takes {
+    OneOption,
+    Options,
+    Text,
 }
 
 /// How much of the model's context window the session uses, and the window's size, in tokens.
@@ -257,6 +286,7 @@ impl Translator {
             context: None,
             waiting: HashMap::new(),
             senders_let_in: BTreeSet::new(),
+            forms: HashMap::new(),
         }
     }
 
@@ -271,6 +301,9 @@ impl Translator {
                         write_text_file: false,
                     },
                     terminal: false,
+                    elicitation: acp::ElicitationCapabilities {
+                        form: acp::FormCapabilities {},
+                    },
                 },
                 client_info: acp::ClientInfo {
                     name: "edualc".to_owned(),
@@ -309,6 +342,106 @@ impl Translator {
             id,
             reply,
         }))
+    }
+
+    /// The answer to a form of the agent's, under the id it came with.
+    fn form_answer(id: Value, answer: acp::ElicitationAnswer) -> Effect {
+        Effect::ToAgent(acp::ToAgent::Elicited(acp::Answer {
+            jsonrpc: acp::JsonRpc::TwoPointZero,
+            id,
+            reply: acp::Reply::Result(answer),
+        }))
+    }
+
+    /// The agent asks the user to fill in a form: the window asks its questions as Claude
+    /// Code's AskUserQuestion does, on the tool call the form is for.
+    fn asked_form(&mut self, id: Value, form: acp::Elicitation) -> Vec<Effect> {
+        let questions = form_questions(&form.requested_schema);
+        if form.mode != acp::ElicitationMode::Form || questions.is_empty() {
+            tracing::warn!(mode = ?form.mode, message = %form.message, "a form edualc can't ask: declined");
+            return vec![Self::form_answer(id, acp::ElicitationAnswer::Decline)];
+        }
+        let asked = wire::Questions {
+            questions: questions
+                .iter()
+                .map(|question| wire::Question {
+                    question: question.question.clone(),
+                    header: String::new(),
+                    options: question
+                        .options
+                        .iter()
+                        .map(|option| wire::QuestionOption {
+                            label: option.title.clone(),
+                            description: String::new(),
+                            preview: String::new(),
+                            rest: Map::new(),
+                        })
+                        .collect(),
+                    multi_select: question.takes == Takes::Options,
+                    rest: Map::new(),
+                })
+                .collect(),
+            answers: std::collections::BTreeMap::new(),
+            annotations: std::collections::BTreeMap::new(),
+            rest: Map::new(),
+        };
+        let input = match serde_json::to_value(&asked) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::warn!(%error, "a form's questions can't be written: cancelled");
+                return vec![Self::form_answer(id, acp::ElicitationAnswer::Cancel)];
+            }
+        };
+        let request = RequestId::from(self.local_id("form"));
+        self.forms.insert(request.clone(), Form { id, questions });
+        vec![Effect::ToWindow(Message::ControlRequest {
+            request_id: request,
+            request: IncomingRequest::CanUseTool {
+                tool_name: ToolName::AskUserQuestion,
+                input,
+                permission_suggestions: Vec::new(),
+                description: form.message,
+                tool_use_id: form.tool_call_id.map(ToolUseId::from),
+            },
+        })]
+    }
+
+    /// The window's answer to a form's questions: the form filled in, or turned down.
+    fn form_answered(form: Form, reply: wire::Reply) -> Effect {
+        let answer = match reply {
+            wire::Reply::Success {
+                response: wire::PermissionResult::Allow { updated_input, .. },
+                ..
+            } => {
+                let given = match updated_input {
+                    wire::ToolInput::Answered(questions) => Some(questions.answers),
+                    wire::ToolInput::AsAsked(input) => {
+                        serde_json::from_value::<wire::GivenAnswers>(input)
+                            .inspect_err(|error| {
+                                tracing::warn!(%error, "a form's answers edualc can't read");
+                            })
+                            .ok()
+                            .map(|given| given.answers)
+                    }
+                    wire::ToolInput::Plan(_) => None,
+                };
+                match given {
+                    Some(answers) => acp::ElicitationAnswer::Accept {
+                        content: filled_in(&form.questions, &answers),
+                    },
+                    None => acp::ElicitationAnswer::Cancel,
+                }
+            }
+            wire::Reply::Success {
+                response: wire::PermissionResult::Deny { .. },
+                ..
+            } => acp::ElicitationAnswer::Decline,
+            wire::Reply::Error { error, .. } => {
+                tracing::warn!(%error, "the window couldn't ask a form's questions: cancelled");
+                acp::ElicitationAnswer::Cancel
+            }
+        };
+        Self::form_answer(form.id, answer)
     }
 
     /// Tells the agent to stop the turn under way.
@@ -388,6 +521,17 @@ impl Translator {
                             outcome: acp::Outcome::Cancelled,
                         }),
                     )]
+                }
+            },
+            Incoming::Request {
+                id,
+                method: AgentMethod::ElicitationCreate,
+                params,
+            } => match serde_json::from_value::<acp::Elicitation>(params) {
+                Ok(form) => self.asked_form(id, form),
+                Err(error) => {
+                    tracing::warn!(%error, "a form edualc can't read: cancelled");
+                    vec![Self::form_answer(id, acp::ElicitationAnswer::Cancel)]
                 }
             },
             Incoming::Request { id, method, .. } => {
@@ -739,6 +883,9 @@ impl Translator {
                 request_id
             }
         };
+        if let Some(form) = self.forms.remove(request) {
+            return vec![Self::form_answered(form, reply)];
+        }
         if let Some(content) = self.waiting.remove(request) {
             return match reply {
                 wire::Reply::Success {
@@ -1382,6 +1529,99 @@ impl Translator {
             })],
         }
     }
+}
+
+/// The questions a form asks: one for each field with options, or for text alone. agy 1.5.9
+/// puts the field for an answer in words beside each question's as `<field>_other`, which goes
+/// with that question rather than being one of its own.
+fn form_questions(schema: &acp::FormSchema) -> Vec<FormQuestion> {
+    let fields = &schema.properties;
+    let other_of = |name: &str| {
+        let other = format!("{name}_other");
+        fields.contains_key(&other).then_some(other)
+    };
+    let beside = |name: &str| {
+        name.strip_suffix("_other").is_some_and(|base| {
+            fields
+                .get(base)
+                .is_some_and(|field| !options_of(field).1.is_empty())
+        })
+    };
+    fields
+        .iter()
+        .filter(|(name, _)| !beside(name))
+        .filter_map(|(name, field)| {
+            let (takes, options) = options_of(field);
+            if takes == Takes::Text && field.kind != acp::FieldKind::String {
+                tracing::warn!(field = %name, "a form's field edualc doesn't ask: left out");
+                return None;
+            }
+            Some(FormQuestion {
+                question: field.title.clone().unwrap_or_else(|| name.clone()),
+                field: name.clone(),
+                other: (takes != Takes::Text).then(|| other_of(name)).flatten(),
+                takes,
+                options,
+            })
+        })
+        .collect()
+}
+
+/// What a form's field takes, and its options.
+fn options_of(field: &acp::FormField) -> (Takes, Vec<acp::FormOption>) {
+    if !field.one_of.is_empty() {
+        return (Takes::OneOption, field.one_of.clone());
+    }
+    match &field.items {
+        Some(items) if !items.any_of.is_empty() => (Takes::Options, items.any_of.clone()),
+        Some(_) | None => (Takes::Text, Vec::new()),
+    }
+}
+
+/// The form filled in from the window's answers, by question. An answer that is an option's
+/// label (or labels, for a question that takes several) is the option's value; anything else
+/// was typed, and goes in the question's field for words, or its own.
+fn filled_in(
+    questions: &[FormQuestion],
+    answers: &std::collections::BTreeMap<String, String>,
+) -> acp::FormContent {
+    let mut content = acp::FormContent::new();
+    for question in questions {
+        let Some(answer) = answers.get(&question.question) else {
+            continue;
+        };
+        let value_of = |label: &str| {
+            question
+                .options
+                .iter()
+                .find(|option| option.title == label)
+                .map(|option| option.value.clone())
+        };
+        let picked = match question.takes {
+            Takes::OneOption => value_of(answer).map(acp::FieldValue::Text),
+            Takes::Options => answer
+                .split(", ")
+                .map(value_of)
+                .collect::<Option<Vec<String>>>()
+                .map(acp::FieldValue::Picked),
+            Takes::Text => None,
+        };
+        match (picked, &question.other) {
+            (Some(picked), _) => {
+                content.insert(question.field.clone(), picked);
+            }
+            (None, Some(other)) => {
+                content.insert(other.clone(), acp::FieldValue::Text(answer.clone()));
+            }
+            (None, None) => {
+                content.insert(
+                    question.field.clone(),
+                    acp::FieldValue::Text(answer.clone()),
+                );
+            }
+        }
+    }
+    content
 }
 
 /// Why the agent ended a turn before it was done, in words; none for a turn it finished or the
@@ -2559,6 +2799,107 @@ mod tests {
         assert_eq!(
             other.first().and_then(|line| line.get("type")),
             Some(&json!("control_request"))
+        );
+    }
+
+    /// agy's form for its `ask_question` tool, as agy 1.5.9 sent it (descriptions shortened):
+    /// a question taking one option, one taking several, each with a field for words beside.
+    const FORM: &str = r#"{"jsonrpc":"2.0","id":"1","method":"elicitation/create","params":{"sessionId":"s","toolCallId":"call_1","mode":"form","message":"The agent has 2 questions.","requestedSchema":{"type":"object","properties":{"q1":{"type":"string","title":"Tabs or spaces?","oneOf":[{"const":"1","title":"(Recommended) Spaces"},{"const":"2","title":"Tabs"}]},"q1_other":{"type":"string","title":"Other","description":"Optional free-form answer to: Tabs or spaces?"},"q2":{"type":"array","title":"Which colours?","items":{"anyOf":[{"const":"1","title":"(Recommended) Red"},{"const":"2","title":"Green"},{"const":"3","title":"Blue"}]}},"q2_other":{"type":"string","title":"Other","description":"Optional free-form answer to: Which colours?"}}}}}"#;
+
+    /// agy's form is asked as Claude Code's questions are, on its tool call, in its order; the
+    /// labels picked go back as the options' values, typed words in the field for words beside,
+    /// and turning the questions down declines the form.
+    #[test]
+    fn agys_form_is_asked_as_questions() {
+        let answer = |request: &Value, response: Value| {
+            serde_json::to_string(&json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": request, "response": response},
+            }))
+            .expect("a line")
+        };
+        let mut translator = opened();
+        let asked = window_lines(&translator.agent_said(FORM));
+        let [card] = asked.as_slice() else {
+            panic!("one question: {asked:?}");
+        };
+        assert_eq!(
+            card.pointer("/request/tool_name"),
+            Some(&json!("AskUserQuestion"))
+        );
+        assert_eq!(card.pointer("/request/tool_use_id"), Some(&json!("call_1")));
+        let questions = card
+            .pointer("/request/input/questions")
+            .and_then(Value::as_array)
+            .expect("questions");
+        let asked_as: Vec<(Option<&Value>, Option<&Value>, usize)> = questions
+            .iter()
+            .map(|question| {
+                (
+                    question.get("question"),
+                    question.get("multiSelect"),
+                    question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len),
+                )
+            })
+            .collect();
+        assert_eq!(
+            asked_as,
+            [
+                (Some(&json!("Tabs or spaces?")), Some(&json!(false)), 2),
+                (Some(&json!("Which colours?")), Some(&json!(true)), 3),
+            ]
+        );
+        let request = card.get("request_id").cloned().expect("an id");
+        let answered = agent_lines(&translator.window_said(&answer(
+            &request,
+            json!({"behavior": "allow", "updatedInput": {
+                "questions": [],
+                "answers": {"Tabs or spaces?": "Tabs", "Which colours?": "(Recommended) Red, Blue"},
+            }}),
+        )));
+        assert_eq!(
+            answered.first(),
+            Some(&json!({"jsonrpc": "2.0", "id": "1", "result": {
+                "action": "accept", "content": {"q1": "2", "q2": ["1", "3"]},
+            }}))
+        );
+
+        let asked = window_lines(&translator.agent_said(FORM));
+        let request = asked
+            .first()
+            .and_then(|card| card.get("request_id"))
+            .cloned()
+            .expect("asked again");
+        let typed = agent_lines(&translator.window_said(&answer(
+            &request,
+            json!({"behavior": "allow", "updatedInput": {
+                "questions": [],
+                "answers": {"Tabs or spaces?": "Whatever the file uses"},
+            }}),
+        )));
+        assert_eq!(
+            typed
+                .first()
+                .and_then(|line| line.pointer("/result/content")),
+            Some(&json!({"q1_other": "Whatever the file uses"}))
+        );
+
+        let asked = window_lines(&translator.agent_said(FORM));
+        let request = asked
+            .first()
+            .and_then(|card| card.get("request_id"))
+            .cloned()
+            .expect("asked again");
+        let declined = agent_lines(&translator.window_said(&answer(
+            &request,
+            json!({"behavior": "deny", "message": "The user chose not to answer."}),
+        )));
+        assert_eq!(
+            declined.first().and_then(|line| line.get("result")),
+            Some(&json!({"action": "decline"}))
         );
     }
 

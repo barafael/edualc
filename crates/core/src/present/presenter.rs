@@ -1085,12 +1085,12 @@ impl<F: Frontend> Presenter<F> {
                 ..
             } => {
                 prompt.kind = PromptKind::Question;
+                let agent = backend.agent();
                 prompt.title = if asked.questions.len() > 1 {
-                    "Claude has questions"
+                    format!("{agent} has questions")
                 } else {
-                    "Claude has a question"
-                }
-                .to_owned();
+                    format!("{agent} has a question")
+                };
                 prompt.questions = questions(&asked.questions, picked, other);
             }
             AskKind::Plan {

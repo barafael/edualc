@@ -568,7 +568,7 @@ component PromptBar inherits Rectangle {
                             edited(text) => { Prompt.set-other(q, text); }
                         }
                         Field {
-                            placeholder: "Notes for Claude, with the answer (optional)";
+                            placeholder: "Notes for " + Session.agent + ", with the answer (optional)";
                             edited(text) => { Prompt.set-notes(q, text); }
                         }
                     }
