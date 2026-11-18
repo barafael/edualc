@@ -6,9 +6,9 @@
 use std::net::{IpAddr, SocketAddr};
 
 use clap::Parser as _;
+use edualc_core::ipc;
 use edualc_core::ipc::pairing::Pairing;
-use edualc_core::ipc::{self, Token};
-use edualc_host::net::{self, state::State};
+use edualc_host::net::{self, state::Listening, state::State};
 
 /// Where windows are to reach edualcd unless told otherwise: this machine alone.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
@@ -32,7 +32,8 @@ struct Args {
     /// this machine's name if it listens on all.
     #[arg(long, value_name = "HOST")]
     name: Option<String>,
-    /// Print the address a window pairs with, which holds the token, and end.
+    /// Print the address a window pairs with, which holds the token, and end: that of the
+    /// edualcd that serves the network (its --listen and --name), unless given here.
     #[arg(long, conflicts_with = "demo")]
     pair: bool,
     /// Serve the demo instead, over plain HTTP (at --listen's address): Claude Code played by a
@@ -44,8 +45,9 @@ struct Args {
 
 const AFTER_HELP: &str = "edualcd makes its certificate and its token on its first start and \
 keeps them in $XDG_STATE_HOME/edualcd (~/.local/state/edualcd); remove that folder to make them \
-anew. EDUALC_TOKEN, if set, is the token instead. Neither is taken on the command line, which \
-every user of the machine can read.";
+anew, or write a token of your own to its file `token`. The token is taken from there alone: not \
+on the command line, which every user of the machine can read, nor from the environment, which \
+every program edualcd runs inherits.";
 
 pub fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -80,7 +82,21 @@ pub fn main() -> std::process::ExitCode {
     if listen.is_none() && !pair {
         return edualc_host::run(edualc_host::Options::default());
     }
-    match network(listen.unwrap_or_else(default_listen), name, pair) {
+    let (listen, name) = match (listen, pair) {
+        (Some(listen), _) => (listen, name),
+        // Where the edualcd serving the network listens, which a service's --listen may have
+        // moved from the default.
+        (None, true) => match Listening::kept() {
+            Ok(Some(kept)) => (kept.address, name.or(kept.name)),
+            Ok(None) => (default_listen(), name),
+            Err(error) => {
+                eprintln!("edualcd: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        (None, false) => (default_listen(), name),
+    };
+    match network(listen, name, pair) {
         Ok(Some(options)) => edualc_host::run(options),
         Ok(None) => std::process::ExitCode::SUCCESS,
         Err(message) => {
@@ -105,9 +121,9 @@ fn network(
 ) -> Result<Option<edualc_host::Options>, String> {
     let state = State::load(&certificate_names(listen.ip(), name.clone()))
         .map_err(|error| error.to_string())?;
-    let token = token(&state)?;
+    let token = state.token.clone();
     let pairing = Pairing {
-        host: name.unwrap_or_else(|| host_of(listen.ip())),
+        host: name.clone().unwrap_or_else(|| host_of(listen.ip())),
         port: listen.port(),
         fingerprint: state.fingerprint(),
         token: token.clone(),
@@ -117,31 +133,23 @@ fn network(
         return Ok(None);
     }
     page_files()?;
-    let acceptor = ipc::tls::acceptor(state.certificate, state.key)
+    Listening {
+        address: listen,
+        name,
+    }
+    .keep()
+    .map_err(|error| error.to_string())?;
+    let tls = ipc::tls::server(state.certificate, state.key)
         .map_err(|error| format!("its certificate doesn't serve: {error}"))?;
     tell_address(&pairing);
     Ok(Some(edualc_host::Options {
         network: Some(net::Config {
             listen,
-            acceptor,
+            tls,
             token,
             page: Some(dioxus::server::router(crate::web::App)),
         }),
     }))
-}
-
-/// EDUALC_TOKEN's, or the one kept.
-fn token(state: &State) -> Result<Token, String> {
-    let variable = ipc::TOKEN_VARIABLE;
-    match std::env::var(variable) {
-        // An empty token would let every line through.
-        Ok(token) if token.is_empty() => Err(format!(
-            "{variable} is empty; give one no one can guess, or unset it"
-        )),
-        Ok(token) => Ok(Token::new(token)),
-        Err(std::env::VarError::NotPresent) => Ok(state.token.clone()),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{variable} isn't text")),
-    }
 }
 
 /// The host windows are told to reach edualcd at: the address it listens at, or this machine's

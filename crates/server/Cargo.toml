@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 edualc-core.workspace = true
-dioxus = { version = "0.7.10", features = ["fullstack", "router"] }
+# Fullstack only for the page and its server (`web`, `server`): dx builds a server beside
+# whatever names it, and the Android app (`mobile`) reaches edualcd by its own line, with none.
+dioxus = { version = "0.7.10", features = ["router"] }
 serde.workspace = true
 async-channel.workspace = true
 tracing.workspace = true
@@ -38,11 +40,10 @@ gloo-net = { version = "0.6", optional = true, default-features = false, feature
 # The page's timers: the prompt's buttons arm a moment after a request shows.
 gloo-timers = { version = "0.4", features = ["futures"], optional = true }
 
-# The Android app's: Android's own (the clipboard, notifications, its files) through JNI, from
-# the activity `ndk-context` holds, and links opened in its browser. All three already built for
-# Dioxus's WebView there (wry, dioxus-desktop).
+# The Android app's: Android's own (the clipboard, notifications, its files) through JNI, with
+# the VM and activity wry hands over (`wry::prelude::dispatch`), and links opened in its browser.
+# Both already built for Dioxus's WebView there (wry, dioxus-desktop); jni at wry's version.
 jni = { version = "0.21", optional = true }
-ndk-context = { version = "0.1", optional = true }
 # The app's own files: the session shown last.
 serde_json = { workspace = true, optional = true }
 webbrowser = { version = "1.2", optional = true }
@@ -57,13 +58,13 @@ mobile = [
     "dep:tokio",
     "dep:thiserror",
     "dep:jni",
-    "dep:ndk-context",
     "dep:serde_json",
     "dep:webbrowser",
 ]
-web = ["dioxus/web", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net", "dep:js-sys"]
+web = ["dioxus/web", "dioxus/fullstack", "dep:web-sys", "dep:wasm-bindgen-futures", "dep:gloo-timers", "dep:gloo-net", "dep:js-sys"]
 server = [
     "dioxus/server",
+    "dioxus/fullstack",
     "dep:edualc-host",
     "dep:tokio",
     "dep:tracing-subscriber",

@@ -20,7 +20,7 @@ pub use listener::{serve, serve_plain};
 /// must show.
 pub struct Config {
     pub listen: std::net::SocketAddr,
-    pub acceptor: tokio_rustls::TlsAcceptor,
+    pub tls: rustls::ServerConfig,
     pub token: crate::ipc::Token,
     /// What else is served over the same connections: a page and its files.
     pub page: Option<axum::Router>,

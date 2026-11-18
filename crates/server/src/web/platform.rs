@@ -27,6 +27,9 @@ mod here {
         java::notify(summary.to_owned(), body.to_owned());
     }
 
+    /// Nothing: Android's question is asked as the window opens, with the app in front.
+    pub fn ask_to_notify() {}
+
     /// Puts `text` on Android's clipboard.
     pub fn copy(text: &str) {
         java::copy(text.to_owned());
@@ -96,23 +99,27 @@ mod here {
         }
     }
 
-    /// Shows a notification, if the browser lets the page; asks it once, for the next.
+    /// Shows a notification, if the browser lets the page (`ask_to_notify`).
     pub fn notify(summary: &str, body: &str) {
         use web_sys::{Notification, NotificationOptions, NotificationPermission};
-        match Notification::permission() {
-            NotificationPermission::Granted => {
-                let options = NotificationOptions::new();
-                options.set_body(body);
-                if Notification::new_with_options(summary, &options).is_err() {
-                    tracing::warn!("the browser showed no notification");
-                }
+        if Notification::permission() == NotificationPermission::Granted {
+            let options = NotificationOptions::new();
+            options.set_body(body);
+            if Notification::new_with_options(summary, &options).is_err() {
+                tracing::warn!("the browser showed no notification");
             }
-            NotificationPermission::Default => {
-                if Notification::request_permission().is_err() {
-                    tracing::debug!("the browser wasn't asked to notify");
-                }
-            }
-            NotificationPermission::Denied | _ => {}
+        }
+    }
+
+    /// Asks the browser to let the page notify, unless it was answered already. Only from
+    /// what you do (a click, a key): Firefox and Safari refuse a question asked otherwise, as
+    /// one asked as a notification comes would be, and Chrome hides it.
+    pub fn ask_to_notify() {
+        use web_sys::{Notification, NotificationPermission};
+        if Notification::permission() == NotificationPermission::Default
+            && Notification::request_permission().is_err()
+        {
+            tracing::debug!("the browser wasn't asked to notify");
         }
     }
 
@@ -154,6 +161,8 @@ mod here {
 #[cfg(not(any(feature = "web", feature = "mobile")))]
 mod here {
     pub fn copy(_text: &str) {}
+
+    pub fn ask_to_notify() {}
 
     #[expect(clippy::unused_async, reason = "as the page's")]
     pub async fn sleep(_ms: u32) {}

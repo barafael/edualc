@@ -13,9 +13,6 @@
 //! else on the projects, to choose from, as the page does. Closing it (the settings' "Choose
 //! another edualcd") goes back to the start screen.
 
-// Dioxus's `rsx!` keeps its templates in `OnceLock`s: its state, not ours (as in `web`).
-#![allow(clippy::disallowed_types)]
-
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
@@ -37,6 +34,8 @@ const HERON: Asset = asset!("/assets/heron/heron.svg");
 /// Where the app is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stage {
+    /// Reading what the app kept, as it starts.
+    Opening,
     /// On the start screen; why the last edualcd wasn't reached or was left, if it was.
     Choosing(Option<String>),
     /// Reaching the edualcd paired as this name.
@@ -78,10 +77,23 @@ impl Kept {
     const SERVERS: &str = "servers.json";
     const LAST: &str = "last-shown.json";
 
-    fn load() -> (Self, Option<String>) {
-        let dir = match java::files_dir() {
-            Ok(dir) => dir,
-            Err(error) => return (Self::default(), Some(error.to_string())),
+    /// What was kept, asked of Android beside the window; why nothing was, if nothing was.
+    async fn load() -> (Self, Option<String>) {
+        let (answer, answered) = async_channel::bounded(1);
+        java::files_dir(move |dir| {
+            if answer.send_blocking(dir).is_err() {
+                tracing::debug!("the app ended as Android named its folder");
+            }
+        });
+        let dir = match answered.recv().await {
+            Ok(Ok(dir)) => dir,
+            Ok(Err(error)) => return (Self::default(), Some(error.to_string())),
+            Err(_gone) => {
+                return (
+                    Self::default(),
+                    Some("Android named no folder for the app's files".to_owned()),
+                );
+            }
         };
         let last = std::fs::read(dir.join(Self::LAST))
             .ok()
@@ -156,7 +168,7 @@ pub fn App() -> Element {
     let view = use_hook(View::new);
     use_context_provider(|| view);
     let mut kept = use_signal(Kept::default);
-    let mut stage = use_signal(|| Stage::Choosing(None));
+    let mut stage = use_signal(|| Stage::Opening);
     let form = use_signal(Form::default);
     // Bumped by each reach and by giving one up: an answer for another is let go.
     let mut attempt = use_signal(|| 0_u32);
@@ -175,21 +187,23 @@ pub fn App() -> Element {
     });
     // Read as the app starts; the edualcd reached last is reached again at once.
     use_hook(move || {
-        let (loaded, problem) = Kept::load();
-        let default = loaded
-            .servers
-            .chosen(None)
-            .ok()
-            .filter(|_| problem.is_none());
-        kept.set(loaded);
-        match default {
-            Some((name, server)) => reaching(Reach {
-                name,
-                server,
-                keep: false,
-            }),
-            None => stage.set(Stage::Choosing(problem)),
-        }
+        spawn(async move {
+            let (loaded, problem) = Kept::load().await;
+            let default = loaded
+                .servers
+                .chosen(None)
+                .ok()
+                .filter(|_| problem.is_none());
+            kept.set(loaded);
+            match default {
+                Some((name, server)) => reaching(Reach {
+                    name,
+                    server,
+                    keep: false,
+                }),
+                None => stage.set(Stage::Choosing(problem)),
+            }
+        });
     });
     // The session shown, kept as it changes, to be opened again.
     let shown = use_memo(move || view.page.read().session.clone());
@@ -203,6 +217,9 @@ pub fn App() -> Element {
         }
     });
     match stage() {
+        Stage::Opening => rsx! {
+            Screen {}
+        },
         Stage::Running(_) => rsx! {
             Shell {}
         },
@@ -270,6 +287,9 @@ fn Start(
         } else {
             named
         };
+        if let Err(taken) = kept.peek().servers.free(&name, &server) {
+            return problem.set(Some(taken.to_string()));
+        }
         problem.set(None);
         reaching(Reach {
             name,
@@ -497,7 +517,17 @@ fn reach(
             }
         };
         if keep || kept.peek().servers.default_name() != Some(name.as_str()) {
-            kept.write().servers.pair(name.clone(), server.clone());
+            let paired = if keep {
+                kept.write().servers.pair(name.clone(), server.clone())
+            } else {
+                kept.write().servers.choose(&name);
+                Ok(())
+            };
+            // Checked as it was asked; another may have been paired by that name meanwhile.
+            if let Err(taken) = paired {
+                stage.set(Stage::Choosing(Some(taken.to_string())));
+                return;
+            }
             if let Some(problem) = kept.peek().save() {
                 tracing::warn!(%problem, "the paired edualcds weren't kept");
             }

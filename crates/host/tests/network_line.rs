@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, Message};
 
-type Client = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+type Client = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 /// An edualcd's network side, listening.
 struct Served {
@@ -28,8 +28,7 @@ async fn served() -> Served {
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("a certificate");
     let certificate = made.cert.der().to_vec();
     let fingerprint = Fingerprint::of(&certificate);
-    let acceptor =
-        ipc::tls::acceptor(certificate, made.signing_key.serialize_der()).expect("TLS serves");
+    let tls = ipc::tls::server(certificate, made.signing_key.serialize_der()).expect("TLS serves");
     let (lines, taken) = mpsc::channel(8);
     let app = net::router(Access::new(Token::new("secret".to_owned()), lines));
     let port = {
@@ -37,7 +36,7 @@ async fn served() -> Served {
         probe.local_addr().expect("its address").port()
     };
     let listen = SocketAddr::from(([127, 0, 0, 1], port));
-    tokio::spawn(net::serve(listen, acceptor, app));
+    tokio::spawn(net::serve(listen, tls, app));
     // Listening before it is reached.
     for _ in 0..100 {
         if TcpStream::connect(listen).await.is_ok() {
@@ -56,21 +55,19 @@ async fn connect(served: &Served, protocol: u32) -> Result<Client, tungstenite::
     let tcp = TcpStream::connect(("127.0.0.1", served.port))
         .await
         .expect("connects");
-    let connector = ipc::tls::connector(served.fingerprint).expect("a connector");
-    let secured = connector
-        .connect(
-            rustls::pki_types::ServerName::try_from("localhost").expect("a name"),
-            tcp,
-        )
-        .await
-        .expect("TLS, with the certificate pinned");
+    let tls = ipc::tls::client(served.fingerprint).expect("a configuration");
     let url = format!(
         "wss://localhost:{}/api/line?protocol={protocol}",
         served.port
     );
-    tokio_tungstenite::client_async(url, secured)
-        .await
-        .map(|(client, _response)| client)
+    tokio_tungstenite::client_async_tls_with_config(
+        url,
+        tcp,
+        None,
+        Some(tokio_tungstenite::Connector::Rustls(tls.into())),
+    )
+    .await
+    .map(|(client, _response)| client)
 }
 
 fn binary(message: &impl serde::Serialize) -> Message {
@@ -174,10 +171,12 @@ async fn what_isnt_a_token_in_a_frame_of_its_own_is_refused() {
 async fn a_line_that_shows_no_token_in_time_is_closed() {
     let mut served = served().await;
     let mut silent = connect(&served, PROTOCOL).await.expect("the line opens");
-    assert!(matches!(
-        next(&mut silent).await,
-        Some(Message::Close(_)) | None
-    ));
+    // Not as a wrong token is: a window told that pairs again, and a slow network is no reason.
+    match next(&mut silent).await {
+        Some(Message::Close(Some(frame))) => assert_ne!(u16::from(frame.code), 4401),
+        Some(Message::Close(None)) | None => {}
+        Some(other) => panic!("closed, not {other:?}"),
+    }
     assert!(served.lines.try_recv().is_err(), "no line for it");
 }
 
@@ -189,4 +188,25 @@ async fn a_line_of_another_protocol_is_refused_before_it_opens() {
         Ok(_) => panic!("opened"),
         Err(other) => panic!("refused as another version, not {other}"),
     }
+}
+
+/// A window paired with another certificate is told so, not let through, and isn't told the line
+/// was merely lost: its TLS trusts the one certificate it was paired with alone.
+#[tokio::test]
+async fn another_certificate_than_the_one_paired_with_is_refused() {
+    use edualc_core::ipc::pairing::{Pairing, Server};
+    let served = served().await;
+    let server = Server::Paired(Pairing {
+        host: "localhost".to_owned(),
+        port: served.port,
+        fingerprint: Fingerprint::of(b"another certificate"),
+        token: Token::new("secret".to_owned()),
+    });
+    let address = SocketAddr::from(([127, 0, 0, 1], served.port));
+    let reached = edualc_core::ipc::ws::connect(&server, &[address]).await;
+    assert!(
+        matches!(reached, Err(edualc_core::ipc::ws::Error::Certificate(_))),
+        "{:?}",
+        reached.map(|_line| ())
+    );
 }

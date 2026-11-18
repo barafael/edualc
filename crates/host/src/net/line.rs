@@ -103,16 +103,24 @@ async fn line(
 
 /// Lets a line in or closes it, then carries it.
 async fn carry(mut socket: WebSocket, heard: Option<Hearing>, access: Access) {
-    if !let_in(&mut socket, access.token.as_ref()).await {
-        tracing::info!("a line refused: it didn't show the token");
-        let refused = Message::Close(Some(CloseFrame {
-            code: REFUSED,
-            reason: "refused".into(),
-        }));
-        if let Err(error) = socket.send(refused).await {
-            tracing::debug!(%error, "a refused line was gone");
+    match let_in(&mut socket, access.token.as_ref()).await {
+        Ok(()) => {}
+        Err(Unadmitted::Refused) => {
+            tracing::info!("a line refused: it didn't show the token");
+            let refused = Message::Close(Some(CloseFrame {
+                code: REFUSED,
+                reason: "refused".into(),
+            }));
+            if let Err(error) = socket.send(refused).await {
+                tracing::debug!(%error, "a refused line was gone");
+            }
+            return;
         }
-        return;
+        // Not closed as refused: a window told so pairs again, and a slow network is no reason.
+        Err(Unadmitted::Silent) => {
+            tracing::info!("a line let go of: it showed no token in time");
+            return;
+        }
     }
     let (line, asks, says) = Line::pair();
     if access.lines.send(line).await.is_err() {
@@ -122,18 +130,37 @@ async fn carry(mut socket: WebSocket, heard: Option<Hearing>, access: Access) {
     carry_on(socket, Silence::new(heard), asks, says).await;
 }
 
+/// Why a line isn't let in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unadmitted {
+    /// Its first frame isn't the token, in a frame of its own and in size.
+    Refused,
+    /// Nothing came in time, or the connection broke first: the network's doing as likely as
+    /// the window's.
+    Silent,
+}
+
 /// Whether the line's first frame shows `token` (any, if there is none to show), in time and in
 /// size.
-async fn let_in(socket: &mut WebSocket, token: Option<&Token>) -> bool {
-    let Ok(first) = tokio::time::timeout(AUTH_WITHIN, socket.recv()).await else {
-        return false;
+async fn let_in(socket: &mut WebSocket, token: Option<&Token>) -> Result<(), Unadmitted> {
+    let first = tokio::time::timeout(AUTH_WITHIN, socket.recv())
+        .await
+        .map_err(|_late| Unadmitted::Silent)?;
+    let frame = match first {
+        Some(Ok(Message::Binary(frame))) => frame,
+        Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Close(_))) => {
+            return Err(Unadmitted::Refused);
+        }
+        Some(Err(_)) | None => return Err(Unadmitted::Silent),
     };
-    let Some(Ok(Message::Binary(frame))) = first else {
-        return false;
-    };
-    frame.len() <= MOST_AUTH
+    let admitted = frame.len() <= MOST_AUTH
         && ipc::deframe::<Auth>(&frame)
-            .is_ok_and(|auth| token.is_none_or(|token| token.admits(&auth.token)))
+            .is_ok_and(|auth| token.is_none_or(|token| token.admits(&auth.token)));
+    if admitted {
+        Ok(())
+    } else {
+        Err(Unadmitted::Refused)
+    }
 }
 
 /// How long a line has been silent: since its last message or pong, or, where its connection

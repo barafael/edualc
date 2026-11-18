@@ -1,15 +1,14 @@
 //! What the app asks of Android itself, through JNI: where its files go, whether a keyboard is
 //! attached, the clipboard (text copied, an image pasted), and notifications. Each call runs on
 //! a thread of its own, attached to Java as it starts and detached as it ends, which frees what
-//! Java made for it. What the app needs before it shows (the folder) is waited for and is
-//! quick; the rest goes on beside the window, which hears of it, if at all, as it is done.
+//! Java made for it; all of it goes on beside the window, which hears of it, if at all, as it is
+//! done.
 //!
-//! The one place `unsafe` is let in (`unsafe_code` is denied elsewhere): Java's VM and the
-//! activity come as raw pointers, which `ndk-context` holds from the moment the activity
-//! started.
+//! Java's VM and the activity come from wry, which runs a closure with them on Android's main
+//! thread (`dispatch`): there, each call takes handles of its own that outlive it (the VM, and
+//! a global reference to the activity), with no raw pointer in sight.
 
-#![allow(unsafe_code)]
-
+use dioxus::mobile::wry::prelude::dispatch;
 use jni::objects::{JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
@@ -37,17 +36,10 @@ impl<T, F> Work<T> for F where
 {
 }
 
-/// Does `work` with Java on this thread, which it attaches for the while.
-fn attached<T>(work: impl Work<T>) -> Result<T, Refused> {
-    let context = ndk_context::android_context();
-    // SAFETY: `ndk-context` holds the process's Java VM, set as the activity started, and the
-    // VM lives as long as the process; this handle doesn't destroy it as it drops.
-    let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }?;
+/// Does `work` with Java on this thread, which it attaches to `vm` for the while.
+fn attached<T>(vm: &JavaVM, activity: &JObject<'_>, work: impl Work<T>) -> Result<T, Refused> {
     let mut env = vm.attach_current_thread()?;
-    // SAFETY: `ndk-context` holds a global reference to the activity, valid while the app runs;
-    // this handle doesn't delete it as it drops.
-    let activity = unsafe { JObject::from_raw(context.context().cast()) };
-    let done = work(&mut env, &activity);
+    let done = work(&mut env, activity);
     // What Java threw is said, and cleared before the thread detaches.
     if env.exception_check().unwrap_or(false)
         && (env.exception_describe().is_err() || env.exception_clear().is_err())
@@ -57,16 +49,21 @@ fn attached<T>(work: impl Work<T>) -> Result<T, Refused> {
     done
 }
 
-/// Does `work` with Java, on a thread of its own, and waits for it.
-fn with_java<T: Send + 'static>(work: impl Work<T>) -> Result<T, Refused> {
-    std::thread::spawn(move || attached(work))
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-}
-
 /// Does `work` with Java, on a thread of its own, and hands what came of it to `done` there.
+/// Android's main thread only hands over the VM and the activity, and is kept waiting for none
+/// of the work (reading a large image, say).
 fn beside<T: 'static>(work: impl Work<T>, done: impl FnOnce(Result<T, Refused>) + Send + 'static) {
-    std::thread::spawn(move || done(attached(work)));
+    dispatch(move |env, activity, _webview| {
+        let handles = env
+            .get_java_vm()
+            .and_then(|vm| Ok((vm, env.new_global_ref(activity)?)));
+        match handles {
+            Ok((vm, activity)) => {
+                std::thread::spawn(move || done(attached(&vm, activity.as_obj(), work)));
+            }
+            Err(error) => done(Err(error.into())),
+        }
+    });
 }
 
 /// What goes on beside the window with nothing to tell it: a failure is only logged.
@@ -132,9 +129,9 @@ fn sdk(env: &mut JNIEnv<'_>) -> Result<i32, Refused> {
 
 /// The folder the app keeps its files in, its own, and kept out of Android's backups
 /// (`Context.getNoBackupFilesDir`): a token there lets whoever holds it run Claude Code as the
-/// user, and must not go to a cloud or to another phone with them.
-pub fn files_dir() -> Result<std::path::PathBuf, Refused> {
-    with_java(|env, activity| {
+/// user, and must not go to a cloud or to another phone with them. Handed to `done`.
+pub fn files_dir(done: impl FnOnce(Result<std::path::PathBuf, Refused>) + Send + 'static) {
+    let work = |env: &mut JNIEnv<'_>, activity: &JObject<'_>| {
         let dir = env
             .call_method(activity, "getNoBackupFilesDir", "()Ljava/io/File;", &[])?
             .l()?;
@@ -142,7 +139,8 @@ pub fn files_dir() -> Result<std::path::PathBuf, Refused> {
             .call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])?
             .l()?;
         Ok(text(env, path)?.into())
-    })
+    };
+    beside(work, done);
 }
 
 /// Whether a keyboard with keys is attached and out (`Configuration.keyboard` is

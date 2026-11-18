@@ -342,8 +342,9 @@ let text_element = fun tag text => element tag {} [text] in
           export RUSTUP_TOOLCHAIN=stable
           export CARGO_TARGET_DIR=target
           cargo build --frozen --release
-          # edualcd with its page: the server, and the public/ folder it serves
-          dx bundle --frozen -p edualc-server --platform web --fullstack --profile web
+          # edualcd with its page: the server (release, stripped), and the public/ folder it serves
+          # (the page's wasm, with the `web` profile wasm-bindgen can read)
+          dx bundle --frozen -p edualc-server --fullstack @client --platform web --profile web @server --platform server --release
           cp target/dx/edualcd/release/web/server target/release/edualcd
           rm -rf target/release/public
           cp -r target/dx/edualcd/release/web/public target/release/public

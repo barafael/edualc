@@ -30,6 +30,10 @@ pub enum Error {
     Unpaired,
     #[error("no edualcd is paired as {0:?}; paired: {1}")]
     Unknown(String, String),
+    #[error(
+        "{0:?} is the name of another edualcd already: choose another, or forget that one first"
+    )]
+    Taken(String),
 }
 
 /// What the file holds.
@@ -56,10 +60,29 @@ impl Servers {
         }
     }
 
+    /// Whether `server` may be paired as `name`: a name is another edualcd's alone, and pairing
+    /// over it would lose that one's token without a word. What is reached the same way may
+    /// take its own name again, with a token made anew.
+    pub fn free(&self, name: &str, server: &Server) -> Result<(), Error> {
+        match self.servers.get(name) {
+            Some(paired) if !paired.same_place(server) => Err(Error::Taken(name.to_owned())),
+            Some(_) | None => Ok(()),
+        }
+    }
+
     /// Pairs with `server` as `name`, which becomes the one reached unless another is named.
-    pub fn pair(&mut self, name: String, server: Server) {
+    pub fn pair(&mut self, name: String, server: Server) -> Result<(), Error> {
+        self.free(&name, &server)?;
         self.servers.insert(name.clone(), server);
         self.default = Some(name);
+        Ok(())
+    }
+
+    /// Makes the edualcd paired as `name` the one reached unless another is named.
+    pub fn choose(&mut self, name: &str) {
+        if self.servers.contains_key(name) {
+            self.default = Some(name.to_owned());
+        }
     }
 
     /// The name to pair `server` as when none is given: its host's, unless another is paired
@@ -161,8 +184,12 @@ mod tests {
     fn the_last_paired_is_the_default() {
         let mut servers = Servers::default();
         assert!(matches!(servers.chosen(None), Err(Error::Unpaired)));
-        servers.pair("here".to_owned(), pairing("127.0.0.1"));
-        servers.pair("box".to_owned(), pairing("box"));
+        servers
+            .pair("here".to_owned(), pairing("127.0.0.1"))
+            .expect("a free name");
+        servers
+            .pair("box".to_owned(), pairing("box"))
+            .expect("a free name");
         assert_eq!(
             servers.chosen(None).map(|(name, _)| name).ok(),
             Some("box".to_owned())
@@ -189,18 +216,24 @@ mod tests {
             port: 7979,
         });
         assert_eq!(servers.name_for(&demo), "box");
-        servers.pair(servers.name_for(&demo), demo.clone());
+        servers
+            .pair(servers.name_for(&demo), demo.clone())
+            .expect("a free name");
         assert_eq!(servers.name_for(&pairing("box")), "box:7878");
         assert_eq!(servers.name_for(&demo), "box");
         // A demo where an edualcd was paired doesn't take its name, nor its token's place.
         let mut servers = Servers::default();
-        servers.pair("box".to_owned(), pairing("box"));
+        servers
+            .pair("box".to_owned(), pairing("box"))
+            .expect("a free name");
         let there = Server::Demo(Demo {
             host: "box".to_owned(),
             port: 7878,
         });
         assert_eq!(servers.name_for(&there), "box:7878");
-        servers.pair(servers.name_for(&there), there.clone());
+        servers
+            .pair(servers.name_for(&there), there.clone())
+            .expect("a free name");
         assert_eq!(servers.name_for(&pairing("box")), "box");
         assert_eq!(servers.name_for(&there), "box:7878");
     }
@@ -209,8 +242,12 @@ mod tests {
     #[test]
     fn forgetting_the_default_moves_it() {
         let mut servers = Servers::default();
-        servers.pair("here".to_owned(), pairing("127.0.0.1"));
-        servers.pair("box".to_owned(), pairing("box"));
+        servers
+            .pair("here".to_owned(), pairing("127.0.0.1"))
+            .expect("a free name");
+        servers
+            .pair("box".to_owned(), pairing("box"))
+            .expect("a free name");
         servers.forget("box");
         assert_eq!(servers.default_name(), Some("here"));
         servers.forget("here");
@@ -218,17 +255,45 @@ mod tests {
         assert!(matches!(servers.chosen(None), Err(Error::Unpaired)));
     }
 
+    /// A name another edualcd is paired as is refused, its token kept; the same edualcd may
+    /// take its name again, with a token made anew.
+    #[test]
+    fn a_name_paired_already_is_refused() {
+        let mut servers = Servers::default();
+        servers
+            .pair("home".to_owned(), pairing("a"))
+            .expect("a free name");
+        assert!(matches!(
+            servers.pair("home".to_owned(), pairing("b")),
+            Err(Error::Taken(name)) if name == "home"
+        ));
+        assert_eq!(
+            servers
+                .chosen(Some("home"))
+                .map(|(_, server)| server.host().to_owned())
+                .ok(),
+            Some("a".to_owned())
+        );
+        servers
+            .pair("home".to_owned(), pairing("a"))
+            .expect("its own name");
+    }
+
     #[test]
     fn the_file_reads_back_and_refuses_unknown_keys() {
         let mut servers = Servers::default();
-        servers.pair("box".to_owned(), pairing("box"));
-        servers.pair(
-            "demo".to_owned(),
-            Server::Demo(Demo {
-                host: "10.0.2.2".to_owned(),
-                port: 7878,
-            }),
-        );
+        servers
+            .pair("box".to_owned(), pairing("box"))
+            .expect("a free name");
+        servers
+            .pair(
+                "demo".to_owned(),
+                Server::Demo(Demo {
+                    host: "10.0.2.2".to_owned(),
+                    port: 7878,
+                }),
+            )
+            .expect("a free name");
         let text = serde_json::to_string(&servers).expect("written");
         let back: Servers = serde_json::from_str(&text).expect("read back");
         assert_eq!(back.chosen(None).ok(), servers.chosen(None).ok());

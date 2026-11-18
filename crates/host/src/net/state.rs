@@ -5,8 +5,10 @@
 //! stay. To make them anew (a token that got out, say), remove the folder: every window then
 //! pairs again.
 //!
-//! Claude Code's sandbox can't read the user's home (see `sandbox`); the token is to be kept as
-//! an SSH key is all the same: whoever holds it runs Claude Code as the user, unsandboxed too.
+//! The token is kept as an SSH key is: whoever holds it runs Claude Code as the user. It is
+//! taken from this folder alone, never from the environment or the command line, so no program
+//! edualcd runs inherits it and no other user of the machine reads it: to choose your own, write
+//! it to the file `token` there.
 
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write as _;
@@ -22,6 +24,7 @@ const FOLDER: &str = "edualcd";
 const CERTIFICATE: &str = "certificate.der";
 const KEY: &str = "key.der";
 const TOKEN: &str = "token";
+const LISTENING: &str = "listening.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -39,6 +42,45 @@ pub enum Error {
     Certificate(#[from] rcgen::Error),
     #[error("{0} is empty: remove it, and a new token is made")]
     EmptyToken(PathBuf),
+    #[error("{path} doesn't read: {source}")]
+    Unreadable {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// Where edualcd serving the network listens, and the name it is reached by: kept as it starts,
+/// so that `edualcd --pair` prints the address of the edualcd that runs (a service's, with an
+/// address of its own), not that of a default.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Listening {
+    pub address: std::net::SocketAddr,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Listening {
+    /// Where an edualcd serving the network listened last; none if none has yet.
+    pub fn kept() -> Result<Option<Self>, Error> {
+        let path = folder()?.join(LISTENING);
+        read(&path)?
+            .map(|bytes| {
+                serde_json::from_slice(&bytes).map_err(|source| Error::Unreadable { path, source })
+            })
+            .transpose()
+    }
+
+    /// Kept, for `edualcd --pair`.
+    pub fn keep(&self) -> Result<(), Error> {
+        let path = folder()?.join(LISTENING);
+        let bytes = serde_json::to_vec(self).map_err(|source| Error::Unreadable {
+            path: path.clone(),
+            source,
+        })?;
+        write(&path, &bytes)
+    }
 }
 
 /// What edualcd keeps.

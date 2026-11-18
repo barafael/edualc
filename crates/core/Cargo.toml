@@ -64,7 +64,6 @@ libc.workspace = true
 landlock.workspace = true
 tokio.workspace = true
 rustls.workspace = true
-tokio-rustls.workspace = true
 # A native window's line over the network (`line`, `ipc::ws`): the Android app's.
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

@@ -17,6 +17,9 @@ use edualc_core::present::{Image, Look, model};
 #[cfg(any(feature = "web", feature = "mobile"))]
 use crate::web::platform;
 
+/// The page's text size before the zoom, in CSS pixels: what the app scales by its zoom.
+pub const DESKTOP_TEXT_SIZE: f32 = 15.0;
+
 /// What the app sets of the page itself, besides the presenter's state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Page {
@@ -119,7 +122,7 @@ impl View {
             images: Signal::new(HashMap::new()),
             draft: Signal::new(String::new()),
             page: Signal::new(Page {
-                text_size: 15.0,
+                text_size: DESKTOP_TEXT_SIZE,
                 pixel_ratio: 1.0,
                 ..Page::default()
             }),

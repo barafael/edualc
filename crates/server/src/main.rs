@@ -16,9 +16,7 @@
 #[cfg(feature = "server")]
 mod serve;
 
-// dx builds the server for the app with the app's features too: there nothing runs it.
 #[cfg(feature = "mobile")]
-#[cfg_attr(feature = "server", allow(dead_code))]
 mod android;
 mod line;
 mod web;

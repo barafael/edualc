@@ -85,8 +85,9 @@ back. Its sessions run on in edualcd meanwhile, and it attaches to them again.
 
 What the page does through the browser, the app does through the WebView's script
 (`document::eval`: the focus, scrolling, the composer's caret) and through Android
-(`android/java.rs`, over JNI from the activity `ndk-context` holds: the clipboard's text and
-image, notifications, its files folder). Links open in Android's browser. It starts no programs:
+(`android/java.rs`, over JNI with the VM and activity wry hands over on Android's main thread,
+`wry::prelude::dispatch`, so no `unsafe`: the clipboard's text and image, notifications, its files
+folder). Links open in Android's browser. It starts no programs:
 it decodes images itself, on the thread the Slint window starts its locked-down decoder from.
 
 The app keeps the edualcds it paired with, and the session it showed last, in its own files. To
@@ -110,9 +111,11 @@ gets each connection as a `daemon::Line`, so another transport, such as WebTrans
 need to provide one.
 
 On its first start, edualcd makes a certificate for itself (with rcgen) and a token, and keeps them
-in `$XDG_STATE_HOME/edualcd`, a folder that is yours alone. `EDUALC_TOKEN` can set the token
-instead. The token is never taken on the command line, since every user of the machine can read
-that. `edualcd --pair` prints the address windows pair with:
+in `$XDG_STATE_HOME/edualcd`, a folder that is yours alone; write your own token to its file `token`
+to choose it. The token is taken from that file alone: never on the command line, which every user
+of the machine can read, nor from the environment, which every program edualcd runs inherits.
+`edualcd --pair` prints the address windows pair with, at the address and name the edualcd serving
+the network was started with (it keeps them there too, in `listening.json`):
 `https://host:port/#token=…&fingerprint=…`. The token is in the fragment, which is never sent to a
 server. A window trusts exactly the certificate it paired with, by its SHA-256, whatever it names
 or is signed by.

@@ -36,9 +36,6 @@ mod token;
 pub mod ws;
 pub use token::{Auth, Token};
 
-/// Where edualcd takes the token windows must show, if not from the file it keeps it in.
-pub const TOKEN_VARIABLE: &str = "EDUALC_TOKEN";
-
 use crate::claude::Launch;
 use crate::decode::{Picture, Refusal};
 use crate::desktop::{Opener, Program, Running};

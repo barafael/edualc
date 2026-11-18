@@ -2824,7 +2824,6 @@ dependencies = [
  "subtle",
  "thiserror 2.0.21",
  "tokio",
- "tokio-rustls",
  "tokio-tungstenite 0.28.0",
  "tracing",
  "uuid",
@@ -2885,7 +2884,6 @@ dependencies = [
  "jni 0.21.1",
  "js-sys",
  "lucide-static-svg",
- "ndk-context",
  "pulldown-cmark",
  "serde",
  "serde_json",
@@ -9274,7 +9272,10 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.28.0",
 ]
 
@@ -9605,6 +9606,7 @@ dependencies = [
  "native-tls",
  "rand 0.9.5",
  "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
  "utf-8",

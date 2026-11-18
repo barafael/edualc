@@ -3400,7 +3400,12 @@ impl<F: Frontend> App<F> {
                 self.watch = None;
                 self.open_session(id);
             }
-            None => self.new_session(self.status.backend, self.status.sign_in_with),
+            // A new session not started yet starts again; a page (the projects, a project's
+            // sessions) stays the page, not a session begun in its folder.
+            None if matches!(self.location, Location::Session(_)) => {
+                self.new_session(self.status.backend, self.status.sign_in_with);
+            }
+            None => {}
         }
         self.load_sessions();
         self.render();
@@ -5115,6 +5120,36 @@ mod tests {
                 ..
             } if folder == &proj
         )));
+    }
+
+    /// The line coming back while a project's page is shown leaves the page as it is: no
+    /// session is begun in its folder.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_line_reached_again_keeps_a_projects_page() {
+        let proj = PathBuf::from("/tmp/proj-reached-again");
+        let settings = Settings {
+            trusted_folders: vec![proj.clone()],
+            ..Settings::default()
+        };
+        let mut test = TestApp::start(None, settings);
+        test.app.begin(Vec::new(), Vec::new(), None, None, None);
+        test.send(Event::Action(Action::EnterProject(proj.clone())));
+        drop(test.drain_daemon());
+
+        test.send(Event::LineLost);
+        test.send(Event::Reconnected {
+            hosted: Vec::new(),
+            live: Vec::new(),
+        });
+        assert!(matches!(&test.app.location, Location::Project(path) if path == &proj));
+        assert_eq!(test.latest_nav().view, PlaceView::Project);
+        assert!(
+            !test
+                .drain_daemon()
+                .iter()
+                .any(|msg| matches!(msg, ToDaemon::Start { .. }))
+        );
     }
 
     /// Stepping back leaves a session for its project page and leaves the project page for start.

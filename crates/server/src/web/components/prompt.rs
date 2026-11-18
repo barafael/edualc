@@ -147,6 +147,13 @@ fn ToolPrompt(armed: bool, grab: Grab) -> Element {
             grab_focus("prompt-feedback");
         }
     });
+    // What was written for a request answered otherwise (allowed, say) isn't the next one's: the
+    // next tool waiting shows in this same part, and Deny would send it.
+    let request = use_memo(move || view.prompt.read().serial);
+    use_effect(move || {
+        request();
+        feedback.set(String::new());
+    });
     let prompt = view.prompt.read();
     let summary_class = if prompt.summary_prose {
         "prompt-summary prose"

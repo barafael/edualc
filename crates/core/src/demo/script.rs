@@ -199,8 +199,8 @@ pub struct Session {
     turns: u32,
     /// The turn under way, to tell what the window says to it.
     turn: Option<Sender<Said>>,
-    /// A line coming in pieces.
-    pieces: String,
+    /// A line coming in pieces, up to `ipc::MAX_LINE`: `edualcd --demo` takes them from anyone.
+    pieces: crate::ipc::Assembler<()>,
 }
 
 impl Session {
@@ -218,19 +218,21 @@ impl Session {
             mode: PermissionMode::Default,
             turns: 0,
             turn: None,
-            pieces: String::new(),
+            pieces: crate::ipc::Assembler::default(),
         }
     }
 
     /// A piece of a line the window wrote to the process; the last piece ends the line, which
     /// may start something to run (see [`Task`]).
     pub fn take(&mut self, text: &str, last: bool) -> Option<Task> {
-        self.pieces.push_str(text);
-        if !last {
-            return None;
+        match self.pieces.push((), text, last) {
+            Ok(Some(line)) => self.line(&line),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%error, "a line from the window too long for the demo");
+                None
+            }
         }
-        let line = std::mem::take(&mut self.pieces);
-        self.line(&line)
     }
 
     fn line(&mut self, line: &str) -> Option<Task> {

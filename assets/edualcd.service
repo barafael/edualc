@@ -9,6 +9,7 @@
 #   ExecStart=
 #   ExecStart=/bin/sh -lc 'exec /usr/bin/edualcd --listen 0.0.0.0:7878'
 # and, for it to run while you aren't logged in: loginctl enable-linger
+# `edualcd --pair` prints the address it listens at, as it was started.
 [Unit]
 Description=edualc's daemon: runs Claude Code for windows on other machines
 Documentation=https://github.com/felintusun/edualc

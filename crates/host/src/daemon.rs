@@ -154,7 +154,7 @@ async fn serve(listener: ipc::Listener, options: Options) -> Result<(), ipc::Err
             None => line,
         };
         tokio::spawn(async move {
-            if let Err(error) = crate::net::serve(config.listen, config.acceptor, app).await {
+            if let Err(error) = crate::net::serve(config.listen, config.tls, app).await {
                 tracing::error!(%error, "the network side failed");
             }
         });

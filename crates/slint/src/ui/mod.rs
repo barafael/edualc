@@ -63,12 +63,9 @@ impl Drawing {
         }
     }
 
-    /// Orders `block`, at `place`, coloured, unless it is (or isn't code).
+    /// Orders `block`, at `place`, coloured, unless it is (or isn't code to colour).
     fn order(&self, place: Place, block: &present::MdBlock) {
-        if block.kind != present::BlockKind::Code
-            || block.lang.trim().is_empty()
-            || self.coloured_as(&block.lang, &block.raw).is_some()
-        {
+        if !is_coloured_code(block) || self.coloured_as(&block.lang, &block.raw).is_some() {
             return;
         }
         self.orders.send(Order::Colour(colourist::Job {
@@ -94,6 +91,8 @@ impl Drawing {
         }
         if let Some(replaced) = self.placed.insert(job.place, job.raw.clone())
             && replaced != job.raw
+            // The same code may be shown at another place, which still draws it from here.
+            && !self.placed.values().any(|shown| *shown == replaced)
         {
             self.coloured.remove(&replaced);
         }
@@ -136,14 +135,34 @@ fn order_changed(
     }
 }
 
+/// Whether `block` is code that is ordered coloured: code that names its language. Code that
+/// names none is shown as it is, and nothing is ever coloured for it.
+fn is_coloured_code(block: &present::MdBlock) -> bool {
+    block.kind == present::BlockKind::Code && !block.lang.trim().is_empty()
+}
+
 /// Whether code growing from `old` to `new` keeps the colours it shows until it is coloured
 /// again (`colourist`), rather than shown plain meanwhile: the newest of it shows a moment late.
+/// Only code that is ordered coloured: what is kept is replaced as its colours come, and for
+/// other code they never do.
 fn keeps_colours(old: &present::MdBlock, new: &present::MdBlock, drawing: &Drawing) -> bool {
-    new.kind == present::BlockKind::Code
+    is_coloured_code(new)
         && old.kind == present::BlockKind::Code
         && old.lang == new.lang
         && new.raw.starts_with(old.raw.as_str())
         && drawing.coloured_as(&new.lang, &new.raw).is_none()
+}
+
+/// Whether `md`, shown now, is drawn with what `job` coloured: the same code, or code grown from
+/// it whose own colours aren't known yet. That shows colours older still (see
+/// [`keeps_colours`]); a block streaming in faster than its colours come is drawn as far as they
+/// go, not left as it was when they first came.
+fn draws(md: &present::MdBlock, job: &colourist::Job, drawing: &Drawing) -> bool {
+    md.kind == present::BlockKind::Code
+        && md.lang == job.lang
+        && (md.raw == job.raw
+            || (md.raw.starts_with(job.raw.as_str())
+                && drawing.coloured_as(&md.lang, &md.raw).is_none()))
 }
 
 /// A Markdown block's body as the Slint window draws it: a text block with the space between its
@@ -343,26 +362,31 @@ impl SlintFrontend {
             .order_side(self.side.as_ref(), self.prompt.as_ref());
     }
 
-    /// Draws the code coloured since, where it is still shown as it was coloured.
+    /// Draws the code coloured since, where it is still shown as it was coloured (or has only
+    /// grown since). The side panel and the plan are drawn again whole, each only if its own code
+    /// was coloured; what that draws plain (code coloured for another place, and let go of
+    /// there since) is ordered coloured again.
     fn draw_coloured(&mut self) {
-        let mut side_coloured = false;
+        let (mut side_coloured, mut plan_coloured) = (false, false);
         for done in self.colourist.take() {
             if !self.drawing.take(&done) {
                 continue;
             }
             match done.job.place {
                 Place::Entry { row, block } => self.draw_in_row(row, block, &done),
-                Place::Side { .. } | Place::Plan { .. } => side_coloured = true,
+                Place::Side { .. } => side_coloured = true,
+                Place::Plan { .. } => plan_coloured = true,
             }
         }
-        if side_coloured {
-            if let Some(side) = &self.side {
-                model::apply_side(&self.window, None, side, &self.drawing);
-            }
-            if let Some(prompt) = &self.prompt {
-                model::apply_prompt(&self.window, None, prompt, &self.drawing);
-            }
+        let side = self.side.as_ref().filter(|_| side_coloured);
+        let prompt = self.prompt.as_ref().filter(|_| plan_coloured);
+        if let Some(side) = side {
+            model::apply_side(&self.window, None, side, &self.drawing);
         }
+        if let Some(prompt) = prompt {
+            model::apply_prompt(&self.window, None, prompt, &self.drawing);
+        }
+        self.drawing.order_side(side, prompt);
     }
 
     /// Shows `done` as block `block` of row `row`, if that is the code it shows: the row and its
@@ -372,11 +396,7 @@ impl SlintFrontend {
             .shown
             .get(row)
             .and_then(|entry| entry.blocks.get(block))
-            .is_some_and(|md| {
-                md.kind == present::BlockKind::Code
-                    && md.lang == done.job.lang
-                    && md.raw == done.job.raw
-            });
+            .is_some_and(|md| draws(md, &done.job, &self.drawing));
         if !shows_it {
             return;
         }
@@ -692,6 +712,28 @@ mod tests {
         assert!(drawing.coloured_as("python", "fn f").is_none());
     }
 
+    /// The same code at two places is coloured once for both: one of them growing leaves the
+    /// other its colours.
+    #[test]
+    fn code_shown_at_another_place_keeps_its_colours() {
+        let (mut drawing, _) = drawing();
+        let elsewhere = colourist::Coloured {
+            job: colourist::Job {
+                place: Place::Side {
+                    exchange: 0,
+                    block: 0,
+                },
+                ..coloured(0, "fn").job
+            },
+            ..coloured(0, "fn")
+        };
+        assert!(drawing.take(&elsewhere));
+        assert!(drawing.take(&coloured(0, "fn")));
+        assert!(drawing.take(&coloured(0, "fn f")));
+        assert!(drawing.coloured_as("rust", "fn").is_some());
+        assert!(drawing.coloured_as("rust", "fn f").is_some());
+    }
+
     #[test]
     fn code_coloured_for_rows_gone_is_dropped() {
         let (mut drawing, _) = drawing();
@@ -714,6 +756,38 @@ mod tests {
         assert!(!keeps(&code("rust", "fn"), &code("rust", "let"), &drawing));
         assert!(drawing.take(&coloured(0, "fn f")));
         assert!(!keeps(&code("rust", "fn"), &code("rust", "fn f"), &drawing));
+    }
+
+    /// What was coloured is drawn where the code has only grown since, as far as it goes, until
+    /// the code's own colours are known; never over other code, or another language's.
+    #[test]
+    fn colours_for_code_since_grown_are_drawn_until_its_own_come() {
+        let (mut drawing, _) = drawing();
+        let older = coloured(0, "fn f");
+        assert!(drawing.take(&older));
+        let draws =
+            |shown: &present::MdBlock, drawing: &Drawing| super::draws(shown, &older.job, drawing);
+        assert!(draws(&code("rust", "fn f"), &drawing));
+        assert!(draws(&code("rust", "fn f() {}"), &drawing));
+        assert!(!draws(&code("rust", "fn"), &drawing));
+        assert!(!draws(&code("python", "fn f() {}"), &drawing));
+        assert!(drawing.take(&coloured(0, "fn f() {}")));
+        assert!(!draws(&code("rust", "fn f() {}"), &drawing));
+    }
+
+    /// Code that names no language is never ordered coloured: nothing would come to replace
+    /// what it showed, so as it grows it is drawn as it is now.
+    #[test]
+    fn growing_code_of_no_language_is_drawn_as_it_grows() {
+        use super::ToSlint as _;
+        let (drawing, _) = drawing();
+        let (old, new) = (code("", "fn"), code("", "fn f"));
+        assert!(!super::keeps_colours(&old, &new, &drawing));
+        let synced = new.sync(&old, old.to_slint(&drawing), &drawing);
+        assert_eq!(
+            format!("{:?}", synced.body),
+            format!("{:?}", super::plain("fn f"))
+        );
     }
 
     /// What the shared Markdown splitter takes for inline Markdown is what Slint's parser takes.

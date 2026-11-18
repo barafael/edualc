@@ -5,21 +5,18 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
-use super::pairing::{Pairing, Server};
+use super::pairing::Server;
 use super::{Auth, Deframer, MAX_FRAME};
 
 /// How long reaching edualcd may take: the connection, TLS and the WebSocket's handshake.
@@ -27,57 +24,9 @@ const REACH: Duration = Duration::from_secs(10);
 /// The close code edualcd ends a line with that showed a wrong token.
 const REFUSED: u16 = 4401;
 
-/// A window's line to edualcd, its handshakes done.
-pub type Line = WebSocketStream<Stream>;
-
-/// What a line runs over: TLS, or, to a demo, the connection itself.
-// One per line, made once and never moved after: its size costs nothing.
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug)]
-pub enum Stream {
-    Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
-    Plain(tokio::net::TcpStream),
-}
-
-impl AsyncRead for Stream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
-            Self::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
-        }
-    }
-}
-
-impl AsyncWrite for Stream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut() {
-            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
-            Self::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
-            Self::Plain(stream) => Pin::new(stream).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
-            Self::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
-        }
-    }
-}
+/// A window's line to edualcd, its handshakes done: over TLS, or, to a demo, over the
+/// connection itself.
+pub type Line = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -98,6 +47,14 @@ pub enum Error {
     Token,
     #[error("edualcd runs another version of edualc ({0})")]
     Version(String),
+    /// Something other than edualcd's line answered (a proxy in front of it, say, while it
+    /// restarts): reached again, as the network's doing, not given up on as another version.
+    #[error("{address} answered {status} in place of edualcd's line: {said}")]
+    Answered {
+        address: String,
+        status: StatusCode,
+        said: String,
+    },
     #[error("the line's TLS: {0}")]
     Tls(#[from] rustls::Error),
     #[error("the line: {0}")]
@@ -151,24 +108,41 @@ async fn reach(server: &Server, addresses: &[SocketAddr]) -> Result<Line, Error>
             source,
         })?;
     stream.set_nodelay(true).map_err(Error::Io)?;
-    let stream = match server {
-        Server::Paired(pairing) => Stream::Tls(secured(pairing, stream, &authority).await?),
-        Server::Demo(_) => Stream::Plain(stream),
+    // TLS trusting the certificate paired with alone, by the name in the line's address.
+    let tls = match server {
+        Server::Paired(pairing) => {
+            Connector::Rustls(super::tls::client(pairing.fingerprint)?.into())
+        }
+        Server::Demo(_) => Connector::Plain,
     };
-    let opened =
-        tokio_tungstenite::client_async_with_config(server.line_url(), stream, Some(config()))
-            .await;
+    let opened = tokio_tungstenite::client_async_tls_with_config(
+        server.line_url(),
+        stream,
+        Some(config()),
+        Some(tls),
+    )
+    .await;
     let mut socket = match opened {
         Ok((socket, _response)) => socket,
+        // The TLS handshake's, or the connection's.
+        Err(tokio_tungstenite::tungstenite::Error::Io(error)) => {
+            return Err(refused_certificate(error, &authority));
+        }
         Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
             let said = response
                 .body()
                 .as_deref()
                 .map(|body| String::from_utf8_lossy(body).into_owned())
                 .unwrap_or_default();
+            // Only edualcd's own refusal of another version is that; whatever else answers may
+            // answer otherwise as the line is tried again.
             return Err(match response.status() {
                 StatusCode::CONFLICT => Error::Version(said),
-                status => Error::Version(format!("it answered {status}: {said}")),
+                status => Error::Answered {
+                    address: authority,
+                    status,
+                    said,
+                },
             });
         }
         Err(error) => return Err(error.into()),
@@ -183,22 +157,6 @@ async fn reach(server: &Server, addresses: &[SocketAddr]) -> Result<Line, Error>
     )
     .await?;
     Ok(socket)
-}
-
-/// TLS over `stream`, trusting the certificate paired with alone.
-async fn secured(
-    pairing: &Pairing,
-    stream: tokio::net::TcpStream,
-    authority: &str,
-) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, Error> {
-    let name =
-        rustls::pki_types::ServerName::try_from(pairing.host.clone()).map_err(|_not_a_name| {
-            rustls::Error::General(format!("{:?} isn't a host", pairing.host))
-        })?;
-    super::tls::connector(pairing.fingerprint)?
-        .connect(name, stream)
-        .await
-        .map_err(|error| refused_certificate(error, authority))
 }
 
 /// A TLS handshake's failure, the pinned certificate's mismatch named.
@@ -278,6 +236,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncRead, AsyncWrite};
+
     use super::*;
     use crate::ipc::{FromDaemon, PROTOCOL, ToDaemon, Token};
 

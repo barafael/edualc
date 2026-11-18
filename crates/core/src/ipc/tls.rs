@@ -1,16 +1,12 @@
-//! The line's TLS (rustls, with ring): edualcd's acceptor, with the certificate it made itself,
-//! and a window's connector, which trusts exactly the certificate it was paired with (its
-//! SHA-256, see `pairing`), whatever name or signer it shows.
+//! The line's TLS (rustls, with ring): edualcd's, with the certificate it made itself, and a
+//! window's, which trusts exactly the certificate it was paired with (its SHA-256, see
+//! `pairing`), whatever name or signer it shows.
 //!
-//! rustls takes its configuration and its verifier only behind an `Arc`, so the few places that
-//! build them are let off the rule against shared state (`lint/rules/no-shared-state.yml`), each
-//! by an `#[expect]` of its own: what is shared is configuration, made once and never changed.
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "rustls takes its configuration behind an Arc"
-)]
-use std::sync::Arc;
+//! Each is a configuration, owned and handed over as it is used: rustls takes it and its
+//! provider behind a reference count of its own (`into`, where rustls' signature names it), and
+//! nothing here keeps a share. The one place the rule against shared state lets off
+//! (`lint/rules/no-shared-state.yml`) is the window's verifier: rustls takes a verifier of one's
+//! own only as an `Arc<dyn ServerCertVerifier>`, which no `into` reaches.
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
@@ -27,39 +23,30 @@ fn provider() -> CryptoProvider {
 /// A window's TLS, trusting only the certificate whose SHA-256 is `pinned`.
 #[expect(
     clippy::disallowed_types,
-    reason = "rustls takes its configuration behind an Arc"
+    reason = "rustls takes a verifier of one's own only as an Arc<dyn ServerCertVerifier>"
 )]
-pub fn connector(pinned: Fingerprint) -> Result<tokio_rustls::TlsConnector, rustls::Error> {
+pub fn client(pinned: Fingerprint) -> Result<rustls::ClientConfig, rustls::Error> {
     let provider = provider();
     let verifier = Pinned {
         fingerprint: pinned,
         algorithms: provider.signature_verification_algorithms,
     };
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
         .with_safe_default_protocol_versions()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(verifier))
-        .with_no_client_auth();
-    Ok(tokio_rustls::TlsConnector::from(Arc::new(config)))
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_no_client_auth())
 }
 
 /// edualcd's TLS, with its certificate (DER) and that certificate's key (PKCS #8 DER).
-#[expect(
-    clippy::disallowed_types,
-    reason = "rustls takes its configuration behind an Arc"
-)]
-pub fn acceptor(
-    certificate: Vec<u8>,
-    key: Vec<u8>,
-) -> Result<tokio_rustls::TlsAcceptor, rustls::Error> {
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
+pub fn server(certificate: Vec<u8>, key: Vec<u8>) -> Result<rustls::ServerConfig, rustls::Error> {
+    rustls::ServerConfig::builder_with_provider(provider().into())
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_single_cert(
             vec![CertificateDer::from(certificate)],
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
-        )?;
-    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+        )
 }
 
 /// Trusts the one certificate paired with: its name and signer aren't looked at (it is

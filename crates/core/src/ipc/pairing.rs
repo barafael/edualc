@@ -306,7 +306,8 @@ pub fn encoded(text: &str) -> String {
     out
 }
 
-/// A value of a URL's query or fragment, its `%`-escapes undone.
+/// A value of a URL's fragment, its `%`-escapes undone. A `+` stays one: in a fragment it is no
+/// space (a folder may be named `c++`), and [`encoded`] escapes a `+` of its own.
 pub fn decoded(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -323,7 +324,7 @@ pub fn decoded(value: &str) -> String {
                 at += 3;
             }
             None => {
-                out.push(if byte == b'+' { b' ' } else { byte });
+                out.push(byte);
                 at += 1;
             }
         }
@@ -438,6 +439,13 @@ mod tests {
             Server::Paired(pairing) => pairing.url(),
             Server::Demo(demo) => format!("http://{}/", authority(&demo.host, demo.port)),
         }
+    }
+
+    /// A fragment's `+` is one, as a page's `dir` (`c++`) has it; a space comes escaped.
+    #[test]
+    fn a_plus_in_a_fragment_stays_one() {
+        assert_eq!(decoded("c++%20x"), "c++ x");
+        assert_eq!(decoded(&encoded("a+b c")), "a+b c");
     }
 
     #[test]

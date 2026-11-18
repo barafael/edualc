@@ -44,8 +44,8 @@ pub async fn play(turn: Turn, prompt: String) {
 }
 
 const GUIDE: &str =
-    "This is **edualc's demo**, running in your browser. The window is the real one, \
-compiled to WebAssembly; Claude is played by a script, so nothing you type leaves the page.
+    "This is **edualc's demo**. The window is the real one; Claude is played by a script, so \
+what you type runs nothing and isn't kept.
 
 Things to try:
 

@@ -50,11 +50,25 @@ pub fn Frame(children: Element) -> Element {
         edualc_core::present::Look::Plain => "plain",
     };
     let style = format!("--base-size: {}px;", page.text_size);
+    // Asked from the first thing you do in the window, which a browser takes the question from.
+    let mut asked = use_signal(|| false);
+    let mut ask = move || {
+        if !asked() {
+            asked.set(true);
+            platform::ask_to_notify();
+        }
+    };
     rsx! {
         document::Stylesheet { href: STYLE }
         Fonts {}
         document::Title { "edualc" }
-        div { class: "window {theme}", style, {children} }
+        div {
+            class: "window {theme}",
+            style,
+            onclick: move |_| ask(),
+            onkeydown: move |_| ask(),
+            {children}
+        }
     }
 }
 
@@ -112,6 +126,7 @@ pub fn Fonts() -> Element {
 /// The page's address: its token, and the folder it is to open (`#token=…&dir=…`).
 #[cfg(feature = "web")]
 fn address() -> (String, Option<String>) {
+    use edualc_core::ipc::pairing::decoded;
     let hash = web_sys::window()
         .and_then(|window| window.location().hash().ok())
         .unwrap_or_default();
@@ -126,33 +141,6 @@ fn address() -> (String, Option<String>) {
         }
     }
     (token, dir)
-}
-
-/// A value of the address, its `%`-escapes undone. A `+` stays one: in a URL's fragment it is
-/// no space (a folder may be named `c++`).
-#[cfg(feature = "web")]
-fn decoded(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while let Some(&byte) = bytes.get(at) {
-        let escaped = (byte == b'%')
-            .then(|| bytes.get(at + 1..at + 3))
-            .flatten()
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match escaped {
-            Some(decoded) => {
-                out.push(decoded);
-                at += 3;
-            }
-            None => {
-                out.push(byte);
-                at += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(any(feature = "web", feature = "mobile"))]
@@ -171,12 +159,13 @@ pub fn begin(
     use edualc_core::app::{App, Desktop};
     let mut shown_events = view.events;
     shown_events.set(Some(events.clone()));
-    let text_size = view.page.peek().text_size;
+    // The page's own size, not the one shown: that is zoomed already, by the app this one
+    // follows (another edualcd reached), and would be zoomed again.
     let mut app = App::new(
         view::PageFrontend::new(view),
         events,
         link,
-        Desktop::of(&greeting, text_size),
+        Desktop::of(&greeting, view::DESKTOP_TEXT_SIZE),
         greeting.settings.clone(),
         edualc_core::app::Start {
             cwd,

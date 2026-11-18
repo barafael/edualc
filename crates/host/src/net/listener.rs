@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::LazyConfigAcceptor;
 
 /// How long a connection has for its TLS handshake.
 const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -30,13 +30,13 @@ type Secured = tokio_rustls::server::TlsStream<TcpStream>;
 /// If `listen` can't be bound, or serving ends in error.
 pub async fn serve(
     listen: SocketAddr,
-    acceptor: TlsAcceptor,
+    tls: rustls::ServerConfig,
     app: axum::Router,
 ) -> std::io::Result<()> {
     let tcp = TcpListener::bind(listen).await?;
     let local = tcp.local_addr()?;
     let (accepted, taken) = mpsc::channel(WAITING);
-    tokio::spawn(handshakes(tcp, acceptor, accepted));
+    tokio::spawn(handshakes(tcp, tls, accepted));
     let app = app.into_make_service_with_connect_info::<Hearing>();
     axum::serve(TlsListener { taken, local }, app).await
 }
@@ -52,7 +52,7 @@ pub async fn serve_plain(listen: SocketAddr, app: axum::Router) -> std::io::Resu
 /// Takes connections and shakes hands with each on a task of its own.
 async fn handshakes(
     tcp: TcpListener,
-    acceptor: TlsAcceptor,
+    tls: rustls::ServerConfig,
     accepted: mpsc::Sender<(Secured, SocketAddr)>,
 ) {
     let mut shaking: JoinSet<Option<(Secured, SocketAddr)>> = JoinSet::new();
@@ -60,9 +60,16 @@ async fn handshakes(
         tokio::select! {
             connection = tcp.accept() => match connection {
                 Ok((stream, peer)) if shaking.len() < MOST_HANDSHAKES => {
-                    let acceptor = acceptor.clone();
+                    // Each connection's own copy, which rustls takes behind its reference count.
+                    let tls = tls.clone();
+                    let handshake = async move {
+                        LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream)
+                            .await?
+                            .into_stream(tls.into())
+                            .await
+                    };
                     shaking.spawn(async move {
-                        match tokio::time::timeout(HANDSHAKE, acceptor.accept(stream)).await {
+                        match tokio::time::timeout(HANDSHAKE, handshake).await {
                             Ok(Ok(secured)) => Some((secured, peer)),
                             Ok(Err(error)) => {
                                 tracing::debug!(%error, %peer, "a TLS handshake failed");

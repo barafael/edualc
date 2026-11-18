@@ -123,8 +123,8 @@ the send button sends; on a keyboard with keys, Enter sends.
 
 ## Building
 
-Run `cargo build --release` to build the window and the daemon, without its page. `just
-release-build` also builds edualcd with its page; it needs
+Run `cargo build --release` to build the window, and `cargo edualcd --release` for its daemon,
+without its page. `just release-build` builds both, edualcd with its page; it needs
 [dioxus-cli](https://dioxuslabs.com) (`cargo install --locked dioxus-cli`).
 
 To try a change, `just run` builds edualc and its daemon and starts the window, as you use
