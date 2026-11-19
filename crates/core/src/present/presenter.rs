@@ -646,6 +646,7 @@ impl<F: Frontend> Presenter<F> {
         let project = sessions::folder_name(cwd);
         session.project = project;
         session.title = status.title.as_deref().unwrap_or("New session").into();
+        session.continued = status.continued;
         session.sign_in = match status.sign_in {
             SignIn::SignedIn => SignInState::SignedIn,
             SignIn::Refused { .. } => SignInState::SignedOut,

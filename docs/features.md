@@ -385,8 +385,13 @@ scaling, or KDE's), scaled for the screen.
 ## The heron
 
 edualc's mascot is a heron (`assets/heron.svg`). It stands beside a new session and greets it. It
-flies off when the conversation begins, and flies in when you open a new session (`ui/heron.slint`,
-with the wing beats in `assets/heron-wings-*.svg`). About once a minute it looks over its shoulder,
+flies off, slowly and somewhere a little different each time, when you send the first message, and
+flies in when you open a new session (`ui/heron.slint`, with the wing beats in
+`assets/heron-wings-*.svg`). A session you open with its conversation has no greeting heron. A
+smaller one strolls there instead, in the margin left of the conversation, on the line over the
+text box: it walks somewhere, stands a while, looks back, and now and then climbs the window's
+side (`assets/heron-walking-*.svg`). It keeps off the conversation's text, and stays away while
+something sits over the text box or the margin is too narrow. About once a minute it looks over its shoulder,
 preens or flaps its wings, for a second or so (`assets/heron-looking-back.svg`,
 `heron-preening-*.svg`, `heron-flapping-*.svg`). It's also the app's icon
 (`assets/io.github.felintusun.edualc.svg`, on Gruvbox's light background).

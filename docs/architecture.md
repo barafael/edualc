@@ -122,7 +122,7 @@ Elsewhere:
 |---|---|
 | `ui/*.slint` | the window: top bar (`topbar.slint`), start page and open-folder dialog (`start.slint`), new-project dialog (`newproject.slint`), project session list (`project.slint`), conversation (`app.slint`), the Changes view (`changes.slint`), settings and panels |
 | `web/` | the browser demo's page, with its fonts |
-| `assets/` | the heron (standing, its idle poses, and its wing beats), the app's icon, desktop entry, metainfo and manual page |
+| `assets/` | the heron (standing, its idle poses, its wing beats and its steps), the app's icon, desktop entry, metainfo and manual page |
 | `dist/` | packaging: one description in Nickel (`package.ncl`) that the deb, rpm and Arch files are written from |
 
 ## The presenter

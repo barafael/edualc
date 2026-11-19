@@ -14,6 +14,8 @@ export global Session {
     in property <string> cwd;
     in property <string> project;
     in property <string> title: "New session";
+    // Begun before and opened with its conversation, not begun here.
+    in property <bool> continued;
     // Something runs that Stop stops: a turn, or a `!` command.
     in property <bool> busy;
     // A turn is running: a message written meanwhile waits for it.

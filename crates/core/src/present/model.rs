@@ -531,6 +531,7 @@ pub struct Session {
     pub cwd: String,
     pub project: String,
     pub title: String,
+    pub continued: bool,
     pub busy: bool,
     pub turn: bool,
     pub status: String,

@@ -795,6 +795,9 @@ pub(super) fn apply_session(
     if old.is_none_or(|old| old.title != new.title) {
         global.set_title(new.title.to_slint(images));
     }
+    if old.is_none_or(|old| old.continued != new.continued) {
+        global.set_continued(new.continued.to_slint(images));
+    }
     if old.is_none_or(|old| old.busy != new.busy) {
         global.set_busy(new.busy.to_slint(images));
     }

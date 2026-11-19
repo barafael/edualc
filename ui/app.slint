@@ -8,7 +8,7 @@ import { Changes, Clipboard, Composer, Focus, Nav, Peek, Preferences, Prompt, Se
 import { AreaFence, Caption, Field, Icon, IconButton, KeyPress, LiveDot, Pressable, Small, TextButton, Title } from "widgets.slint";
 import { ChangesPanel } from "changes.slint";
 import { EntryView } from "transcript.slint";
-import { Heron } from "heron.slint";
+import { Heron, HeronWalker } from "heron.slint";
 import { NewProjectDialog } from "newproject.slint";
 import { PeekPanel } from "peek.slint";
 import { PlanReview } from "plan.slint";
@@ -1794,6 +1794,9 @@ export component AppWindow inherits Window {
                     column := VerticalLayout {
                         horizontal-stretch: 1;
                         min-width: 360px;
+                        // Something sits between the conversation and the text box: what Claude
+                        // asks, the commands matching the draft, a bar about the session.
+                        property <bool> docked: Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust || Session.asks-claude-trust || Session.shows-sign-in || Sessions.choosing-sign-in != "";
                         // Tab goes round within the conversation (the transcript), and
                         // within what Claude asks together with the composer.
                         conversation-start := AreaFence {
@@ -2127,7 +2130,9 @@ export component AppWindow inherits Window {
                             Heron {
                                 width: 64px;
                                 height: 64px;
-                                wanted: greeting.empty;
+                                wanted: greeting.empty && !Session.continued;
+                                // You began the conversation; an opened one was there.
+                                flies-off: !Session.continued;
                                 reach-x: transcript.width / 2 + 64px;
                                 reach-y: transcript.height / 2 + 64px;
                             }
@@ -2150,6 +2155,20 @@ export component AppWindow inherits Window {
                             animate opacity { duration: 250ms; easing: ease-out; }
                             visible: self.opacity > 0;
                         }
+                    }
+                    // In the margin left of the column, on the text box's line: so it is only
+                    // while nothing comes between them, and while the margin has room for it.
+                    HeronWalker {
+                        property <length> margin: (transcript.visible-width - Theme.column(transcript.visible-width)) / 2;
+                        x: 0;
+                        y: parent.height;
+                        width: 0;
+                        height: 0;
+                        shown: Session.continued && !transcript.settling && !column.docked && composer.visible
+                            && self.margin >= self.size + 2 * Theme.space-s;
+                        ground: self.margin - self.size - Theme.space-s;
+                        // Below the pinned line, and clear of the top.
+                        wall: parent.height * 60%;
                     }
                     if Prompt.kind == PromptKind.plan && Prompt.reviewing: PlanReview {
                         x: 0;
@@ -2203,7 +2222,7 @@ export component AppWindow inherits Window {
                 // What Claude asks and the commands matching the draft, in the transcript's
                 // column above the composer. Placed (`x`), so that their width, taken from the
                 // space there is, doesn't size that space in turn.
-                if Prompt.kind != PromptKind.none || Composer.commands.length > 0 || Session.watching || Session.needs-trust || Session.asks-claude-trust || Session.shows-sign-in || Sessions.choosing-sign-in != "": Rectangle {
+                if column.docked: Rectangle {
                     height: dock.preferred-height;
                     // Centred, as wide as the conversation's column; Claude's questions take the
                     // whole width, where their options have room.

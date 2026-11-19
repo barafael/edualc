@@ -1,14 +1,29 @@
 // edualc's heron, over a new session's empty conversation. It stands there while the
-// conversation is empty, flies off when it begins, and flies in when a new one opens. It faces
-// left, so it leaves to the upper left and comes in from the upper right.
+// conversation is empty, flies off when you begin it, slowly, and flies in when a new one opens.
+// A session opened with its conversation has no use for it: it is gone without a flight (see
+// `HeronWalker` for the one that comes instead). It faces left, so it leaves to the upper left
+// and comes in from the upper right.
 
 import { Theme } from "theme.slint";
+
+// A number from 0 to 1 that looks drawn at random: from the moment it is asked in, which a
+// person's timing makes hard to foresee, and how many were drawn before (`nth`), so that two
+// asked in the same frame differ. Asked only in callbacks: a binding would read the time on
+// every frame.
+global Chance {
+    public function draw(nth: int) -> float {
+        let x = Math.sin((animation-tick() / 1ms) * 12.9898deg + nth * 78.233deg) * 43758.5453;
+        return x - Math.floor(x);
+    }
+}
 
 enum Flight { standing, leaving, away, arriving }
 
 export component Heron inherits Rectangle {
     // Whether it belongs here: the conversation is empty.
     in property <bool> wanted;
+    // Whether it flies off when it isn't wanted any more, or is just gone.
+    in property <bool> flies-off: true;
     // How far it flies from where it stands before it is out of sight.
     in property <length> reach-x;
     in property <length> reach-y;
@@ -17,6 +32,18 @@ export component Heron inherits Rectangle {
     // The wing beat's frame: up, level, down, level.
     property <int> beat;
     property <duration> flight-time: 1100ms;
+    // Leaving takes its time: it is what you see as your first message goes.
+    property <duration> leaving-time: 2400ms;
+    // Where it leaves for, drawn as it takes off: mostly ahead, to the left and up, more or
+    // less steeply; now and then it turns and goes to the right.
+    property <length> leave-x: -root.reach-x;
+    property <length> leave-y: -root.reach-y;
+    property <bool> leaves-right;
+    property <int> rolls;
+    function roll() -> float {
+        root.rolls += 1;
+        return Chance.draw(root.rolls);
+    }
 
     init => {
         if !root.wanted {
@@ -32,8 +59,15 @@ export component Heron inherits Rectangle {
         } else {
             approach.running = false;
             landing.running = false;
-            root.flight = Flight.leaving;
-            departure.running = true;
+            if root.flies-off {
+                root.leaves-right = root.roll() < 0.25;
+                root.leave-x = (root.leaves-right ? 1 : -1) * root.reach-x * (0.5 + 0.6 * root.roll());
+                root.leave-y = -root.reach-y * (0.5 + 0.6 * root.roll());
+                root.flight = Flight.leaving;
+                departure.running = true;
+            } else {
+                root.flight = Flight.away;
+            }
         }
     }
 
@@ -55,7 +89,7 @@ export component Heron inherits Rectangle {
         }
     }
     departure := Timer {
-        interval: root.flight-time;
+        interval: root.leaving-time;
         running: false;
         triggered => {
             self.running = false;
@@ -64,8 +98,9 @@ export component Heron inherits Rectangle {
             }
         }
     }
+    // Slower beats as it leaves, slower as it goes.
     Timer {
-        interval: 110ms;
+        interval: root.flight == Flight.leaving ? 160ms : 110ms;
         running: root.flight == Flight.leaving || root.flight == Flight.arriving;
         triggered => {
             root.beat = Math.mod(root.beat + 1, 4);
@@ -79,6 +114,7 @@ export component Heron inherits Rectangle {
         colorize: Theme.claude;
         accessible-role: none;
         visible: root.flight != Flight.away;
+        transform-scale-x: root.flight == Flight.leaving && root.leaves-right ? -1 : 1;
         source: root.flight == Flight.standing ? @image-url("../assets/heron.svg")
             : root.beat == 0 ? @image-url("../assets/heron-wings-up.svg")
             : root.beat == 2 ? @image-url("../assets/heron-wings-down.svg")
@@ -88,13 +124,13 @@ export component Heron inherits Rectangle {
     states [
         // Up first, then away: it climbs at once and gathers speed sideways.
         leaving when root.flight == Flight.leaving: {
-            bird.x: -root.reach-x;
-            bird.y: -root.reach-y;
+            bird.x: root.leave-x;
+            bird.y: root.leave-y;
             bird.opacity: 0;
             in {
-                animate bird.x { duration: root.flight-time; easing: ease-in; }
-                animate bird.y { duration: root.flight-time; easing: ease-out; }
-                animate bird.opacity { duration: root.flight-time; easing: ease-in; }
+                animate bird.x { duration: root.leaving-time; easing: ease-in; }
+                animate bird.y { duration: root.leaving-time; easing: ease-out; }
+                animate bird.opacity { duration: root.leaving-time; easing: ease-in; }
             }
         }
         away when root.flight == Flight.away: {
@@ -168,6 +204,132 @@ export component HeronMark inherits Rectangle {
                     : root.act == Act.preening ? Act.flapping
                     : Act.looking-back;
             }
+        }
+    }
+}
+
+// What the walking heron is doing.
+enum Stroll { standing, walking, looking-back }
+
+// The heron of a session opened with its conversation, where the greeting's would only fly off:
+// it strolls about the conversation's lower left corner, where nothing is written. Its path
+// runs along the line over the text box, in the margin beside the conversation's column, and,
+// now and then, up the side of the window, turning the corner on the way. It walks somewhere,
+// stands a while, looks back now and then, each drawn at random; while it stands, only a timer
+// waits.
+// Placed with its corner where the line meets the side: it draws itself above and right of it.
+export component HeronWalker inherits Rectangle {
+    // Whether it is about: it comes and goes by fading.
+    in property <bool> shown;
+    // How far it may walk along the line, and up the side, from the corner.
+    in property <length> ground;
+    in property <length> wall;
+    in property <length> size: 26px;
+    // Where it is on its path: along the line from the corner, or, less than zero, up the side.
+    property <length> at;
+    property <Stroll> stroll: Stroll.standing;
+    // It goes on its path's way, along the line away from the side and down the side: it faces
+    // that way (its pictures face the other).
+    property <bool> outward;
+    property <duration> walk-time;
+    // The step's frame: stride, passing.
+    property <int> step;
+    property <int> rolls;
+    function roll() -> float {
+        root.rolls += 1;
+        return Chance.draw(root.rolls);
+    }
+    // Most walks keep to the line; one in five goes up the side, if there is room.
+    function set-off() {
+        let up = root.wall > root.size * 2 && root.roll() < 0.2;
+        let to = up ? -(root.size + root.roll() * (root.wall - root.size))
+            : root.roll() * max(0px, root.ground);
+        // Too short a walk isn't one: it looks back instead.
+        if abs(to - root.at) < root.size {
+            root.stroll = Stroll.looking-back;
+            return;
+        }
+        root.outward = to > root.at;
+        // A slow stroll, some 28 px a second.
+        root.walk-time = abs(to - root.at) / 28px * 1s;
+        root.stroll = Stroll.walking;
+        root.at = to;
+    }
+
+    init => { root.come(); }
+    changed shown => { root.come(); }
+    function come() {
+        if root.shown {
+            // Put there, not walked there.
+            root.walk-time = 0;
+            root.stroll = Stroll.standing;
+            root.at = root.roll() * max(0px, root.ground);
+            root.outward = root.roll() < 0.5;
+        }
+    }
+    // Shown narrower than before: it stays on the line.
+    changed ground => {
+        if root.at > root.ground && root.stroll == Stroll.standing {
+            root.walk-time = 0;
+            root.at = max(0px, root.ground);
+        }
+    }
+
+    // The wait before the next walk differs every time, from 4 to 14 seconds.
+    rest := Timer {
+        interval: 4s + 10s * root.roll-at-rest;
+        running: root.shown && root.stroll == Stroll.standing;
+        triggered => {
+            root.roll-at-rest = root.roll();
+            if root.roll() < 0.25 {
+                root.stroll = Stroll.looking-back;
+            } else {
+                root.set-off();
+            }
+        }
+    }
+    property <float> roll-at-rest: 0.3;
+    Timer {
+        interval: root.walk-time;
+        running: root.stroll == Stroll.walking;
+        triggered => { root.stroll = Stroll.standing; }
+    }
+    Timer {
+        interval: 1600ms;
+        running: root.stroll == Stroll.looking-back;
+        triggered => { root.stroll = Stroll.standing; }
+    }
+    Timer {
+        interval: 240ms;
+        running: root.stroll == Stroll.walking;
+        triggered => { root.step = Math.mod(root.step + 1, 2); }
+    }
+    animate at { duration: root.walk-time; easing: linear; }
+
+    // Upright on the line; on the side, turned a quarter, its feet to the side. Its feet are at
+    // 21.5 of its 24 units' height, 9.5 below its middle.
+    property <bool> climbing: root.at < 0;
+    body := Rectangle {
+        width: root.size;
+        height: root.size;
+        x: root.climbing ? -root.size * 2.5 / 24 : root.at;
+        y: root.climbing ? root.at - root.size : -root.size * 21.5 / 24;
+        transform-rotation: root.climbing ? 90deg : 0deg;
+        animate transform-rotation { duration: 200ms; easing: ease-in-out; }
+        opacity: root.shown ? 1 : 0;
+        animate opacity { duration: 600ms; easing: ease-out; }
+        visible: self.opacity > 0;
+        Image {
+            width: 100%;
+            height: 100%;
+            image-fit: contain;
+            colorize: Theme.claude;
+            accessible-role: none;
+            transform-scale-x: root.outward ? -1 : 1;
+            source: root.stroll == Stroll.looking-back ? @image-url("../assets/heron-walking-looking-back.svg")
+                : root.stroll == Stroll.standing ? @image-url("../assets/heron-walking-standing.svg")
+                : root.step == 0 ? @image-url("../assets/heron-walking-stride.svg")
+                : @image-url("../assets/heron-walking-passing.svg");
         }
     }
 }

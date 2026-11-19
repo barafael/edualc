@@ -737,6 +737,9 @@ pub struct ModelChoice {
 #[derive(Debug, Default)]
 pub struct Status {
     pub session_id: Option<SessionId>,
+    /// The session was begun before and opened with its conversation; a new one isn't, even
+    /// once it has an id.
+    pub continued: bool,
     pub title: Option<String>,
     /// The program the session talks to: the one picked for a new session (the command line's
     /// at first), the transcript's for one continued.
@@ -2523,6 +2526,7 @@ impl<F: Frontend> App<F> {
         title: Option<String>,
         backend: claude::Backend,
     ) {
+        self.status.continued = id.is_some();
         self.status.session_id = id;
         self.status.title = title;
         self.status.backend = backend;
